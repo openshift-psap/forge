@@ -496,10 +496,13 @@ def execute_project_operation(project: str, operation: str, args: tuple, verbose
         sys.exit(1)
 
 
-@click.command()
+@click.command(context_settings=dict(
+    ignore_unknown_options=True,
+    allow_interspersed_args=False,
+))
 @click.argument('project', required=False)
 @click.argument('operation', required=False)
-@click.argument('args', nargs=-1)
+@click.argument('args', nargs=-1, type=click.UNPROCESSED)
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output', default=True)
 @click.option('--dry-run', is_flag=True, help='Show what would be executed without running it')
 def main(project, operation, args, verbose, dry_run):

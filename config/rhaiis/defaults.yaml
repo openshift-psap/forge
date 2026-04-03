@@ -1,0 +1,44 @@
+# Global Defaults & Accelerator-Specific Settings
+# These are merged with model configs at runtime using inheritance:
+#   defaults → accelerator → model → model.accelerator_overrides → scenario
+
+# Global defaults applied to all deployments
+defaults:
+  deploy:
+    namespace: forge
+    replicas: 1
+    cpu_request: "4"
+    memory_request: "16Gi"
+    storage_source: hf
+    storage_path: model-pvc-2
+
+  vllm_args:
+    gpu-memory-utilization: 0.9
+    trust-remote-code: true
+    disable-log-requests: true
+    uvicorn-log-level: debug
+    tensor-parallel-size: 1  # Also determines num_gpus for deployment
+
+  guidellm:
+    rate_type: concurrent
+    max_seconds: 300
+
+# Accelerator-specific overrides
+# Selected via --accelerator flag or auto-detected from cluster
+accelerators:
+  nvidia:
+    image: quay.io/aipcc/rhaiis/cuda-ubi9:3.4.0-ea.2-1773886296
+    vllm_args: {}
+    env_vars: {}
+
+  amd:
+    image: quay.io/aipcc/rhaiis/rocm-ubi9:3.2.5-1766067105
+    vllm_args:
+      num-scheduler-steps: 8
+    env_vars:
+      VLLM_ROCM_USE_AITER: "1"
+
+  # Future accelerators
+  # gaudi:
+  #   image: ...
+  #   vllm_args: {}

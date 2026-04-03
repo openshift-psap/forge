@@ -1,0 +1,64 @@
+# GuideLLM Workload Profiles
+# These define benchmark parameters - can be changed WITHOUT restarting vLLM
+# Only GuideLLM needs to restart with new workload config
+
+workloads:
+  # === Standard Workloads ===
+  balanced:
+    name: "Balanced"
+    description: "Balanced prompt and output tokens (1k/1k)"
+    guidellm:
+      data: "prompt_tokens=1000,output_tokens=1000"
+      rates: [1, 50, 100, 200]
+      max_seconds: 180
+
+  short:
+    name: "Short"
+    description: "Short prompt and output (256/256)"
+    guidellm:
+      data: "prompt_tokens=256,output_tokens=256"
+      rates: [1, 50, 100, 200]
+      max_seconds: 120
+
+  long-prompt:
+    name: "Long Prompt"
+    description: "Long prompt, standard output (8k/1k)"
+    guidellm:
+      data: "prompt_tokens=8000,output_tokens=1000"
+      rate_type: "concurrent"
+      rates: [1, 25, 50, 100]
+      max_seconds: 300
+    # Requires separate deployment with larger context
+    vllm_args:
+      max-model-len: 10000
+
+  very-long-prompt:
+    name: "Very Long Prompt"
+    description: "Very long prompt (16k/1k)"
+    guidellm:
+      data: "prompt_tokens=16000,output_tokens=1000"
+      rate_type: "concurrent"
+      rates: [1, 10, 25, 50]
+      max_seconds: 600
+    # Requires separate deployment with larger context
+    vllm_args:
+      max-model-len: 20000
+
+  # === Advanced Workloads ===
+  heterogeneous:
+    name: "Heterogeneous"
+    description: "Mixed token distributions simulating real traffic"
+    guidellm:
+      data: "ADD ME"
+      rate_type: "concurrent"
+      rates: [1, 25, 50]
+      max_seconds: 300
+
+  multi-turn:
+    name: "Multi-Turn"
+    description: "Multi-turn conversation with context reuse"
+    guidellm:
+      data: "multi_turn"
+      rate_type: "concurrent"
+      rates: [1, 10, 25]
+      max_seconds: 600

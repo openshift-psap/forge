@@ -1,0 +1,315 @@
+# Model Registry
+# Models only specify what's DIFFERENT from defaults.yaml
+# Accelerator-specific settings go in accelerator_overrides section
+#
+# Resolution order:
+#   defaults.yaml → accelerators[accel] → models[model] → models[model].accelerator_overrides[accel]
+
+models:
+  # === Small Test Models ===
+  qwen-0.6b:
+    name: "Qwen3-0.6B"
+    hf_model_id: "Qwen/Qwen3-0.6B"
+    supported_workloads: [balanced, short, long-prompt]
+
+  # === Llama 3.3 Family ===
+  llama-3.3-70b:
+    name: "Llama-3.3-70B-Instruct"
+    hf_model_id: "meta-llama/Llama-3.3-70B-Instruct"
+    vllm_args:
+      tensor-parallel-size: 4
+    supported_workloads: [balanced, short]
+
+  llama-3.3-70b-fp8:
+    name: "Llama-3.3-70B-Instruct-FP8"
+    hf_model_id: "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic"
+    vllm_args:
+      tensor-parallel-size: 4
+      kv-cache-dtype: fp8
+    supported_workloads: [balanced, short, long-prompt]
+
+  llama-3.3-70b-w8a8:
+    name: "Llama-3.3-70B-Instruct-W8A8"
+    hf_model_id: "RedHatAI/Llama-3.3-70B-Instruct-quantized.w8a8"
+    vllm_args:
+      tensor-parallel-size: 4
+      max-model-len: 32768
+    supported_workloads: [balanced, short]
+
+  # === Llama 3.1 Family ===
+  llama-3.1-8b:
+    name: "Llama-3.1-8B-Instruct"
+    hf_model_id: "meta-llama/Llama-3.1-8B-Instruct"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short, long-prompt]
+
+  llama-3.1-8b-fp8:
+    name: "Llama-3.1-8B-Instruct-FP8"
+    hf_model_id: "RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8-dynamic"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short, long-prompt]
+
+  llama-3.1-405b-fp8:
+    name: "Llama-3.1-405B-Instruct-FP8"
+    hf_model_id: "RedHatAI/Meta-Llama-3.1-405B-Instruct-FP8-dynamic"
+    vllm_args:
+      tensor-parallel-size: 8
+      kv-cache-dtype: fp8
+    supported_workloads: [balanced]
+
+  # === Llama 4 Family ===
+  llama-4-scout-fp8:
+    name: "Llama-4-Scout-17B-16E-FP8"
+    hf_model_id: "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic"
+    vllm_args:
+      tensor-parallel-size: 2
+      kv-cache-dtype: fp8
+    supported_workloads: [balanced, short]
+
+  llama-4-maverick-fp8:
+    name: "Llama-4-Maverick-17B-128E-FP8"
+    hf_model_id: "RedHatAI/Llama-4-Maverick-17B-128E-Instruct-FP8"
+    vllm_args:
+      tensor-parallel-size: 8
+      kv-cache-dtype: fp8
+    supported_workloads: [balanced]
+
+  llama-4-maverick-w4a16:
+    name: "Llama-4-Maverick-17B-128E-W4A16"
+    hf_model_id: "RedHatAI/Llama-4-Maverick-17B-128E-Instruct-quantized.w4a16"
+    vllm_args:
+      tensor-parallel-size: 8
+      enable-expert-parallel: true
+    supported_workloads: [balanced]
+
+  llama-4-scout-w4a16:
+    name: "Llama-4-Scout-17B-16E-W4A16"
+    hf_model_id: "RedHatAI/Llama-4-Scout-17B-16E-Instruct-quantized.w4a16"
+    vllm_args:
+      tensor-parallel-size: 2
+    supported_workloads: [balanced, short]
+
+  # === Qwen Family ===
+  qwen-235b-fp8:
+    name: "Qwen3-235B-A22B-FP8"
+    hf_model_id: "RedHatAI/Qwen3-235B-A22B-FP8-dynamic"
+    aliases: [qwen-235b, qwen3-moe]
+    vllm_args:
+      tensor-parallel-size: 4
+      max-model-len: 16384
+      gpu-memory-utilization: 0.95
+      enable-expert-parallel: true
+    supported_workloads: [balanced, short]
+
+  qwen-235b-instruct:
+    name: "Qwen3-235B-A22B-Instruct"
+    hf_model_id: "Qwen/Qwen3-235B-A22B-Instruct-2507"
+    vllm_args:
+      tensor-parallel-size: 4
+      max-model-len: 16384
+      gpu-memory-utilization: 0.95
+    # AMD needs AITER disabled for this model
+    accelerator_overrides:
+      amd:
+        env_vars:
+          VLLM_ROCM_USE_AITER: "0"
+    supported_workloads: [balanced]
+
+  qwen-30b-a3b:
+    name: "Qwen3-30B-A3B-Instruct"
+    hf_model_id: "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  qwen-next-80b-a3b:
+    name: "Qwen3-Next-80B-A3B-Instruct"
+    hf_model_id: "Qwen/Qwen3-Next-80B-A3B-Instruct"
+    vllm_args:
+      tensor-parallel-size: 4
+    supported_workloads: [balanced]
+
+  qwen-vl-30b-a3b:
+    name: "Qwen3-VL-30B-A3B-Instruct"
+    hf_model_id: "Qwen/Qwen3-VL-30B-A3B-Instruct"
+    vllm_args:
+      tensor-parallel-size: 4
+    supported_workloads: [balanced]
+
+  qwen-25-7b:
+    name: "Qwen2.5-7B-Instruct"
+    hf_model_id: "Qwen/Qwen2.5-7B-Instruct"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short, long-prompt]
+
+  # === DeepSeek ===
+  deepseek-r1:
+    name: "DeepSeek-R1-0528"
+    hf_model_id: "deepseek-ai/DeepSeek-R1-0528"
+    aliases: [deepseek, r1]
+    vllm_args:
+      tensor-parallel-size: 8
+      max-model-len: 16384
+      gpu-memory-utilization: 0.95
+    # AMD needs different AITER settings
+    accelerator_overrides:
+      amd:
+        env_vars:
+          VLLM_ROCM_USE_AITER: "0"
+    supported_workloads: [balanced]
+
+  deepseek-r1-w4a16:
+    name: "DeepSeek-R1-0528-W4A16"
+    hf_model_id: "RedHatAI/DeepSeek-R1-0528-quantized.w4a16"
+    vllm_args:
+      tensor-parallel-size: 8
+      max-model-len: 16384
+    supported_workloads: [balanced]
+
+  # === GPT-OSS ===
+  gpt-oss-120b:
+    name: "GPT-OSS-120B"
+    hf_model_id: "openai/gpt-oss-120b"
+    vllm_args:
+      max-model-len: 16384
+      gpu-memory-utilization: 0.95
+    supported_workloads: [balanced, short]
+
+  gpt-oss-120b-fp8:
+    name: "GPT-OSS-120B-FP8"
+    hf_model_id: "RedHatAI/gpt-oss-120b-FP8-dynamic"
+    vllm_args:
+      max-model-len: 16384
+      gpu-memory-utilization: 0.95
+    supported_workloads: [balanced, short]
+
+  gpt-oss-20b:
+    name: "GPT-OSS-20B"
+    hf_model_id: "openai/gpt-oss-20b"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  # === Mistral Family ===
+  mistral-small-24b:
+    name: "Mistral-Small-3.1-24B"
+    hf_model_id: "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  mistral-small-24b-fp8:
+    name: "Mistral-Small-3.1-24B-FP8"
+    hf_model_id: "RedHatAI/Mistral-Small-3.1-24B-Instruct-2503-FP8-dynamic"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  mixtral-8x22b:
+    name: "Mixtral-8x22B-Instruct"
+    hf_model_id: "mistralai/Mixtral-8x22B-Instruct-v0.1"
+    aliases: [mixtral]
+    vllm_args:
+      tensor-parallel-size: 4
+      max-model-len: 16384
+      gpu-memory-utilization: 0.95
+    supported_workloads: [balanced, short]
+
+  mixtral-8x7b:
+    name: "Mixtral-8x7B-Instruct"
+    hf_model_id: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  mistral-7b:
+    name: "Mistral-7B-Instruct"
+    hf_model_id: "mistralai/Mistral-7B-Instruct-v0.3"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  ministral-14b:
+    name: "Ministral-3-14B-Instruct"
+    hf_model_id: "mistralai/Ministral-3-14B-Instruct-2512"
+    vllm_args:
+      tensor-parallel-size: 4
+    supported_workloads: [balanced, short]
+
+  ministral-14b-fp8:
+    name: "Ministral-3-14B-Instruct-FP8"
+    hf_model_id: "RedHatAI/Ministral-3-14B-Instruct-2512"
+    vllm_args:
+      tensor-parallel-size: 4
+    supported_workloads: [balanced, short]
+
+  # === Granite Family ===
+  granite-3.1-8b:
+    name: "Granite-3.1-8B-Instruct"
+    hf_model_id: "ibm-granite/granite-3.1-8b-instruct"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short, long-prompt]
+
+  granite-3.1-8b-fp8:
+    name: "Granite-3.1-8B-Instruct-FP8"
+    hf_model_id: "RedHatAI/granite-3.1-8b-instruct-fp8-dynamic"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short, long-prompt]
+
+  # === Phi Family ===
+  phi-4:
+    name: "Phi-4"
+    hf_model_id: "microsoft/phi-4"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  phi-4-fp8:
+    name: "Phi-4-FP8"
+    hf_model_id: "RedHatAI/phi-4-FP8-dynamic"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced, short]
+
+  # === Gemma Family ===
+  gemma-2-9b:
+    name: "Gemma-2-9B-IT"
+    hf_model_id: "google/gemma-2-9b-it"
+    vllm_args:
+      max-model-len: 8192
+    supported_workloads: [balanced, short]
+
+  gemma-2-9b-fp8:
+    name: "Gemma-2-9B-IT-FP8"
+    hf_model_id: "RedHatAI/gemma-2-9b-it-FP8"
+    vllm_args:
+      max-model-len: 8192
+    supported_workloads: [balanced, short]
+
+  # === Nemotron Family ===
+  nemotron-70b:
+    name: "Nemotron-70B-Instruct"
+    hf_model_id: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF"
+    vllm_args:
+      tensor-parallel-size: 2
+      max-model-len: 16384
+    supported_workloads: [balanced]
+
+  nemotron-70b-fp8:
+    name: "Nemotron-70B-Instruct-FP8"
+    hf_model_id: "RedHatAI/Llama-3.1-Nemotron-70B-Instruct-HF-FP8-dynamic"
+    vllm_args:
+      max-model-len: 16384
+    supported_workloads: [balanced]
+
+  nemotron-nano-30b-fp8:
+    name: "Nemotron-3-Nano-30B-FP8"
+    hf_model_id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
+    vllm_args:
+      tensor-parallel-size: 4
+    supported_workloads: [balanced, short]
