@@ -276,6 +276,20 @@ artifacts/{run_uuid}/
 └── 005__cleanup/
 ```
 
+## Running Unit Tests
+
+```bash
+# Activate venv and run from forge directory
+source ~/test_foo/python3_virt/bin/activate
+cd /Users/memehta/workspace/forge
+PYTHONPATH=. python -m pytest tests/ --ignore=tests/llm_d -v
+
+# Or run specific test files
+PYTHONPATH=. pytest tests/core/utils/test_oc.py -v          # OC wrapper tests
+PYTHONPATH=. pytest tests/core/scenarios/test_config_loader.py -v  # ConfigLoader tests
+PYTHONPATH=. pytest tests/rhaiis/ -v                        # RHAIIS tests
+```
+
 ## Key Design Decisions
 
 1. **KServe RawDeployment**: Uses ServingRuntime + InferenceService for RHOAI compatibility
