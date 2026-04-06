@@ -113,7 +113,194 @@ models:
           TORCH_CUDA_ARCH_LIST: "9.0"
 ```
 
-## Core Interfaces
+## Core Interfaces - Class Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           FORGE WORKFLOW ENGINE                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────┐         ┌──────────────────────────────┐
+│    «abstract» WorkflowStep   │         │      WorkflowContext         │
+├──────────────────────────────┤         ├──────────────────────────────┤
+│ - _name: str | None          │         │ + run_uuid: str              │
+├──────────────────────────────┤         │ + artifact_dir: Path         │
+│ + name: str {property}       │         │ + config: dict               │
+│ + execute(ctx) → StepResult  │◄────────│ + env_vars: dict             │
+│   «abstract»                 │  uses   │ + start_time: datetime       │
+└──────────────────────────────┘         │ + step_number: int           │
+            △                            │ + current_step_name: str     │
+            │ inherits                   ├──────────────────────────────┤
+            │                            │ + from_environment() → ctx   │
+    ┌───────┴───────┐                    │ + get_step_artifact_dir()    │
+    │               │                    │ + get_env(key) → str         │
+    ▼               ▼                    │ + write_metadata()           │
+┌────────────┐  ┌────────────┐           │ + write_restart_script()     │
+│ Core Steps │  │ Project    │           └──────────────────────────────┘
+│            │  │ Steps      │
+├────────────┤  ├────────────┤
+│RunGuideLLM │  │DeployVLLM  │
+│Collect     │  │WaitForReady│
+│Artifacts   │  │DeployHelm  │
+│Cleanup     │  │ConfigureEPP│
+│Deployment  │  │...         │
+└────────────┘  └────────────┘
+
+
+┌──────────────────────────────┐
+│     «abstract» Workflow      │         ┌──────────────────────────────┐
+├──────────────────────────────┤         │        StepResult            │
+│ + ctx: WorkflowContext       │         ├──────────────────────────────┤
+│ - _steps: list[WorkflowStep] │         │ + success: bool              │
+│ - _finally_steps: list[...]  │         │ + message: str               │
+│ - _defined: bool             │         │ + error: Exception | None    │
+├──────────────────────────────┤         │ + artifacts: list[str]       │
+│ + add_step(step)             │         │ + data: dict                 │
+│ + add_finally(step)          │         │ + duration_seconds: float    │
+│ + define_steps() «abstract»  │         ├──────────────────────────────┤
+│ + steps: list {property}     │         │ + ok(message) → StepResult   │
+│ + finally_steps: list {prop} │         │ + fail(message) → StepResult │
+│ + execute() → WorkflowResult │         └──────────────────────────────┘
+└──────────────────────────────┘                       △
+            │                                          │ returns
+            │ uses                                     │
+            ▼                            ┌─────────────┴────────────────┐
+┌──────────────────────────────┐         │    SequentialExecutor        │
+│       WorkflowResult         │         ├──────────────────────────────┤
+├──────────────────────────────┤         │                              │
+│ + success: bool              │◄────────┤ + execute(workflow)          │
+│ + step_results: dict         │ returns │   → WorkflowResult           │
+│ + failed_step: str | None    │         │                              │
+│ + duration_seconds: float    │         │ Execution Flow:              │
+│ + run_uuid: str              │         │ 1. Run steps sequentially    │
+│ + start_time: datetime       │         │ 2. Stop on first failure     │
+│ + end_time: datetime         │         │ 3. Always run finally_steps  │
+└──────────────────────────────┘         │ 4. Collect all StepResults   │
+                                         └──────────────────────────────┘
+```
+
+### Concrete Workflow Implementations
+
+```
+            △ inherits from Workflow
+            │
+    ┌───────┴────────────────────┐
+    │                            │
+    ▼                            ▼
+┌────────────────────┐    ┌────────────────────┐
+│ BenchmarkWorkflow  │    │ LlmdBenchmark      │
+│ (RHAIIS)           │    │ Workflow (llm-d)   │
+├────────────────────┤    ├────────────────────┤
+│ + model: str       │    │ + model: str       │
+│ + workload: str    │    │ + routing_mode: str│
+│ + vllm_image: str  │    │ + helmfile_path    │
+│ + namespace: str   │    │ + namespace: str   │
+├────────────────────┤    ├────────────────────┤
+│ define_steps():    │    │ define_steps():    │
+│  ├─ DeployVLLMStep │    │  ├─ DeployHelmStep │
+│  ├─ WaitForReady   │    │  ├─ ConfigureEPP   │
+│  ├─ RunGuideLLM    │    │  ├─ WaitForGateway │
+│  ├─ [finally]      │    │  ├─ RunGuideLLM    │
+│  │  CollectArtif.  │    │  ├─ [finally]      │
+│  └─ CleanupDeploy  │    │  │  CollectArtif.  │
+└────────────────────┘    │  └─ HelmCleanup    │
+                          └────────────────────┘
+```
+
+### Execution Sequence Diagram
+
+```
+┌──────────┐     ┌──────────────┐     ┌────────────────────┐     ┌──────────────┐
+│  Client  │     │   Workflow   │     │ SequentialExecutor │     │ WorkflowStep │
+└────┬─────┘     └──────┬───────┘     └─────────┬──────────┘     └──────┬───────┘
+     │                  │                       │                       │
+     │  execute()       │                       │                       │
+     │─────────────────>│                       │                       │
+     │                  │                       │                       │
+     │                  │  execute(self)        │                       │
+     │                  │──────────────────────>│                       │
+     │                  │                       │                       │
+     │                  │                       │  ┌─────────────────┐  │
+     │                  │                       │  │ For each step:  │  │
+     │                  │                       │  └────────┬────────┘  │
+     │                  │                       │           │           │
+     │                  │                       │  execute(ctx)         │
+     │                  │                       │──────────────────────>│
+     │                  │                       │                       │
+     │                  │                       │     StepResult        │
+     │                  │                       │<──────────────────────│
+     │                  │                       │           │           │
+     │                  │                       │  ┌────────┴────────┐  │
+     │                  │                       │  │ if !success:    │  │
+     │                  │                       │  │   break loop    │  │
+     │                  │                       │  └────────┬────────┘  │
+     │                  │                       │           │           │
+     │                  │                       │  ┌────────┴────────┐  │
+     │                  │                       │  │ For each        │  │
+     │                  │                       │  │ finally_step:   │  │
+     │                  │                       │  └────────┬────────┘  │
+     │                  │                       │           │           │
+     │                  │                       │  execute(ctx)         │
+     │                  │                       │──────────────────────>│
+     │                  │                       │                       │
+     │                  │                       │     StepResult        │
+     │                  │                       │<──────────────────────│
+     │                  │                       │  (continue even       │
+     │                  │                       │   if failed)          │
+     │                  │                       │                       │
+     │                  │    WorkflowResult     │                       │
+     │                  │<──────────────────────│                       │
+     │                  │                       │                       │
+     │  WorkflowResult  │                       │                       │
+     │<─────────────────│                       │                       │
+     │                  │                       │                       │
+```
+
+### Dependency Graph
+
+```
+                    ┌─────────────────┐
+                    │ WorkflowContext │
+                    └────────┬────────┘
+                             │
+                    created by│from_environment()
+                             │
+                             ▼
+┌──────────────┐    ┌─────────────────┐    ┌────────────────────┐
+│ WorkflowStep │◄───│    Workflow     │───►│ SequentialExecutor │
+│   (ABC)      │    │     (ABC)       │    │                    │
+└──────┬───────┘    └────────┬────────┘    └─────────┬──────────┘
+       │                     │                       │
+       │ implements          │ implements            │ produces
+       ▼                     ▼                       ▼
+┌──────────────┐    ┌─────────────────┐    ┌────────────────────┐
+│  Concrete    │    │    Concrete     │    │   WorkflowResult   │
+│   Steps      │    │   Workflows     │    │   + StepResults    │
+│              │    │                 │    │                    │
+│ DeployVLLM   │    │ BenchmarkWF     │    │ {                  │
+│ RunGuideLLM  │    │ PrepareWF       │    │   success: bool    │
+│ CollectArtif │    │ CleanupWF       │    │   step_results: {} │
+│ WaitForReady │    │ LlmdBenchmarkWF │    │   failed_step: str │
+│ DeployHelm   │    │                 │    │ }                  │
+└──────────────┘    └─────────────────┘    └────────────────────┘
+```
+
+### Key Relationships
+
+| Relationship | Type | Description |
+|-------------|------|-------------|
+| `Workflow` → `WorkflowContext` | composition | Workflow holds a context instance |
+| `Workflow` → `WorkflowStep` | aggregation | Workflow contains list of steps |
+| `WorkflowStep.execute()` → `WorkflowContext` | dependency | Steps receive context as parameter |
+| `WorkflowStep.execute()` → `StepResult` | returns | Steps return result objects |
+| `SequentialExecutor.execute()` → `Workflow` | uses | Executor runs a workflow |
+| `SequentialExecutor.execute()` → `WorkflowResult` | returns | Executor returns final result |
+| Concrete Steps → `WorkflowStep` | inheritance | All steps extend the abstract class |
+| Concrete Workflows → `Workflow` | inheritance | All workflows extend the abstract class |
+
+---
+
+## Core Interfaces - Code
 
 ### WorkflowStep
 ```python
