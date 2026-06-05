@@ -3,6 +3,7 @@ vaults:
   all-optional:
   - psap-forge-notifications
   - psap-forge-mlflow-export
+  - psap-models-corp-rh
   prepare: []
   prepare-optional:
   - psap-forge-hf
@@ -64,3 +65,11 @@ caliper:
       enabled: false
       baseline: null
       output: kpi_analyze.json
+
+agentic:
+  enabled: true
+  model_key: qwen-3-6-35b
+  on_failure:
+    enabled: true
+  config_review:
+    enabled: true
