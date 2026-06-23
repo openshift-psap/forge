@@ -314,7 +314,9 @@ def wait_for_download(args, ctx):
         ignore_not_found=True,
     )
     if not payload:
-        return (False, f"Download job {cache_spec['download_job_name']} not found, retrying...")
+        raise RuntimeError(
+            f"Download job {cache_spec['download_job_name']} not found - job may have been externally deleted"
+        )
 
     status = payload.get("status", {})
 
