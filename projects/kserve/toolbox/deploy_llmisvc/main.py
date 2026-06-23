@@ -6,13 +6,15 @@ from pathlib import Path
 
 import yaml
 
-from projects.core.dsl import entrypoint, execute_tasks, retry, task
+from projects.core.dsl import always, entrypoint, execute_tasks, on_failure, retry, task
 from projects.core.dsl.utils import write_text
 from projects.core.dsl.utils.k8s import (
     oc,
     oc_apply,
     oc_get_json,
 )
+
+from .on_failure_helpers import on_wait_pods_appear_failure
 
 
 def load_yaml(path: Path):
@@ -85,28 +87,6 @@ def copy_manifest_to_src(args, ctx):
 
 
 @task
-def capture_llm_service_description(args, ctx):
-    """Capture LLM service description using oc describe"""
-
-    # Use oc describe to get the deployed service description
-    result = oc(
-        "describe",
-        "llminferenceservice",
-        ctx.service_name,
-        "-n",
-        args.namespace,
-        log_stdout=False,
-    )
-
-    service_description = result.stdout.strip()
-
-    # Store in context for other tasks
-    ctx.service_description = service_description
-
-    return f"Captured LLM service description for {ctx.service_name}"
-
-
-@task
 def delete_existing_service(args, ctx):
     """Delete existing LLMInferenceService"""
 
@@ -130,11 +110,13 @@ def delete_existing_service(args, ctx):
 def wait_old_pods_gone(args, ctx):
     """Wait for old llm-d pods to disappear"""
 
-    pods = oc_get_json(
-        "pods", namespace=args.namespace, selector=ctx.selector, ignore_not_found=True
-    )
+    # Use service name and selector from context (if set) or create from args
+    service_name = getattr(ctx, "service_name", args.inference_service_name)
+    selector = getattr(ctx, "selector", f"app.kubernetes.io/name={service_name}")
+
+    pods = oc_get_json("pods", namespace=args.namespace, selector=selector, ignore_not_found=True)
     if not pods or not pods.get("items"):
-        return f"Old pods gone for {ctx.service_name}"
+        return f"Old pods gone for {service_name}"
     return False  # Retry
 
 
@@ -151,28 +133,125 @@ def apply_inference_service(args, ctx):
     return f"Applied LLMInferenceService manifest from {src_manifest_path} for {ctx.service_name}"
 
 
+@on_failure(on_wait_pods_appear_failure)
 @retry(attempts=120, delay=5, backoff=1.0)
 @task
 def wait_pods_appear(args, ctx):
     """Wait for llm-d pods to appear"""
 
-    pods = oc_get_json(
-        "pods", namespace=args.namespace, selector=ctx.selector, ignore_not_found=True
-    )
+    # Use service name and selector from context (if set) or create from args
+    service_name = getattr(ctx, "service_name", args.inference_service_name)
+    selector = getattr(ctx, "selector", f"app.kubernetes.io/name={service_name}")
+
+    pods = oc_get_json("pods", namespace=args.namespace, selector=selector, ignore_not_found=True)
     if pods and pods.get("items"):
-        return f"Pods appeared for {ctx.service_name}"
+        return f"Pods appeared for {service_name}"
     return False  # Retry
+
+
+@always
+@task
+def capture_llmisv_description(args, ctx):
+    """Capture LLMISV description with events and status for failure analysis"""
+
+    try:
+        # Ensure artifacts directory exists
+        artifacts_dir = args.artifact_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use service name from args (available) or context (if set)
+        service_name = getattr(ctx, "service_name", args.inference_service_name)
+
+        # Capture LLMISV description
+        result = oc(
+            "describe",
+            "llminferenceservice",
+            service_name,
+            "-n",
+            args.namespace,
+            log_stdout=False,
+            check=False,
+        )
+
+        llmisv_desc_path = artifacts_dir / "llmisv_description.txt"
+        with open(llmisv_desc_path, "w", encoding="utf-8") as f:
+            f.write(result.stdout)
+
+        return f"Captured LLMISV description to {llmisv_desc_path}"
+
+    except Exception as e:
+        return f"Failed to capture LLMISV description: {e}"
+
+
+@always
+@task
+def capture_replicaset_description(args, ctx):
+    """Capture ReplicaSet description for pod creation failure analysis"""
+
+    try:
+        # Ensure artifacts directory exists
+        artifacts_dir = args.artifact_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use service name from args (available) or context (if set)
+        service_name = getattr(ctx, "service_name", args.inference_service_name)
+        selector = getattr(ctx, "selector", f"app.kubernetes.io/name={service_name}")
+
+        # Get replicasets for the service
+        rs_result = oc(
+            "get",
+            "replicaset",
+            "-l",
+            selector,
+            "-n",
+            args.namespace,
+            "-o",
+            "name",
+            log_stdout=False,
+            check=False,
+        )
+
+        replicaset_descriptions = []
+
+        if rs_result.stdout.strip():
+            # Describe each replicaset
+            for rs_name in rs_result.stdout.strip().split("\n"):
+                if rs_name.strip():
+                    rs_desc_result = oc(
+                        "describe",
+                        rs_name.strip(),
+                        "-n",
+                        args.namespace,
+                        log_stdout=False,
+                        check=False,
+                    )
+                    replicaset_descriptions.append(rs_desc_result.stdout)
+
+        # Save all replicaset descriptions
+        rs_desc_path = artifacts_dir / "replicaset_description.txt"
+        with open(rs_desc_path, "w", encoding="utf-8") as f:
+            if replicaset_descriptions:
+                f.write("\n".join(replicaset_descriptions))
+            else:
+                f.write("No replicasets found for the service")
+
+        return f"Captured ReplicaSet description to {rs_desc_path}"
+
+    except Exception as e:
+        return f"Failed to capture ReplicaSet description: {e}"
 
 
 @task
 def query_service_status(args, ctx):
     """Query the status of the LLMInferenceService"""
 
+    service_name = getattr(ctx, "service_name", args.inference_service_name)
+
     # Query only the Ready condition status
     result = oc(
         "get",
         "llminferenceservice",
-        ctx.service_name,
+        service_name,
         "-n",
         args.namespace,
         "-o",
@@ -184,20 +263,22 @@ def query_service_status(args, ctx):
     ctx.is_ready = ready_status == "True"
 
     if ctx.is_ready:
-        return f"LLMInferenceService {ctx.service_name} status: Ready"
+        return f"LLMInferenceService {service_name} status: Ready"
     else:
-        return f"LLMInferenceService {ctx.service_name} status: Not Ready"
+        return f"LLMInferenceService {service_name} status: Not Ready"
 
 
 @task
 def query_service_message(args, ctx):
     """Query detailed message from LLMInferenceService"""
 
+    service_name = getattr(ctx, "service_name", args.inference_service_name)
+
     # Query the Ready condition details
     result = oc(
         "get",
         "llminferenceservice",
-        ctx.service_name,
+        service_name,
         "-n",
         args.namespace,
         "-o",
@@ -228,11 +309,14 @@ def query_service_message(args, ctx):
 def wait_service_ready(args, ctx):
     """Wait for LLMInferenceService to be ready"""
 
+    service_name = getattr(ctx, "service_name", args.inference_service_name)
+    selector = getattr(ctx, "selector", f"app.kubernetes.io/name={service_name}")
+
     # Query the current status and show diagnostic info
     result = oc(
         "get",
         "llminferenceservice",
-        ctx.service_name,
+        service_name,
         "-n",
         args.namespace,
         "-o",
@@ -245,7 +329,7 @@ def wait_service_ready(args, ctx):
         "get",
         "pods",
         "-l",
-        ctx.selector,
+        selector,
         "-n",
         args.namespace,
         log_stdout=True,  # Show pod status in logs
@@ -261,7 +345,7 @@ def wait_service_ready(args, ctx):
             message = condition.get("message", "No message")
 
             if status == "True":
-                return f"LLMInferenceService {ctx.service_name} is ready"
+                return f"LLMInferenceService {service_name} is ready"
             else:
                 return (
                     False,
@@ -271,7 +355,7 @@ def wait_service_ready(args, ctx):
         except (json.JSONDecodeError, KeyError) as e:
             return (False, f"Failed to parse Ready condition: {e}")
     else:
-        return (False, f"No Ready condition found in status for {ctx.service_name}")
+        return (False, f"No Ready condition found in status for {service_name}")
 
 
 @retry(attempts=90, delay=10, backoff=1.0)
