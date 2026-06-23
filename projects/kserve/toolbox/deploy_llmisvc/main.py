@@ -54,6 +54,11 @@ def run(
     if not endpoint_url:
         raise RuntimeError("Failed to resolve gateway endpoint URL after deployment")
 
+    # Log service description for visibility
+    service_description = getattr(context, "service_description", None)
+    if service_description:
+        print(f"Deployed: {service_description}")
+
     return endpoint_url
 
 
@@ -77,6 +82,28 @@ def copy_manifest_to_src(args, ctx):
     ctx.src_manifest_path = str(src_path)
 
     return f"Copied manifest from {original_path} to {src_path}"
+
+
+@task
+def capture_llm_service_description(args, ctx):
+    """Capture LLM service description using oc describe"""
+
+    # Use oc describe to get the deployed service description
+    result = oc(
+        "describe",
+        "llminferenceservice",
+        ctx.service_name,
+        "-n",
+        args.namespace,
+        log_stdout=False,
+    )
+
+    service_description = result.stdout.strip()
+
+    # Store in context for other tasks
+    ctx.service_description = service_description
+
+    return f"Captured LLM service description for {ctx.service_name}"
 
 
 @task
@@ -269,7 +296,12 @@ def deploy_llmisvc_task(args, ctx):
     """Deploy the llm_d inference service and resolve its endpoint"""
 
     # All work is done by the individual tasks
-    return f"LLMInferenceService deployment completed: {ctx.endpoint_url}"
+    service_info = getattr(
+        ctx, "service_description", f"LLM Service '{args.inference_service_name}'"
+    )
+    return (
+        f"LLMInferenceService deployment completed: {service_info} - Endpoint: {ctx.endpoint_url}"
+    )
 
 
 def try_resolve_endpoint_url(
