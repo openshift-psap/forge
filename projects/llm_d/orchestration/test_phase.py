@@ -54,25 +54,63 @@ def run() -> int:
     return run_and_postprocess(do_test)
 
 
-def do_test() -> int:
-    from projects.llm_d.orchestration import runtime_config
+def run_finalizers(
+    endpoint_url: str | None,
+    primary_exc: tuple[type[BaseException], BaseException, Any] | None,
+    finalizer_exc: tuple[type[BaseException], BaseException, Any] | None,
+) -> tuple[type[BaseException], BaseException, Any] | None:
+    def _run_finalizer(
+        description: str,
+        callback,
+        **kwargs,
+    ):
+        try:
+            callback(**kwargs)
+        except Exception:
+            if primary_exc is None:
+                logger.exception("Finalizer failed: %s", description)
+                return finalizer_exc or sys.exc_info()
+            logger.exception("Ignoring %s failure after primary test failure", description)
+        return finalizer_exc
 
-    for run_spec in runtime_config.get_run_specs():
-        with runtime_config.activate_run_spec(run_spec):
-            with env.NextArtifactDir(run_spec.artifact_dirname):
-                _do_single_test()
-
-    return 0
-
-
-def _do_single_test() -> None:
-    artifact_dir = env.ARTIFACT_DIR
     from projects.llm_d.orchestration import runtime_config
 
     namespace = runtime_config.get_namespace()
     platform = runtime_config.get_platform_config()
     capture_namespace_events = platform["artifacts"]["capture_namespace_events"]
 
+    finalizer_exc = _run_finalizer(
+        "capture inference-service state",
+        capture_inference_service_state,
+    )
+    finalizer_exc = _run_finalizer(
+        "write endpoint URL",
+        write_endpoint_url,
+        artifact_dir=env.ARTIFACT_DIR,
+        endpoint_url=endpoint_url,
+    )
+    finalizer_exc = _run_finalizer(
+        "capture namespace events",
+        capture_namespace_events_after_test,
+        artifact_dir=env.ARTIFACT_DIR,
+        namespace=namespace,
+        capture_namespace_events=capture_namespace_events,
+    )
+    finalizer_exc = _run_finalizer(
+        "cleanup runtime resources",
+        cleanup_test_resources,
+    )
+
+    return primary_exc, finalizer_exc
+
+
+def do_test() -> int:
+    # Load minimal config needed for orchestration flow
+    from projects.llm_d.orchestration import runtime_config
+
+    namespace = runtime_config.get_namespace()
+
+    # Ensure namespace exists before starting any deployments
     ensure_namespace(
         namespace,
         labels={
@@ -85,61 +123,40 @@ def _do_single_test() -> None:
     primary_exc: tuple[type[BaseException], BaseException, Any] | None = None
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None = None
 
-    try:
-        create_test_labels()
+    with env.NextArtifactDir("llmd_test"):
+        try:
+            # Create test labels with actual model and profile information
+            create_test_labels()
 
-        endpoint_url = deploy_inference_service()
+            endpoint_url = deploy_inference_service()
 
-        if not endpoint_url:
-            raise ValueError("Failed to extract the endpoint_url from the LLMISVC deployment")
-        run_smoke_request(endpoint_url=endpoint_url)
+            if not endpoint_url:
+                raise ValueError("Failed to extract the endpoint_url from the LLMISVC deployment")
+            run_smoke_request(endpoint_url=endpoint_url)
 
-        run_guidellm_benchmark(endpoint_url=endpoint_url)
-    except Exception:
-        primary_exc = sys.exc_info()
-    except SignalInterrupt:
-        primary_exc = sys.exc_info()
-    finally:
-        do_finalizers = True
-        if primary_exc and isinstance(primary_exc[1], SignalInterrupt):
-            logging.warning("Caught a SignalInterrupt, skipping the finalizers")
-            do_finalizers = False
+            run_guidellm_benchmark(endpoint_url=endpoint_url)
+        except Exception:
+            primary_exc = sys.exc_info()
+        except SignalInterrupt:
+            primary_exc = sys.exc_info()
+        finally:
+            do_finalizers = True
+            if primary_exc and isinstance(primary_exc[1], SignalInterrupt):
+                logging.warning("Caught a SignalInterrupt, skipping the finalizers")
+                do_finalizers = False
 
-        if do_finalizers:
-            finalizer_exc = _run_finalizer(
-                primary_exc,
-                finalizer_exc,
-                "capture inference-service state",
-                capture_inference_service_state,
-            )
-            finalizer_exc = _run_finalizer(
-                primary_exc,
-                finalizer_exc,
-                "write endpoint URL",
-                write_endpoint_url,
-                artifact_dir=artifact_dir,
-                endpoint_url=endpoint_url,
-            )
-            finalizer_exc = _run_finalizer(
-                primary_exc,
-                finalizer_exc,
-                "capture namespace events",
-                capture_namespace_events_after_test,
-                artifact_dir=artifact_dir,
-                namespace=namespace,
-                capture_namespace_events=capture_namespace_events,
-            )
-            finalizer_exc = _run_finalizer(
-                primary_exc,
-                finalizer_exc,
-                "cleanup runtime resources",
-                cleanup_test_resources,
-            )
+            if do_finalizers:
+                primary_exc, finalizer_exc = run_finalizers(
+                    endpoint_url, primary_exc, finalizer_exc
+                )
 
     if primary_exc is not None:
         raise primary_exc[1].with_traceback(primary_exc[2])
+
     if finalizer_exc is not None:
         raise finalizer_exc[1].with_traceback(finalizer_exc[2])
+
+    return 0
 
 
 def deploy_inference_service() -> str:
@@ -332,20 +349,3 @@ def capture_namespace_events_after_test(
         check=False,
         stdout_dest=artifact_dir / "artifacts" / "namespace.events.txt",
     )
-
-
-def _run_finalizer(
-    primary_exc: tuple[type[BaseException], BaseException, Any] | None,
-    finalizer_exc: tuple[type[BaseException], BaseException, Any] | None,
-    description: str,
-    callback,
-    **kwargs,
-) -> tuple[type[BaseException], BaseException, Any] | None:
-    try:
-        callback(**kwargs)
-    except Exception:
-        if primary_exc is None:
-            logger.exception("Finalizer failed: %s", description)
-            return finalizer_exc or sys.exc_info()
-        logger.exception("Ignoring %s failure after primary test failure", description)
-    return finalizer_exc
