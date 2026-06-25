@@ -494,20 +494,23 @@ def capture_csv(args, ctx):
 
     csv_name = getattr(ctx, "csv_name", "")
     if not csv_name:
+        # First check if any CSV exists to avoid array index out of bounds
         result = shell.run(
             "oc get csv "
             f"-n {args.target_namespace} "
             f"-l operators.coreos.com/{args.package_name}.{args.target_namespace} "
-            "-o jsonpath='{.items[0].metadata.name}'",
+            "--no-headers -ocustom-columns=NAME:.metadata.name",
             check=False,
-            log_stdout=False,
         )
         if not result.success:
             return "No CSV found to capture (command failed)"
 
         csv_name = result.stdout.strip()
-        if not csv_name or csv_name == "''":
-            return "No CSV found to capture (empty result)"
+        if not csv_name:
+            return "No CSV found to capture (no matching CSV)"
+
+        # If multiple CSVs, take the first one
+        csv_name = csv_name.split("\n")[0].strip()
 
     shell.run(
         f"oc get csv {csv_name} -n {args.target_namespace} -o yaml",
