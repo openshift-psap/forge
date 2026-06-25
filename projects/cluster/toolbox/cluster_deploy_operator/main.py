@@ -372,7 +372,7 @@ def apply_subscription(args, ctx):
     return f"Applied Subscription for {ctx.display_name}"
 
 
-@retry(attempts=6, delay=10)
+@retry(attempts=30, delay=10)
 @task
 def wait_for_csv_to_appear(args, ctx):
     """Wait for the CSV to appear after subscription creation"""
