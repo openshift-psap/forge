@@ -6,7 +6,7 @@ import hashlib
 import logging
 from pathlib import Path
 
-from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
+from projects.core.dsl import always, entrypoint, execute_tasks, retry, shell, task
 from projects.core.dsl.utils import (
     slugify_identifier,
     truncate_k8s_name,
@@ -305,39 +305,44 @@ def wait_for_download(args, ctx):
         return "Skipping download wait - cache already ready"
 
     cache_spec = ctx.cache_spec
+    job_name = cache_spec["download_job_name"]
+    namespace = cache_spec["namespace"]
 
     # Check job status
     payload = oc_get_json(
         "job",
-        name=cache_spec["download_job_name"],
-        namespace=cache_spec["namespace"],
+        name=job_name,
+        namespace=namespace,
         ignore_not_found=True,
     )
     if not payload:
         raise RuntimeError(
-            f"Download job {cache_spec['download_job_name']} not found - job may have been externally deleted"
+            f"Download job {job_name} not found - job may have been externally deleted"
         )
 
     status = payload.get("status", {})
 
     # Check if succeeded
     if status.get("succeeded", 0):
-        return f"Download job {cache_spec['download_job_name']} completed successfully"
+        return f"Download job {job_name} completed successfully"
 
     # Check if failed
     failed_count = status.get("failed", 0)
     for condition in status.get("conditions", []):
         if condition.get("type") == "Failed" and condition.get("status") == "True":
             raise RuntimeError(
-                f"job/{cache_spec['download_job_name']} failed: {condition.get('reason') or 'unknown reason'}"
+                f"job/{job_name} failed: {condition.get('reason') or 'unknown reason'}"
             )
     if failed_count:
-        raise RuntimeError(
-            f"job/{cache_spec['download_job_name']} failed after {failed_count} attempt(s)"
-        )
+        raise RuntimeError(f"job/{job_name} failed after {failed_count} attempt(s)")
 
-    # Still running
-    return (False, f"Download job {cache_spec['download_job_name']} still running, retrying...")
+    # Still running - show pod status
+    shell.run(
+        f"oc get pods -n {namespace} -l job-name={job_name}",
+        check=False,
+    )
+
+    return (False, f"Download job {job_name} still running, retrying...")
 
 
 @task
