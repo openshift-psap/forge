@@ -1,8 +1,8 @@
 defaults:
-  replicas: 4
-  tensor_parallelism: 2
+  replicas: 1
+  tensor_parallelism: 1
   vllm_args:
-    - --max-model-len=8192
+    - --max-model-len=4096
     - --gpu-memory-utilization=0.92
     - --trust-remote-code
     - --no-enable-log-requests

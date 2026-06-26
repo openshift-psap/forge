@@ -53,10 +53,10 @@ def test_release_deployment_profiles_have_expected_shape() -> None:
     distributed = runtime_config.get_deployment_profile()
 
     for profile in (approximate, precise, distributed):
-        assert profile["replicas"] == 4
-        assert profile["tensor_parallelism"] == 2
+        assert profile["replicas"] == 1
+        assert profile["tensor_parallelism"] == 1
         assert profile["vllm_args"] == [
-            "--max-model-len=8192",
+            "--max-model-len=4096",
             "--gpu-memory-utilization=0.92",
             "--trust-remote-code",
             "--no-enable-log-requests",
@@ -81,7 +81,11 @@ def test_smoke_presets_inherit_deployment_modes(preset: str, expected_deployment
     core_config.project.apply_preset(preset)
     assert runtime_config.get_deployment_profile_name() == expected_deployment
     assert runtime_config.get_model_name() == "Qwen/Qwen3-0.6B"
-    assert runtime_config.get_benchmark_config() is None
+    # Only the base "smoke" preset enables benchmarking via runtime.benchmark_key: short
+    if preset == "smoke":
+        assert runtime_config.get_benchmark_config() is not None
+    else:
+        assert runtime_config.get_benchmark_config() is None
 
 
 def test_benchmark_workloads_are_available() -> None:
@@ -190,7 +194,8 @@ def test_ci_init_uses_project_default_preset_when_no_explicit_preset_is_provided
 
     assert runtime_config.get_model_name() == "Qwen/Qwen3-0.6B"
     assert runtime_config.get_deployment_profile_name() == "approximate-prefix-cache"
-    assert runtime_config.get_benchmark_keys() == []
+    # Default preset "smoke" enables the short benchmark
+    assert runtime_config.get_benchmark_keys() == ["short"]
 
 
 def test_model_and_deployment_profile_accept_yaml_list_strings() -> None:
@@ -241,20 +246,20 @@ def test_render_uses_sanitized_model_name_and_profile_resources() -> None:
         model_cache=runtime_config.get_model_cache_config(),
     )
 
-    assert manifest["spec"]["replicas"] == 4
+    assert manifest["spec"]["replicas"] == 1
     assert manifest["spec"]["model"]["uri"] == "hf://openai/gpt-oss-120b"
     assert manifest["spec"]["model"]["name"] == "openai-gpt-oss-120b"
     assert manifest["spec"]["template"]["containers"][0]["resources"] == {
-        "requests": {"nvidia.com/gpu": "2"},
-        "limits": {"nvidia.com/gpu": "2"},
+        "requests": {"nvidia.com/gpu": "1"},
+        "limits": {"nvidia.com/gpu": "1"},
     }
     assert manifest["spec"]["template"]["containers"][0]["args"] == [
-        "--max-model-len=8192",
+        "--max-model-len=4096",
         "--gpu-memory-utilization=0.92",
         "--trust-remote-code",
         "--no-enable-log-requests",
         "--enable-prefix-caching",
-        "--tensor-parallel-size=2",
+        "--tensor-parallel-size=1",
     ]
     assert manifest["spec"]["router"]["scheduler"] == {}
 
@@ -344,12 +349,13 @@ def test_benchmark_job_names_collapse_shared_default() -> None:
     assert runtime_config.get_benchmark_job_names() == ["guidellm-benchmark"]
 
 
-def test_benchmark_job_names_empty_when_benchmarking_disabled() -> None:
+def test_smoke_preset_benchmark_behavior() -> None:
     _init_project_config()
 
     core_config.project.apply_preset("smoke")
-    assert runtime_config.get_benchmark_keys() == []
-    assert runtime_config.get_benchmark_job_names() == []
+    # The smoke preset enables the short benchmark
+    assert runtime_config.get_benchmark_keys() == ["short"]
+    assert runtime_config.get_benchmark_job_names() == ["guidellm-benchmark"]
 
 
 def test_run_spec_preserves_namespace_managed_flag() -> None:

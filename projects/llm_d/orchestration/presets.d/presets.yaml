@@ -22,6 +22,8 @@ smoke:
     - smoke-base
     - deployment-approximate-prefix-cache
   runtime.selected_preset: smoke
+  runtime.benchmark_key: short
+  platform.gateway.status_address_name: gateway-internal
 
 smoke-precise:
   extends:
