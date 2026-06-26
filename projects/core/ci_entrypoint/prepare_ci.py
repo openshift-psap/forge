@@ -585,9 +585,7 @@ def send_notification(project: str, operation: str, finish_reason: FinishReason,
     try:
         # Determine notification parameters
         success = finish_reason == FinishReason.SUCCESS
-        notification_status = (
-            f"Test of '{project} {operation}' {('succeeded' if success else 'failed')}{duration}"
-        )
+        notification_status = f"Executing of '{project} {operation}' {('succeeded' if success else 'failed')}{duration}"
 
         send_notification = True
         if project == "foreign_testing":
@@ -709,9 +707,9 @@ def postchecks(
     if finish_reason != FinishReason.SUCCESS or (
         failures_file.exists() and failures_file.stat().st_size > 0
     ):
-        status = f"❌ Test of '{project} {operation}' failed{duration_str}."
+        status = f"❌ Execution of '{project} {operation}' failed{duration_str}."
     else:
-        status = f"✅ Test of '{project} {operation}' succeeded{duration_str}."
+        status = f"✅ Execution of '{project} {operation}' succeeded{duration_str}."
 
     # Send notifications for job completion
     # Get the actual step from args (like "test", "lock_cluster", "prepare")
