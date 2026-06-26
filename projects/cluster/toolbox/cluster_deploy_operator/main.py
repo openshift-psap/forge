@@ -7,7 +7,18 @@ import logging
 
 import yaml
 
-from projects.core.dsl import always, entrypoint, execute_tasks, retry, shell, task, template
+from projects.core.dsl import (
+    always,
+    entrypoint,
+    execute_tasks,
+    on_failure,
+    retry,
+    shell,
+    task,
+    template,
+)
+
+from .on_failure_helpers import handle_installplan_failure
 
 logger = logging.getLogger("DSL")
 
@@ -374,6 +385,7 @@ def apply_subscription(args, ctx):
     return f"Applied Subscription for {ctx.display_name}"
 
 
+@on_failure(handle_installplan_failure)
 @retry(attempts=30, delay=10)
 @task
 def wait_for_installplan(args, ctx):
