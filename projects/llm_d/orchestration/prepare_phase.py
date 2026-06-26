@@ -5,6 +5,7 @@ import json
 import logging
 from typing import Any
 
+from projects.cluster.toolbox.bootstrap_lws_operator import main as bootstrap_lws_operator
 from projects.cluster.toolbox.cluster_deploy_operator import main as cluster_deploy_operator
 from projects.cluster.toolbox.deploy_custom_catalog import main as deploy_custom_catalog
 from projects.cluster.toolbox.wait_for_crds import main as wait_for_crds_command
@@ -132,9 +133,26 @@ def prepare_cert_manager() -> None:
 
 
 def prepare_leader_worker_set() -> None:
+    logger.info("Starting Leader Worker Set preparation")
     platform = runtime_config.get_platform_config()
     operator_spec = operator_spec_by_package(platform, "leader-worker-set")
+    logger.info(f"LWS operator spec: {operator_spec}")
+
     ensure_operator_subscription(operator_spec)
+    logger.info("LWS operator subscription ensured")
+
+    # Bootstrap the LeaderWorkerSetOperator configuration first
+    # This enables the operator to install the LeaderWorkerSet workload CRDs
+    logger.info("Starting LWS operator bootstrap")
+    bootstrap_lws_operator.run()
+    logger.info("LWS operator bootstrap completed")
+
+    # Now wait for the LeaderWorkerSet workload CRDs that get installed after operator configuration
+    wait_for_crds_command.run(
+        crd_names=[operator_spec["bootstrap_crd"]],
+        display_name="Leader Worker Set workload CRD",
+    )
+    logger.info("LWS workload CRD ready")
 
 
 def prepare_nfd() -> None:

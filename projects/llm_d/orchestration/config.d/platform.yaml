@@ -21,6 +21,8 @@ operators:
     namespace: openshift-lws
     channel: stable-v1.0
     source: redhat-operators
+    bootstrap_crd: leaderworkersets.leaderworkerset.x-k8s.io
+    bootstrap_manifest: manifests/leaderworkersetoperator.yaml
   nfd:
     display_name: Node Feature Discovery
     namespace: openshift-nfd
@@ -60,6 +62,7 @@ rhoai:
     - datascienceclusters.datasciencecluster.opendatahub.io
   required_crds_after_dsc:
     - llminferenceservices.serving.kserve.io
+    - leaderworkersets.leaderworkerset.x-k8s.io
 
 gateway:
   namespace: openshift-ingress
