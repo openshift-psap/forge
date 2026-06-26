@@ -16,6 +16,7 @@ import projects.core.library.env as env
 from projects.core.library.run import SignalInterrupt
 
 from .context import create_task_parameters
+from .control_flow import EarlyReturn
 from .log import (
     _get_forge_relative_path,
     _get_toolbox_function_name,
@@ -68,6 +69,14 @@ class TaskExecutionError(Exception):
 
         # Preserve the original exception chain to maintain full stack trace
         # This allows the full traceback to be shown in logs
+
+
+class EarlyReturnException(Exception):
+    """Exception raised when a task returns an EarlyReturn, signaling early successful termination"""
+
+    def __init__(self, early_return: EarlyReturn):
+        self.early_return = early_return
+        super().__init__(early_return.message)
 
 
 def execute_tasks(function_args: dict = None):
@@ -165,6 +174,7 @@ def execute_tasks(function_args: dict = None):
             execution_error = None
             always_task_exceptions = []
             task_index = 0
+            script_stopped = False
 
             try:
                 while task_index < len(file_tasks):
@@ -180,6 +190,16 @@ def execute_tasks(function_args: dict = None):
                 log_completion_banner(function_args, status="INTERRUPTED")
                 raise
 
+            except EarlyReturnException as e:
+                # EarlyReturn was returned - skip remaining non-@always tasks but continue with @always tasks
+                logger.info("")
+                logger.info("~" * 80)
+                logger.info(f"==> EARLY RETURN: {e.early_return.message}")
+                logger.info("~" * 80)
+                # execution_error remains None so we don't treat this as a failure
+                # Set flag to distinguish from error cases in pending task handling
+                script_stopped = True
+
             except (TaskExecutionError, ConditionError, RetryFailure, Exception) as e:
                 # Generate FAILURE file for agent analysis
                 _generate_failure_file_for_agent(e)
@@ -192,23 +212,38 @@ def execute_tasks(function_args: dict = None):
                 # Save error to re-raise after always tasks execute
                 execution_error = e
 
-            # After a failure, skip pending non-@always tasks; still run pending @always tasks
+            # After a failure or stop, skip pending non-@always tasks; still run pending @always tasks
             pending = file_tasks[task_index + 1 :] if task_index < len(file_tasks) else []
             always_pending = [t for t in pending if t.get("always_execute")]
             if always_pending:
-                logger.warning("Executing the @always tasks ...")
+                if script_stopped:
+                    logger.info("Executing the @always tasks after early return ...")
+                else:
+                    logger.warning("Executing the @always tasks ...")
             for current_task_info in pending:
                 if not current_task_info.get("always_execute"):
                     logger.info("")
                     logger.info("~" * 80)
-                    logger.info(
-                        f"==> SKIPPING TASK: {current_task_info['name']} "
-                        "(not @always; aborted after earlier failure)"
-                    )
+                    if script_stopped:
+                        logger.info(
+                            f"==> SKIPPING TASK: {current_task_info['name']} "
+                            "(not @always; early return triggered)"
+                        )
+                    else:
+                        logger.info(
+                            f"==> SKIPPING TASK: {current_task_info['name']} "
+                            "(not @always; aborted after earlier failure)"
+                        )
                     logger.info("~" * 80)
                     continue
                 try:
                     _execute_single_task(current_task_info, args, shared_context)
+
+                except EarlyReturnException:
+                    # EarlyReturn from @always task - just log and continue with other @always tasks
+                    logger.info(
+                        f"==> @always task {current_task_info['name']} returned EarlyReturn - continuing with other @always tasks"
+                    )
 
                 except Exception as always_exc:
                     # Collect all always task exceptions
@@ -329,8 +364,14 @@ def _execute_single_task(task_info, args, shared_context):
         else:
             # Call task with readonly args and mutable context
             task_status["ret"] = task_func(readonly_args, context)
+
         if task_status["ret"] is not None:
             logger.info(f"<task returned value> {task_status['ret']}")
+
+            # Check if task returned EarlyReturn - if so, raise exception to stop execution
+            if isinstance(task_status["ret"], EarlyReturn):
+                logger.info(f"==> EARLY RETURN: {task_status['ret']}")
+                raise EarlyReturnException(task_status["ret"])
 
         # Store context values back into shared_context for access by subsequent tasks
         # This allows tasks to communicate through context without polluting args
