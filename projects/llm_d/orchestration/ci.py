@@ -88,13 +88,25 @@ def test(ctx) -> int:
 @agent_review_on_failure
 def pre_cleanup(ctx) -> int:
     """Cleanup phase - Clean up resources and finalize."""
-    # Cleanup doesn't typically need vaults, but initialize resolve-only for consistency
-    # no vault needed
     from projects.llm_d.orchestration import runtime_config
 
     for run_spec in runtime_config.get_run_specs():
         with runtime_config.activate_run_spec(run_spec):
-            cleanup_toolbox_run(namespace=run_spec.namespace)
+            cleanup_toolbox_run(namespace=run_spec.namespace, cleanup_subscriptions=True)
+    return 0
+
+
+@main.command()
+@click.pass_context
+@ci_lib.safe_ci_command
+@agent_review_on_failure
+def post_cleanup(ctx) -> int:
+    """Cleanup phase - Clean up resources and finalize."""
+    from projects.llm_d.orchestration import runtime_config
+
+    for run_spec in runtime_config.get_run_specs():
+        with runtime_config.activate_run_spec(run_spec):
+            cleanup_toolbox_run(namespace=run_spec.namespace, cleanup_subscriptions=True)
     return 0
 
 

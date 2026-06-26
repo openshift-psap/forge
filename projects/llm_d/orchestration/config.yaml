@@ -73,3 +73,10 @@ agentic:
     enabled: true
   config_review:
     enabled: true
+
+cleanup:
+  preserve_operators:
+    # see the list in config.d/platform.yaml
+    gpu-operator-certified: true
+    nfd: true
+    openshift-cert-manager-operator: true

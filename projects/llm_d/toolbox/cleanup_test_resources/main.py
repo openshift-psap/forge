@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from projects.core.dsl import entrypoint, execute_tasks, retry, task
+from projects.core.dsl import entrypoint, execute_tasks, retry, shell, task
 from projects.core.dsl.utils.k8s import oc, oc_get_json, oc_resource_exists
 
 logger = logging.getLogger("DSL")
@@ -197,6 +197,19 @@ def wait_for_inference_service_deletion(args, ctx):
 @task
 def wait_for_workload_pods_deletion(args, ctx):
     """Wait for all llm-d workload pods to be deleted"""
+
+    # Show current pods in plain text with logs enabled
+    shell.run(
+        f"oc get pods -n {args.namespace} -l app.kubernetes.io/name={args.inference_service_name}",
+        check=False,
+        log_stdout=True,
+    )
+
+    shell.run(
+        f"oc get pods -n {args.namespace} -l app.kubernetes.io/name={args.inference_service_name} -o json",
+        check=False,
+        log_stdout=False,
+    )
 
     if _llm_d_pods_gone(args.namespace, args.inference_service_name):
         return f"All llm-d workload pods deleted from {args.namespace}"
