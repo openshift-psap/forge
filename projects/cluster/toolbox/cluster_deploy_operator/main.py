@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 
+import yaml
+
 from projects.core.dsl import always, entrypoint, execute_tasks, retry, shell, task, template
 
 logger = logging.getLogger("DSL")
@@ -370,6 +372,65 @@ def apply_subscription(args, ctx):
 
     shell.run(f"oc apply -f {ctx.subscription_manifest_file}")
     return f"Applied Subscription for {ctx.display_name}"
+
+
+@retry(attempts=30, delay=10)
+@task
+def wait_for_installplan(args, ctx):
+    """Wait for InstallPlan and approve if manual approval is required"""
+
+    # Get the subscription to check for install plan reference
+    result = shell.run(
+        f"oc get subscription {args.package_name} -n {args.target_namespace} -o yaml",
+        stdout_dest=args.artifact_dir / "artifacts" / f"{args.package_name}-subscription.yaml",
+        check=False,
+        log_stdout=False,
+    )
+
+    if not result.success:
+        return (False, f"Failed to get subscription {args.package_name}")
+
+    subscription_data = yaml.safe_load(result.stdout)
+    install_plan_ref = subscription_data.get("status", {}).get("installPlanRef", {})
+
+    if not install_plan_ref or not install_plan_ref.get("name"):
+        return (False, "No InstallPlan reference found in subscription status")
+
+    install_plan_name = install_plan_ref["name"]
+
+    # Get the install plan to check its approval mode
+    result = shell.run(
+        f"oc get installplan {install_plan_name} -n {args.target_namespace} -o yaml",
+        stdout_dest=args.artifact_dir / "artifacts" / f"{install_plan_name}-installplan.yaml",
+        check=False,
+        log_stdout=False,
+    )
+
+    if not result.success:
+        return (False, f"Failed to get InstallPlan {install_plan_name}")
+
+    install_plan_data = yaml.safe_load(result.stdout)
+    approval_mode = install_plan_data.get("spec", {}).get("approval", "")
+    approved = install_plan_data.get("spec", {}).get("approved", False)
+
+    if approval_mode.lower() == "automatic":
+        return f"InstallPlan {install_plan_name} has automatic approval"
+
+    elif approval_mode.lower() == "manual":
+        if approved:
+            return f"InstallPlan {install_plan_name} already approved"
+        else:
+            # Approve the manual install plan
+            shell.run(
+                f"oc patch installplan {install_plan_name} -n {args.target_namespace} "
+                '--type merge -p \'{"spec":{"approved":true}}\''
+            )
+            return f"Approved manual InstallPlan {install_plan_name}"
+    else:
+        return (
+            False,
+            f"Unknown approval mode '{approval_mode}' for InstallPlan {install_plan_name}",
+        )
 
 
 @retry(attempts=30, delay=10)
