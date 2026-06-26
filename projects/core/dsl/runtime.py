@@ -360,6 +360,7 @@ def _execute_single_task(task_info, args, shared_context):
                 retry_config.get("retry_on_exceptions", False),
                 readonly_args,
                 context,
+                artifact_dirname_suffix=getattr(shared_context, "_artifact_dirname_suffix", None),
             )
         else:
             # Call task with readonly args and mutable context
@@ -380,6 +381,9 @@ def _execute_single_task(task_info, args, shared_context):
                 setattr(shared_context, attr_name, attr_value)
 
     except (KeyboardInterrupt, SignalInterrupt):
+        raise
+    except EarlyReturnException:
+        # Allow EarlyReturn to bubble up without wrapping in TaskExecutionError
         raise
     except Exception as e:
         co_filename = task_func.original_func.__code__.co_filename

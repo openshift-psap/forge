@@ -57,6 +57,7 @@ def _log_retry_attempt(
     retry_reason=None,
     result=None,
     exc=None,
+    artifact_dirname_suffix=None,
 ):
     """
     Log a retry attempt with consistent formatting.
@@ -70,6 +71,7 @@ def _log_retry_attempt(
         retry_reason: Optional reason for retry (from result tuple)
         result: The result value that caused retry
         exc: Exception that caused retry
+        artifact_dirname_suffix: Optional suffix for artifact directory (shown in header)
     """
     elapsed_time = time.time() - start_time
     elapsed_mins, elapsed_secs = divmod(elapsed_time, 60)
@@ -87,7 +89,15 @@ def _log_retry_attempt(
 
     logger.info("")
     logger.info("~" * LINE_WIDTH)
-    logger.info(f"~~ {source_info}")
+
+    # Build the file/line info with optional suffix (same format as log_task_header)
+    file_line_info = f"~~ {source_info}"
+    if artifact_dirname_suffix:
+        # Strip underscores and add to display
+        display_suffix = artifact_dirname_suffix.strip("_")
+        file_line_info += f" [{display_suffix}]"
+
+    logger.info(file_line_info)
     logger.info(f"~~ TASK: {func.__name__}: {func.__doc__ or 'No description'}")
 
     # Build retry message based on what caused the retry
@@ -107,7 +117,16 @@ def _log_retry_attempt(
     time.sleep(current_delay)
 
 
-def _execute_with_retry(func, attempts, delay, backoff, retry_on_exceptions, *args, **kwargs):
+def _execute_with_retry(
+    func,
+    attempts,
+    delay,
+    backoff,
+    retry_on_exceptions,
+    *args,
+    artifact_dirname_suffix=None,
+    **kwargs,
+):
     """
     Execute a function with retry logic.
 
@@ -117,7 +136,9 @@ def _execute_with_retry(func, attempts, delay, backoff, retry_on_exceptions, *ar
         delay: Initial delay between retries in seconds
         backoff: Multiplier for delay on each retry
         retry_on_exceptions: If True, retry on raised exceptions (never on KeyboardInterrupt/SignalInterrupt)
-        *args, **kwargs: Arguments to pass to the function
+        *args: Arguments to pass to the function
+        artifact_dirname_suffix: Optional suffix for artifact directory (shown in retry headers)
+        **kwargs: Keyword arguments to pass to the function
 
     Returns:
         Result of the function execution
@@ -160,6 +181,7 @@ def _execute_with_retry(func, attempts, delay, backoff, retry_on_exceptions, *ar
                         current_delay,
                         retry_reason=retry_reason,
                         result=result,
+                        artifact_dirname_suffix=artifact_dirname_suffix,
                     )
                     current_delay *= retry_backoff
                 else:
@@ -204,7 +226,15 @@ def _execute_with_retry(func, attempts, delay, backoff, retry_on_exceptions, *ar
                     f"{func.__doc__ or 'No description'} (last error: {exc.__class__.__name__}: {exc})"
                 ) from exc
 
-            _log_retry_attempt(func, attempt, retry_attempts, start_time, current_delay, exc=exc)
+            _log_retry_attempt(
+                func,
+                attempt,
+                retry_attempts,
+                start_time,
+                current_delay,
+                exc=exc,
+                artifact_dirname_suffix=artifact_dirname_suffix,
+            )
             current_delay *= retry_backoff
 
     raise RetryFailure(
