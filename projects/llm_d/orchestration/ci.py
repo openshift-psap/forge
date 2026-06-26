@@ -18,6 +18,7 @@ from projects.core.library import config, env, run, vault
 from projects.core.library.export import caliper_export_entrypoint
 from projects.core.library.replot import caliper_replot_entrypoint
 from projects.llm_d.orchestration.cleanup_phase import run as cleanup_toolbox_run
+from projects.llm_d.orchestration.preflight_phase import run as preflight_toolbox_run
 from projects.llm_d.orchestration.prepare_sequence import run_prepare_sequence
 from projects.llm_d.orchestration.test_phase import run as test_toolbox_run
 
@@ -65,11 +66,8 @@ def prepare(ctx) -> int:
 @ci_lib.safe_ci_command
 @agent_review_on_failure
 def preflight_check(ctx) -> int:
-    """Preflight check phase - Validate that the cluster if ready for testing."""
-
-    logger.warning("Nothing so far for the preflight check")
-
-    return 0
+    """Preflight check phase - Validate required CRDs exist before testing."""
+    return preflight_toolbox_run()
 
 
 @main.command()
