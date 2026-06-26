@@ -591,7 +591,7 @@ def analyze_single_failure_multi_query(
                 )
 
                 with open(failure_review_path, "w", encoding="utf-8") as f:
-                    f.write(f"# {relative_artifacts_path}\n\n")
+                    f.write(f"**{relative_artifacts_path}**\n\n")
                     f.write(failure_review_content.strip() + "\n")
 
                 logger.info(f"📝 FAILURE_REVIEW generated: {failure_review_path}")
@@ -658,7 +658,7 @@ def analyze_single_failure_multi_query(
                 )
 
                 with open(failure_review_path, "w", encoding="utf-8") as f:
-                    f.write(f"# {relative_artifacts_path}\n\n")
+                    f.write(f"**{relative_artifacts_path}**\n\n")
                     f.write(partial_summary.strip() + "\n")
 
                 logger.info(
