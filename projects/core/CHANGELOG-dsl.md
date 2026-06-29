@@ -1,5 +1,42 @@
 # DSL Framework Changelog
 
+## 2026-06-26 - Early Return & Enhanced Logging
+
+### New Features
+- **Early Return Capability**: Tasks can now return `EarlyReturn` to gracefully terminate execution
+  - **Behavior**: Stops executing remaining non-@always tasks while preserving cleanup tasks
+  - **Usage**: `return EarlyReturn("reason for early exit")`
+  - **Benefits**: Allows conditional early exit (e.g., operator already deployed) without failure status
+
+### Changed  
+- **Enhanced Retry Logging**: Improved retry attempt logging with artifact directory context
+  - **Context Display**: Retry headers now show artifact directory suffix for better identification
+  - **Better Tracking**: Enhanced visibility into which toolbox/operation is retrying
+  - **Consistent Formatting**: Unified retry message format across all DSL operations
+
+### Control Flow
+```python
+from projects.core.dsl import EarlyReturn
+
+@task
+def check_operator_deployed(args, ctx):
+    if operator_exists():
+        return EarlyReturn("Operator already deployed, skipping installation")
+    # Continue with installation...
+```
+
+### Files Modified
+- `projects/core/dsl/__init__.py` - Exported `EarlyReturn` class
+- `projects/core/dsl/control_flow.py` - New `EarlyReturn` and `EarlyReturnException` classes (NEW)
+- `projects/core/dsl/runtime.py` - Early return handling and exception propagation
+- `projects/core/dsl/task.py` - Enhanced retry logging with artifact directory context
+
+### Benefits
+- **Graceful Early Exit**: Clean termination when conditions are already met
+- **Preserved Cleanup**: @always tasks still execute after early return
+- **Better Debugging**: Enhanced retry logging helps identify which operations are struggling
+- **Improved UX**: Clear messaging when operations complete early vs. when they fail
+
 ## 2026-06-24 - Context Persistence & Logging Improvements
 
 ### New Features
