@@ -22,7 +22,6 @@ import yaml
 
 import projects.core.ci_entrypoint.fournos as fournos
 import projects.core.ci_entrypoint.github.pr_args as github_pr_args
-import projects.core.notifications.send as send
 
 IS_LIGHTWEIGHT_IMAGE = os.environ.get("FORGE_LIGHT_IMAGE")
 
@@ -577,71 +576,6 @@ def format_duration(duration_seconds: int) -> str:
     return f"after {hours:02d} hours {minutes:02d} minutes {seconds:02d} seconds"
 
 
-def send_notification(project: str, operation: str, finish_reason: FinishReason, duration: str):
-    if project == "jump_ci":
-        logger.info("No need to send notification in the JumpCI project")
-        return
-
-    try:
-        # Determine notification parameters
-        success = finish_reason == FinishReason.SUCCESS
-        notification_status = f"Executing of '{project} {operation}' {('succeeded' if success else 'failed')}{duration}"
-
-        send_notification = True
-        if project == "foreign_testing":
-            # never submit for the time being
-            logger.info(f"Skipping notification for project '{project}'")
-            send_notification = False
-
-        elif project == "fournos_launcher":
-            # always submit for the time being
-            logger.info(f"Keeping all the notications for the {project} project")
-
-        elif os.environ.get("PSAP_FORGE_FOREIGN_TESTING"):
-            logger.info("Keeping all the notications for foreign tests")
-
-        elif os.environ.get("PSAP_FORGE_ALWAYS_SEND_NOTIFICATION", "false").lower() == "true":
-            logger.info(
-                "PSAP_FORGE_ALWAYS_SEND_NOTIFICATION is set - sending notification for all operations"
-            )
-        elif success and operation not in ("test",):
-            logger.info(
-                f"Skipping notification for successful '{operation}' step (only 'test' step notifies on success)"
-            )
-            send_notification = False
-
-        if not send_notification:
-            return
-
-        # Enable GitHub notifications by default, Slack can be enabled via environment variable
-        github_notifications = True
-        slack_notifications = True
-
-        # Check for dry run mode
-        dry_run = os.environ.get("FORGE_NOTIFICATION_DRY_RUN", "false").lower() == "true"
-
-        logger.info(
-            f"Sending notifications - finish_reason: {finish_reason} | GitHub: {github_notifications}, Slack: {slack_notifications}, dry_run: {dry_run}"
-        )
-
-        # Send the notification
-        notification_failed = send.send_job_completion_notification(
-            finish_reason=finish_reason,
-            status=notification_status,
-            github=github_notifications,
-            slack=slack_notifications,
-            dry_run=dry_run,
-        )
-        if notification_failed:
-            logger.warning("Some notifications failed to send")
-        else:
-            logger.info("Notifications sent successfully")
-
-    except Exception:
-        logger.exception("Failed to send notifications")
-        # Don't fail the entire job if notifications fail
-
-
 def postchecks(
     project: str,
     operation: str,
@@ -710,10 +644,5 @@ def postchecks(
         status = f"❌ Execution of '{project} {operation}' failed{duration_str}."
     else:
         status = f"✅ Execution of '{project} {operation}' succeeded{duration_str}."
-
-    # Send notifications for job completion
-    # Get the actual step from args (like "test", "lock_cluster", "prepare")
-    actual_step = args[0] if args and len(args) > 0 else operation
-    send_notification(project, actual_step, finish_reason, duration_str)
 
     return status
