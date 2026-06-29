@@ -1,5 +1,5 @@
 """
-Shared Caliper “artifacts export” CLI for FORGE project orchestration.
+Shared Caliper "artifacts export" CLI for FORGE project orchestration.
 
 Registers a :mod:`click` subcommand that reads ``caliper`` from project config and runs
 :func:`projects.caliper.orchestration.export.run_from_orchestration_config`.
@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
@@ -17,8 +19,15 @@ import yaml
 from projects.caliper.orchestration.export import run_from_orchestration_config
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, run
+from projects.core.notifications import send
 
 logger = logging.getLogger(__name__)
+
+
+class FinishReason(StrEnum):
+    SUCCESS = "success"
+    ERROR = "error"
+    OTHER = "other"
 
 
 def _update_fjob_export_status(status: dict):
@@ -78,6 +87,100 @@ def _update_fjob_export_status(status: dict):
             os.environ["KUBECONFIG"] = original_kubeconfig
 
 
+def send_notification(status: dict[str, Any]) -> None:
+    """Send job completion notifications based on caliper export status.
+
+    Args:
+        status: Caliper export status object containing backend results and metadata
+    """
+    # Extract notification parameters from status object
+    project = _extract_project_from_status(status)
+    operation = _extract_operation_from_status(status)
+    finish_reason = _extract_finish_reason_from_status(status)
+    duration_str = _extract_duration_from_status(status)
+
+    # Apply minimal filtering logic
+    if _should_skip_notification(project, operation, finish_reason):
+        logger.info(f"Skipping notification for {project} {operation}")
+        return
+
+    # Send actual notifications
+    logger.info(f"Sending notification: {project} {operation} {finish_reason}{duration_str}")
+
+    notification_status = f"Export artifacts for '{project}' {('succeeded' if finish_reason == FinishReason.SUCCESS else 'failed')}{duration_str}"
+
+    # Enable GitHub and Slack notifications by default
+    github_notifications = True
+    slack_notifications = True
+    dry_run = os.environ.get("FORGE_NOTIFICATION_DRY_RUN", "false").lower() == "true"
+
+    # Send the notification
+    notification_failed = send.send_job_completion_notification(
+        finish_reason=finish_reason,
+        status=notification_status,
+        github=github_notifications,
+        slack=slack_notifications,
+        dry_run=dry_run,
+    )
+
+    if notification_failed:
+        logger.warning("Some notifications failed to send")
+    else:
+        logger.info("Notifications sent successfully")
+
+
+def _extract_project_from_status(status: dict[str, Any]) -> str:
+    """Extract project name from status object or environment."""
+    # Try to get project from environment variables
+    project = os.environ.get("PROJECT_NAME")
+    if project:
+        return project
+
+    # Fallback to JOB_NAME parsing (common in CI environments)
+    job_name = os.environ.get("JOB_NAME", "")
+    if job_name and "-" in job_name:
+        # Extract project from job name pattern like "project-operation-variant"
+        return job_name.split("-")[0]
+
+    return "unknown"
+
+
+def _extract_operation_from_status(status: dict[str, Any]) -> str:
+    """Extract operation name from status object."""
+    return "export-artifacts"
+
+
+def _extract_finish_reason_from_status(status: dict[str, Any]) -> FinishReason:
+    """Extract finish reason from status object."""
+    # Check if any backend failed in the status
+    if not status:
+        return FinishReason.ERROR
+
+    # Look for backend results
+    backends = status.get("backends", {})
+    for backend_name, backend_result in backends.items():
+        if backend_result.get("success") is False:
+            logger.info(f"Backend {backend_name} failed, marking as error")
+            return FinishReason.ERROR
+
+    return FinishReason.SUCCESS
+
+
+def _extract_duration_from_status(status: dict[str, Any]) -> str:
+    """Extract duration from status object."""
+    # Look for duration in status
+    duration = status.get("duration")
+    if duration:
+        return f" after {duration}"
+    return ""
+
+
+def _should_skip_notification(project: str, operation: str, finish_reason: FinishReason) -> bool:
+    """Apply minimal filtering logic to determine if notification should be skipped."""
+    # Minimal filtering - no special cases for now
+    return False
+
+
 def run_caliper_orchestration_export(*, artifact_directory: Path | None):
     """Set optional ``caliper.export.from`` and run orchestration export."""
 
@@ -119,5 +222,12 @@ def caliper_export_entrypoint(_ctx, artifact_directory: Path | None):
 
     # Update fjob status with export results
     _update_fjob_export_status(status)
+
+    # Send completion notifications
+    try:
+        send_notification(status)
+    except Exception as e:
+        logger.warning(f"Failed to send notifications: {e}")
+        # Don't fail the entire job if notifications fail
 
     return 0
