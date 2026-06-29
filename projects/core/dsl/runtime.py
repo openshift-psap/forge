@@ -237,7 +237,7 @@ def execute_tasks(function_args: dict = None):
                     logger.info("~" * 80)
                     continue
                 try:
-                    _execute_single_task(current_task_info, args, shared_context)
+                    _execute_single_task(current_task_info, args, shared_context, start_time)
 
                 except EarlyReturnException:
                     # EarlyReturn from @always task - just log and continue with other @always tasks
@@ -293,7 +293,7 @@ def execute_tasks(function_args: dict = None):
                 del _thread_local_handlers.file_handler
 
 
-def _execute_single_task(task_info, args, shared_context):
+def _execute_single_task(task_info, args, shared_context, start_time=None):
     """Execute a single task with condition checking"""
     task_name = task_info["name"]
     task_func = task_info["func"]
