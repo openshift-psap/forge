@@ -63,6 +63,44 @@ def capture_initial_dsc(args, ctx):
 
 
 @task
+def wait_for_operator_deployments(args, ctx):
+    """Wait for all deployments in redhat-ods-operator namespace to be ready"""
+
+    # Wait for all deployments in redhat-ods-operator to be ready (5 minute timeout)
+    result = oc(
+        "wait",
+        "--for=condition=Available",
+        "--timeout=300s",
+        "deployment",
+        "--all",
+        "-n",
+        "redhat-ods-operator",
+        check=False,
+    )
+
+    # Guard pattern: handle success case first and return early
+    if result.returncode == 0:
+        return "All deployments in redhat-ods-operator namespace are ready"
+
+    # Handle failure case
+    status_result = oc(
+        "get",
+        "deployments",
+        "-n",
+        "redhat-ods-operator",
+        "-o",
+        "wide",
+        check=False,
+    )
+
+    error_msg = "Timeout waiting for deployments in redhat-ods-operator namespace to be ready"
+    if status_result.returncode == 0:
+        error_msg += f"\n\nCurrent deployment status:\n{status_result.stdout}"
+
+    raise RuntimeError(error_msg)
+
+
+@task
 def apply_datasciencecluster(args, ctx):
     """Render and apply the DataScienceCluster manifest"""
 
