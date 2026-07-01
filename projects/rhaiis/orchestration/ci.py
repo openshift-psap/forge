@@ -7,7 +7,6 @@ import click
 import prepare_rhaiis
 import test_rhaiis
 
-from projects.core.agentic.on_failure import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import vault
@@ -60,7 +59,6 @@ def main(ctx):
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
-@agent_review_on_failure
 def prepare(ctx):
     """Prepare phase - Set up environment and dependencies."""
     return prepare_rhaiis.prepare()
@@ -85,7 +83,6 @@ def pre_cleanup(ctx):
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
-@agent_review_on_failure
 def post_cleanup(ctx):
     """Post-cleanup phase - Clean up resources after test."""
     return prepare_rhaiis.cleanup()

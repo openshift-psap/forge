@@ -3,11 +3,6 @@ vaults:
 - psap-forge-mlflow-export
 - psap-rhaiis-image-pull
 
-agentic:
-  enabled: false
-  on_failure:
-    enabled: false
-
 benchmarks:
   guidellm:
     enabled: true
