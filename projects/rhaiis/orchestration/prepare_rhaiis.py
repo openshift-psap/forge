@@ -68,17 +68,36 @@ def _operator_spec(platform: dict[str, Any], package: str) -> dict[str, Any]:
     return {"package": package, **operators[package]}
 
 
+def _operator_csv_exists(namespace: str, package: str) -> bool:
+    result = oc(
+        "get", "csv", "-n", namespace,
+        "-o", "jsonpath={.items[*].metadata.name}",
+        check=False, log_stdout=False,
+    )
+    if result.returncode != 0:
+        return False
+    csv_names = result.stdout.strip().split()
+    return any(package in name for name in csv_names)
+
+
 def _ensure_operator_subscription(operator_spec: dict[str, str]) -> None:
+    package = operator_spec["package"]
+    namespace = operator_spec["namespace"]
+
+    if _operator_csv_exists(namespace, package):
+        logger.info("Operator %s already installed in %s, skipping", package, namespace)
+        return
+
     from projects.cluster.toolbox.cluster_deploy_operator import main as cluster_deploy_operator
 
     cluster_deploy_operator.run(
-        package_name=operator_spec["package"],
-        target_namespace=operator_spec["namespace"],
+        package_name=package,
+        target_namespace=namespace,
         source_name=operator_spec["source"],
         channel=operator_spec["channel"],
         source_namespace=operator_spec.get("source_namespace", "openshift-marketplace"),
-        display_name=operator_spec.get("display_name", operator_spec["package"]),
-        artifact_dirname_suffix=f"_{operator_spec['package']}",
+        display_name=operator_spec.get("display_name", package),
+        artifact_dirname_suffix=f"_{package}",
     )
 
 
