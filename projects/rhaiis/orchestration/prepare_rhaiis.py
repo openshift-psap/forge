@@ -264,8 +264,9 @@ def ensure_image_pull_secret(
         },
     }
 
-    artifact_path = env.ARTIFACT_DIR / "src" / "image-pull-secret.yaml"
-    oc_apply(artifact_path, manifest)
+    src_dir = env.ARTIFACT_DIR / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    oc_apply(src_dir / "image-pull-secret.yaml", manifest)
     logger.info("Created image pull secret %s in %s from vault %s", secret_name, namespace, vault_name)
 
 
@@ -317,8 +318,9 @@ def ensure_model_pvc(
 
     from projects.core.library import env
 
-    artifact_path = env.ARTIFACT_DIR / "src" / "model-pvc.yaml"
-    oc_apply(artifact_path, manifest)
+    src_dir = env.ARTIFACT_DIR / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    oc_apply(src_dir / "model-pvc.yaml", manifest)
     logger.info(
         "Created PVC %s (%s, %s, %s) in %s",
         pvc_name, storage_class, size, access_mode, namespace,
