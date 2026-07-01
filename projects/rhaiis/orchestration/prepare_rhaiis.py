@@ -70,9 +70,14 @@ def _operator_spec(platform: dict[str, Any], package: str) -> dict[str, Any]:
 
 def _operator_csv_exists(namespace: str, package: str) -> bool:
     result = oc(
-        "get", "csv", "-n", namespace,
-        "-o", "jsonpath={.items[*].metadata.name}",
-        check=False, log_stdout=False,
+        "get",
+        "csv",
+        "-n",
+        namespace,
+        "-o",
+        "jsonpath={.items[*].metadata.name}",
+        check=False,
+        log_stdout=False,
     )
     if result.returncode != 0:
         return False
@@ -267,7 +272,9 @@ def ensure_image_pull_secret(
     src_dir = env.ARTIFACT_DIR / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
     oc_apply(src_dir / "image-pull-secret.yaml", manifest)
-    logger.info("Created image pull secret %s in %s from vault %s", secret_name, namespace, vault_name)
+    logger.info(
+        "Created image pull secret %s in %s from vault %s", secret_name, namespace, vault_name
+    )
 
 
 def _base64_encode_file(path: Any) -> str:
@@ -323,5 +330,9 @@ def ensure_model_pvc(
     oc_apply(src_dir / "model-pvc.yaml", manifest)
     logger.info(
         "Created PVC %s (%s, %s, %s) in %s",
-        pvc_name, storage_class, size, access_mode, namespace,
+        pvc_name,
+        storage_class,
+        size,
+        access_mode,
+        namespace,
     )
