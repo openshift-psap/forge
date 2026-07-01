@@ -1,0 +1,10 @@
+env_key: PSAP_RHAIIS_IMAGE_PULL_SECRET_PATH
+description: |
+  Vault to store container registry credentials for rhaiis image pulling
+
+content:
+  .dockerconfigjson:
+    description: |
+      Docker/Podman registry auth config in JSON format
+    sample: |
+      {"auths":{"quay.io":{"auth":"base64-encoded-credentials"}}}

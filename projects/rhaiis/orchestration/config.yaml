@@ -1,6 +1,7 @@
 vaults:
 - psap-forge-notifications
 - psap-forge-mlflow-export
+- psap-rhaiis-image-pull
 
 benchmarks:
   guidellm:

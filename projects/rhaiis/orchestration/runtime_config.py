@@ -59,6 +59,10 @@ def get_vaults() -> list[str]:
     return config.project.get_config("vaults")
 
 
+def get_platform_config() -> dict:
+    return dict(config.project.get_config("platform"))
+
+
 def get_test_model_key() -> str:
     return config.project.get_config("tests.rhaiis.model_key")
 

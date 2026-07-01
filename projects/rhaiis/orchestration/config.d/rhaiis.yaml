@@ -16,7 +16,7 @@ deploy:
   memory_request: "16Gi"
   storage_source: hf
   storage_pvc: model-pvc-2
-  image_pull_secret: ""
+  image_pull_secret: rhaiis-image-pull
   service_account_name: ""
   ready_timeout: 3600
   health_check_timeout: 120

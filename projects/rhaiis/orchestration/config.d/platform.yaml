@@ -1,0 +1,46 @@
+operators:
+  nfd:
+    package: nfd
+    namespace: openshift-nfd
+    channel: stable
+    source: redhat-operators
+    bootstrap_crd: nodefeaturediscoveries.nfd.openshift.io
+  gpu-operator-certified:
+    package: gpu-operator-certified
+    namespace: nvidia-gpu-operator
+    channel: v24.9
+    source: certified-operators
+    bootstrap_crd: clusterpolicies.nvidia.com
+  rhcl-operator:
+    package: rhcl-operator
+    namespace: redhat-ods-operator
+    channel: stable
+    source: redhat-operators
+  rhoai-operator:
+    package: rhods-operator
+    namespace: redhat-ods-operator
+    channel: stable
+    source: redhat-operators
+
+datasciencecluster:
+  name: default-dsc
+  namespace: redhat-ods-applications
+  components:
+    - kserve
+
+prepare:
+  scc:
+    policy: anyuid
+    service_account: sa
+  image_pull_secret:
+    vault_name: psap-rhaiis-image-pull
+    vault_content: .dockerconfigjson
+  model_pvc:
+    storage_class: lvms-vg1
+    size: 300Gi
+    access_mode: ReadWriteOnce
+
+cleanup:
+  preserve_operators:
+    nfd: true
+    gpu-operator-certified: true

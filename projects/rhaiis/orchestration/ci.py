@@ -7,6 +7,7 @@ import click
 import prepare_rhaiis
 import test_rhaiis
 
+from projects.core.agentic.on_failure import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import vault
@@ -59,6 +60,7 @@ def main(ctx):
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
+@agent_review_on_failure
 def prepare(ctx):
     """Prepare phase - Set up environment and dependencies."""
     return prepare_rhaiis.prepare()
@@ -83,19 +85,33 @@ def pre_cleanup(ctx):
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
+@agent_review_on_failure
 def post_cleanup(ctx):
     """Post-cleanup phase - Clean up resources after test."""
     return prepare_rhaiis.cleanup()
+
+
+REQUIRED_CRDS = [
+    "inferenceservices.serving.kserve.io",
+    "servingruntimes.serving.kserve.io",
+]
 
 
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
 def preflight(ctx) -> int:
-    """Preflight check phase - Validate that the cluster if ready for testing."""
+    """Preflight check phase - Validate that the cluster is ready for testing."""
+    from projects.core.dsl.utils.k8s import oc_resource_exists
 
-    logger.warning("Nothing so far for the preflight check")
+    logger.info("Starting preflight checks")
+    missing = [crd for crd in REQUIRED_CRDS if not oc_resource_exists("crd", crd)]
 
+    if missing:
+        logger.error("Preflight failed — missing CRDs: %s", ", ".join(missing))
+        return 1
+
+    logger.info("Preflight passed — all required CRDs present")
     return 0
 
 
