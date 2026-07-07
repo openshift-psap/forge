@@ -22,12 +22,13 @@ def prepare() -> int:
     ns = runtime_config.get_namespace()
     deploy_cfg = runtime_config.get_deploy_config()
     prepare_cfg = platform.get("prepare", {})
+    labels = platform.get("labels", {})
 
-    ensure_test_namespace(ns)
+    ensure_test_namespace(ns, labels)
     ensure_service_account(ns, deploy_cfg)
-    ensure_scc_policy(ns, prepare_cfg)
+    ensure_scc_policy(ns, deploy_cfg, prepare_cfg)
     ensure_image_pull_secret(ns, deploy_cfg, prepare_cfg)
-    ensure_model_pvc(ns, deploy_cfg, prepare_cfg)
+    ensure_model_pvc(ns, deploy_cfg, prepare_cfg, labels)
 
     return 0
 
@@ -68,28 +69,31 @@ def _operator_spec(platform: dict[str, Any], package: str) -> dict[str, Any]:
     return {"package": package, **operators[package]}
 
 
-def _operator_csv_exists(namespace: str, package: str) -> bool:
+def _operator_csv_succeeded(namespace: str, package: str) -> bool:
     result = oc(
         "get",
         "csv",
         "-n",
         namespace,
         "-o",
-        "jsonpath={.items[*].metadata.name}",
+        r'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}',
         check=False,
         log_stdout=False,
     )
     if result.returncode != 0:
         return False
-    csv_names = result.stdout.strip().split()
-    return any(package in name for name in csv_names)
+    for line in result.stdout.strip().splitlines():
+        name, _, phase = line.partition("\t")
+        if package in name and phase == "Succeeded":
+            return True
+    return False
 
 
 def _ensure_operator_subscription(operator_spec: dict[str, str]) -> None:
     package = operator_spec["package"]
     namespace = operator_spec["namespace"]
 
-    if _operator_csv_exists(namespace, package):
+    if _operator_csv_succeeded(namespace, package):
         logger.info("Operator %s already installed in %s, skipping", package, namespace)
         return
 
@@ -186,14 +190,8 @@ def prepare_kserve(platform: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def ensure_test_namespace(namespace: str) -> None:
-    ensure_namespace(
-        namespace,
-        labels={
-            "app.kubernetes.io/managed-by": "forge",
-            "forge.openshift.io/project": "rhaiis",
-        },
-    )
+def ensure_test_namespace(namespace: str, labels: dict[str, str]) -> None:
+    ensure_namespace(namespace, labels=labels)
     logger.info("Namespace %s ready", namespace)
 
 
@@ -210,15 +208,20 @@ def ensure_service_account(namespace: str, deploy_cfg: dict[str, Any]) -> None:
     logger.info("Created service account %s in %s", sa_name, namespace)
 
 
-def ensure_scc_policy(namespace: str, prepare_cfg: dict[str, Any]) -> None:
+def ensure_scc_policy(
+    namespace: str, deploy_cfg: dict[str, Any], prepare_cfg: dict[str, Any]
+) -> None:
     scc = prepare_cfg.get("scc", {})
-    policy = scc.get("policy", "")
-    sa = scc.get("service_account", "")
-    if not policy or not sa:
+    policy = scc.get("policy")
+    sa = deploy_cfg.get("service_account_name", "")
+    if not policy:
         logger.info("SCC policy not configured, skipping")
         return
+    if not sa:
+        logger.info("No service account configured, skipping SCC")
+        return
 
-    oc("adm", "policy", "add-scc-to-user", policy, "-z", sa, "-n", namespace, check=False)
+    oc("adm", "policy", "add-scc-to-user", policy, "-z", sa, "-n", namespace)
     logger.info("Applied SCC %s to SA %s in %s", policy, sa, namespace)
 
 
@@ -227,65 +230,55 @@ def ensure_image_pull_secret(
 ) -> None:
     secret_name = deploy_cfg.get("image_pull_secret", "")
     if not secret_name:
+        logger.info("No image pull secret configured, skipping")
         return
 
     if oc_resource_exists("secret", secret_name, namespace=namespace):
         logger.info("Image pull secret %s already exists in %s", secret_name, namespace)
         return
 
-    vault_name = prepare_cfg.get("image_pull_secret", {}).get(
-        "vault_name", "psap-rhaiis-image-pull"
-    )
-    vault_content = prepare_cfg.get("image_pull_secret", {}).get(
-        "vault_content", ".dockerconfigjson"
-    )
+    vault_cfg = prepare_cfg.get("image_pull_secret", {})
+    vault_name = vault_cfg.get("vault_name")
+    vault_content = vault_cfg.get("vault_content")
 
-    from projects.core.library import env, vault
+    if not vault_name or not vault_content:
+        raise RuntimeError(
+            f"Image pull secret {secret_name} is configured but "
+            "platform.prepare.image_pull_secret.vault_name/vault_content are missing"
+        )
+
+    from projects.core.library import vault
 
     try:
         dockerconfig_path = vault.get_vault_content_path(vault_name, vault_content)
-    except Exception:
-        logger.warning("Vault %s not available — cannot create image pull secret", vault_name)
-        return
+    except Exception as exc:
+        raise RuntimeError(
+            f"Vault {vault_name} not available — cannot create image pull secret {secret_name}"
+        ) from exc
 
     if not dockerconfig_path or not dockerconfig_path.exists():
-        logger.warning("Vault content %s/%s not found", vault_name, vault_content)
-        return
+        raise FileNotFoundError(f"Vault content {vault_name}/{vault_content} not found")
 
-    manifest = {
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {
-            "name": secret_name,
-            "namespace": namespace,
-            "labels": {
-                "app.kubernetes.io/managed-by": "forge",
-                "forge.openshift.io/project": "rhaiis",
-            },
-        },
-        "type": "kubernetes.io/dockerconfigjson",
-        "data": {
-            ".dockerconfigjson": _base64_encode_file(dockerconfig_path),
-        },
-    }
-
-    src_dir = env.ARTIFACT_DIR / "src"
-    src_dir.mkdir(parents=True, exist_ok=True)
-    oc_apply(src_dir / "image-pull-secret.yaml", manifest)
+    oc(
+        "create",
+        "secret",
+        "generic",
+        secret_name,
+        f"--from-file=.dockerconfigjson={dockerconfig_path}",
+        "--type=kubernetes.io/dockerconfigjson",
+        "-n",
+        namespace,
+    )
     logger.info(
         "Created image pull secret %s in %s from vault %s", secret_name, namespace, vault_name
     )
 
 
-def _base64_encode_file(path: Any) -> str:
-    import base64
-
-    content = path.read_bytes()
-    return base64.b64encode(content).decode("ascii")
-
-
 def ensure_model_pvc(
-    namespace: str, deploy_cfg: dict[str, Any], prepare_cfg: dict[str, Any]
+    namespace: str,
+    deploy_cfg: dict[str, Any],
+    prepare_cfg: dict[str, Any],
+    labels: dict[str, str],
 ) -> None:
     pvc_name = deploy_cfg.get("storage_pvc", "")
     if not pvc_name:
@@ -296,13 +289,16 @@ def ensure_model_pvc(
         return
 
     pvc_cfg = prepare_cfg.get("model_pvc", {})
-    storage_class = pvc_cfg.get("storage_class", "")
-    size = pvc_cfg.get("size", "300Gi")
-    access_mode = pvc_cfg.get("access_mode", "ReadWriteOnce")
+    storage_class = pvc_cfg.get("storage_class")
+    size = pvc_cfg["size"]
+    access_mode = pvc_cfg["access_mode"]
 
-    if not storage_class:
-        logger.warning("No storage_class configured for model PVC, skipping creation")
-        return
+    pvc_spec: dict[str, Any] = {
+        "accessModes": [access_mode],
+        "resources": {"requests": {"storage": size}},
+    }
+    if storage_class:
+        pvc_spec["storageClassName"] = storage_class
 
     manifest = {
         "apiVersion": "v1",
@@ -311,16 +307,11 @@ def ensure_model_pvc(
             "name": pvc_name,
             "namespace": namespace,
             "labels": {
-                "app.kubernetes.io/managed-by": "forge",
-                "forge.openshift.io/project": "rhaiis",
+                **labels,
                 "forge.openshift.io/preserve": "true",
             },
         },
-        "spec": {
-            "accessModes": [access_mode],
-            "resources": {"requests": {"storage": size}},
-            "storageClassName": storage_class,
-        },
+        "spec": pvc_spec,
     }
 
     from projects.core.library import env

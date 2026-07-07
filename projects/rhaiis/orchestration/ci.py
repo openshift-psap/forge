@@ -88,12 +88,6 @@ def post_cleanup(ctx):
     return prepare_rhaiis.cleanup()
 
 
-REQUIRED_CRDS = [
-    "inferenceservices.serving.kserve.io",
-    "servingruntimes.serving.kserve.io",
-]
-
-
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
@@ -101,14 +95,43 @@ def preflight(ctx) -> int:
     """Preflight check phase - Validate that the cluster is ready for testing."""
     from projects.core.dsl.utils.k8s import oc_resource_exists
 
-    logger.info("Starting preflight checks")
-    missing = [crd for crd in REQUIRED_CRDS if not oc_resource_exists("crd", crd)]
+    platform = runtime_config.get_platform_config()
+    deploy_cfg = runtime_config.get_deploy_config()
+    ns = runtime_config.get_namespace()
+    errors = []
 
-    if missing:
-        logger.error("Preflight failed — missing CRDs: %s", ", ".join(missing))
+    logger.info("Starting preflight checks")
+
+    required_crds = platform.get("required_crds", [])
+    for crd in required_crds:
+        if not oc_resource_exists("crd", crd):
+            errors.append(f"CRD not found: {crd}")
+        else:
+            logger.info("CRD found: %s", crd)
+
+    if not oc_resource_exists("namespace", ns):
+        errors.append(f"Namespace not found: {ns}")
+    else:
+        logger.info("Namespace found: %s", ns)
+
+    secret_name = deploy_cfg.get("image_pull_secret", "")
+    if secret_name and not oc_resource_exists("secret", secret_name, namespace=ns):
+        errors.append(f"Image pull secret not found: {secret_name} in {ns}")
+    elif secret_name:
+        logger.info("Image pull secret found: %s in %s", secret_name, ns)
+
+    pvc_name = deploy_cfg.get("storage_pvc", "")
+    if pvc_name and not oc_resource_exists("pvc", pvc_name, namespace=ns):
+        errors.append(f"PVC not found: {pvc_name} in {ns}")
+    elif pvc_name:
+        logger.info("PVC found: %s in %s", pvc_name, ns)
+
+    if errors:
+        for err in errors:
+            logger.error("Preflight failed — %s", err)
         return 1
 
-    logger.info("Preflight passed — all required CRDs present")
+    logger.info("Preflight passed — all checks passed")
     return 0
 
 

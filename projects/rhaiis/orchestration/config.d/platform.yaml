@@ -28,10 +28,17 @@ datasciencecluster:
   components:
     - kserve
 
+required_crds:
+  - inferenceservices.serving.kserve.io
+  - servingruntimes.serving.kserve.io
+
+labels:
+  app.kubernetes.io/managed-by: forge
+  forge.openshift.io/project: rhaiis
+
 prepare:
   scc:
     policy: anyuid
-    service_account: sa
   image_pull_secret:
     vault_name: psap-rhaiis-image-pull
     vault_content: .dockerconfigjson
