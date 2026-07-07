@@ -1,0 +1,22 @@
+defaults:
+  backend_framework: vllm
+  replicas: 1
+  tensor_parallelism: 1
+  serving_mode: aggregated
+  runtime_image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
+  frontend_image: nvcr.io/nvidia/ai-dynamo/dynamo-frontend:1.2.1
+  vllm_args:
+    - --gpu-memory-utilization=0.90
+    - --enable-prefix-caching
+    - --block-size=16
+  env:
+    DYN_STORE_KV: mem
+    DYN_DECODE_FALLBACK: "true"
+
+aggregated:
+  serving_mode: aggregated
+
+disaggregated:
+  serving_mode: disaggregated
+  prefill_replicas: 1
+  decode_replicas: 2

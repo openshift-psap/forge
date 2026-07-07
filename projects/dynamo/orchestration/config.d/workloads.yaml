@@ -1,0 +1,39 @@
+job_name: guidellm-benchmark
+image: ghcr.io/vllm-project/guidellm:v0.5.4
+pvc_size: 1Gi
+timeout_seconds: 3600
+args: {}
+
+smoke_requests:
+  default:
+    prompt: San Francisco is a
+    max_tokens: 50
+    temperature: 0.7
+
+benchmarks:
+  short:
+    timeout_seconds: 900
+    outputs: json
+    args:
+      backend_type: openai_http
+      rate: 1
+      rate_type: concurrent
+      max_seconds: 120
+      sample_requests: 20
+      data: prompt_tokens=256,output_tokens=128
+
+  concurrent-1k-1k:
+    args:
+      backend_type: openai_http
+      rate_type: concurrent
+      rate: [300, 200, 100, 50, 1]
+      data: prompt_tokens=1000,output_tokens=1000
+      max_seconds: 600
+
+  multi-turn:
+    args:
+      backend_type: openai_http
+      rate_type: concurrent
+      rate: [32, 64, 128, 256, 512]
+      data: prompt_tokens=128,output_tokens=128,turns=5,prefix_tokens=10000,prefix_count={2*rate}
+      max_requests: "{10*rate}"
