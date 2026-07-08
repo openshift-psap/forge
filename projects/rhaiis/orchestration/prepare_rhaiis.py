@@ -54,10 +54,9 @@ def cleanup(*, cleanup_subscriptions: bool = False) -> int:
 
 def _cleanup_operators() -> None:
     from projects.cluster.toolbox.cleanup_operators import main as cleanup_operators_command
-    from projects.core.library import config
 
     platform = runtime_config.get_platform_config()
-    cleanup_config = config.project.get_config("cleanup", {})
+    cleanup_config = platform.get("cleanup", {})
     preserve = cleanup_config.get("preserve_operators", {})
 
     operators = platform.get("operators", {})
