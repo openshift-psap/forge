@@ -69,7 +69,7 @@ def _operator_spec(platform: dict[str, Any], package: str) -> dict[str, Any]:
     return {"package": package, **operators[package]}
 
 
-def _operator_csv_succeeded(namespace: str, package: str) -> bool:
+def _find_operator_csv(namespace: str, package: str) -> tuple[str | None, str | None]:
     result = oc(
         "get",
         "csv",
@@ -81,20 +81,31 @@ def _operator_csv_succeeded(namespace: str, package: str) -> bool:
         log_stdout=False,
     )
     if result.returncode != 0:
-        return False
+        return None, None
     for line in result.stdout.strip().splitlines():
         name, _, phase = line.partition("\t")
-        if package in name and phase == "Succeeded":
-            return True
-    return False
+        if package in name:
+            return name, phase
+    return None, None
 
 
 def _ensure_operator_subscription(operator_spec: dict[str, str]) -> None:
     package = operator_spec["package"]
     namespace = operator_spec["namespace"]
 
-    if _operator_csv_succeeded(namespace, package):
+    csv_name, csv_phase = _find_operator_csv(namespace, package)
+
+    if csv_name and csv_phase == "Succeeded":
         logger.info("Operator %s already installed in %s, skipping", package, namespace)
+        return
+
+    if csv_name and csv_phase != "Succeeded":
+        logger.warning(
+            "Operator %s CSV %s is in %s phase (not Succeeded), skipping install to avoid conflict",
+            package,
+            csv_name,
+            csv_phase,
+        )
         return
 
     from projects.cluster.toolbox.cluster_deploy_operator import main as cluster_deploy_operator
