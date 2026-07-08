@@ -51,3 +51,4 @@ cleanup:
   preserve_operators:
     nfd: true
     gpu-operator-certified: true
+    servicemeshoperator3: true
