@@ -106,13 +106,10 @@ def _ensure_operator_subscription(operator_spec: dict[str, str]) -> None:
         return
 
     if csv_name and csv_phase != "Succeeded":
-        logger.warning(
-            "Operator %s CSV %s is in %s phase (not Succeeded), skipping install to avoid conflict",
-            package,
-            csv_name,
-            csv_phase,
+        raise RuntimeError(
+            f"Operator {package} CSV {csv_name} is in {csv_phase} phase (not Succeeded). "
+            f"Manual intervention required — check the CSV in namespace {namespace}"
         )
-        return
 
     from projects.cluster.toolbox.cluster_deploy_operator import main as cluster_deploy_operator
 
