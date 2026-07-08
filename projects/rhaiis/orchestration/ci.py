@@ -84,8 +84,8 @@ def pre_cleanup(ctx):
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
 def post_cleanup(ctx):
-    """Post-cleanup phase - Clean up resources after test."""
-    return prepare_rhaiis.cleanup()
+    """Post-cleanup phase - Clean up resources and optionally remove operators."""
+    return prepare_rhaiis.cleanup(cleanup_subscriptions=True)
 
 
 @main.command()

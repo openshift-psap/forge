@@ -33,21 +33,50 @@ def prepare() -> int:
     return 0
 
 
-def cleanup() -> int:
+def cleanup(*, cleanup_subscriptions: bool = False) -> int:
     ns = runtime_config.get_namespace()
     logger.info("Cleaning up rhaiis benchmark resources in %s", ns)
 
-    if not oc_resource_exists("namespace", ns):
-        logger.info("Namespace %s does not exist, nothing to clean up", ns)
-        return 0
+    if oc_resource_exists("namespace", ns):
+        oc("delete", "inferenceservice", "--all", "-n", ns, "--ignore-not-found", check=False)
+        oc("delete", "servingruntime", "--all", "-n", ns, "--ignore-not-found", check=False)
+        oc("delete", "job", "--all", "-n", ns, "--ignore-not-found", check=False)
+        oc("delete", "pod", "--all", "-n", ns, "--ignore-not-found", check=False)
+        logger.info("Namespace cleanup complete")
+    else:
+        logger.info("Namespace %s does not exist, skipping namespace cleanup", ns)
 
-    oc("delete", "inferenceservice", "--all", "-n", ns, "--ignore-not-found", check=False)
-    oc("delete", "servingruntime", "--all", "-n", ns, "--ignore-not-found", check=False)
-    oc("delete", "job", "--all", "-n", ns, "--ignore-not-found", check=False)
-    oc("delete", "pod", "--all", "-n", ns, "--ignore-not-found", check=False)
+    if cleanup_subscriptions:
+        _cleanup_operators()
 
-    logger.info("Cleanup complete")
     return 0
+
+
+def _cleanup_operators() -> None:
+    from projects.cluster.toolbox.cleanup_operators import main as cleanup_operators_command
+    from projects.core.library import config
+
+    platform = runtime_config.get_platform_config()
+    cleanup_config = config.project.get_config("cleanup", {})
+    preserve = cleanup_config.get("preserve_operators", {})
+
+    operators = platform.get("operators", {})
+    to_delete = []
+
+    for package_name, operator_spec in operators.items():
+        if preserve.get(package_name, False):
+            logger.info("Preserving operator: %s", package_name)
+            continue
+        namespace = operator_spec.get("namespace", "openshift-operators")
+        logger.info("Marking operator for deletion: %s in %s", package_name, namespace)
+        to_delete.append({"name": package_name, "namespace": namespace})
+
+    if not to_delete:
+        logger.info("No operators to clean up")
+        return
+
+    logger.info("Cleaning up %d operator(s)", len(to_delete))
+    cleanup_operators_command.run(operators=to_delete)
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +241,7 @@ def ensure_test_namespace(namespace: str, labels: dict[str, str]) -> None:
 def ensure_service_account(namespace: str, deploy_cfg: dict[str, Any]) -> None:
     sa_name = deploy_cfg.get("service_account_name", "")
     if not sa_name:
+        logger.info("No service account configured, skipping")
         return
 
     if oc_resource_exists("serviceaccount", sa_name, namespace=namespace):
