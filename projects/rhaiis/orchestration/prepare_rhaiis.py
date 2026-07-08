@@ -76,15 +76,21 @@ def _find_operator_csv(namespace: str, package: str) -> tuple[str | None, str | 
         "-n",
         namespace,
         "-o",
-        r'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}',
+        "jsonpath={range .items[*]}{.metadata.name}={.status.phase};{end}",
         check=False,
         log_stdout=False,
     )
     if result.returncode != 0:
         return None, None
-    for line in result.stdout.strip().splitlines():
-        name, _, phase = line.partition("\t")
+    for entry in result.stdout.strip().split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            continue
+        name, phase = entry.rsplit("=", 1)
         if package in name:
+            logger.info("Found CSV %s in phase %s", name, phase)
             return name, phase
     return None, None
 
