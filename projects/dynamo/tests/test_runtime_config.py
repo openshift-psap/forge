@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from projects.dynamo.orchestration.runtime_config import (
-    RunSpec,
     _deep_merge,
     _normalize_string_or_list,
     derive_namespace,

@@ -67,7 +67,6 @@ def install_or_upgrade_chart(args, ctx):
     ]
 
     if args.values_override:
-        import json
         import tempfile
         values_file = Path(tempfile.mkdtemp()) / "values-override.yaml"
         import yaml

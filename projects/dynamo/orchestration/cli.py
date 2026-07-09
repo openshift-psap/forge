@@ -86,8 +86,8 @@ def test(ctx):
 @safe_cli_command
 def cleanup(ctx):
     """Cleanup phase - Remove Dynamo test resources."""
-    from projects.dynamo.orchestration.cleanup_phase import run as cleanup_run
     from projects.dynamo.orchestration import runtime_config
+    from projects.dynamo.orchestration.cleanup_phase import run as cleanup_run
 
     for run_spec in runtime_config.get_run_specs():
         with runtime_config.activate_run_spec(run_spec):
