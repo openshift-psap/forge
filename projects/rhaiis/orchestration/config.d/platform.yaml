@@ -8,7 +8,7 @@ operators:
   gpu-operator-certified:
     package: gpu-operator-certified
     namespace: nvidia-gpu-operator
-    channel: v24.9
+    channel: stable
     source: certified-operators
     bootstrap_crd: clusterpolicies.nvidia.com
   rhcl-operator:
