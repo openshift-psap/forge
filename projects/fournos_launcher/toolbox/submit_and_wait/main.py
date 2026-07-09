@@ -26,6 +26,25 @@ from projects.core.library import env as env_mod
 logger = logging.getLogger(__name__)
 
 
+class FournosJobFailureError(RuntimeError):
+    """Custom exception for FOURNOS job failures."""
+
+    def __init__(
+        self, job_name: str, failure_message: str, namespace: str, error_type: str = "failure"
+    ):
+        self.job_name = job_name
+        self.failure_message = failure_message
+        self.namespace = namespace
+        self.error_type = error_type
+
+        if error_type == "shutdown":
+            msg = f"FOURNOS Job '{job_name}' was shutdown: {failure_message}"
+        else:
+            msg = f"FOURNOS Job '{job_name}' failed: {failure_message}"
+
+        super().__init__(msg)
+
+
 @entrypoint
 def run(
     cluster_name: str,
@@ -197,7 +216,12 @@ def wait_for_job_completion(args, ctx):
     if not status_result.success:
         # Check if it's a "not found" error (permanent failure) vs temporary error
         if "not found" in status_result.stderr.lower():
-            raise RuntimeError(f"Job {ctx.final_job_name} not found in namespace {args.namespace}")
+            raise FournosJobFailureError(
+                ctx.final_job_name,
+                "Job not found - may have been deleted or never created",
+                args.namespace,
+                "not_found",
+            )
 
         # Other errors might be temporary, retry
         logger.info(
@@ -218,8 +242,8 @@ def wait_for_job_completion(args, ctx):
         logger.warning(
             f"Job {ctx.final_job_name} has spec.shutdown={shutdown_value} - aborting wait"
         )
-        raise RuntimeError(
-            f"Job {ctx.final_job_name} shutdown requested: spec.shutdown={shutdown_value}"
+        raise FournosJobFailureError(
+            ctx.final_job_name, f"spec.shutdown={shutdown_value}", args.namespace, "shutdown"
         )
 
     if status in ["Succeeded"]:
@@ -232,7 +256,9 @@ def wait_for_job_completion(args, ctx):
             check=False,
         )
         failure_msg = failure_result.stdout.strip() if failure_result.success else "Unknown failure"
-        raise RuntimeError(f"Job {ctx.final_job_name} failed: {failure_msg}")  # Abort on failure
+        raise FournosJobFailureError(
+            ctx.final_job_name, failure_msg, args.namespace
+        )  # Abort on failure
     elif status in ["Running", "Pending", "Admitted"]:
         logger.info(f"Job {ctx.final_job_name} status: {status}. Keep waiting.")
         return False  # Retry

@@ -4,6 +4,8 @@ Logging utilities for the DSL framework
 
 import inspect
 import logging
+import time
+from datetime import datetime
 from pathlib import Path
 
 import projects.core.library.env as env
@@ -36,6 +38,7 @@ def log_task_header(
     rel_filename: str,
     line_no: int,
     artifact_dirname_suffix: str = None,
+    start_time: float = None,
 ):
     """Log the verbose task header with tildes"""
     logger.info("")
@@ -51,7 +54,21 @@ def log_task_header(
         file_line_info += f" [{display_suffix}]"
 
     logger.info(file_line_info)
-    logger.info(f"~~ TASK: {task_name} : {(task_doc or 'No description').strip()}")
+
+    # Build task line with timestamp and elapsed time if start_time provided
+    current_time = time.time()
+    timestamp = datetime.fromtimestamp(current_time).strftime("%Y-%m-%d %H:%M:%S")
+    if start_time is not None:
+        elapsed_time = current_time - start_time
+        elapsed_mins, elapsed_secs = divmod(elapsed_time, 60)
+        logger.info(f"~~ TASK: {task_name} : {(task_doc or 'No description').strip()}")
+        logger.info(f"~~ {timestamp} ({elapsed_time:.0f}s {elapsed_mins:.0f}m {elapsed_secs:.0f}s)")
+        logger.info("~" * LINE_WIDTH)
+        logger.info("")
+        return
+    else:
+        logger.info(f"~~ TASK: {task_name} : {(task_doc or 'No description').strip()}")
+        logger.info(f"~~ {timestamp}")
     logger.info("~" * LINE_WIDTH)
     logger.info("")
 

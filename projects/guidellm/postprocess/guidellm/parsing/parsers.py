@@ -106,7 +106,7 @@ class GuideLLMParser:
             metric_name: str, stat_type: str = "median", default: float = 0.0
         ) -> float:
             metric_data = metrics.get(metric_name, {}).get("successful", {})
-            if stat_type in ["p95", "p90", "p75", "p50", "p25", "p10"]:
+            if stat_type in ["p99", "p95", "p90", "p75", "p50", "p25", "p10"]:
                 percentiles = metric_data.get("percentiles", {})
                 return float(percentiles.get(stat_type, default))
             else:
@@ -163,6 +163,11 @@ class GuideLLMParser:
             (total_tokens_per_second / request_rate) if request_rate > 0 else 0.0
         )
 
+        # Extract P99 values
+        ttft_p99 = get_metric_value("time_to_first_token_ms", "p99") / 1000.0
+        itl_p99 = get_metric_value("inter_token_latency_ms", "p99") / 1000.0
+        tpot_p99 = get_metric_value("time_per_output_token_ms", "p99") / 1000.0
+
         # Create GuideLLMBenchmark object
         return GuideLLMBenchmark(
             strategy=strategy,
@@ -188,6 +193,7 @@ class GuideLLMParser:
             ttft_p75=ttft_p75,
             ttft_p90=ttft_p90,
             ttft_p95=ttft_p95,
+            ttft_p99=ttft_p99,
             itl_median=itl_median,
             itl_p10=itl_p10,
             itl_p25=itl_p25,
@@ -195,8 +201,10 @@ class GuideLLMParser:
             itl_p75=itl_p75,
             itl_p90=itl_p90,
             itl_p95=itl_p95,
+            itl_p99=itl_p99,
             tpot_median=tpot_median,
             tpot_p95=tpot_p95,
+            tpot_p99=tpot_p99,
             # Throughput metrics
             tokens_per_second=total_tokens_per_second,
             input_tokens_per_second=input_tokens_per_second,
@@ -236,16 +244,129 @@ class GuideLLMParser:
         )
         return 1.0
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
+    def _group_benchmarks_by_test(
+        self, benchmarks: list[GuideLLMBenchmark]
+    ) -> dict[str, list[GuideLLMBenchmark]]:
+        """
+        Group benchmarks by test characteristics, excluding rate.
+
+        Args:
+            benchmarks: List of parsed benchmarks
+
+        Returns:
+            Dictionary mapping group keys to lists of benchmarks
+        """
+        groups = {}
+
+        for benchmark in benchmarks:
+            # Create a simple group key based only on strategy
+            # This ensures all rate variations are grouped together into a single performance curve
+            group_key = benchmark.strategy
+
+            if group_key not in groups:
+                groups[group_key] = []
+            groups[group_key].append(benchmark)
+
+        return groups
+
+    def _create_aggregated_metrics(
+        self, benchmark_group: list[GuideLLMBenchmark]
+    ) -> dict[str, Any]:
+        """
+        Create aggregated metrics with performance curves from a group of benchmarks.
+
+        Args:
+            benchmark_group: List of benchmarks representing the same test at different rates
+
+        Returns:
+            Dictionary containing aggregated metrics with performance curves
+        """
+        if not benchmark_group:
+            return {}
+
+        # Sort benchmarks by request rate for consistent curve ordering
+        sorted_benchmarks = sorted(benchmark_group, key=lambda b: b.request_rate)
+
+        # Use the first benchmark for static characteristics
+        representative = sorted_benchmarks[0]
+
+        # Create base metrics from representative benchmark
+        metrics = {
+            "strategy": representative.strategy,
+            "duration": representative.duration,
+            "request_concurrency": representative.request_concurrency,
+            "warmup_time": representative.warmup_time,
+            "cooldown_time": representative.cooldown_time,
+        }
+
+        # Create performance curves across all rates
+        request_rates = []
+        curves = {
+            "tokens_per_second": [],
+            "input_tokens_per_second": [],
+            "output_tokens_per_second": [],
+            "ttft_median": [],
+            "ttft_p95": [],
+            "ttft_p99": [],
+            "itl_median": [],
+            "itl_p95": [],
+            "itl_p99": [],
+            "tpot_median": [],
+            "tpot_p95": [],
+            "tpot_p99": [],
+            "request_latency_median": [],
+            "request_latency_p95": [],
+            "completed_requests": [],
+            "failed_requests": [],
+            "request_concurrency": [],  # Add concurrency to curves
+        }
+
+        for benchmark in sorted_benchmarks:
+            request_rates.append(benchmark.request_rate)
+            curves["tokens_per_second"].append(benchmark.tokens_per_second)
+            curves["input_tokens_per_second"].append(benchmark.input_tokens_per_second)
+            curves["output_tokens_per_second"].append(benchmark.output_tokens_per_second)
+            curves["ttft_median"].append(benchmark.ttft_median)
+            curves["ttft_p95"].append(benchmark.ttft_p95)
+            curves["ttft_p99"].append(benchmark.ttft_p99)
+            curves["itl_median"].append(benchmark.itl_median)
+            curves["itl_p95"].append(benchmark.itl_p95)
+            curves["itl_p99"].append(benchmark.itl_p99)
+            curves["tpot_median"].append(benchmark.tpot_median)
+            curves["tpot_p95"].append(benchmark.tpot_p95)
+            curves["tpot_p99"].append(benchmark.tpot_p99)
+            curves["request_latency_median"].append(benchmark.request_latency_median)
+            curves["request_latency_p95"].append(benchmark.request_latency_p95)
+            curves["completed_requests"].append(benchmark.completed_requests)
+            curves["failed_requests"].append(benchmark.failed_requests)
+            curves["request_concurrency"].append(
+                benchmark.request_concurrency
+            )  # Add concurrency per rate point
+
+        # Add request_rate and performance curves to metrics
+        metrics["request_rate"] = request_rates
+        metrics["performance_curves"] = curves
+
+        # Also add summary statistics from the representative benchmark
+        metrics.update(
+            {
+                "input_tokens_per_request": representative.input_tokens_per_request,
+                "output_tokens_per_request": representative.output_tokens_per_request,
+                "total_tokens_per_request": representative.total_tokens_per_request,
+            }
+        )
+
+        return metrics
+
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         """
         Parse test nodes containing GuideLLM benchmarks.json files.
 
         Args:
-            base_dir: Base directory for the test run
             nodes: List of test nodes to parse
 
         Returns:
-            ParseResult with unified records and warnings
+            ParseResult with one unified record per node and warnings
         """
         records: list[UnifiedResultRecord] = []
         warnings: list[str] = []
@@ -256,11 +377,11 @@ class GuideLLMParser:
             benchmarks_files.sort(key=lambda path: path.name)
 
             if not benchmarks_files:
-                # No benchmark result JSON found, create empty record
+                # No benchmark result JSON found for this node, create empty record
                 labels = _labels_from_node(node)
                 records.append(
                     UnifiedResultRecord(
-                        test_base_path=str(node.directory.relative_to(base_dir.resolve())),
+                        test_base_path=str(node.test_path),
                         distinguishing_labels=labels,
                         metrics={"no_benchmarks_found": True},
                         run_identity={"guidellm": True},
@@ -269,28 +390,33 @@ class GuideLLMParser:
                 )
                 continue
 
+            # Collect all benchmarks from all files for this node
+            node_benchmarks = []
+            node_config = None
+
             for benchmarks_file in benchmarks_files:
                 benchmarks, config, file_warnings = self.parse_benchmarks_json(benchmarks_file)
                 warnings.extend(file_warnings)
+                node_benchmarks.extend(benchmarks)
+                if config and not node_config:
+                    node_config = config
 
-                # Create a unified record for each benchmark
-                for benchmark in benchmarks:
-                    labels = _labels_from_node(node)
+            if node_benchmarks:
+                # Create aggregated metrics with performance curves for this node
+                labels = _labels_from_node(node)
+                metrics = self._create_aggregated_metrics(node_benchmarks)
+                if node_config:
+                    metrics["configuration"] = node_config.to_dict()
 
-                    # Convert benchmark to metrics dictionary
-                    metrics = benchmark.to_dict()
-                    if config:
-                        metrics["configuration"] = config.to_dict()
-
-                    records.append(
-                        UnifiedResultRecord(
-                            test_base_path=str(node.directory.relative_to(base_dir.resolve())),
-                            distinguishing_labels=labels,
-                            metrics=metrics,
-                            run_identity={"guidellm": True},
-                            parse_notes=[],
-                        )
+                records.append(
+                    UnifiedResultRecord(
+                        test_base_path=str(node.test_path),
+                        distinguishing_labels=labels,
+                        metrics=metrics,
+                        run_identity={"guidellm": True},
+                        parse_notes=[],
                     )
+                )
 
         logging.info(f"GuideLLM parser created {len(records)} unified result records")
         return ParseResult(records=records, warnings=warnings)

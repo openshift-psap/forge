@@ -58,6 +58,7 @@ from projects.core.agentic.artifact_processing import (
 from projects.core.agentic.models import create_llm_client, load_model_config
 from projects.core.agentic.on_failure.cli import cli
 from projects.core.agentic.on_failure.report import generate_html_report, text_to_code_block
+from projects.core.library import ci as ci_lib
 from projects.core.library import config
 
 from .queries import (
@@ -125,7 +126,7 @@ def agent_review_on_failure(func):
     Usage:
         @main.command()
         @click.pass_context
-        @ci_lib.safe_ci_command
+        @ci_lib.safe_ci_entrypoint
         @agent_review_on_failure
         def test(ctx) -> int:
             return test_toolbox_run()
@@ -340,7 +341,7 @@ def _generate_unique_failure_review_path(base_artifact_dir: Path, failure_dir_na
         Unique path for the FAILURE_REVIEW file in 000__ci_metadata/notifications/
     """
     # Create notifications directory
-    notifications_dir = base_artifact_dir / "000__ci_metadata" / "notifications"
+    notifications_dir = ci_lib.get_ci_metadata_dir() / "notifications"
     notifications_dir.mkdir(parents=True, exist_ok=True)
 
     base_filename = f"090__FAILURE_REVIEW_{failure_dir_name}.txt"

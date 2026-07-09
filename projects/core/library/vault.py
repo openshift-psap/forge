@@ -222,11 +222,20 @@ class VaultManager:
 
                 if filename not in defined_files:
                     msg = f"Vault '{vault_name}' contains extra file '{filename}' at '{file_path}' not defined in specification"
-                    if effective_strict:
-                        logger.error(msg)
-                        all_valid = False
-                    else:
-                        logger.warning(msg)
+                    # Always warn for extra files, never fail validation
+                    logger.warning(msg)
+
+                    # Add CI notification for extra vault files
+                    from projects.core.library import ci as ci_lib
+
+                    notification_msg = f"Extra vault file detected: {vault_name}/{filename}\n\nThis file exists in the vault but is not defined in the vault specification. This is not an error but should be reviewed for security purposes."
+                    ci_lib.add_notification_file(
+                        name=f"vault_extra_file_{vault_name}_{filename}",
+                        message=notification_msg,
+                    )
+                    logger.debug(
+                        f"Added notification for extra vault file: {vault_name}/{filename}"
+                    )
 
         if all_valid:
             logger.info(f"Vault '{vault_name}' validation passed")
@@ -486,11 +495,40 @@ def _phase_vault_get_for_phase(phase: str) -> list[str]:
     from projects.core.library import config
 
     # Get vaults for specific phase, defaulting to empty list if phase doesn't exist
-    return config.project.get_config(f"vaults.{phase}", [])
+    return config.project.get_config(f"vaults.{phase}", [], warn=False)
 
 
-def phase_vault_init(phase: str) -> None:
+def _get_framework_conditional_vaults() -> tuple[list[str], list[str]]:
+    """Get conditionally enabled vaults based on configuration.
+
+    Returns:
+        tuple: (mandatory_vaults, optional_vaults)
+    """
+    mandatory_vaults = []
+    optional_vaults = []
+
+    from projects.core.library.export import (
+        caliper_agentic_list_vaults,
+        caliper_export_list_optional_vaults,
+        caliper_export_list_vaults,
+    )
+
+    # Get conditionally enabled caliper vaults
+    mandatory_vaults += caliper_export_list_vaults()
+    optional_vaults += caliper_export_list_optional_vaults()
+    optional_vaults += caliper_agentic_list_vaults()
+
+    return mandatory_vaults, optional_vaults
+
+
+def phase_vault_init(
+    phase: str, include_framework_vaults=True, extra_mandatory=None, extra_optional=None
+) -> None:
     """Initialize vaults for a specific phase."""
+
+    if phase == "resolve-fournos-config":
+        logger.info("No need to initialize the vaults for the resolve step")
+        return
 
     # Get global mandatory vaults (always loaded)
     global_mandatory = _phase_vault_get_for_phase("all")
@@ -498,7 +536,7 @@ def phase_vault_init(phase: str) -> None:
     # Get phase-specific mandatory vaults
     phase_mandatory = _phase_vault_get_for_phase(phase)
 
-    # Combine all mandatory vaults
+    # Combine all mandatory vaults from config
     mandatory_vaults = global_mandatory + phase_mandatory
 
     # Get global optional vaults (always loaded optionally)
@@ -507,8 +545,22 @@ def phase_vault_init(phase: str) -> None:
     # Get phase-specific optional vaults
     phase_optional = _phase_vault_get_for_phase(f"{phase}-optional")
 
-    # Combine all optional vaults
+    # Combine all optional vaults from config
     optional_vaults = global_optional + phase_optional
+
+    # Add conditional vaults (same mechanism as fournos resolve)
+    conditional_mandatory, conditional_optional = (
+        _get_framework_conditional_vaults() if include_framework_vaults else ([], [])
+    )
+
+    mandatory_vaults += conditional_mandatory
+    optional_vaults += conditional_optional
+
+    if extra_mandatory:
+        mandatory_vaults += extra_mandatory
+
+    if extra_optional:
+        optional_vaults += extra_optional
 
     if not mandatory_vaults and not optional_vaults:
         logger.info(f"No vault to initialize for phase '{phase}'")

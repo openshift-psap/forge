@@ -1,4 +1,4 @@
-"""Emit canonical KPI JSONL."""
+"""Emit canonical KPI JSON."""
 
 from __future__ import annotations
 

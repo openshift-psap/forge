@@ -4,16 +4,23 @@
 #
 # Report system:
 #   Report 00: GuideLLM Performance Analysis (comprehensive embedded report with all charts)
+#   Report 01: GuideLLM KPI Summary (test conditions and key performance indicators)
 
 groups:
-  # Comprehensive analysis - main report with embedded charts (recommended)
+  # Comprehensive analysis - all reports including performance analysis and KPI summary (recommended)
   comprehensive:
     - report_performance_analysis
+    - report_kpi_summary
 
-  # Performance overview - main report with embedded charts
+  # Performance overview - main performance report only
   overview:
     - report_performance_analysis
 
-  # All reports - currently only the main performance analysis report
+  # KPI focus - test conditions and metrics summary only
+  kpi:
+    - report_kpi_summary
+
+  # All reports - complete set of available reports
   all:
     - report_performance_analysis
+    - report_kpi_summary

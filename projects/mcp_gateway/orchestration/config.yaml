@@ -6,6 +6,11 @@ vaults:
   prepare: []
   test: []
 
+notifications:
+  slack:
+    channel_id: C0BEBS6929L
+    provider_module: projects.mcp_gateway.orchestration.notifications.MCPGatewaySlackProvider
+
 metrics:
   enabled: true
   namespaces:
@@ -31,7 +36,7 @@ caliper:
       enabled: true
       generate:
         enabled: true
-        output: kpis.jsonl
+        output: kpis.json
       export:
         enabled: false
     analyze:
@@ -53,10 +58,15 @@ caliper:
         config:
           run_name:
           experiment: mcp-gateway-cpt
-          workspace: ashtarkb
+          workspace: mcp-gw-cpt
           description: >
             MCP Gateway performance test results
           source_script: mcp_gateway project
           tags: {}
           parameters: {}
           metrics: {}
+          run_naming:
+            prefix: "forge-mcp-gateway"
+            single_run: "{prefix}-s{num_servers}-u{users}-v{mcp_gateway_version}-{timestamp}"
+            parent_run: "{prefix}-{preset}-{mcp_gateway_version}-{timestamp}"
+            child_run: "{prefix}-s{num_servers}-u{users}-v{mcp_gateway_version}-{timestamp}"

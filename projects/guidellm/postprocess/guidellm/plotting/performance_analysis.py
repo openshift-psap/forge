@@ -19,6 +19,28 @@ from projects.caliper.postprocess.helpers.visualization_utils import (
 )
 
 
+def _safe_get_curve_value(curves: dict, metric_name: str, index: int, default: Any = 0.0) -> Any:
+    """
+    Safely extract a value from a performance curve at a specific index.
+
+    Args:
+        curves: Dictionary of performance curves
+        metric_name: Name of the metric curve to extract from
+        index: Index in the curve array
+        default: Default value if extraction fails
+
+    Returns:
+        The value at the specified index, or default if not available
+    """
+    try:
+        curve = curves.get(metric_name, [])
+        if isinstance(curve, list) and 0 <= index < len(curve):
+            return curve[index]
+        return default
+    except (IndexError, TypeError, ValueError):
+        return default
+
+
 def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.DataFrame:
     """
     Convert Caliper UnifiedResultRecord objects to pandas DataFrame for analysis.
@@ -49,72 +71,206 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
         # Create legend name using only varying parameters
         legend_name = create_legend_name(record, varying_params)
 
-        # Extract all metrics and labels
-        row = {
-            # Identity and configuration
-            "test_configuration": legend_name,
-            "test_base_path": record.test_base_path,
-            # All distinguishing labels as individual columns
-            **{f"label_{k}": v for k, v in record.distinguishing_labels.items()},
-            # Core performance metrics
-            "strategy": record.metrics.get("strategy", "unknown"),
-            "duration": record.metrics.get("duration", 0.0),
-            "request_concurrency": record.metrics.get("request_concurrency", 1.0),
-            "request_rate": record.metrics.get("request_rate", 0.0),
-            "completed_requests": record.metrics.get("completed_requests", 0),
-            "failed_requests": record.metrics.get("failed_requests", 0),
-            # Token metrics
-            "tokens_per_second": record.metrics.get("tokens_per_second", 0.0),
-            "input_tokens_per_second": record.metrics.get("input_tokens_per_second", 0.0),
-            "output_tokens_per_second": record.metrics.get("output_tokens_per_second", 0.0),
-            "input_tokens_per_request": record.metrics.get("input_tokens_per_request", 0.0),
-            "output_tokens_per_request": record.metrics.get("output_tokens_per_request", 0.0),
-            "total_tokens_per_request": record.metrics.get("total_tokens_per_request", 0.0),
-            # Latency metrics (in ms for consistency with topsail)
-            "request_latency_median_ms": record.metrics.get("request_latency_median", 0.0) * 1000,
-            "request_latency_p95_ms": record.metrics.get("request_latency_p95", 0.0) * 1000,
-            "ttft_median_ms": record.metrics.get("ttft_median", 0.0),
-            "ttft_p10_ms": record.metrics.get("ttft_p10", 0.0),
-            "ttft_p25_ms": record.metrics.get("ttft_p25", 0.0),
-            "ttft_p50_ms": record.metrics.get("ttft_p50", 0.0),
-            "ttft_p75_ms": record.metrics.get("ttft_p75", 0.0),
-            "ttft_p90_ms": record.metrics.get("ttft_p90", 0.0),
-            "ttft_p95_ms": record.metrics.get("ttft_p95", 0.0),
-            "itl_median_ms": record.metrics.get("itl_median", 0.0),
-            "itl_p10_ms": record.metrics.get("itl_p10", 0.0),
-            "itl_p25_ms": record.metrics.get("itl_p25", 0.0),
-            "itl_p50_ms": record.metrics.get("itl_p50", 0.0),
-            "itl_p75_ms": record.metrics.get("itl_p75", 0.0),
-            "itl_p90_ms": record.metrics.get("itl_p90", 0.0),
-            "itl_p95_ms": record.metrics.get("itl_p95", 0.0),
-            "tpot_median_ms": record.metrics.get("tpot_median", 0.0),
-            "tpot_p95_ms": record.metrics.get("tpot_p95", 0.0),
-            # Output token throughput percentiles
-            "output_tokens_per_second_p10": record.metrics.get("output_tokens_per_second_p10", 0.0),
-            "output_tokens_per_second_p25": record.metrics.get("output_tokens_per_second_p25", 0.0),
-            "output_tokens_per_second_p50": record.metrics.get("output_tokens_per_second_p50", 0.0),
-            "output_tokens_per_second_p75": record.metrics.get("output_tokens_per_second_p75", 0.0),
-            "output_tokens_per_second_p90": record.metrics.get("output_tokens_per_second_p90", 0.0),
-        }
-        data.append(row)
+        # Check if this is curve data (new format) or scalar data (old format)
+        has_curves = "performance_curves" in record.metrics
+        request_rates = record.metrics.get("request_rate", [])
+
+        if has_curves and isinstance(request_rates, list) and len(request_rates) > 0:
+            # New format: expand performance curves into multiple data points
+            print(
+                f"   🔄 Expanding performance curves for {legend_name} ({len(request_rates)} points)"
+            )
+            curves = record.metrics.get("performance_curves", {})
+
+            for i, rate in enumerate(request_rates):
+                # Create one row per rate point
+                row = {
+                    # Identity and configuration
+                    "test_configuration": legend_name,
+                    "test_base_path": record.test_base_path,
+                    "rate_point_index": i,
+                    # All distinguishing labels as individual columns
+                    **{f"label_{k}": v for k, v in record.distinguishing_labels.items()},
+                    # Core performance metrics from curves
+                    "strategy": record.metrics.get("strategy", "unknown"),
+                    "duration": record.metrics.get("duration", 0.0),
+                    "request_concurrency": _safe_get_curve_value(
+                        curves,
+                        "request_concurrency",
+                        i,
+                        record.metrics.get("request_concurrency", 1.0),
+                    ),
+                    "request_rate": rate,
+                    "completed_requests": _safe_get_curve_value(curves, "completed_requests", i, 0),
+                    "failed_requests": _safe_get_curve_value(curves, "failed_requests", i, 0),
+                    # Token metrics from curves
+                    "tokens_per_second": _safe_get_curve_value(curves, "tokens_per_second", i, 0.0),
+                    "input_tokens_per_second": _safe_get_curve_value(
+                        curves, "input_tokens_per_second", i, 0.0
+                    ),
+                    "output_tokens_per_second": _safe_get_curve_value(
+                        curves, "output_tokens_per_second", i, 0.0
+                    ),
+                    "input_tokens_per_request": record.metrics.get("input_tokens_per_request", 0.0),
+                    "output_tokens_per_request": record.metrics.get(
+                        "output_tokens_per_request", 0.0
+                    ),
+                    "total_tokens_per_request": record.metrics.get("total_tokens_per_request", 0.0),
+                    # Latency metrics from curves (convert seconds to ms where needed)
+                    "request_latency_median_ms": _safe_get_curve_value(
+                        curves, "request_latency_median", i, 0.0
+                    )
+                    * 1000,
+                    "request_latency_p95_ms": _safe_get_curve_value(
+                        curves, "request_latency_p95", i, 0.0
+                    )
+                    * 1000,
+                    "ttft_median_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
+                    "ttft_p10_ms": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
+                    "ttft_p25_ms": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
+                    "ttft_p50_ms": _safe_get_curve_value(
+                        curves, "ttft_median", i, 0.0
+                    ),  # p50 = median
+                    "ttft_p75_ms": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
+                    "ttft_p90_ms": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
+                    "ttft_p95_ms": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
+                    "itl_median_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),
+                    "itl_p10_ms": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
+                    "itl_p25_ms": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
+                    "itl_p50_ms": _safe_get_curve_value(
+                        curves, "itl_median", i, 0.0
+                    ),  # p50 = median
+                    "itl_p75_ms": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
+                    "itl_p90_ms": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
+                    "itl_p95_ms": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
+                    "tpot_median_ms": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
+                    "tpot_p95_ms": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
+                    # Output token throughput percentiles (not in curves currently, use zeros)
+                    "output_tokens_per_second_p10": 0.0,
+                    "output_tokens_per_second_p25": 0.0,
+                    "output_tokens_per_second_p50": _safe_get_curve_value(
+                        curves, "output_tokens_per_second", i, 0.0
+                    ),
+                    "output_tokens_per_second_p75": 0.0,
+                    "output_tokens_per_second_p90": 0.0,
+                }
+                data.append(row)
+        else:
+            # Old format: single data point per record (backward compatibility)
+            print(f"   📊 Using scalar metrics for {legend_name}")
+            # Extract scalar request_rate if it's a single value
+            request_rate = (
+                request_rates[0]
+                if isinstance(request_rates, list) and len(request_rates) > 0
+                else record.metrics.get("request_rate", 0.0)
+            )
+
+            row = {
+                # Identity and configuration
+                "test_configuration": legend_name,
+                "test_base_path": record.test_base_path,
+                "rate_point_index": 0,
+                # All distinguishing labels as individual columns
+                **{f"label_{k}": v for k, v in record.distinguishing_labels.items()},
+                # Core performance metrics
+                "strategy": record.metrics.get("strategy", "unknown"),
+                "duration": record.metrics.get("duration", 0.0),
+                "request_concurrency": record.metrics.get("request_concurrency", 1.0),
+                "request_rate": request_rate,
+                "completed_requests": record.metrics.get("completed_requests", 0),
+                "failed_requests": record.metrics.get("failed_requests", 0),
+                # Token metrics
+                "tokens_per_second": record.metrics.get("tokens_per_second", 0.0),
+                "input_tokens_per_second": record.metrics.get("input_tokens_per_second", 0.0),
+                "output_tokens_per_second": record.metrics.get("output_tokens_per_second", 0.0),
+                "input_tokens_per_request": record.metrics.get("input_tokens_per_request", 0.0),
+                "output_tokens_per_request": record.metrics.get("output_tokens_per_request", 0.0),
+                "total_tokens_per_request": record.metrics.get("total_tokens_per_request", 0.0),
+                # Latency metrics (in ms for consistency with topsail)
+                "request_latency_median_ms": record.metrics.get("request_latency_median", 0.0)
+                * 1000,
+                "request_latency_p95_ms": record.metrics.get("request_latency_p95", 0.0) * 1000,
+                "ttft_median_ms": record.metrics.get("ttft_median", 0.0),
+                "ttft_p10_ms": record.metrics.get("ttft_p10", 0.0),
+                "ttft_p25_ms": record.metrics.get("ttft_p25", 0.0),
+                "ttft_p50_ms": record.metrics.get("ttft_p50", 0.0),
+                "ttft_p75_ms": record.metrics.get("ttft_p75", 0.0),
+                "ttft_p90_ms": record.metrics.get("ttft_p90", 0.0),
+                "ttft_p95_ms": record.metrics.get("ttft_p95", 0.0),
+                "itl_median_ms": record.metrics.get("itl_median", 0.0),
+                "itl_p10_ms": record.metrics.get("itl_p10", 0.0),
+                "itl_p25_ms": record.metrics.get("itl_p25", 0.0),
+                "itl_p50_ms": record.metrics.get("itl_p50", 0.0),
+                "itl_p75_ms": record.metrics.get("itl_p75", 0.0),
+                "itl_p90_ms": record.metrics.get("itl_p90", 0.0),
+                "itl_p95_ms": record.metrics.get("itl_p95", 0.0),
+                "tpot_median_ms": record.metrics.get("tpot_median", 0.0),
+                "tpot_p95_ms": record.metrics.get("tpot_p95", 0.0),
+                # Output token throughput percentiles
+                "output_tokens_per_second_p10": record.metrics.get(
+                    "output_tokens_per_second_p10", 0.0
+                ),
+                "output_tokens_per_second_p25": record.metrics.get(
+                    "output_tokens_per_second_p25", 0.0
+                ),
+                "output_tokens_per_second_p50": record.metrics.get(
+                    "output_tokens_per_second_p50", 0.0
+                ),
+                "output_tokens_per_second_p75": record.metrics.get(
+                    "output_tokens_per_second_p75", 0.0
+                ),
+                "output_tokens_per_second_p90": record.metrics.get(
+                    "output_tokens_per_second_p90", 0.0
+                ),
+            }
+            data.append(row)
 
     if not data:
         print("⚠️  No GuideLLM data found in records")
         return pd.DataFrame()
 
-    print(f"✅ Successfully processed {len(data)} benchmark entries")
+    print(f"✅ Successfully processed {len(data)} data points from {len(records)} records")
     df = pd.DataFrame(data)
 
     # Sort for consistent ordering
-    print("📋 Organizing data by configuration and concurrency...")
-    df = df.sort_values(["test_configuration", "request_concurrency"])
+    print("📋 Organizing data by configuration, concurrency, and request rate...")
+    # Sort and fill any NaN values in numeric columns with 0 for consistent plotting
+    df = df.sort_values(
+        ["test_configuration", "request_concurrency", "request_rate", "rate_point_index"]
+    )
+
+    # Fill NaN values in numeric columns with appropriate defaults
+    numeric_columns = [
+        col
+        for col in df.columns
+        if col not in ["test_configuration", "test_base_path", "strategy"] and "label_" not in col
+    ]
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
     # Show what we found
     configs = df["test_configuration"].unique()
-    print(f"🎯 Found {len(configs)} test configurations:")
+    total_records = len(
+        [
+            r
+            for r in records
+            if r.run_identity.get("guidellm") and not r.metrics.get("no_benchmarks_found")
+        ]
+    )
+
+    print(
+        f"🎯 Expanded {total_records} benchmark records into {len(df)} data points across {len(configs)} configurations:"
+    )
     for config in configs:
-        count = len(df[df["test_configuration"] == config])
-        print(f"   • {config}: {count} data points")
+        config_data = df[df["test_configuration"] == config]
+        rate_points = len(config_data)
+        rate_range = (
+            f"{config_data['request_rate'].min():.1f}-{config_data['request_rate'].max():.1f} req/s"
+            if rate_points > 1
+            else f"{config_data['request_rate'].iloc[0]:.1f} req/s"
+        )
+        print(f"   • {config}: {rate_points} rate points ({rate_range})")
 
     return df
 

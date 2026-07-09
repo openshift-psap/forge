@@ -22,8 +22,8 @@ class RhaiisPlugin(PostProcessingPlugin):
         self.parser = RhaiisParser()
         self.kpi_handler = RhaiisKpiHandler()
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
-        return self.parser.parse(base_dir, nodes)
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+        return self.parser.parse(nodes)
 
     def get_available_reports(self) -> dict[str, dict[str, str]]:
         return {}
@@ -53,7 +53,7 @@ class RhaiisPlugin(PostProcessingPlugin):
     def compute_kpis(self, model: UnifiedRunModel) -> list[dict[str, Any]]:
         return self.kpi_handler.compute_kpis(model)
 
-    def build_ai_eval_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
+    def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
         return {}
 
 

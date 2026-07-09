@@ -6,6 +6,7 @@ import inspect
 import logging
 import os
 import threading
+import time
 import types
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +87,8 @@ def execute_tasks(function_args: dict = None):
     Args:
         function_args: Dictionary of function arguments (from locals())
     """
+    # Track the start time for elapsed time calculations
+    start_time = time.time()
 
     # Get the command name from the caller file path for artifact directory naming
     frame = inspect.currentframe()
@@ -149,6 +152,9 @@ def execute_tasks(function_args: dict = None):
         # Setup file logging first so all output is captured
         log_file, file_handler = _setup_execution_logging(env.ARTIFACT_DIR)
 
+        # Track if @always tasks were executed after failure for log splitting
+        always_executed = False
+
         try:
             # Log execution banner (now captured in file)
             log_execution_banner(function_args, log_file)
@@ -179,7 +185,7 @@ def execute_tasks(function_args: dict = None):
             try:
                 while task_index < len(file_tasks):
                     current_task_info = file_tasks[task_index]
-                    _execute_single_task(current_task_info, args, shared_context)
+                    _execute_single_task(current_task_info, args, shared_context, start_time)
                     task_index += 1
 
             except (KeyboardInterrupt, SignalInterrupt):
@@ -215,11 +221,17 @@ def execute_tasks(function_args: dict = None):
             # After a failure or stop, skip pending non-@always tasks; still run pending @always tasks
             pending = file_tasks[task_index + 1 :] if task_index < len(file_tasks) else []
             always_pending = [t for t in pending if t.get("always_execute")]
+
+            # Mark the start of @always task execution for post-mortem log splitting
             if always_pending:
                 if script_stopped:
                     logger.info("Executing the @always tasks after early return ...")
                 else:
                     logger.warning("Executing the @always tasks ...")
+                    # Only mark for log splitting if there was an execution error
+                    if execution_error:
+                        logger.info("=== @ALWAYS TASK EXECUTION BEGIN ===")
+                        always_executed = True
             for current_task_info in pending:
                 if not current_task_info.get("always_execute"):
                     logger.info("")
@@ -237,7 +249,7 @@ def execute_tasks(function_args: dict = None):
                     logger.info("~" * 80)
                     continue
                 try:
-                    _execute_single_task(current_task_info, args, shared_context)
+                    _execute_single_task(current_task_info, args, shared_context, start_time)
 
                 except EarlyReturnException:
                     # EarlyReturn from @always task - just log and continue with other @always tasks
@@ -250,6 +262,10 @@ def execute_tasks(function_args: dict = None):
                     always_task_exceptions.append(always_exc)
                     logger.error(f"==> ALWAYS TASK ALSO FAILED: {always_exc}")
                     logger.info("")
+
+            # Mark end of @always execution for post-processing
+            if always_executed:
+                logger.info("=== @ALWAYS TASK EXECUTION END ===")
 
             # Re-raise accumulated errors
             all_exceptions = []
@@ -292,8 +308,12 @@ def execute_tasks(function_args: dict = None):
                 # Remove the reference to prevent memory leaks
                 del _thread_local_handlers.file_handler
 
+            # Split @always task logs to separate file after handler is closed
+            if always_executed:
+                _split_always_task_logs(env.ARTIFACT_DIR)
 
-def _execute_single_task(task_info, args, shared_context):
+
+def _execute_single_task(task_info, args, shared_context, start_time=None):
     """Execute a single task with condition checking"""
     task_name = task_info["name"]
     task_func = task_info["func"]
@@ -315,7 +335,12 @@ def _execute_single_task(task_info, args, shared_context):
         rel_definition_filename = co_filename
 
     log_task_header(
-        task_name, original_func.__doc__, rel_definition_filename, co_firstlineno, suffix
+        task_name,
+        original_func.__doc__,
+        rel_definition_filename,
+        co_firstlineno,
+        suffix,
+        start_time,
     )
 
     # Check condition if present
@@ -547,6 +572,46 @@ def _setup_execution_logging(artifact_dir):
         main_dsl_logger.addHandler(thread_handler)
 
     return log_file, file_handler
+
+
+def _split_always_task_logs(artifact_dir):
+    """Split @always task logs from main task log after execution completes"""
+    task_log = artifact_dir / "task.log"
+    always_log = artifact_dir / "task-always.log"
+    marker = "=== @ALWAYS TASK EXECUTION BEGIN ==="
+
+    try:
+        if not task_log.exists():
+            return
+
+        # Read the full log content
+        with open(task_log, encoding="utf-8") as f:
+            content = f.read()
+
+        # Find the marker
+        marker_pos = content.find(marker)
+        if marker_pos == -1:
+            return  # No @always tasks were executed
+
+        # Split content at marker
+        main_content = content[:marker_pos].rstrip()
+        always_content = content[marker_pos:].lstrip()
+
+        # Write @always content to separate file
+        with open(always_log, "w", encoding="utf-8") as f:
+            f.write(always_content)
+
+        # Truncate main log to remove @always content
+        with open(task_log, "w", encoding="utf-8") as f:
+            f.write(main_content)
+            if main_content and not main_content.endswith("\n"):
+                f.write("\n")
+
+        logger.info(f"Split @always task logs to: {always_log}")
+
+    except Exception as e:
+        logger.warning(f"Failed to split @always task logs: {e}")
+        # Don't fail the entire execution if log splitting fails
 
 
 def _generate_restart_script(function_args: dict, caller_frame, meta_dir):

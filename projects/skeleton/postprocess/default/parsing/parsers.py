@@ -46,12 +46,11 @@ class SkeletonParser:
             warnings.append(f"Malformed JSON {file_path}: {e}")
             return {"_parse_error": True}, warnings
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         """
         Parse test nodes containing metrics.json files.
 
         Args:
-            base_dir: Base directory for the test run
             nodes: List of test nodes to parse
 
         Returns:
@@ -74,7 +73,7 @@ class SkeletonParser:
             labels = _labels_from_node(node)
             records.append(
                 UnifiedResultRecord(
-                    test_base_path=str(node.directory.relative_to(base_dir.resolve())),
+                    test_base_path=str(node.test_path),
                     distinguishing_labels=labels,
                     metrics=dict(metrics) if metrics else {"throughput": 0.0},
                     run_identity={"skeleton_sample": True},

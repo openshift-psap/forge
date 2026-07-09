@@ -18,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .directive_parser import create_help_directive_handler, parse_directives_generic
 
 # Avoid circular import - define locally
@@ -115,19 +117,19 @@ def handle_var_directive(line: str) -> dict[str, Any]:
     """
     var_content = line[5:].strip()
 
-    # Validate basic YAML format
-    if ":" not in var_content:
+    try:
+        parsed = yaml.safe_load(var_content)
+    except yaml.YAMLError as e:
+        raise Exception(f"Invalid /var directive: {line} - {e}") from e
+
+    if not isinstance(parsed, dict) or len(parsed) != 1:
         raise Exception(f"Invalid /var directive format: {line} (expected 'key: value')")
 
-    try:
-        if ": " in var_content:
-            key, value = var_content.split(": ", 1)
-            return {key.strip(): value.strip()}
-        else:
-            # Fallback for other formats
-            return {var_content: var_content}
-    except Exception as e:
-        raise Exception(f"Invalid /var directive: {line} - {e}") from e
+    key, value = next(iter(parsed.items()))
+    if not isinstance(key, str) or not key.strip():
+        raise Exception(f"Invalid /var directive format: {line} (expected a non-empty key)")
+
+    return {key.strip(): value}
 
 
 def format_help_text(directives_dict: dict[str, str], title: str) -> str:

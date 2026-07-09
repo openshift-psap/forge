@@ -41,6 +41,7 @@ def discover_test_bases(base_dir: Path) -> list[TestBaseNode]:
                 directory=path,
                 labels=labels,
                 artifact_paths=_list_files_under(path, exclude_markers=True),
+                test_path=path.relative_to(base_dir),
             )
         )
     return sorted(nodes, key=lambda n: str(n.directory))

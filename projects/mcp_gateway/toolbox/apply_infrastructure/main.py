@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from projects.agentic_tools.mcp.toolbox.deploy_mock_servers.main import SCALE_OUT_LABEL
+from projects.agentic_tools.mcp.toolbox.deploy_mock_servers.main import MOCK_MCP_LABEL
 from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc
 
@@ -107,7 +107,7 @@ def capture_artifacts(args, ctx):
         "-n",
         args.namespace,
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "-o",
         "yaml",
     )
@@ -118,7 +118,7 @@ def capture_artifacts(args, ctx):
         "-n",
         args.namespace,
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "-o",
         "yaml",
     )
@@ -129,7 +129,7 @@ def capture_artifacts(args, ctx):
         "-n",
         "istio-system",
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "-o",
         "yaml",
     )
@@ -158,7 +158,7 @@ def _count_ready_registrations(*, namespace: str, api_group: str = DEFAULT_API_G
         "-n",
         namespace,
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "-o",
         'jsonpath={range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\\n"}{end}',
         check=False,
@@ -180,7 +180,7 @@ def _generate_infrastructure_manifest(
 ) -> str:
     """Generate YAML manifest for HTTPRoute + DestinationRule + MCPServerRegistration."""
     labels = {
-        "experiment": "scale-out",
+        "forge.openshift.io/component": "mock-mcp",
         "forge.openshift.io/project": "mcp_gateway",
     }
 

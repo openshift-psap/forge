@@ -8,8 +8,8 @@ building your own projects.
 """
 
 import logging
+import pathlib
 import types
-from pathlib import Path
 
 import click
 import prepare_skeleton
@@ -20,17 +20,21 @@ from projects.core.agentic.on_failure import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
-from projects.core.library.export import caliper_export_entrypoint
+from projects.core.library.export import (
+    caliper_agentic_list_vaults,
+    caliper_export_entrypoint,
+    caliper_export_list_optional_vaults,
+    caliper_export_list_vaults,
+)
 from projects.core.library.replot import caliper_replot_entrypoint
 
 logger = logging.getLogger(__name__)
 
 
 def init():
-    """Initialize Skeleton orchestration environment"""
     env.init()
     run.init()
-    config.init(Path(__file__).parent)
+    config.init(pathlib.Path(__file__).parent)
 
 
 @click.group(cls=ci_lib.HelpfulGroup)
@@ -50,7 +54,7 @@ def main(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def prepare(ctx):
     """Prepare phase - Set up environment and dependencies."""
@@ -59,7 +63,7 @@ def prepare(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def test(ctx):
     """Test phase - Execute the main testing logic."""
 
@@ -71,7 +75,7 @@ def test(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def pre_cleanup(ctx):
     """Cleanup phase - Clean up resources and finalize."""
@@ -80,7 +84,7 @@ def pre_cleanup(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def post_cleanup(ctx):
     """Cleanup phase - Clean up resources and finalize."""
@@ -89,7 +93,7 @@ def post_cleanup(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def preflight(ctx) -> int:
     """Preflight check phase - Validate that the cluster if ready for testing."""
 
@@ -103,7 +107,12 @@ main.add_command(caliper_replot_entrypoint)
 
 main.add_command(
     create_fournos_resolve_entrypoint(
-        vault_list_func=vault.phase_vault_list_all,
+        vault_list_funcs=[
+            vault.phase_vault_list_all,
+            caliper_export_list_vaults,
+            caliper_export_list_optional_vaults,
+            caliper_agentic_list_vaults,
+        ],
         hardware_resolver_func=test_skeleton.resolve_hardware_request,
     )
 )

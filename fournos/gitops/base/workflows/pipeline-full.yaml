@@ -76,7 +76,7 @@ spec:
         - name: job-step-name
           value: 02__preflight
 
-    - name: 02-test
+    - name: 03-test
       runAfter: [02-preflight]
       taskRef:
         name: forge-step
@@ -94,7 +94,7 @@ spec:
         - name: job-step
           value: test
         - name: job-step-name
-          value: 02__test
+          value: 03__test
 
   finally:
     - name: 04-post-cleanup

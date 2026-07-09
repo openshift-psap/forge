@@ -11,6 +11,8 @@ post-processing.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,7 @@ from projects.agentic_tools.mcp.toolbox.deploy_mock_servers import main as deplo
 from projects.caliper.prometheus_metrics.capture import capture_metrics
 from projects.caliper.prometheus_metrics.config import MetricsCaptureConfig
 from projects.core.dsl.utils import write_json
-from projects.core.library import env
+from projects.core.library import config, env
 from projects.core.library.postprocess import run_and_postprocess, write_test_labels
 from projects.mcp_gateway.orchestration.runtime_config import cfg
 from projects.mcp_gateway.toolbox.apply_infrastructure import main as apply_infra
@@ -94,18 +96,26 @@ def do_test() -> int:
 
                 all_summaries.append(job_name)
 
-    write_json(
-        env.ARTIFACT_DIR / "test_summary.json",
-        {
-            "preset": preset,
-            "version": version,
-            "servers": servers,
-            "concurrency": concurrency,
-            "targets": targets,
-            "tools_per_server": tools_per_server,
-            "run_names": all_summaries,
-        },
-    )
+    summary: dict[str, Any] = {
+        "preset": preset,
+        "version": version,
+        "servers": servers,
+        "concurrency": concurrency,
+        "targets": targets,
+        "tools_per_server": tools_per_server,
+        "run_names": all_summaries,
+    }
+
+    configured_version = config.project.get_config(
+        "infrastructure.mcp_gateway_version", None, print=False, warn=False
+    ) or os.environ.get("MCP_GATEWAY_VERSION")
+    if configured_version and re.fullmatch(r"[0-9a-f]{40}", configured_version):
+        summary["nightly"] = {
+            "commit_sha": configured_version,
+            "image_tag": f"sha-{configured_version}",
+        }
+
+    write_json(env.ARTIFACT_DIR / "test_summary.json", summary)
 
     return 0
 
@@ -152,11 +162,10 @@ def run_one_test(
         )
 
         run_start_time = datetime.now(UTC)
-        results = _run_test(users=users, target=target, num_servers=num_servers)
+        _run_test(users=users, target=target, num_servers=num_servers)
         test_end_time = datetime.now(UTC)
         test_start_time = run_start_time + timedelta(seconds=warmup_seconds)
 
-        _save_locust_artifacts(results, env.ARTIFACT_DIR)
         _capture_pod_logs(namespace=namespace, run_dir=env.ARTIFACT_DIR)
 
         if metrics_cfg.enabled:
@@ -216,28 +225,6 @@ def _deploy_servers(
         )
 
 
-# ---------------------------------------------------------------------------
-# Artifact helpers
-# ---------------------------------------------------------------------------
-
-
-def _save_locust_artifacts(results: LocustResults, run_dir: Path) -> None:
-    """Save raw Locust CSV/log output directly to the run directory."""
-    if results.stats_csv:
-        (run_dir / "stats.csv").write_text(results.stats_csv, encoding="utf-8")
-    if results.stats_history_csv:
-        (run_dir / "stats_history.csv").write_text(results.stats_history_csv, encoding="utf-8")
-    if results.failures_csv:
-        (run_dir / "failures.csv").write_text(results.failures_csv, encoding="utf-8")
-    (run_dir / "master.log").write_text(results.raw_log, encoding="utf-8")
-    logger.info("Locust artifacts saved to %s", run_dir)
-
-
-# ---------------------------------------------------------------------------
-# Deployment helpers
-# ---------------------------------------------------------------------------
-
-
 def _cleanup_servers(*, namespace: str, num_servers: int, mock_server: str) -> None:
     """Remove mock servers and infrastructure after a server-level iteration."""
     from projects.core.dsl.utils.k8s import oc as run_oc
@@ -245,14 +232,15 @@ def _cleanup_servers(*, namespace: str, num_servers: int, mock_server: str) -> N
     deploy_mock_servers.cleanup_servers(namespace=namespace)
 
     api_group = cfg.get_api_group()
-    scale_out_label = "experiment=scale-out"
+    from projects.agentic_tools.mcp.toolbox.deploy_mock_servers.main import MOCK_MCP_LABEL
+
     run_oc(
         "delete",
         f"mcpserverregistrations.{api_group},httproute",
         "-n",
         namespace,
         "-l",
-        scale_out_label,
+        MOCK_MCP_LABEL,
         "--wait=false",
         "--ignore-not-found=true",
         check=False,
@@ -263,7 +251,7 @@ def _cleanup_servers(*, namespace: str, num_servers: int, mock_server: str) -> N
         "-n",
         "istio-system",
         "-l",
-        scale_out_label,
+        MOCK_MCP_LABEL,
         "--wait=false",
         "--ignore-not-found=true",
         check=False,
@@ -276,7 +264,7 @@ def _cleanup_servers(*, namespace: str, num_servers: int, mock_server: str) -> N
 
 
 def _run_test(*, users: int, target: str, num_servers: int) -> LocustResults:
-    """Run a single Locust test (artifacts saved separately by the caller)."""
+    """Run a single Locust test (artifacts saved by the run_distributed toolbox)."""
     locust_kwargs = cfg.build_locust_kwargs(
         users=users,
         target=target,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 from projects.caliper.engine.model import (
@@ -25,8 +24,8 @@ class MCPGatewayPlugin(PostProcessingPlugin):
         self.parser = MCPGatewayParser()
         self.kpi_handler = MCPGatewayKpiHandler()
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
-        return self.parser.parse(base_dir, nodes)
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+        return self.parser.parse(nodes)
 
     def kpi_catalog(self) -> list[dict[str, Any]]:
         return self.kpi_handler.get_catalog()

@@ -77,7 +77,7 @@ def init():
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def test(ctx):
     """Test phase - Trigger the project's test method."""
     log("Starting test phase...")

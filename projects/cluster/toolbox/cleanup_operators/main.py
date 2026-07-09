@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
+
+import yaml
 
 from projects.core.dsl import entrypoint, execute_tasks, shell, task
 from projects.core.dsl.utils.k8s import oc_resource_exists
@@ -43,16 +46,22 @@ def setup_directories(args, ctx):
 
 
 @task
+def discover_related_operators(args, ctx):
+    """Discover related operators from OLM InstallPlan ownerReferences"""
+    requested_operators = [(op["name"], op["namespace"]) for op in args.operators]
+    ctx.all_operators = _expand_operators_with_installplan_owners(requested_operators)
+
+    return f"Discovered {len(ctx.all_operators)} operator subscription(s) to clean up"
+
+
+@task
 def validate_operators(args, ctx):
     """Categorize operators by subscription existence"""
 
     existing_subscriptions = []
     missing_subscriptions = []
 
-    for operator_info in args.operators:
-        operator_name = operator_info["name"]
-        namespace = operator_info["namespace"]
-
+    for operator_name, namespace in ctx.all_operators:
         if oc_resource_exists("subscription", operator_name, namespace=namespace):
             existing_subscriptions.append((operator_name, namespace))
         else:
@@ -61,10 +70,93 @@ def validate_operators(args, ctx):
     ctx.existing_subscriptions = existing_subscriptions
     ctx.missing_subscriptions = missing_subscriptions
 
-    # Store all operators for resource cleanup
-    ctx.all_operators = [(op["name"], op["namespace"]) for op in args.operators]
-
     return f"Found {len(existing_subscriptions)} existing subscriptions, {len(missing_subscriptions)} missing (will clean up resources for all)"
+
+
+def _expand_operators_with_installplan_owners(
+    operators: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    expanded_operators = []
+    seen_operators = set(operators)
+    pending_operators = deque(operators)
+    installplans_by_namespace: dict[str, dict] = {}
+
+    while pending_operators:
+        operator_name, namespace = pending_operators.popleft()
+        expanded_operators.append((operator_name, namespace))
+
+        # Follow ownerReferences transitively because dependency InstallPlans can
+        # point back to the root subscription or to other related subscriptions.
+        if namespace not in installplans_by_namespace:
+            installplans_by_namespace[namespace] = _fetch_installplans(namespace)
+
+        owner_names = _subscription_owner_refs_from_installplans(
+            installplans_by_namespace[namespace],
+            operator_name,
+        )
+        for owner_name in owner_names:
+            owner_key = (owner_name, namespace)
+            if owner_key in seen_operators:
+                continue
+
+            seen_operators.add(owner_key)
+            logger.info(
+                f"Discovered related subscription from InstallPlan ownerReferences: "
+                f"{owner_name} in namespace {namespace}"
+            )
+            pending_operators.append(owner_key)
+
+    return expanded_operators
+
+
+def _fetch_installplans(namespace: str) -> dict:
+    result = shell.run(
+        f"oc get installplan -n {namespace} -o yaml",
+        check=False,
+        log_stdout=False,
+    )
+
+    if result.returncode != 0:
+        logger.warning(
+            f"Failed to list InstallPlans in namespace {namespace} "
+            f"(exit {result.returncode}); related subscriptions may not be fully discovered: "
+            f"{result.stderr}"
+        )
+        return {}
+
+    try:
+        return yaml.safe_load(result.stdout) or {}
+    except yaml.YAMLError as e:
+        logger.warning(f"Could not parse InstallPlans in namespace {namespace}: {e}")
+        return {}
+
+
+def _subscription_owner_refs_from_installplans(
+    installplans: dict,
+    subscription_name: str,
+) -> list[str]:
+    owner_names = []
+    seen_owner_names = set()
+    for installplan in installplans.get("items", []):
+        owner_references = installplan.get("metadata", {}).get("ownerReferences", [])
+        subscription_owner_names = dict.fromkeys(
+            owner_reference.get("name")
+            for owner_reference in owner_references
+            if owner_reference.get("kind") == "Subscription" and owner_reference.get("name")
+        )
+        if subscription_name not in subscription_owner_names:
+            continue
+
+        for owner_name in subscription_owner_names:
+            if owner_name == subscription_name:
+                continue
+            if owner_name in seen_owner_names:
+                continue
+
+            seen_owner_names.add(owner_name)
+            owner_names.append(owner_name)
+
+    return owner_names
 
 
 @task

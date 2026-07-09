@@ -115,7 +115,6 @@ def _run_test(
         logger.info("Running benchmark at rates=%s", rates)
 
         benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0")
-        image, version = runtime_config.split_image_tag(benchmark_image)
 
         guidellm_args = runtime_config.build_guidellm_args(
             benchmark_cfg=benchmark_cfg,
@@ -129,8 +128,7 @@ def _run_test(
             endpoint_url=f"{endpoint_url}/v1",
             name=f"guidellm-{deployment_name}",
             namespace=namespace,
-            image=image,
-            version=version,
+            image=benchmark_image,
             timeout=benchmark_timeout,
             pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
             guidellm_args=guidellm_args,

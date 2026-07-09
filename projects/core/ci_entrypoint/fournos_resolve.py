@@ -7,6 +7,7 @@ spec.secretRefs with vault information from project configuration.
 
 import logging
 import os
+import sys
 from collections.abc import Callable
 
 import click
@@ -16,6 +17,11 @@ from projects.core.library import ci as ci_lib
 from projects.core.library import env, run
 
 logger = logging.getLogger(__name__)
+
+
+def is_interactive_tty() -> bool:
+    """Check if running in an interactive TTY environment."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def fetch_fournos_job() -> tuple[str, str, dict]:
@@ -124,15 +130,25 @@ def resolve_fournos_config(
         ValueError: If required environment variables are missing
         RuntimeError: If FournosJob operations fail
     """
+    # Check if we're in an interactive TTY environment
+    is_tty = is_interactive_tty()
+
     # Fetch the FournosJob object
     try:
         job_name, namespace, fjob_obj = fetch_fournos_job()
 
         logger.info(f"Resolving FournosJob: {job_name} in namespace: {namespace}")
-    except ValueError:
-        if not dry_run:
+    except ValueError as e:
+        if not dry_run and not is_tty:
             raise
-        logger.info("DRY RUN: not using any existing FournosJob")
+
+        if is_tty:
+            logger.warning(f"TTY MODE: {e}")
+            logger.warning(
+                "Running in interactive mode - will show vault configuration without applying to cluster"
+            )
+        else:
+            logger.info("DRY RUN: not using any existing FournosJob")
 
         fjob_obj = {"spec": {}}
 
@@ -141,6 +157,10 @@ def resolve_fournos_config(
 
     # Create secretRefs list with vault names
     fjob_obj["spec"]["secretRefs"] = list(vaults)
+
+    logger.info(f"Vault configuration ({len(vaults)} vault references):")
+    for i, vault_name in enumerate(vaults, 1):
+        logger.info(f"  {i}. {vault_name}")
 
     logger.info(f"Updated spec.secretRefs with {len(vaults)} vault references")
 
@@ -173,6 +193,11 @@ def resolve_fournos_config(
         logger.info("DRY RUN: Not applying changes to cluster")
         return 0
 
+    # Check if we have valid job info for cluster update
+    if is_tty and ("job_name" not in locals() or "namespace" not in locals()):
+        logger.info("TTY MODE: Not applying changes to cluster (no FournosJob available)")
+        return 0
+
     # Update the FournosJob object
     update_fournos_job(job_name, namespace, fjob_obj)
 
@@ -180,19 +205,32 @@ def resolve_fournos_config(
 
 
 def create_fournos_resolve_entrypoint(
-    vault_list_func: Callable[[], list[str]],
+    vault_list_func: Callable[[], list[str]] | None = None,
+    vault_list_funcs: list[Callable[[], list[str]]] | None = None,
     hardware_resolver_func: Callable[[dict], dict] | None = None,
 ):
     """
     Create a FournosJob resolve command with the given vault list and hardware resolver functions.
 
     Args:
-        vault_list_func: Function that returns a list of vault names
+        vault_list_func: Function that returns a list of vault names (deprecated, use vault_list_funcs)
+        vault_list_funcs: List of functions that each return a list of vault names
         hardware_resolver_func: Optional function that takes spec.hardware dict and returns updated hardware dict
 
     Returns:
         Click command for FournosJob resolution
     """
+    # Handle backward compatibility
+    if vault_list_func is not None and vault_list_funcs is not None:
+        raise ValueError("Cannot specify both vault_list_func and vault_list_funcs")
+
+    if vault_list_func is not None:
+        # Convert single function to list for backward compatibility
+        vault_functions = [vault_list_func]
+    elif vault_list_funcs is not None:
+        vault_functions = vault_list_funcs
+    else:
+        raise ValueError("Must specify either vault_list_func or vault_list_funcs")
 
     @click.command("resolve-fournos-config")
     @click.option(
@@ -211,7 +249,7 @@ def create_fournos_resolve_entrypoint(
         help="Show the updated FournosJob spec without applying changes to the cluster",
     )
     @click.pass_context
-    @ci_lib.safe_ci_command
+    @ci_lib.safe_ci_entrypoint
     def fournos_resolve_command(ctx, fjob_name, namespace, dry_run):
         """Resolve the FournosJob object configuration."""
 
@@ -220,12 +258,23 @@ def create_fournos_resolve_entrypoint(
         if namespace:
             os.environ["FOURNOS_WORKLOAD_NAMESPACE"] = namespace
 
-        # Get vault list from the provided function
+        # Get vault lists from all provided functions
         try:
-            vaults = vault_list_func()
+            all_vaults = []
+            for i, func in enumerate(vault_functions):
+                func_vaults = func()
+                logger.info(
+                    f"Vault function {i + 1} returned {len(func_vaults)} vaults: {func_vaults}"
+                )
+                all_vaults.extend(func_vaults)
+
+            # Remove duplicates while preserving order
+            vaults = list(dict.fromkeys(all_vaults))
+            logger.info(f"Combined vault list ({len(vaults)} unique vaults): {vaults}")
+
         except Exception as e:
-            logger.error(f"Failed to get vault list: {e}")
-            raise RuntimeError(f"Failed to get vault list: {e}") from e
+            logger.error(f"Failed to get vault lists: {e}")
+            raise RuntimeError(f"Failed to get vault lists: {e}") from e
 
         return resolve_fournos_config(
             dry_run=dry_run, vaults=vaults, hardware_resolver_func=hardware_resolver_func

@@ -238,6 +238,10 @@ def install_mcp_gateway_instance(args, ctx):
     The MCPGatewayExtension is created in a separate step after the Gateway is
     programmed, to avoid a race condition where the controller deletes the CR
     because the Gateway isn't ready yet at first reconciliation.
+
+    Supports two install modes:
+    - Release: uses OCI chart ref + --version flag
+    - Nightly: uses local chart path from cloned repo + image tag overrides
     """
     step = find_step(ctx.steps, "mcp-gateway-instance")
     if not step:
@@ -245,9 +249,17 @@ def install_mcp_gateway_instance(args, ctx):
 
     _ensure_helm()
 
-    chart_ref = ctx.inst.get("chart_ref", "oci://ghcr.io/kuadrant/charts/mcp-gateway")
-    chart_version = ctx.inst.get("version")
-    version_flag = ["--version", chart_version] if chart_version else []
+    chart_path = ctx.inst.get("chart_path")
+    image_tag = ctx.inst.get("image_tag")
+
+    if chart_path:
+        chart_ref = chart_path
+        version_flag = []
+    else:
+        chart_ref = ctx.inst.get("chart_ref", "oci://ghcr.io/kuadrant/charts/mcp-gateway")
+        chart_version = ctx.inst.get("version")
+        version_flag = ["--version", chart_version] if chart_version else []
+
     ctx.mcp_host = _get_mcp_host()
 
     subprocess.run(
@@ -284,9 +296,14 @@ def install_mcp_gateway_instance(args, ctx):
         "mcpGatewayExtension.create=false",
     ]
 
+    if image_tag:
+        cmd += ["--set", f"image.tag={image_tag}", "--set", f"imageController.tag={image_tag}"]
+
     subprocess.run(cmd, check=True, timeout=120)
     ctx.gateway_installed = True
-    return f"MCP Gateway Helm release installed (host={ctx.mcp_host}, MCPGatewayExtension deferred)"
+
+    mode = "nightly" if chart_path else "release"
+    return f"MCP Gateway Helm release installed ({mode}, host={ctx.mcp_host}, MCPGatewayExtension deferred)"
 
 
 @retry(attempts=30, delay=10, backoff=1.0)

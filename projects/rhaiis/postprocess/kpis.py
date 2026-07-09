@@ -188,11 +188,15 @@ class RhaiisKpiHandler:
             ]
 
             for kpi_id, metric_key, unit, higher_is_better in kpi_mappings:
-                raw_value = r.metrics.get(metric_key, 0)
+                raw_value = r.metrics.get(metric_key)
                 try:
-                    value = float(raw_value)
+                    value = float(raw_value) if raw_value is not None else None
                 except (TypeError, ValueError):
-                    value = 0.0
+                    value = None
+
+                # Skip KPIs with null values
+                if value is None:
+                    continue
 
                 labels = {**base_labels}
                 if higher_is_better is not None:
@@ -204,7 +208,7 @@ class RhaiisKpiHandler:
                         "kpi_id": kpi_id,
                         "value": value,
                         "unit": unit,
-                        "run_id": r.test_base_path,
+                        "run_path": r.test_base_path,
                         "timestamp": ts,
                         "labels": labels,
                         "source": {

@@ -40,6 +40,7 @@ from projects.core.agentic.config_review.queries import (
 )
 from projects.core.agentic.config_review.report import generate_config_html_report
 from projects.core.agentic.models import create_llm_client, load_model_config
+from projects.core.library import ci as ci_lib
 from projects.core.library import vault
 
 # Check for optional agentic dependencies
@@ -130,8 +131,8 @@ def load_artifact_directory_data(base_artifact_dir: str | Path) -> dict[str, Any
     # Define required files
     required_files = {
         "config": base_artifact_dir / "config.yaml",
-        "presets_applied": base_artifact_dir / "000__ci_metadata" / "presets_applied.txt",
-        "fournos_fjob": base_artifact_dir / "000__ci_metadata" / "fournos_fjob.yaml",
+        "presets_applied": ci_lib.get_ci_metadata_dir() / "presets_applied.txt",
+        "fournos_fjob": ci_lib.get_ci_metadata_dir() / "fournos_fjob.yaml",
     }
 
     result = {
@@ -318,7 +319,7 @@ def analyze_test_with_llm(
         # Save to 000__ci_metadata/notifications/000__TEST_DESCRIPTION.txt
         try:
             if base_artifact_dir:
-                notifications_dir = base_artifact_dir / "000__ci_metadata" / "notifications"
+                notifications_dir = ci_lib.get_ci_metadata_dir() / "notifications"
                 notifications_dir.mkdir(parents=True, exist_ok=True)
                 test_description_path = notifications_dir / "000__TEST_DESCRIPTION.txt"
             else:
@@ -518,8 +519,26 @@ def trigger_config_review_for_ci(base_artifact_dir: Path, async_mode: bool = Fal
         base_artifact_dir: Path to the base artifact directory
         async_mode: If True, run the analysis in a background thread
     """
+    from projects.core.library import config
+
     # Check if agentic dependencies are available
     if not _is_agentic_dependencies_available():
+        return
+
+    # Check if agentic features are enabled (master switch)
+    agentic_enabled = config.project.get_config("agentic.enabled", False, print=False, warn=False)
+    if not agentic_enabled:
+        logger.debug("Agentic features disabled (agentic.enabled=false) - skipping config review")
+        return
+
+    # Check if config review is specifically enabled
+    config_review_enabled = config.project.get_config(
+        "agentic.config_review.enabled", False, print=False, warn=False
+    )
+    if not config_review_enabled:
+        logger.debug(
+            "Config review disabled (agentic.config_review.enabled=false) - skipping config review"
+        )
         return
 
     def _run_config_review():

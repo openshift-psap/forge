@@ -26,7 +26,7 @@ def main(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def submit(ctx):
     """Launch a foreign test."""
     project_path = foreign_testing.prepare()

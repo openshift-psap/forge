@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import time
+from datetime import datetime
 
 from projects.core.library.run import SignalInterrupt
 
@@ -98,7 +99,12 @@ def _log_retry_attempt(
         file_line_info += f" [{display_suffix}]"
 
     logger.info(file_line_info)
+
+    # Build task line with timestamp and elapsed time
+    current_time = time.time()
+    timestamp = datetime.fromtimestamp(current_time).strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"~~ TASK: {func.__name__}: {func.__doc__ or 'No description'}")
+    logger.info(f"~~ {timestamp} ({elapsed_time:.0f}s {elapsed_mins:.0f}m{elapsed_secs:.0f}s)")
 
     # Build retry message based on what caused the retry
     if exc:
@@ -109,7 +115,6 @@ def _log_retry_attempt(
         retry_reason = f"returned: {result}"
 
     logger.warning(f"~~ RETRY ATTEMPT #{attempt + 1}/{retry_attempts} ({retry_reason})")
-    logger.info(f"~~ ELAPSED TIME: {elapsed_mins:.0f}m {elapsed_secs:.0f}s")
     logger.info(f"~~ RETRY in {current_delay:.0f}s")
     logger.info("~" * LINE_WIDTH)
     logger.info("")

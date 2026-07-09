@@ -58,7 +58,7 @@ def main(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def prepare(ctx):
     """Prepare phase - Set up environment and dependencies."""
     return prepare_rhaiis.prepare()
@@ -66,7 +66,7 @@ def prepare(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def test(ctx):
     """Test phase - Deploy model, run benchmarks, capture results."""
     return test_rhaiis.test()
@@ -74,7 +74,7 @@ def test(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def pre_cleanup(ctx):
     """Pre-cleanup phase - no-op to avoid cleaning up running resources."""
     return 0
@@ -82,7 +82,7 @@ def pre_cleanup(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def post_cleanup(ctx):
     """Post-cleanup phase - Clean up resources after test."""
     return prepare_rhaiis.cleanup()
@@ -90,7 +90,7 @@ def post_cleanup(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 def preflight(ctx) -> int:
     """Preflight check phase - Validate that the cluster if ready for testing."""
 

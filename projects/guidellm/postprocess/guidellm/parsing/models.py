@@ -35,6 +35,7 @@ class GuideLLMBenchmark:
     itl_p95: float = 0.0
     tpot_median: float = 0.0  # Time Per Output Token
     tpot_p95: float = 0.0
+    tpot_p99: float = 0.0
 
     # Additional TTFT percentiles
     ttft_p10: float = 0.0
@@ -42,6 +43,7 @@ class GuideLLMBenchmark:
     ttft_p50: float = 0.0
     ttft_p75: float = 0.0
     ttft_p90: float = 0.0
+    ttft_p99: float = 0.0
 
     # Additional ITL percentiles
     itl_p10: float = 0.0
@@ -49,6 +51,7 @@ class GuideLLMBenchmark:
     itl_p50: float = 0.0
     itl_p75: float = 0.0
     itl_p90: float = 0.0
+    itl_p99: float = 0.0
 
     # Throughput metrics
     tokens_per_second: float = 0.0

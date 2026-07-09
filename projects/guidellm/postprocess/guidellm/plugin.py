@@ -15,6 +15,7 @@ from projects.caliper.engine.model import (
 
 from .ai_eval import GuideLLMAIEvaluator
 from .parsing import GuideLLMKpiHandler, GuideLLMParser
+from .plotting.kpi_report import generate_kpi_report
 from .plotting.performance_analysis import generate_comprehensive_performance_report
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,15 @@ PLOT_REGISTRY = {
         },
         "description": "comprehensive performance analysis report (recommended)",
     },
+    "report_kpi_summary": {
+        "function": generate_kpi_report,
+        "type": "report",
+        "kwargs": {
+            "report_number": 1,
+            "report_title": "GuideLLM KPI Summary",
+        },
+        "description": "KPI summary with test conditions and metrics",
+    },
 }
 
 
@@ -44,9 +54,9 @@ class GuideLLMPlugin(PostProcessingPlugin):
         self.kpi_handler = GuideLLMKpiHandler()
         self.ai_evaluator = GuideLLMAIEvaluator()
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         """Parse test nodes using the GuideLLM parser."""
-        return self.parser.parse(base_dir, nodes)
+        return self.parser.parse(nodes)
 
     def get_available_reports(self) -> dict[str, dict[str, str]]:
         """Get a structured dictionary of available reports and plots with their types and descriptions."""
@@ -165,9 +175,66 @@ class GuideLLMPlugin(PostProcessingPlugin):
         """Compute KPI values from the unified model."""
         return self.kpi_handler.compute_kpis(model)
 
-    def build_ai_eval_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
+    def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
         """Build AI evaluation payload from the unified model."""
-        return self.ai_evaluator.build_payload(model)
+        return self.ai_evaluator.build_payload(model, self)
+
+    def get_ai_data_artifact_files_for_test(self, test_dir: Path) -> list[str]:
+        """Return list of artifact files to copy for AI evaluation export from a specific test directory.
+
+        Args:
+            test_dir: The specific test directory to search within
+
+        Returns:
+            List of relative paths from test_dir to relevant artifact files
+        """
+        artifact_files = []
+
+        # LLMInferenceService state files - search within this test directory only
+        llmisvc_patterns = [
+            "*__capture_llmisvc_state/artifacts/llminferenceservice.json",
+            "*__capture_llmisvc_state/artifacts/llminferenceservice.deployments.json",
+        ]
+
+        for pattern in llmisvc_patterns:
+            matches = list(test_dir.glob(pattern))
+            if matches:
+                logger.debug(
+                    f"Found {len(matches)} LLMInferenceService files in {test_dir} for pattern {pattern}"
+                )
+                for match in matches:
+                    relative_path = str(match.relative_to(test_dir))
+                    artifact_files.append(relative_path)
+                    logger.debug(f"Found LLMInferenceService artifact: {relative_path}")
+            else:
+                logger.debug(f"No matches found in {test_dir} for pattern: {pattern}")
+
+        # GuideLLM benchmark results - search within this test directory only
+        benchmark_pattern = "**/*__run_guidellm_benchmark/artifacts/results/benchmarks*.json"
+        benchmark_matches = list(test_dir.glob(benchmark_pattern))
+
+        if benchmark_matches:
+            logger.debug(f"Found {len(benchmark_matches)} GuideLLM benchmark files in {test_dir}")
+            for match in benchmark_matches:
+                relative_path = str(match.relative_to(test_dir))
+                artifact_files.append(relative_path)
+                logger.debug(f"Found GuideLLM benchmark artifact: {relative_path}")
+        else:
+            logger.debug(f"No benchmark files found in {test_dir}")
+
+        # Project configuration file - include if present
+        config_file = test_dir / "config.yaml"
+        if config_file.exists():
+            relative_path = str(config_file.relative_to(test_dir))
+            artifact_files.append(relative_path)
+            logger.info(f"Found project config artifact: {relative_path}")
+        else:
+            logger.warning(f"No config.yaml found in {test_dir}")
+
+        logger.info(
+            f"AI eval export will copy {len(artifact_files)} artifact files from {test_dir}"
+        )
+        return artifact_files
 
 
 def get_plugin() -> PostProcessingPlugin:

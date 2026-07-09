@@ -1,8 +1,6 @@
 vaults:
   all: []
-  all-optional:
-  - psap-forge-notifications
-  - psap-forge-mlflow-export
+  all-optional: []
   prepare: []
   prepare-optional: []
   test: []
@@ -44,6 +42,9 @@ caliper:
           tags: {}
           parameters: {}
           metrics: {}
+    notifications:
+      enabled: true
+      vault: psap-forge-notifications
 
   replot:
     url: null  # Set via /replot.url directive
@@ -65,16 +66,44 @@ caliper:
 
     kpi:
       enabled: true
-      generate:
+      artifacts_to_kpis:
         enabled: true
-        output: kpis.jsonl
-      export:
+        output: kpis/kpis.json
+      kpis_to_csv:
         enabled: false
+        output: kpis/kpis.csv
+        include_header_comments: true
+      artifacts_to_ai_data:
+        enabled: true
+        output_dir: ai_data
 
     analyze:
-      enabled: false
-      baseline: null
-      output: kpi_analyze.json
+      enabled: true
+      historical_kpis: historical_data
+      output: regression_analyze/kpi_analyze.json
+
+    s3:
+      bucket: psap-dashboard-data
+      instance: smoke
+      directory: skeleton-dashboard
+      prefix: skeleton/
+      vault:
+        name: psap-forge-aws-s3-export
+        aws_credentials_file: aws.credentials
+      import:
+        enabled: true
+        output_dir: historical_data
+        include_kpis_json: true
+        include_kpis_csv: false
+        include_ai_data: false
+        max_downloads: 50
+      export:
+        enabled: true
+        upload_id: null  # use timestamp if null
+        dry_run: false
+        include_csv: false
+        include_kpis_json: true
+        include_ai_data: true
 
 agentic:
   enabled: true

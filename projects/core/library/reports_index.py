@@ -31,8 +31,20 @@ def generate_caliper_reports_index(
     index_path = output_dir / index_filename
 
     # Extract report information from status
-    visualize_step = status.get("steps", {}).get("visualize", {})
-    if visualize_step.get("status") != "ok":
+    steps = status.get("steps", [])
+    visualize_step = {}
+
+    # Find visualize step in list format
+    if isinstance(steps, list):
+        for step in steps:
+            if "visualize" in step:
+                visualize_step = step["visualize"]
+                break
+    elif isinstance(steps, dict):
+        # Legacy dict format fallback
+        visualize_step = steps.get("visualize", {})
+
+    if visualize_step.get("status") not in ("ok", "success"):
         logger.info("No successful visualize step found, skipping index generation")
         return None
 
@@ -40,14 +52,14 @@ def generate_caliper_reports_index(
     html_files = []
     data_files = []
 
-    ignored_files = {index_filename, "caliper_postprocess_status.yaml"}
+    ignored_files = {index_filename, "postprocess_status.yaml"}
 
     for html_file in sorted(output_dir.glob("*.html")):
         if html_file.name not in ignored_files:
             html_files.append(html_file)
 
-    # Include JSON and JSONL files
-    for data_file in sorted(list(output_dir.glob("*.json")) + list(output_dir.glob("*.jsonl"))):
+    # Include JSON and JSON files
+    for data_file in sorted(output_dir.glob("*.json")):
         if data_file.name not in ignored_files:
             data_files.append(data_file)
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,116 @@ from projects.core.library import env
 from projects.core.library import vault as vault_lib
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Run naming helpers
+# ---------------------------------------------------------------------------
+
+_TIMESTAMP_RE = re.compile(r"(\d{8}-\d{6})")
+_DIR_INDEX_RE = re.compile(r"^(\d+__)")
+
+
+def _extract_timestamp_from_fjob() -> str:
+    """Extract YYYYMMDD-HHMMSS timestamp from FJOB_NAME env var."""
+    fjob = os.environ.get("FJOB_NAME", "")
+    m = _TIMESTAMP_RE.search(fjob)
+    return m.group(1) if m else ""
+
+
+def _read_test_labels(run_dir: Path) -> dict[str, str]:
+    """Read labels from __test_labels__.yaml in a run directory."""
+    marker = run_dir / "__test_labels__.yaml"
+    if not marker.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(marker.read_text(encoding="utf-8"))
+        labels = data.get("labels", {}) if isinstance(data, dict) else {}
+        return labels if isinstance(labels, dict) else {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
+def _format_run_name(template: str, labels: dict[str, str], *, prefix: str, timestamp: str) -> str:
+    """Format a run name template using labels plus computed fields (prefix, timestamp)."""
+    fields = {**labels, "prefix": prefix, "timestamp": timestamp}
+    try:
+        return template.format_map(fields)
+    except (KeyError, ValueError) as e:
+        logger.warning("Run naming template error (%s), falling back to raw template", e)
+        return template
+
+
+def format_child_run_name(
+    run_dir: Path,
+    *,
+    template: str,
+    prefix: str,
+    timestamp: str,
+) -> str:
+    """Build a child run name: preserve the NNN__ index prefix, apply the template for the rest."""
+    dir_name = run_dir.name
+    m = _DIR_INDEX_RE.match(dir_name)
+    num_prefix = m.group(1) if m else ""
+    labels = _read_test_labels(run_dir)
+    formatted = _format_run_name(template, labels, prefix=prefix, timestamp=timestamp)
+    return f"{num_prefix}{formatted}"
+
+
+def resolve_run_names(
+    run_dirs: list[Path],
+    mlflow_config_data: dict[str, Any] | None,
+    *,
+    fallback_run_name: str | None = None,
+) -> dict[str, str | None | dict[Path, str]]:
+    """Resolve parent and child run names from ``run_naming`` config + test labels.
+
+    Returns a dict with keys:
+        parent_run_name: str | None
+        single_run_name: str | None
+        child_run_names: dict[Path, str] (mapping run_dir -> formatted name)
+    """
+    naming_cfg = (mlflow_config_data or {}).get("run_naming")
+    if not naming_cfg or not isinstance(naming_cfg, dict):
+        return {
+            "parent_run_name": fallback_run_name,
+            "single_run_name": None,
+            "child_run_names": {},
+        }
+
+    prefix = naming_cfg.get("prefix", "")
+    timestamp = _extract_timestamp_from_fjob()
+    single_tpl = naming_cfg.get("single_run")
+    parent_tpl = naming_cfg.get("parent_run")
+    child_tpl = naming_cfg.get("child_run")
+
+    result: dict[str, Any] = {
+        "parent_run_name": fallback_run_name,
+        "single_run_name": None,
+        "child_run_names": {},
+    }
+
+    if len(run_dirs) == 1 and single_tpl:
+        labels = _read_test_labels(run_dirs[0])
+        result["single_run_name"] = _format_run_name(
+            single_tpl, labels, prefix=prefix, timestamp=timestamp
+        )
+
+    if len(run_dirs) > 1 and parent_tpl:
+        labels = _read_test_labels(run_dirs[0])
+        result["parent_run_name"] = _format_run_name(
+            parent_tpl, labels, prefix=prefix, timestamp=timestamp
+        )
+
+    if child_tpl:
+        child_names: dict[Path, str] = {}
+        for rd in run_dirs:
+            child_names[rd] = format_child_run_name(
+                rd, template=child_tpl, prefix=prefix, timestamp=timestamp
+            )
+        result["child_run_names"] = child_names
+
+    return result
 
 
 def run_from_orchestration_config(
@@ -93,6 +205,11 @@ def run_from_orchestration_config(
 
     run_dirs = _discover_run_dirs(from_path)
 
+    # Resolve descriptive run names from labels + run_naming config
+    naming = resolve_run_names(
+        run_dirs, mlflow_config_data, fallback_run_name=export_cfg.mlflow_run_name
+    )
+
     if len(run_dirs) > 1:
         if export_cfg.dry_run:
             logger.info(
@@ -107,12 +224,18 @@ def run_from_orchestration_config(
                 mlflow_secrets_path=mlflow_secrets_path,
                 mlflow_config_data=mlflow_config_data,
                 run_dirs=run_dirs,
+                resolved_parent_name=naming.get("parent_run_name"),
+                child_run_names=naming.get("child_run_names") or {},
             )
     else:
+        effective_name = (
+            naming.get("single_run_name") if len(run_dirs) == 1 else None
+        ) or export_cfg.mlflow_run_name
+
         mlflow_kwargs: dict[str, Any] = {
             "mlflow_experiment": export_cfg.mlflow_experiment,
             "mlflow_run_id": export_cfg.mlflow_run_id,
-            "mlflow_run_name": export_cfg.mlflow_run_name,
+            "mlflow_run_name": effective_name,
             "mlflow_secrets_path": mlflow_secrets_path,
         }
         if mlflow_config_data is not None:
@@ -165,6 +288,8 @@ def _run_multi_run_export(
     mlflow_secrets_path: Path,
     mlflow_config_data: dict[str, Any] | None,
     run_dirs: list[Path],
+    resolved_parent_name: str | None = None,
+    child_run_names: dict[Path, str] | None = None,
 ) -> int:
     """Export as parent + nested child MLflow runs."""
     import sys
@@ -208,8 +333,11 @@ def _run_multi_run_export(
 
     tracking_uri = merged_ml.get("tracking_uri")
     experiment = merged_ml.get("experiment")
-    run_name = merged_ml.get("run_name")
+    run_name = resolved_parent_name or merged_ml.get("run_name")
     workspace = merged_ml.get("workspace")
+    if not workspace:
+        raise ValueError("The export workspace must be specified")
+
     meta = project_metadata_fields(merged_ml)
     run_metadata = meta if meta else None
 
@@ -220,7 +348,7 @@ def _run_multi_run_export(
         click.echo(f"  Source: {from_path}", err=True)
         click.echo(f"  Total artifact files: {len(all_artifact_paths)}", err=True)
         click.echo(f"  Run directories: {len(run_dirs)}", err=True)
-        click.echo(f"  Workspace: {workspace or '(default)'}", err=True)
+        click.echo(f"  Workspace: {workspace}", err=True)
         for rd in run_dirs:
             click.echo(f"    - {rd.name}", err=True)
         click.echo("", err=True)
@@ -241,6 +369,7 @@ def _run_multi_run_export(
             upload_workers=export_cfg.upload_workers,
             run_metadata=run_metadata,
             workspace=workspace,
+            child_run_names=child_run_names or None,
         )
         results = [
             FileExportBackendResult(

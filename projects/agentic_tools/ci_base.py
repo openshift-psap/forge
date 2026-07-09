@@ -150,6 +150,28 @@ class CIApp:
     def _get_vaults_for_key(self, key: str) -> list[str]:
         return config.project.get_config(f"vaults.{key}", [])
 
+    def _resolve_notification_provider(self):
+        """Auto-discover notification provider from config.
+
+        Reads ``notifications.slack.provider_module`` (a fully-qualified
+        class path like ``projects.foo.notifications.MyProvider``) and
+        instantiates it.  Returns None if not configured.
+        """
+        provider_path = config.project.get_config(
+            "notifications.slack.provider_module", None, print=False, warn=False
+        )
+        if not provider_path:
+            return None
+
+        try:
+            module_path, class_name = provider_path.rsplit(".", 1)
+            mod = importlib.import_module(module_path)
+            provider_cls = getattr(mod, class_name)
+            return provider_cls()
+        except Exception as e:
+            logger.warning("Failed to resolve notification provider '%s': %s", provider_path, e)
+            return None
+
     # ------------------------------------------------------------------
     # Build
     # ------------------------------------------------------------------
@@ -170,6 +192,8 @@ class CIApp:
                 return
 
             app.init_vaults(ctx.invoked_subcommand)
+
+            ctx.obj.notification_provider = app._resolve_notification_provider()
 
         main.help = self.description
 
@@ -198,7 +222,7 @@ def _register_phase_command(
     """Register a lazily-imported phase function as a click command."""
 
     @click.pass_context
-    @ci_lib.safe_ci_command
+    @ci_lib.safe_ci_entrypoint
     @functools.wraps(_import_function)
     def command(ctx, _spec=spec):
         fn = _import_function(_spec.func)

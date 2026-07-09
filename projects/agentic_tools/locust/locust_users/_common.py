@@ -18,7 +18,7 @@ _user_counter_lock = threading.Lock()
 
 
 def load_prompts():
-    """Load all prompts from JSONL, falling back to single prompt file, then env var."""
+    """Load all prompts from JSON, falling back to single prompt file, then env var."""
     import sys
 
     output_dir = os.environ.get("LOCUST_OUTPUT_DIR", "")

@@ -6,7 +6,7 @@ import time
 
 import yaml
 
-from projects.core.library import config, env, run, vault
+from projects.core.library import config, env, vault
 from projects.core.library.postprocess import run_and_postprocess
 from projects.skeleton.toolbox.cluster_info.main import run as cluster_info
 
@@ -60,20 +60,6 @@ def _setup_sample_signal_handlers():
         logger.debug("Sample signal handlers installed")
     except Exception as e:
         logger.warning(f"Failed to set up sample signal handlers: {e}")
-
-
-def init(skip_vault_init=False, strict_vault_validation=True):
-    env.init()
-    run.init()
-    config.init(pathlib.Path(__file__).parent)
-    if skip_vault_init:
-        logger.info("Skipping vault initialization as requested")
-        return
-
-    if not strict_vault_validation:
-        vault.disable_strict_validation()
-
-    vault.init(config.project.get_config("vaults"))
 
 
 def test():

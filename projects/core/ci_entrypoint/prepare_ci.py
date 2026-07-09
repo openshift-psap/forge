@@ -8,6 +8,7 @@ including parsing GitHub PR arguments and setting up the execution environment.
 
 import logging
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,7 @@ import yaml
 
 import projects.core.ci_entrypoint.fournos as fournos
 import projects.core.ci_entrypoint.github.pr_args as github_pr_args
-import projects.core.notifications.send as send
+from projects.core.library import ci as ci_lib
 
 IS_LIGHTWEIGHT_IMAGE = os.environ.get("FORGE_LIGHT_IMAGE")
 
@@ -520,6 +521,172 @@ def validate_prerequisites():
         raise RuntimeError("oc not found. Can't continue.")
 
 
+def wait_for_step_completion():
+    """
+    Wait for a dependent step to complete if PSAP_FORGE_WAIT_FOR_STEP is configured.
+
+    Waits for the specified step's test_duration.yaml file to appear, indicating
+    that the step has completed.
+    """
+    wait_for_step = os.environ.get("PSAP_FORGE_WAIT_FOR_STEP")
+    if not wait_for_step:
+        return
+
+    # Exit early if explicitly disabled
+    if wait_for_step.lower() in ("false", "no", "0", "disabled", "off"):
+        logger.info(f"Step waiting disabled (PSAP_FORGE_WAIT_FOR_STEP={wait_for_step})")
+        return
+
+    artifact_dir = os.environ.get("ARTIFACT_DIR")
+    if not artifact_dir:
+        logger.warning("PSAP_FORGE_WAIT_FOR_STEP set but ARTIFACT_DIR not available, skipping wait")
+        return
+
+    # Construct path to the completion indicator file
+    completion_file = (
+        Path(artifact_dir).parent / wait_for_step / CI_METADATA_DIRNAME / "test_duration.yaml"
+    )
+
+    logger.info(f"Waiting for step '{wait_for_step}' to complete...")
+    logger.info(f"Monitoring file: {completion_file}")
+
+    step_dir = completion_file.parent.parent  # Remove /000__ci_metadata/test_duration.yaml
+
+    def _wait_for_path(path_to_check, timeout_seconds, description, wait_action):
+        """Helper function to wait for a path to exist with timeout handling."""
+        wait_start = time.time()
+
+        while not path_to_check.exists():
+            elapsed = time.time() - wait_start
+            if elapsed >= timeout_seconds:
+                logger.error(f"❌ Timeout: {description} did not appear within {timeout_seconds}s")
+                # Create failure notification
+                failure_message = (
+                    f"Step sync failed: {description} did not appear within {timeout_seconds}s\n"
+                    f"Waited for step: {wait_for_step}\n"
+                    f"Expected file: {completion_file}"
+                )
+                ci_lib.add_notification_file(
+                    "STEP_SYNC_FAILED", failure_message, base_ci_dir=os.environ["ARTIFACT_DIR"]
+                )
+                return False
+            logger.info(f"⏳ {wait_action} ({elapsed:.0f}s/{timeout_seconds}s)...")
+            time.sleep(10)
+        return True
+
+    # First wait for the step directory to appear (1 minute timeout)
+    if not _wait_for_path(
+        step_dir,
+        60,
+        f"Step directory {step_dir}",
+        f"Waiting for {wait_for_step} directory to appear",
+    ):
+        return
+
+    # Then wait for the completion file to appear (10 minutes timeout)
+    if not _wait_for_path(
+        completion_file, 600, "Completion file", f"Waiting for {wait_for_step} to finish"
+    ):
+        return
+
+    logger.info(f"✅ Step '{wait_for_step}' completed, proceeding with current step")
+
+
+def generate_duration_and_timing_file(start_time: float | None, artifact_path: Path) -> str:
+    """Generate duration string and timing file.
+
+    Args:
+        start_time: Unix timestamp when execution started (None if unknown)
+        artifact_path: Path to artifact directory
+
+    Returns:
+        Duration string for status message
+    """
+    if not start_time:
+        return " (duration unknown)"
+
+    end_time = time.time()
+    duration_seconds = int(end_time - start_time)
+    duration_str = f" {format_duration(duration_seconds)}"
+
+    # Generate timing file in CI metadata directory
+    try:
+        metadata_dir = artifact_path / CI_METADATA_DIRNAME
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        timing_data = {
+            "start_time": {
+                "timestamp": start_time,
+                "iso": datetime.fromtimestamp(start_time).isoformat(),
+                "human": datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            "end_time": {
+                "timestamp": end_time,
+                "iso": datetime.fromtimestamp(end_time).isoformat(),
+                "human": datetime.fromtimestamp(end_time).strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            "duration": {
+                "seconds": duration_seconds,
+                "formatted": format_duration(duration_seconds),
+            },
+        }
+
+        timing_file = metadata_dir / "test_duration.yaml"
+        with open(timing_file, "w", encoding="utf-8") as f:
+            yaml.dump(timing_data, f, default_flow_style=False, sort_keys=False)
+
+        logger.info(f"Generated timing file: {timing_file}")
+
+    except Exception as e:
+        logger.warning(f"Failed to generate timing file: {e}")
+
+    return duration_str
+
+
+def record_test_start_time(start_time: float | None = None):
+    """Record test start time to test_start.yaml file.
+
+    Writes to test_start.yaml (not test_duration.yaml) so the wait mechanism
+    in wait_for_step_completion() — which polls for test_duration.yaml — is not
+    triggered prematurely. test_duration.yaml is only created at step completion
+    by generate_duration_and_timing_file().
+
+    Args:
+        start_time: Unix timestamp when execution started. If None, uses current time.
+    """
+    try:
+        artifact_dir = os.environ.get("ARTIFACT_DIR")
+        if not artifact_dir:
+            logger.warning("ARTIFACT_DIR not set, cannot record start time")
+            return
+
+        artifact_path = pathlib.Path(artifact_dir)
+        metadata_dir = artifact_path / CI_METADATA_DIRNAME
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        timing_file = metadata_dir / "test_start.yaml"
+
+        # Use provided start_time or current time
+        start_timestamp = start_time if start_time is not None else time.time()
+        logger.info(f"Recording start time: {start_timestamp}")
+
+        timing_data = {
+            "start_time": {
+                "timestamp": start_timestamp,
+                "iso": datetime.fromtimestamp(start_timestamp).isoformat(),
+                "human": datetime.fromtimestamp(start_timestamp).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        }
+
+        with open(timing_file, "w", encoding="utf-8") as f:
+            yaml.dump(timing_data, f, default_flow_style=False, sort_keys=False)
+
+        logger.info(f"Recorded test start time: {timing_file}")
+
+    except Exception as e:
+        logger.warning(f"Failed to record test start time: {e}")
+
+
 def prepare(
     verbose: bool = False,
     project: str = "",
@@ -553,6 +720,9 @@ def prepare(
         # Set up environment variables
         setup_environment_variables()
 
+        # Record test start time
+        record_test_start_time()
+
         # Perform prechecks
         system_prechecks()
 
@@ -561,6 +731,9 @@ def prepare(
 
         # Parse and save PR arguments if in PR context
         parse_and_save_pr_arguments()
+
+        # Wait for dependent step completion if configured
+        wait_for_step_completion()
 
         logger.info("CI preparation completed successfully")
 
@@ -574,72 +747,19 @@ def format_duration(duration_seconds: int) -> str:
     hours = duration_seconds // 3600
     minutes = (duration_seconds % 3600) // 60
     seconds = duration_seconds % 60
-    return f"after {hours:02d} hours {minutes:02d} minutes {seconds:02d} seconds"
 
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+    if minutes > 0:
+        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+    if seconds > 0:
+        parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
 
-def send_notification(project: str, operation: str, finish_reason: FinishReason, duration: str):
-    if project == "jump_ci":
-        logger.info("No need to send notification in the JumpCI project")
-        return
+    if not parts:
+        return "0 seconds"
 
-    try:
-        # Determine notification parameters
-        success = finish_reason == FinishReason.SUCCESS
-        notification_status = f"Execution of '{project} {operation}' {('succeeded' if success else 'failed')}{duration}"
-
-        send_notification = True
-        if project == "foreign_testing":
-            # never submit for the time being
-            logger.info(f"Skipping notification for project '{project}'")
-            send_notification = False
-
-        elif project == "fournos_launcher":
-            # always submit for the time being
-            logger.info(f"Keeping all the notications for the {project} project")
-
-        elif os.environ.get("PSAP_FORGE_FOREIGN_TESTING"):
-            logger.info("Keeping all the notications for foreign tests")
-
-        elif os.environ.get("PSAP_FORGE_ALWAYS_SEND_NOTIFICATION", "false").lower() == "true":
-            logger.info(
-                "PSAP_FORGE_ALWAYS_SEND_NOTIFICATION is set - sending notification for all operations"
-            )
-        elif success and operation not in ("test",):
-            logger.info(
-                f"Skipping notification for successful '{operation}' step (only 'test' step notifies on success)"
-            )
-            send_notification = False
-
-        if not send_notification:
-            return
-
-        # Enable GitHub notifications by default, Slack can be enabled via environment variable
-        github_notifications = True
-        slack_notifications = True
-
-        # Check for dry run mode
-        dry_run = os.environ.get("FORGE_NOTIFICATION_DRY_RUN", "false").lower() == "true"
-
-        logger.info(
-            f"Sending notifications - finish_reason: {finish_reason} | GitHub: {github_notifications}, Slack: {slack_notifications}, dry_run: {dry_run}"
-        )
-
-        # Send the notification
-        notification_failed = send.send_job_completion_notification(
-            finish_reason=finish_reason,
-            status=notification_status,
-            github=github_notifications,
-            slack=slack_notifications,
-            dry_run=dry_run,
-        )
-        if notification_failed:
-            logger.warning("Some notifications failed to send")
-        else:
-            logger.info("Notifications sent successfully")
-
-    except Exception:
-        logger.exception("Failed to send notifications")
-        # Don't fail the entire job if notifications fail
+    return ", ".join(parts)
 
 
 def postchecks(
@@ -693,27 +813,16 @@ def postchecks(
         # placeholder for future exist status (eg, performance regression, flake, ...)
         logger.warning(f"postchecks: unhandled finish reason: {finish_reason}")
 
-    # Normal exit handling
-    duration_str = ""
-    if start_time:
-        end_time = time.time()
-        duration_seconds = int(end_time - start_time)
-        duration_str = f" {format_duration(duration_seconds)}"
-    else:
-        duration_str = " (duration unknown)"
+    # Generate duration string and timing file
+    duration_str = generate_duration_and_timing_file(start_time, artifact_path)
 
     # Check if there were failures
     failures_file = artifact_path / "FAILURES"
     if finish_reason != FinishReason.SUCCESS or (
         failures_file.exists() and failures_file.stat().st_size > 0
     ):
-        status = f"❌ Execution of '{project} {operation}' failed{duration_str}."
+        status = f"❌ Execution of '{project} {operation}' failed after{duration_str}."
     else:
-        status = f"✅ Execution of '{project} {operation}' succeeded{duration_str}."
-
-    # Send notifications for job completion
-    # Get the actual step from args (like "test", "lock_cluster", "prepare")
-    actual_step = args[0] if args and len(args) > 0 else operation
-    send_notification(project, actual_step, finish_reason, duration_str)
+        status = f"✅ Execution of '{project} {operation}' succeeded after{duration_str}."
 
     return status

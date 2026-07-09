@@ -115,6 +115,12 @@ def init(daily_artifact_dir=False):
     # Also set in thread-local storage for main thread
     _set_tls_artifact_dir(artifact_dir)
 
+    # Ensure CI metadata directory exists (lazy import to avoid circular imports)
+    from . import ci as ci_lib
+
+    ci_metadata_dir = ci_lib.get_ci_metadata_dir()
+    ci_metadata_dir.mkdir(parents=True, exist_ok=True)
+
 
 def NextArtifactDir(name, *, lock=None, counter_p=None):
     # Use global lock to ensure sequential numbering in parallel execution

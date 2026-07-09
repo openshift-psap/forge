@@ -8,6 +8,7 @@ and tooling setup for consistent behavior across all projects.
 
 import functools
 import logging
+import pathlib
 import sys
 import traceback
 
@@ -18,6 +19,30 @@ from projects.core.dsl.runtime import TaskExecutionError
 from projects.core.library import env
 
 logger = logging.getLogger(__name__)
+
+
+# CI metadata directory path
+def get_ci_metadata_dir(base_ci_dir=None):
+    """Get the CI metadata directory path.
+
+    Args:
+        base_ci_dir: Optional base directory. If not provided, uses env.BASE_ARTIFACT_DIR
+
+    Returns:
+        Path to the CI metadata directory
+
+    Raises:
+        ValueError: If both base_ci_dir and env.BASE_ARTIFACT_DIR are None
+    """
+    if base_ci_dir is not None:
+        return pathlib.Path(base_ci_dir) / "000__ci_metadata"
+
+    if env.BASE_ARTIFACT_DIR is not None:
+        return env.BASE_ARTIFACT_DIR / "000__ci_metadata"
+
+    raise ValueError(
+        "Cannot determine CI metadata directory: both base_ci_dir parameter and env.BASE_ARTIFACT_DIR are None"
+    )
 
 
 class HelpfulGroup(click.Group):
@@ -122,6 +147,91 @@ def safe_ci_command(command_func):
             sys.exit(1)
 
     return wrapper
+
+
+def safe_ci_entrypoint(command_func):
+    """
+    Decorator/wrapper for CI entrypoints to provide consistent error handling and exit status saving.
+
+    Saves the return code to exit_status.yaml in the CI metadata directory.
+
+    Args:
+        command_func: Function to execute safely
+    """
+
+    import yaml
+
+    @functools.wraps(command_func)
+    def wrapper(*args, **kwargs):
+        exit_code = 0
+        try:
+            result = command_func(*args, **kwargs)
+            exit_code = result if result is not None else 0
+        except Exception as e:
+            handle_ci_exception(e)
+            exit_code = 1
+
+        # Save exit status to YAML file
+        try:
+            metadata_dir = get_ci_metadata_dir()
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+
+            exit_status_file = metadata_dir / "exit_status.yaml"
+            exit_status_data = {"return_code": exit_code}
+
+            with open(exit_status_file, "w", encoding="utf-8") as f:
+                yaml.dump(exit_status_data, f, default_flow_style=False)
+
+            logger.info(f"Exit status saved: {exit_status_file} (return_code: {exit_code})")
+        except Exception as save_error:
+            logger.warning(f"Failed to save exit status: {save_error}")
+
+        sys.exit(exit_code)
+
+    return wrapper
+
+
+def add_notification_file(
+    name: str, message: str, start_index: int = 0, base_ci_dir=None
+) -> str | None:
+    """
+    Add a notification file in CI metadata notifications directory with the next available index.
+
+    Args:
+        name: Base name for the notification file (without extension)
+        message: Content to write to the file
+        start_index: Starting index to search for available slot
+        base_ci_dir: Optional base directory. If not provided, uses env.BASE_ARTIFACT_DIR
+
+    Returns:
+        Path to the created notification file, or None if creation failed
+    """
+    metadata_dir = get_ci_metadata_dir(base_ci_dir)
+    notifications_dir = metadata_dir / "notifications"
+    notifications_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find the next available index
+    index = start_index
+    while True:
+        filename = f"{index:03d}__{name}.txt"
+        file_path = notifications_dir / filename
+
+        if not file_path.exists():
+            break
+
+        index += 1
+
+    # Write the notification file
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(message)
+
+        logger.info(f"Created notification file: {file_path}")
+        return str(file_path)
+
+    except Exception as e:
+        logger.error(f"Failed to create notification file {file_path}: {e}")
+        return None
 
 
 def safe_ci_function(command_func):

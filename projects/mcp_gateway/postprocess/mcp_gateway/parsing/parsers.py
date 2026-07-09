@@ -58,7 +58,7 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 class MCPGatewayParser:
     """Parser for Locust stats.csv artifacts from MCP Gateway tests."""
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         records: list[UnifiedResultRecord] = []
         warnings: list[str] = []
 
@@ -69,7 +69,7 @@ class MCPGatewayParser:
                 labels = _labels_from_node(node)
                 records.append(
                     UnifiedResultRecord(
-                        test_base_path=str(node.directory.relative_to(base_dir.resolve())),
+                        test_base_path=str(node.test_path),
                         distinguishing_labels=labels,
                         metrics={"no_stats_csv_found": True},
                         run_identity={"mcp_gateway": True},
@@ -96,7 +96,7 @@ class MCPGatewayParser:
 
                 records.append(
                     UnifiedResultRecord(
-                        test_base_path=str(node.directory.relative_to(base_dir.resolve())),
+                        test_base_path=str(node.test_path),
                         distinguishing_labels=labels,
                         metrics=metrics_dict,
                         run_identity={"mcp_gateway": True},

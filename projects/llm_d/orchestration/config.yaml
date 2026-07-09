@@ -1,9 +1,6 @@
 vaults:
   all: []
-  all-optional:
-  - psap-forge-notifications
-  - psap-forge-mlflow-export
-  - psap-models-corp-rh
+  all-optional: []
   prepare: []
   prepare-optional:
   - psap-forge-hf
@@ -33,6 +30,9 @@ caliper:
           tags: {}
           parameters: {}
           metrics: {}
+    notifications:
+      enabled: true
+      vault: psap-forge-notifications
 
   replot:
     url: null  # Set via /replot.url directive
@@ -55,16 +55,48 @@ caliper:
 
     kpi:
       enabled: true
-      generate:
+      artifacts_to_kpis:
         enabled: true
-        output: kpis.jsonl
-      export:
+        output: kpis/kpis.json
+      kpis_to_csv:
         enabled: true
+        output: kpis/kpis.csv
+        include_header_comments: true
+      artifacts_to_ai_data:
+        enabled: true
+        output_dir: ai_data
 
     analyze:
+      enabled: true
+      historical_kpis: historical_data
+      output: regression_analyze/kpi_analyze.json
+
+    s3:
+      bucket: psap-dashboard-data
+      instance: smoke
+      directory: llmd-dashboard
+      vault:
+        name: psap-forge-aws-s3-export
+        aws_credentials_file: aws.credentials
+      prefix: llm_d/
+      import:
+        enabled: true
+        output_dir: historical_data
+        include_kpis_json: true
+        include_kpis_csv: false
+        include_ai_data: false
+        max_downloads: 50
+      export:
+        enabled: true
+        upload_id: null  # use timestamp if null
+        dry_run: false
+        include_csv: true
+        include_kpis_json: true
+        include_ai_data: true
+
+    analyse_kpis:
       enabled: false
-      baseline: null
-      output: kpi_analyze.json
+      output: kpi_analysis.json
 
 agentic:
   enabled: true

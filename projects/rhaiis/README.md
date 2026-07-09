@@ -263,7 +263,7 @@ automatically computes 22 KPIs with model-furnace parity:
 | Request stats | concurrency, completed_requests, failed_requests |
 | Benchmark | duration, prompt_token_count_mean |
 
-KPIs are written to `kpis.jsonl` in the postprocess output directory.
+KPIs are written to `kpis.json` in the postprocess output directory.
 
 ## PSAP payload
 

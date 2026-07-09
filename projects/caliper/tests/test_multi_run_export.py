@@ -381,6 +381,69 @@ class TestMultiRunMlflowLogging:
 
         mock_mlflow.set_experiment.assert_called_once_with("my-experiment")
 
+    def test_child_runs_only_get_own_artifacts(self, artifact_tree: Path, mock_mlflow):
+        """Each child run should only receive artifacts from its own directory subtree."""
+        from projects.caliper.engine.file_export.mlflow_backend import (
+            log_multi_run_artifacts,
+        )
+
+        run_dirs = _discover_run_dirs(artifact_tree)
+        all_files = [p for p in artifact_tree.rglob("*") if p.is_file()]
+
+        child_run_ids = iter(["child-run-a", "child-run-b"])
+        original_active = mock_mlflow.active_run
+
+        def _active_run_side_effect():
+            mock = MagicMock()
+            mock.info.run_id = next(child_run_ids, "fallback-id")
+            return mock
+
+        mock_mlflow.active_run.side_effect = _active_run_side_effect
+        mock_client = mock_mlflow.tracking.MlflowClient.return_value
+
+        log_multi_run_artifacts(
+            all_artifact_paths=all_files,
+            artifact_root=artifact_tree,
+            run_dirs=run_dirs,
+            metrics_file=METRICS_FILE,
+            parameters_file=PARAMETERS_FILE,
+            tracking_uri="http://test-mlflow:5000",
+            experiment="test-experiment",
+            parent_run_name="test-parent",
+        )
+
+        log_artifact_calls = mock_client.log_artifact.call_args_list
+
+        parent_artifacts = [c for c in log_artifact_calls if c.args[0] == "parent-run-id"]
+        child_a_artifacts = [c for c in log_artifact_calls if c.args[0] == "child-run-a"]
+        child_b_artifacts = [c for c in log_artifact_calls if c.args[0] == "child-run-b"]
+
+        assert len(parent_artifacts) == len(all_files), "Parent run should receive all artifacts"
+
+        run_a = sorted(run_dirs)[0]
+        run_b = sorted(run_dirs)[1]
+        run_a_file_count = sum(1 for p in all_files if p.resolve().is_relative_to(run_a.resolve()))
+        run_b_file_count = sum(1 for p in all_files if p.resolve().is_relative_to(run_b.resolve()))
+
+        assert len(child_a_artifacts) == run_a_file_count, (
+            f"Child A should only get {run_a_file_count} files from {run_a.name}, "
+            f"got {len(child_a_artifacts)}"
+        )
+        assert len(child_b_artifacts) == run_b_file_count, (
+            f"Child B should only get {run_b_file_count} files from {run_b.name}, "
+            f"got {len(child_b_artifacts)}"
+        )
+
+        assert len(child_a_artifacts) < len(parent_artifacts), (
+            "Child runs should have fewer artifacts than parent"
+        )
+        assert len(child_b_artifacts) < len(parent_artifacts), (
+            "Child runs should have fewer artifacts than parent"
+        )
+
+        mock_mlflow.active_run.side_effect = None
+        mock_mlflow.active_run.return_value = original_active.return_value
+
     def test_sets_forge_tags_on_parent(self, artifact_tree: Path, mock_mlflow):
         from projects.caliper.engine.file_export.mlflow_backend import (
             log_multi_run_artifacts,
@@ -402,6 +465,60 @@ class TestMultiRunMlflowLogging:
         tag_dict = {c.args[0]: c.args[1] for c in tag_calls}
         assert tag_dict.get("forge.multi_run") == "true"
         assert tag_dict.get("forge.child_count") == "2"
+
+    def test_child_run_metadata_in_status(self, artifact_tree: Path, mock_mlflow):
+        """Returned metadata should include child_runs with run_id and run_name."""
+        from projects.caliper.engine.file_export.mlflow_backend import (
+            log_multi_run_artifacts,
+        )
+
+        run_dirs = _discover_run_dirs(artifact_tree)
+
+        child_run_ids = iter(["child-id-1", "child-id-2"])
+
+        def _active_run_side_effect():
+            mock = MagicMock()
+            mock.info.run_id = next(child_run_ids, "fallback-id")
+            return mock
+
+        mock_mlflow.active_run.side_effect = _active_run_side_effect
+
+        mock_client = mock_mlflow.tracking.MlflowClient.return_value
+        mock_get_run = MagicMock()
+        mock_get_run.info.run_name = "test-parent"
+        mock_get_run.data.tags = {}
+        mock_client.get_run.return_value = mock_get_run
+
+        mock_exp = MagicMock()
+        mock_exp.name = "test-experiment"
+        mock_client.get_experiment.return_value = mock_exp
+
+        _, meta = log_multi_run_artifacts(
+            all_artifact_paths=[],
+            artifact_root=artifact_tree,
+            run_dirs=run_dirs,
+            metrics_file=METRICS_FILE,
+            parameters_file=PARAMETERS_FILE,
+            tracking_uri="http://test-mlflow:5000",
+            experiment="test-experiment",
+            parent_run_name="test-parent",
+        )
+
+        assert meta is not None
+        assert "child_runs" in meta
+
+        child_runs = meta["child_runs"]
+        assert len(child_runs) == 2
+
+        child_names = sorted(c["run_name"] for c in child_runs)
+        assert child_names == ["mcp-smoke-s1-u16-gateway", "mcp-smoke-s1-u64-gateway"]
+
+        child_ids = {c["run_id"] for c in child_runs}
+        assert child_ids == {"child-id-1", "child-id-2"}
+
+        for child in child_runs:
+            assert "run_id" in child
+            assert "run_name" in child
 
 
 # ---------------------------------------------------------------------------

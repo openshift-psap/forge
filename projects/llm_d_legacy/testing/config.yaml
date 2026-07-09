@@ -366,7 +366,7 @@ caliper:
       enabled: false
       generate:
         enabled: false
-        output: kpis.jsonl
+        output: kpis.json
       export:
         enabled: false
 

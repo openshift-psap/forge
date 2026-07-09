@@ -33,7 +33,7 @@ caliper:
       enabled: true
       generate:
         enabled: true
-        output: kpis.jsonl
+        output: kpis.json
       export:
         enabled: false
 
@@ -49,6 +49,7 @@ caliper:
             name: psap-forge-mlflow-export
             mlflow_secret: mlflow-secret.yaml
         config:
+          workspace: forge-rhaiis
           experiment: forge-rhaiis
           run_name: null
           description: "Caliper export from FORGE rhaiis benchmarks"

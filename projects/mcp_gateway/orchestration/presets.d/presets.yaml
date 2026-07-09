@@ -44,3 +44,21 @@ matrix-demo-1:
   experiment.duration_seconds: 30
   experiment.warmup_seconds: 5
   experiment.tools_per_server: 10
+
+small-scale:
+  runtime.mock_server: perf-mock-server
+  experiment.servers: [1, 15, 45, 60]
+  experiment.concurrency: [500]
+  experiment.target: [gateway]
+  experiment.duration_seconds: 240
+  experiment.warmup_seconds: 60
+  experiment.tools_per_server: 10
+
+large-scale:
+  runtime.mock_server: perf-mock-server
+  experiment.servers: [75, 90, 110, 130, 140]
+  experiment.concurrency: [500]
+  experiment.target: [gateway]
+  experiment.duration_seconds: 240
+  experiment.warmup_seconds: 60
+  experiment.tools_per_server: 10

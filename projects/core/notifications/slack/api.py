@@ -10,9 +10,12 @@ CHANNEL_ID = "C07NS5TAKPA"
 MAX_CALLS = 10
 
 
-def search_channel_message(client, message_anchor: str, not_before=None):
+def search_channel_message(client, message_anchor: str, not_before=None, channel_id=None):
     """Searches for a message matching the pattern.
     Returns thread ts if successful."""
+    if channel_id is None:
+        channel_id = CHANNEL_ID
+
     has_more = True
     history = []
     cursor = None
@@ -23,7 +26,7 @@ def search_channel_message(client, message_anchor: str, not_before=None):
 
         try:
             result = client.conversations_history(
-                channel=CHANNEL_ID,
+                channel=channel_id,
                 limit=20,  # default 100
                 oldest=not_before,
                 cursor=cursor,
@@ -52,11 +55,14 @@ def search_channel_message(client, message_anchor: str, not_before=None):
     return None, None
 
 
-def send_message(client, message: str, main_ts: str = None):
+def send_message(client, message: str, main_ts: str = None, channel_id=None):
     """Sends a message. Optionally to a thread."""
+    if channel_id is None:
+        channel_id = CHANNEL_ID
+
     try:
         result = client.chat_postMessage(
-            channel=CHANNEL_ID,
+            channel=channel_id,
             text=message,
             thread_ts=main_ts,
         )

@@ -1,5 +1,29 @@
 # DSL Framework Changelog
 
+## 2026-06-30 - Logging Enhancements & Timestamp Tracking
+
+### Logging Improvements
+- **Dedicated @always Task Logs**: @always tasks now log to separate dedicated log files
+  - **Isolation**: @always task output is separated from main execution logs  
+  - **Better Organization**: Cleaner log structure with distinct sections for different task types
+  - **Enhanced Debugging**: Easier to identify post-execution and cleanup task behavior
+
+### Execution Tracking
+- **Task Execution Timestamps**: Added precise timestamp tracking for task execution
+  - **Performance Monitoring**: Track execution duration and timing patterns
+  - **Debugging Support**: Better visibility into task execution chronology
+  - **Metadata Enhancement**: Enriched execution context with timing information
+
+### Files Modified
+- `projects/core/dsl/runtime.py` - Added @always log isolation and timestamp tracking
+- `projects/core/dsl/toolbox.py` - Enhanced logging infrastructure for task separation
+
+### Benefits
+- **Cleaner Log Structure**: @always tasks no longer clutter main execution logs
+- **Better Performance Analysis**: Precise timing data for optimization and debugging
+- **Enhanced Troubleshooting**: Separated logs make it easier to identify issues in different execution phases
+- **Improved Monitoring**: Better visibility into task execution patterns and performance
+
 ## 2026-06-26 - Early Return & Enhanced Logging
 
 ### New Features

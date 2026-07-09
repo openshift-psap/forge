@@ -1,7 +1,7 @@
 """
 Deploy MCP-compatible mock servers on Kubernetes.
 
-Supports both single-server (count=1) and scale-out (count>1) scenarios
+Supports both single-server (count=1) and multi-server (count>1) scenarios
 using programmatic manifest generation. Each server gets a unique name
 (e.g. mock-server-1 .. mock-server-N), its own Service, and configurable
 tool count.
@@ -24,7 +24,7 @@ from projects.core.dsl.utils.k8s import oc
 
 logger = logging.getLogger(__name__)
 
-SCALE_OUT_LABEL = "experiment=scale-out"
+MOCK_MCP_LABEL = "forge.openshift.io/component=mock-mcp"
 
 
 @entrypoint
@@ -48,9 +48,8 @@ def run(
 @task
 def generate_and_apply_manifests(args, ctx):
     """Generate YAML manifests for all servers and apply them."""
-    merged_labels = {"experiment": "scale-out"}
-    if args.labels:
-        merged_labels.update(args.labels)
+    merged_labels = dict(args.labels) if args.labels else {}
+    merged_labels["forge.openshift.io/component"] = "mock-mcp"
 
     ctx.names = [f"{args.name_prefix}-{i}" for i in range(1, args.count + 1)]
 
@@ -92,7 +91,7 @@ def wait_for_rollout(args, ctx):
         "-n",
         args.namespace,
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "-o",
         "jsonpath={.items[?(@.status.readyReplicas==1)].metadata.name}",
         check=False,
@@ -120,7 +119,7 @@ def capture_artifacts(args, ctx):
         "-n",
         args.namespace,
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "-o",
         "yaml",
     )
@@ -131,7 +130,7 @@ def capture_artifacts(args, ctx):
         "-n",
         args.namespace,
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "-o",
         "wide",
     )
@@ -148,21 +147,21 @@ def capture_artifacts(args, ctx):
 
 
 def cleanup_servers(*, namespace: str) -> None:
-    """Delete all scale-out mock server deployments and services by label."""
-    logger.info("Cleaning up scale-out servers (label=%s)...", SCALE_OUT_LABEL)
+    """Delete all mock MCP server deployments and services by label."""
+    logger.info("Cleaning up mock MCP servers (label=%s)...", MOCK_MCP_LABEL)
     oc(
         "delete",
         "deployment,service",
         "-n",
         namespace,
         "-l",
-        SCALE_OUT_LABEL,
+        MOCK_MCP_LABEL,
         "--wait=false",
         "--ignore-not-found=true",
         check=False,
     )
     _wait_for_deletion(namespace=namespace, resource="deployment", timeout_seconds=120)
-    logger.info("Scale-out server cleanup complete")
+    logger.info("Mock MCP server cleanup complete")
 
 
 def restart_servers(
@@ -191,7 +190,7 @@ def restart_servers(
 
 
 def _wait_for_deletion(*, namespace: str, resource: str, timeout_seconds: int = 120) -> None:
-    """Wait until no resources with the scale-out label remain."""
+    """Wait until no resources with the mock-mcp label remain."""
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         result = oc(
@@ -200,7 +199,7 @@ def _wait_for_deletion(*, namespace: str, resource: str, timeout_seconds: int = 
             "-n",
             namespace,
             "-l",
-            SCALE_OUT_LABEL,
+            MOCK_MCP_LABEL,
             "--no-headers",
             check=False,
         )

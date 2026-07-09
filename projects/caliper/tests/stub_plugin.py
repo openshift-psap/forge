@@ -15,7 +15,7 @@ from projects.caliper.engine.model import (
 
 
 class StubPlugin(PostProcessingPlugin):
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         records: list[UnifiedResultRecord] = []
         warnings: list[str] = []
         for node in nodes:
@@ -37,7 +37,7 @@ class StubPlugin(PostProcessingPlugin):
             dist = labels if isinstance(labels, dict) else {}
             records.append(
                 UnifiedResultRecord(
-                    test_base_path=str(node.directory),
+                    test_base_path=str(node.test_path),
                     distinguishing_labels=dict(dist) if dist else {"facet": "default"},
                     metrics=raw or {"throughput": 1.0},
                     run_identity={"stub": True},
@@ -81,7 +81,7 @@ class StubPlugin(PostProcessingPlugin):
             try:
                 val = float(m)
             except (TypeError, ValueError):
-                val = 0.0
+                val = None
             out.append(
                 {
                     "schema_version": "1",
@@ -102,7 +102,7 @@ class StubPlugin(PostProcessingPlugin):
             )
         return out
 
-    def build_ai_eval_payload(self, model: UnifiedRunModel) -> dict[str, object]:
+    def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, object]:
         return {
             "schema_version": "1",
             "run_id": model.base_directory,

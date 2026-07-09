@@ -2,7 +2,7 @@
 MCP Server Testing Toolbox
 
 Shared infrastructure for:
-- Deploying mock MCP servers on Kubernetes (batch scale-out)
+- Deploying mock MCP servers on Kubernetes (batch deployment)
 - Deploying tokenizer-accurate MCP servers (deterministic tool responses)
 - MCP protocol client for load testing (JSON-RPC over HTTP)
 

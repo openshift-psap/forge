@@ -95,6 +95,17 @@ def capture_related_deployments(args, context):
 
 
 @task
+def capture_related_deployments_json(args, context):
+    """Capture deployments related to the LLMInferenceService in JSON format for easier parsing"""
+    shell.run(
+        f'oc get deployments -l "app.kubernetes.io/name={args.llmisvc_name}" -n {context.target_namespace} -ojson',
+        stdout_dest=args.artifact_dir / "artifacts/llminferenceservice.deployments.json",
+        check=False,
+    )
+    return "Related deployments JSON captured"
+
+
+@task
 def capture_related_replicasets(args, context):
     """Capture replicasets related to the LLMInferenceService"""
     shell.run(

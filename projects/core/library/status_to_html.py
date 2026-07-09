@@ -17,14 +17,14 @@ def convert_status_yaml_to_html(
     """Convert a Caliper postprocess status YAML file to HTML report.
 
     Args:
-        yaml_file_path: Path to the caliper_postprocess_status.yaml file
+        yaml_file_path: Path to the postprocess_status.yaml file
         output_html_path: Path for the output HTML file. If None, uses same directory as YAML with .html extension
 
     Returns:
         Path to the generated HTML file
 
     Example:
-        convert_status_yaml_to_html("~/kserve/caliper/caliper_postprocess_status.yaml")
+        convert_status_yaml_to_html("~/kserve/caliper/postprocess_status.yaml")
     """
     yaml_path = Path(yaml_file_path).expanduser().resolve()
 
@@ -47,7 +47,17 @@ def convert_status_yaml_to_html(
     # Extract status information
     final_status = status_data.get("final_status", "unknown")
     test_phase = status_data.get("test_phase", {})
-    steps = status_data.get("steps", {})
+    steps_raw = status_data.get("steps", [])
+    base_directory = status_data.get("base_directory")
+
+    # Convert steps to iterable format for processing
+    steps_list = []
+    if isinstance(steps_raw, list):
+        # New list-based format with {step_name: step_data} structure
+        steps_list = steps_raw
+    elif isinstance(steps_raw, dict):
+        # Legacy dict format - convert to new list format
+        steps_list = [{name: step_data} for name, step_data in steps_raw.items()]
 
     # Determine overall status styling
     if final_status in ["passed", "success"]:
@@ -61,15 +71,18 @@ def convert_status_yaml_to_html(
         status_badge_class = "status-warning"
 
     # Count step statuses for summary
-    step_counts = {"success": 0, "failed": 0, "skipped": 0}
-    for step_info in steps.values():
-        step_status = step_info.get("status", "unknown")
-        if step_status in ["ok", "success"]:
-            step_counts["success"] += 1
-        elif step_status == "failed":
-            step_counts["failed"] += 1
-        elif step_status == "skipped":
-            step_counts["skipped"] += 1
+    step_counts = {"success": 0, "failed": 0, "skipped": 0, "warning": 0}
+    for step_dict in steps_list:
+        for _step_name, step_info in step_dict.items():
+            step_status = step_info.get("status", "unknown")
+            if step_status in ["ok", "success"]:
+                step_counts["success"] += 1
+            elif step_status == "failed":
+                step_counts["failed"] += 1
+            elif step_status == "skipped":
+                step_counts["skipped"] += 1
+            elif step_status == "warning":
+                step_counts["warning"] += 1
 
     # Generate HTML
     html_content = f"""<!DOCTYPE html>
@@ -141,6 +154,7 @@ def convert_status_yaml_to_html(
         }}
         .stat.success {{ border-color: #28a745; color: #28a745; }}
         .stat.failed {{ border-color: #dc3545; color: #dc3545; }}
+        .stat.warning {{ border-color: #ffc107; color: #856404; }}
         .stat.skipped {{ border-color: #6c757d; color: #6c757d; }}
         .step-card {{
             border: 1px solid #e0e0e0;
@@ -159,6 +173,7 @@ def convert_status_yaml_to_html(
         .step-header.success {{ background-color: #f8fff9; border-left: 4px solid #28a745; }}
         .step-header.failed {{ background-color: #fff8f8; border-left: 4px solid #dc3545; }}
         .step-header.skipped {{ background-color: #f8f9fa; border-left: 4px solid #6c757d; }}
+        .step-header.warning {{ background-color: #fffdf7; border-left: 4px solid #ffc107; }}
         .step-title {{
             font-size: 1.1em;
             font-weight: 600;
@@ -174,6 +189,7 @@ def convert_status_yaml_to_html(
         .step-ok {{ background-color: #d4edda; color: #155724; }}
         .step-failed {{ background-color: #f8d7da; color: #721c24; }}
         .step-skipped {{ background-color: #e2e3e5; color: #495057; }}
+        .step-warning {{ background-color: #fff3cd; color: #856404; }}
         .step-content {{
             padding: 20px;
         }}
@@ -241,6 +257,7 @@ def convert_status_yaml_to_html(
                 <div class="summary-stats">
                     <div class="stat success">✅ {step_counts["success"]} Success</div>
                     <div class="stat failed">❌ {step_counts["failed"]} Failed</div>
+                    <div class="stat warning">⚠️ {step_counts["warning"]} Warning</div>
                     <div class="stat skipped">⏭️ {step_counts["skipped"]} Skipped</div>
                 </div>
             </div>
@@ -254,17 +271,40 @@ def convert_status_yaml_to_html(
         <h2>Processing Steps</h2>"""
 
     # Generate step cards
-    step_order = ["parse", "visualize", "kpi_generate", "kpi_export", "ai_eval_export", "analyze"]
+    step_order = [
+        "parse",
+        "visualize",
+        "artifacts_to_kpis",
+        "kpis_to_csv",
+        "artifacts_to_ai_data",
+        "s3_import",
+        "analyse_kpis",
+        "s3_export",
+    ]
+
+    # Create step lookup for easy access
+    step_lookup = {}
+    for step_dict in steps_list:
+        for step_name, step_data in step_dict.items():
+            step_lookup[step_name] = step_data
 
     for step_name in step_order:
-        if step_name not in steps:
+        if step_name not in step_lookup:
             continue
 
-        step_info = steps[step_name]
+        step_info = step_lookup[step_name]
         step_status = step_info.get("status", "unknown")
 
         # Format step name
-        step_display = step_name.replace("_", " ").title()
+        step_display_map = {
+            "artifacts_to_kpis": "KPI Generation",
+            "kpis_to_csv": "KPI CSV Export",
+            "artifacts_to_ai_data": "AI Data Export",
+            "s3_import": "S3 Import",
+            "s3_export": "S3 Export",
+            "analyse_kpis": "KPI Analysis",
+        }
+        step_display = step_display_map.get(step_name, step_name.replace("_", " ").title())
 
         # Determine status styling
         if step_status in ["ok", "success"]:
@@ -279,6 +319,10 @@ def convert_status_yaml_to_html(
             header_class = "skipped"
             status_class = "step-skipped"
             status_text = "SKIPPED"
+        elif step_status == "warning":
+            header_class = "warning"
+            status_class = "step-warning"
+            status_text = "WARNING"
         else:
             header_class = "skipped"
             status_class = "step-skipped"
@@ -308,25 +352,49 @@ def convert_status_yaml_to_html(
             )
 
         elif step_name == "visualize" and step_status in ["ok", "success"]:
-            output_dir = step_info.get("output_dir", "")
-            paths = step_info.get("paths", [])
+            output_files = step_info.get("output_files", [])
             plugin_module = step_info.get("plugin_module", "")
             details.extend(
                 [
-                    ("Files Generated", str(len(paths))),
+                    ("Files Generated", str(len(output_files))),
                     ("Plugin", plugin_module) if plugin_module else None,
                 ]
             )
 
-        elif step_name == "kpi_generate" and step_status in ["ok", "success"]:
+        elif step_name == "artifacts_to_kpis" and step_status in ["ok", "success"]:
             kpi_count = step_info.get("kpi_count", 0)
             output_file = step_info.get("output_file", "")
             details.extend([("KPI Records", str(kpi_count))])
 
-        elif step_name == "ai_eval_export" and step_status in ["ok", "success"]:
-            schema_version = step_info.get("payload_schema_version", "unknown")
-            output_file = step_info.get("output_file", "")
-            details.extend([("Schema Version", str(schema_version))])
+        elif step_name == "artifacts_to_ai_data" and step_status in ["ok", "success"]:
+            exported_entries = step_info.get("exported_entries", 0)
+            details.extend([("Exported Entries", str(exported_entries))])
+
+        elif step_name == "s3_import" and step_status in ["ok", "success"]:
+            downloaded_files = step_info.get("downloaded_files", 0)
+            failed_files = step_info.get("failed_files", 0)
+            details.extend(
+                [
+                    ("Downloaded Files", str(downloaded_files)),
+                    ("Failed Files", str(failed_files)) if failed_files > 0 else None,
+                ]
+            )
+
+        elif step_name == "analyse_kpis" and step_status in ["ok", "success"]:
+            baseline_files_count = step_info.get("baseline_files_count", 0)
+            details.extend([("Baseline Files", str(baseline_files_count))])
+
+        elif step_name == "s3_export" and step_status in ["ok", "success"]:
+            uploaded_files = step_info.get("uploaded_files", 0)
+            failed_files = step_info.get("failed_files", 0)
+            exported_path = step_info.get("exported_path", "")
+            details.extend(
+                [
+                    ("Uploaded Files", str(uploaded_files)),
+                    ("Failed Files", str(failed_files)) if failed_files > 0 else None,
+                    ("Export Path", exported_path) if exported_path else None,
+                ]
+            )
 
         # Add failure/skip reasons
         reason = step_info.get("reason", "")
@@ -357,40 +425,50 @@ def convert_status_yaml_to_html(
         # Add file links
         file_links = []
 
+        def _get_full_path(relative_path: str) -> str:
+            """Convert relative path to full path using base_directory."""
+            if base_directory and relative_path:
+                return str(Path(base_directory) / relative_path)
+            return relative_path
+
         if step_name == "visualize" and step_status in ["ok", "success"]:
-            output_dir = step_info.get("output_dir", "")
-            paths = step_info.get("paths", [])
-            index_path = step_info.get("index_path", "")
+            output_files = step_info.get("output_files", [])
 
-            if index_path:
-                if output_dir:
-                    full_index_path = str(Path(output_dir) / index_path)
-                else:
-                    full_index_path = index_path
-                file_links.append((f"📊 {Path(index_path).name}", full_index_path))
-
-            for path in paths[:8]:  # Show first 8 files
-                if output_dir:
-                    full_path = str(Path(output_dir) / path)
-                else:
-                    full_path = path
+            for path in output_files[:8]:  # Show first 8 files
+                full_path = _get_full_path(path)
                 file_name = Path(path).name
                 file_links.append((file_name, full_path))
 
-            if len(paths) > 8:
-                file_links.append((f"... and {len(paths) - 8} more files", ""))
+            if len(output_files) > 8:
+                file_links.append((f"... and {len(output_files) - 8} more files", ""))
 
-        elif step_name == "kpi_generate" and step_status in ["ok", "success"]:
+        elif step_name == "artifacts_to_kpis" and step_status in ["ok", "success"]:
             output_file = step_info.get("output_file", "")
             if output_file:
+                full_path = _get_full_path(output_file)
                 file_name = Path(output_file).name
-                file_links.append((f"📈 {file_name}", output_file))
+                file_links.append((f"📈 {file_name}", full_path))
 
-        elif step_name == "ai_eval_export" and step_status in ["ok", "success"]:
+        elif step_name == "kpis_to_csv" and step_status in ["ok", "success"]:
             output_file = step_info.get("output_file", "")
             if output_file:
+                full_path = _get_full_path(output_file)
                 file_name = Path(output_file).name
-                file_links.append((f"🤖 {file_name}", output_file))
+                file_links.append((f"📊 {file_name}", full_path))
+
+        elif step_name == "artifacts_to_ai_data" and step_status in ["ok", "success"]:
+            output_file = step_info.get("output_file", "")
+            if output_file:
+                full_path = _get_full_path(output_file)
+                file_name = Path(output_file).name
+                file_links.append((f"🤖 {file_name}", full_path))
+
+        elif step_name == "analyse_kpis" and step_status in ["ok", "success"]:
+            output_file = step_info.get("output_file", "")
+            if output_file:
+                full_path = _get_full_path(output_file)
+                file_name = Path(output_file).name
+                file_links.append((f"📊 {file_name}", full_path))
 
         if file_links:
             html_content += (

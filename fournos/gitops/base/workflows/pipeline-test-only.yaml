@@ -37,6 +37,7 @@ spec:
           value: 00__preflight
 
     - name: 01-test
+      runAfter: [00-preflight]
       taskRef:
         name: forge-step
         kind: Task

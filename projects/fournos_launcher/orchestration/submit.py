@@ -4,15 +4,19 @@ import pathlib
 import signal
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime
 
 import yaml
 
+from projects.core.ci_entrypoint.prepare_ci import format_duration
+from projects.core.dsl.runtime import TaskExecutionError
 from projects.core.dsl.utils.k8s import sanitize_k8s_name
+from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
 from projects.core.library.run_parallel import Parallel
-from projects.core.notifications.send import get_ci_link
+from projects.core.notifications.send import get_ocpci_link, send_notification
 from projects.fournos_launcher.orchestration import job_management, pr_args
 from projects.fournos_launcher.toolbox.cleanup_fjob.main import (
     run as cleanup_fjob,
@@ -57,32 +61,30 @@ def _setup_signal_handlers():
         logger.warning(f"Failed to set up FOURNOS signal handlers: {e}")
 
 
-def generate_notification_files():
-    """Generate NOTIFICATION.html and NOTIFICATION.md files with job artifacts information."""
-    artifact_dir = pathlib.Path(env.ARTIFACT_DIR)
+def send_github_notification(
+    success: bool,
+    job_type: str = "single",
+    start_time: float | None = None,
+    error: Exception | None = None,
+):
+    """Send a simplified GitHub notification with essential test information."""
+    try:
+        artifact_dir = pathlib.Path(env.ARTIFACT_DIR)
 
-    logger.info("Generating notification files with job artifacts information")
+        # 1. Test status: green/red flag
+        status_flag = "🟢" if success else "🔴"
 
-    # Search for job files under fournos_jobs/* and parse for MLflow info and status
-    mlflow_urls = []
-    job_status_info = []
-    job_files = []
+        # 2. Get project and job configuration
+        project_name = config.project.get_config("ci_job.project")
+        job_args = config.project.get_config("ci_job.args")
 
-    for job_file in artifact_dir.glob("**/fournos_jobs/*"):
-        if job_file.is_file() and job_file.name.endswith("-final-status.yaml"):
+        # 3. Link to test results (MLflow URL if available)
+        test_results_link = None
+        for job_file in artifact_dir.glob("**/fournos_jobs/*-final-status.yaml"):
             try:
                 with open(job_file) as f:
                     status_data = yaml.safe_load(f)
 
-                # Extract job status info (message and phase)
-                job_status = status_data.get("status", {})
-                if job_status.get("message") or job_status.get("phase"):
-                    status_message = job_status.get("message", "")
-                    status_phase = job_status.get("phase", "Unknown")
-                    job_name = status_data.get("metadata", {}).get("name", job_file.stem)
-                    job_status_info.append((job_name, status_phase, status_message))
-
-                # Extract MLflow run URL if available
                 mlflow_info = (
                     status_data.get("status", {})
                     .get("engineStatus", {})
@@ -98,135 +100,100 @@ def generate_notification_files():
                     and mlflow_info.get("status") == "success"
                     and mlflow_info.get("run_url")
                 ):
-                    run_url = mlflow_info["run_url"]
-                    run_name = mlflow_info.get("run_name", "MLflow run")
-                    experiment_name = mlflow_info.get("experiment_name", "experiment")
-                    mlflow_urls.append((run_name, run_url, experiment_name))
-                    logger.info(f"Found MLflow URL in {job_file.name}: {run_url}")
+                    test_results_link = f"[Test Results]({mlflow_info['run_url']})"
+                    break
+            except Exception:
+                continue
 
-                # Always also include a link to the raw job file for reference
-                rel_path = job_file.relative_to(artifact_dir)
-                ci_link = get_ci_link(str(rel_path), is_raw_file=True)
-                job_files.append((job_file.name, ci_link))
+        if not test_results_link:
+            test_results_link = "Test results not available"
 
+        # Read test configuration from pr_config.txt
+        pr_config_content = "Configuration not available"
+        metadata_dir = ci_lib.get_ci_metadata_dir()
+        pr_config_file = metadata_dir / "pr_config.txt"
+        if pr_config_file.exists():
+            try:
+                with open(pr_config_file, encoding="utf-8") as f:
+                    pr_config_content = f.read().strip()
             except Exception as e:
-                logger.warning("Failed to parse job status from %s: %s", job_file, e)
-                # On parse error, fall back to showing the job file link
-                rel_path = job_file.relative_to(artifact_dir)
-                ci_link = get_ci_link(str(rel_path), is_raw_file=True)
-                job_files.append((job_file.name, ci_link))
-        elif job_file.is_file():
-            # Non-status files, just show as links
-            rel_path = job_file.relative_to(artifact_dir)
-            ci_link = get_ci_link(str(rel_path), is_raw_file=True)
-            job_files.append((job_file.name, ci_link))
+                logger.warning(f"Failed to read pr_config.txt: {e}")
+                pr_config_content = f"Error reading configuration: {e}"
 
-    # Search for log files under task_logs/*
-    log_files = []
-    for log_file in artifact_dir.glob("**/task_logs/*"):
-        if log_file.is_file():
-            # Get relative path from artifact_dir for the CI link
-            rel_path = log_file.relative_to(artifact_dir)
-            # Generate absolute CI link for the log file
-            ci_link = get_ci_link(str(rel_path), is_raw_file=True)
-            log_files.append((log_file.name, ci_link))
+        # Get various CI links
+        ocpci_results_link = get_ocpci_link("", is_raw_file=False, is_dir=True)
+        execution_logs_link = get_ocpci_link("run.log", is_raw_file=True)
 
-    if mlflow_urls or job_status_info or job_files or log_files:
-        if mlflow_urls:
-            logger.info(f"Found {len(mlflow_urls)} MLflow runs")
-        if job_status_info:
-            logger.info(f"Found {len(job_status_info)} job status summaries")
-        if job_files:
-            logger.info(f"Found {len(job_files)} job files")
-        if log_files:
-            logger.info(f"Found {len(log_files)} log files")
+        # Collect individual task log files
+        task_log_links = []
+        for log_file in artifact_dir.glob("**/task_logs/*"):
+            if log_file.is_file():
+                rel_path = log_file.relative_to(artifact_dir)
+                ci_link = get_ocpci_link(str(rel_path), is_raw_file=True)
+                task_log_links.append(f"  - [{log_file.name}]({ci_link})")
 
-        # Generate HTML notification for GitHub
-        html_content = ""
+        # Format task logs section
+        if task_log_links:
+            task_logs_section = "* Task logs:\n" + "\n".join(task_log_links)
+        else:
+            task_logs_dir_link = get_ocpci_link("task_logs", is_raw_file=False, is_dir=True)
+            task_logs_section = f"* [Task logs]({task_logs_dir_link})"
 
-        if job_status_info:
-            html_content += "• **FOURNOS Job Status**:\n"
-            for job_name, phase, message in job_status_info:
-                status_emoji = "✅" if phase == "Succeeded" else "❌"
-                html_content += f"  - {status_emoji} **{job_name}**: {phase}"
-                if message:
-                    html_content += f" - {message}"
-                html_content += "\n"
+        # Calculate duration if start_time is provided
+        duration_str = ""
+        if start_time is not None:
+            end_time = time.time()
+            duration_seconds = int(end_time - start_time)
+            duration_str = f" after {format_duration(duration_seconds)}"
 
-        if mlflow_urls:
-            if html_content:
-                html_content += "\n"
-            html_content += "• **MLflow Tracking**:\n"
-            for run_name, run_url, experiment_name in mlflow_urls:
-                html_content += f"  - [{run_name} ({experiment_name})]({run_url})\n"
+        # Build structured notification
+        presets = " ".join(job_args) if job_args else ""
+        status_verb = "succeeded" if success else "failed"
 
-        if job_files:
-            if html_content:
-                html_content += "\n"
-            html_content += "• **FOURNOS Job Details**:\n"
-            for job_name, job_url in job_files:
-                html_content += f"  - [{job_name}]({job_url})\n"
+        # Include error details if provided
+        error_section = ""
+        if error is not None:
+            # Extract clean error message from TaskExecutionError if needed
+            if isinstance(error, TaskExecutionError) and error.original_exception:
+                clean_error_name = type(error.original_exception).__name__
+                clean_error_msg = str(error.original_exception)
+                error_section = f"\n**Error:** `{clean_error_name}: {clean_error_msg}`\n"
+            else:
+                error_section = f"\n**Error:** `{type(error).__name__}: {str(error)}`\n"
 
-        if log_files:
-            if html_content:
-                html_content += "\n"
-            html_content += "• **Task Logs**:\n"
-            for log_name, log_url in log_files:
-                html_content += f"  - [{log_name}]({log_url})\n"
+        notification_status = f"""<details>
+<summary>{status_flag} Submission of <code>{project_name} {presets}</code> {status_verb} <code>{duration_str.strip()}</code> {status_flag}</summary>
 
-        html_file = artifact_dir / "NOTIFICATION.html"
+* [OCPCI Test results]({ocpci_results_link})
+{task_logs_section}
+* [Execution logs]({execution_logs_link})
+* {test_results_link.replace("[Test Results]", "[MLFlow Test Results]")}
+
+</details>
+{error_section}
+```
+{pr_config_content}
+```"""
+
+        # Write simplified notification to file for notification system pickup
         try:
-            with open(html_file, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            logger.info(f"Generated GitHub notification: {html_file}")
-        except Exception as e:
-            logger.warning(f"Failed to write NOTIFICATION.html: {e}")
+            notification_file = artifact_dir / "NOTIFICATION-github.md"
+            with open(notification_file, "w", encoding="utf-8") as f:
+                f.write(notification_status)
+            logger.info(f"Created notification content for {job_type} job")
+        except Exception as file_error:
+            logger.warning(f"Failed to write notification file: {file_error}")
+            return
 
-        # Generate Markdown notification for Slack
-        md_content = ""
-
-        if job_status_info:
-            md_content += "• *FOURNOS Job Status*:\n"
-            for job_name, phase, message in job_status_info:
-                status_emoji = ":white_check_mark:" if phase == "Succeeded" else ":x:"
-                md_content += f"  - {status_emoji} *{job_name}*: {phase}"
-                if message:
-                    md_content += f" - {message}"
-                md_content += "\n"
-
-        if mlflow_urls:
-            if md_content:
-                md_content += "\n"
-            md_content += "• *MLflow Tracking*:\n"
-            for run_name, run_url, experiment_name in mlflow_urls:
-                md_content += f"  - <{run_url}|{run_name} ({experiment_name})>\n"
-
-        if job_files:
-            if md_content:
-                md_content += "\n"
-            md_content += "• *FOURNOS Job Details*:\n"
-            for job_name, job_url in job_files:
-                md_content += f"  - <{job_url}|{job_name}>\n"
-
-        if log_files:
-            if md_content:
-                md_content += "\n"
-            md_content += "• *Task Logs*:\n"
-            for log_name, log_url in log_files:
-                # For Slack, use the absolute CI link
-                md_content += f"  - <{log_url}|{log_name}>\n"
-
-        md_file = artifact_dir / "NOTIFICATION.md"
+        # Send notification through notification system
         try:
-            with open(md_file, "w", encoding="utf-8") as f:
-                f.write(md_content)
-            logger.info(f"Generated Slack notification: {md_file}")
-        except Exception as e:
-            logger.warning(f"Failed to write NOTIFICATION.md: {e}")
-    else:
-        logger.info(
-            "No job status, MLflow runs, job files, or log files found, skipping notification generation"
-        )
+            send_notification(message=notification_status, github=True, slack=False, dry_run=False)
+            logger.info(f"Sent GitHub notification for {job_type} job")
+        except Exception as send_error:
+            logger.warning(f"Failed to send notification: {send_error}")
+
+    except Exception as e:
+        logger.warning(f"Failed to send GitHub notification: {e}")
 
 
 def init():
@@ -255,198 +222,221 @@ def prepare_env():
 
 
 def submit_job():
-    # Set up signal handlers for graceful job shutdown on interruption
-    _setup_signal_handlers()
+    # Capture start time for duration calculation
+    start_time = time.time()
 
-    overrides = {}
-    overrides.update(config.project.get_config("overrides"))
-    overrides.update(config.project.get_config("extra_overrides"))
+    try:
+        # Set up signal handlers for graceful job shutdown on interruption
+        _setup_signal_handlers()
 
-    # Build env dict from pass lists
-    env_dict = {}
-    env_pass_lists = config.project.get_config("fournos.job.env", print=False)
-    for _, pass_list in (env_pass_lists or {}).items():
-        for env_var in pass_list:
-            if env_var in os.environ:
-                env_dict[env_var] = os.environ[env_var]
+        overrides = {}
+        overrides.update(config.project.get_config("overrides"))
+        overrides.update(config.project.get_config("extra_overrides"))
 
-    # Add extra environment variables
-    extra_env = config.project.get_config("fournos.job.extra_env", {}, print=False)
-    env_dict.update(extra_env)
+        # Build env dict from pass lists
+        env_dict = {}
+        env_pass_lists = config.project.get_config("fournos.job.env", print=False)
+        for _, pass_list in (env_pass_lists or {}).items():
+            for env_var in pass_list:
+                if env_var in os.environ:
+                    env_dict[env_var] = os.environ[env_var]
 
-    # Update display name with project and args
-    project_name = config.project.get_config("ci_job.project")
-    job_args = config.project.get_config("ci_job.args")
+        # Add extra environment variables
+        extra_env = config.project.get_config("fournos.job.extra_env", {}, print=False)
+        env_dict.update(extra_env)
 
-    # job_args is always a list, format accordingly
-    args_str = " ".join(job_args)
+        # Update display name with project and args
+        project_name = config.project.get_config("ci_job.project")
+        job_args = config.project.get_config("ci_job.args")
 
-    display_name = f"{project_name} {args_str}".strip()
-    config.project.set_config("fournos.job.display_name", display_name)
-    logger.info(f"Set job display name: {display_name}")
+        # job_args is always a list, format accordingly
+        args_str = " ".join(job_args)
 
-    # Validate required configuration before job submission
-    cluster_name = config.project.get_config("cluster.name")
-    if not cluster_name:
-        raise ValueError(
-            "cluster.name must be configured in config.yaml - cannot submit job without target cluster"
-        )
+        display_name = f"{project_name} {args_str}".strip()
+        config.project.set_config("fournos.job.display_name", display_name)
+        logger.info(f"Set job display name: {display_name}")
 
-    # Get GPU hardware configuration
-    gpu_count = config.project.get_config("fournos.job.hardware.gpu_count")
-    gpu_type = config.project.get_config("fournos.job.hardware.gpu_type")
+        # Validate required configuration before job submission
+        cluster_name = config.project.get_config("cluster.name")
+        if not cluster_name:
+            raise ValueError(
+                "/cluster (cluster.name) must be set - cannot submit job without target cluster"
+            )
 
-    # Validate GPU configuration - both must be present or both must be missing
-    gpu_config_present = (gpu_count is not None, gpu_type is not None)
-    if gpu_config_present[0] != gpu_config_present[1]:
-        raise ValueError(
-            "GPU configuration invalid: both gpu_count and gpu_type must be specified together, "
-            f"or both must be null. Got gpu_count={gpu_count}, gpu_type={gpu_type}"
-        )
+        # Get GPU hardware configuration
+        gpu_count = config.project.get_config("fournos.job.hardware.gpu_count")
+        gpu_type = config.project.get_config("fournos.job.hardware.gpu_type")
 
-    # Check if parallel jobs are configured
-    parallel_jobs = config.project.get_config("fournos_launcher.parallel_jobs", {}, print=False)
-    parallel_job_configs = []
+        # Validate GPU configuration - both must be present or both must be missing
+        gpu_config_present = (gpu_count is not None, gpu_type is not None)
+        if gpu_config_present[0] != gpu_config_present[1]:
+            raise ValueError(
+                "GPU configuration invalid: both gpu_count and gpu_type must be specified together, "
+                f"or both must be null. Got gpu_count={gpu_count}, gpu_type={gpu_type}"
+            )
 
-    for idx, job_args_list in parallel_jobs.items():
-        if job_args_list:  # Non-empty list
-            parallel_job_configs.append((idx, job_args_list))
+        # Check if parallel jobs are configured
+        parallel_jobs = config.project.get_config("fournos_launcher.parallel_jobs", {}, print=False)
+        parallel_job_configs = []
 
-    # Prepare common submit_and_wait arguments
-    submit_kwargs = {
-        "cluster_name": cluster_name,
-        "project": config.project.get_config("ci_job.project"),
-        "variables_overrides": overrides,
-        "namespace": config.project.get_config("fournos.namespace"),
-        "owner": config.project.get_config("fournos.job.owner"),
-        "pipeline_name": config.project.get_config("fournos.job.pipeline_name"),
-        "env": env_dict,
-        "ci_label": config.project.get_config("fournos.job.ci_label"),
-        "exclusive": config.project.get_config("fournos.job.exclusive"),
-        "gpu_count": gpu_count,
-        "gpu_type": gpu_type,
-    }
+        for idx, job_args_list in parallel_jobs.items():
+            if job_args_list:  # Non-empty list
+                parallel_job_configs.append((idx, job_args_list))
 
-    if parallel_job_configs:
-        logger.info(
-            f"Found {len(parallel_job_configs)} parallel job configurations, launching in parallel"
-        )
+        # Prepare common submit_and_wait arguments
+        submit_kwargs = {
+            "cluster_name": cluster_name,
+            "project": config.project.get_config("ci_job.project"),
+            "variables_overrides": overrides,
+            "namespace": config.project.get_config("fournos.namespace"),
+            "owner": config.project.get_config("fournos.job.owner"),
+            "pipeline_name": config.project.get_config("fournos.job.pipeline_name"),
+            "env": env_dict,
+            "ci_label": config.project.get_config("fournos.job.ci_label"),
+            "exclusive": config.project.get_config("fournos.job.exclusive"),
+            "gpu_count": gpu_count,
+            "gpu_type": gpu_type,
+        }
 
-        # Generate timestamp for parallel job names (shared across all parallel jobs)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        raw_name = f"forge-{project_name}-{timestamp}"
-        raw_name = sanitize_k8s_name(raw_name)
+        if parallel_job_configs:
+            logger.info(
+                f"Found {len(parallel_job_configs)} parallel job configurations, launching in parallel"
+            )
 
-        # Track failures and job names across parallel jobs
-        failure_lock = threading.Lock()
-        has_failures = [False]  # Use list for mutable reference
-        submitted_job_names = []
-        submitted_job_lock = threading.Lock()
+            # Generate timestamp for parallel job names (shared across all parallel jobs)
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            raw_name = f"forge-{project_name}-{timestamp}"
+            raw_name = sanitize_k8s_name(raw_name)
 
-        def submit_parallel_job(job_index, job_args_list):
-            """Submit a single parallel job with specific args."""
-            # Combine base ci_job.args with parallel job-specific args
-            base_args = config.project.get_config("ci_job.args")
-            combined_args = base_args + job_args_list
+            # Track failures and job names across parallel jobs
+            failure_lock = threading.Lock()
+            has_failures = [False]  # Use list for mutable reference
+            submitted_job_names = []
+            submitted_job_lock = threading.Lock()
 
-            logger.info(f"Submitting parallel job {job_index} with args: {combined_args}")
+            def submit_parallel_job(job_index, job_args_list):
+                """Submit a single parallel job with specific args."""
+                # Combine base ci_job.args with parallel job-specific args
+                base_args = config.project.get_config("ci_job.args")
+                combined_args = base_args + job_args_list
 
-            # Create display name consistent with single job format
-            args_str = " ".join(combined_args)
-            parallel_display_name = f"{project_name} {args_str} (job {job_index})".strip()
+                logger.info(f"Submitting parallel job {job_index} with args: {combined_args}")
 
-            # Create unique job name with timestamp and index
-            unique_job_name = sanitize_k8s_name(f"{raw_name}-{job_index}")
+                # Create display name consistent with single job format
+                args_str = " ".join(combined_args)
+                parallel_display_name = f"{project_name} {args_str} (job {job_index})".strip()
+
+                # Create unique job name with timestamp and index
+                unique_job_name = sanitize_k8s_name(f"{raw_name}-{job_index}")
+
+                try:
+                    # Track the job name for cleanup (job gets submitted even if waiting fails)
+                    with submitted_job_lock:
+                        submitted_job_names.append(unique_job_name)
+
+                    # Create job-specific status directory
+                    job_status_dest = env.ARTIFACT_DIR / unique_job_name
+                    job_status_dest.mkdir(parents=True, exist_ok=True)
+
+                    submit_and_wait(
+                        **submit_kwargs,
+                        args=combined_args,
+                        display_name=parallel_display_name,
+                        job_name=unique_job_name,
+                        artifact_dirname_suffix=str(job_index),
+                        status_dest=job_status_dest,
+                    )
+                    logger.info(f"Parallel job {job_index} completed successfully")
+                except Exception as e:
+                    logger.error(f"Parallel job {job_index} failed: {e}")
+                    traceback.print_exc()
+
+                    # Register failure in thread-safe way
+                    with failure_lock:
+                        has_failures[0] = True
+
+            # Submit all parallel jobs with exit_on_exception=False to let others complete
+            with Parallel("parallel_jobs", exit_on_exception=False) as parallel:
+                for job_index, job_args_list in parallel_job_configs:
+                    parallel.delayed(submit_parallel_job, job_index, job_args_list)
+
+            # Cleanup all submitted jobs
+            if submitted_job_names:
+                logger.info(
+                    f"Cleaning up {len(submitted_job_names)} parallel jobs: {', '.join(submitted_job_names)}"
+                )
+                for job_name in submitted_job_names:
+                    try:
+                        cleanup_fjob(
+                            job_name=job_name,
+                            namespace=config.project.get_config("fournos.namespace"),
+                        )
+                        logger.info(f"Cleaned up job: {job_name}")
+                    except Exception as cleanup_e:
+                        logger.warning(f"Failed to cleanup job {job_name}: {cleanup_e}")
+
+            # Send simplified GitHub notification instead of generating detailed files
+            send_github_notification(
+                success=not has_failures[0], job_type="parallel", start_time=start_time
+            )
+
+            # Check if any jobs failed
+            if has_failures[0]:
+                logger.error("One or more parallel jobs failed")
+                return 1
+            else:
+                logger.info("All parallel jobs completed successfully")
+                return 0
+        else:
+            # No parallel jobs configured, run single job as before
+            logger.info("No parallel jobs configured, running single job")
+
+            # Generate unique job name for single job
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            single_job_name = sanitize_k8s_name(f"forge-{project_name}-{timestamp}")
 
             try:
-                # Track the job name for cleanup (job gets submitted even if waiting fails)
-                with submitted_job_lock:
-                    submitted_job_names.append(unique_job_name)
-
-                # Create job-specific status directory
-                job_status_dest = env.ARTIFACT_DIR / unique_job_name
-                job_status_dest.mkdir(parents=True, exist_ok=True)
-
                 submit_and_wait(
                     **submit_kwargs,
-                    args=combined_args,
-                    display_name=parallel_display_name,
-                    job_name=unique_job_name,
-                    artifact_dirname_suffix=str(job_index),
-                    status_dest=job_status_dest,
+                    args=config.project.get_config("ci_job.args"),
+                    display_name=config.project.get_config("fournos.job.display_name"),
+                    job_name=single_job_name,
+                    status_dest=env.ARTIFACT_DIR,
                 )
-                logger.info(f"Parallel job {job_index} completed successfully")
+                logger.info("Single job completed successfully")
+                return_code = 0
             except Exception as e:
-                logger.error(f"Parallel job {job_index} failed: {e}")
-                traceback.print_exc()
+                logger.error(f"Single job failed: {e}")
+                return_code = 1
+                job_error = e
+            else:
+                job_error = None
 
-                # Register failure in thread-safe way
-                with failure_lock:
-                    has_failures[0] = True
-
-        # Submit all parallel jobs with exit_on_exception=False to let others complete
-        with Parallel("parallel_jobs", exit_on_exception=False) as parallel:
-            for job_index, job_args_list in parallel_job_configs:
-                parallel.delayed(submit_parallel_job, job_index, job_args_list)
-
-        # Cleanup all submitted jobs
-        if submitted_job_names:
-            logger.info(
-                f"Cleaning up {len(submitted_job_names)} parallel jobs: {', '.join(submitted_job_names)}"
+            # Send simplified GitHub notification
+            send_github_notification(
+                success=(return_code == 0),
+                job_type="single",
+                start_time=start_time,
+                error=job_error,
             )
-            for job_name in submitted_job_names:
-                try:
-                    cleanup_fjob(
-                        job_name=job_name,
-                        namespace=config.project.get_config("fournos.namespace"),
-                    )
-                    logger.info(f"Cleaned up job: {job_name}")
-                except Exception as cleanup_e:
-                    logger.warning(f"Failed to cleanup job {job_name}: {cleanup_e}")
 
-        # Generate notification files regardless of success/failure
-        generate_notification_files()
+            # Cleanup the job
+            try:
+                cleanup_fjob(
+                    job_name=single_job_name,
+                    namespace=config.project.get_config("fournos.namespace"),
+                )
+                logger.info(f"Cleaned up job: {single_job_name}")
+            except Exception as cleanup_e:
+                logger.warning(f"Failed to cleanup job {single_job_name}: {cleanup_e}")
 
-        # Check if any jobs failed
-        if has_failures[0]:
-            logger.error("One or more parallel jobs failed")
-            return 1
-        else:
-            logger.info("All parallel jobs completed successfully")
-            return 0
-    else:
-        # No parallel jobs configured, run single job as before
-        logger.info("No parallel jobs configured, running single job")
+            return return_code
 
-        # Generate unique job name for single job
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        single_job_name = sanitize_k8s_name(f"forge-{project_name}-{timestamp}")
+    except Exception as e:
+        logger.error(f"Submit job failed with exception: {e}")
 
-        try:
-            submit_and_wait(
-                **submit_kwargs,
-                args=config.project.get_config("ci_job.args"),
-                display_name=config.project.get_config("fournos.job.display_name"),
-                job_name=single_job_name,
-                status_dest=env.ARTIFACT_DIR,
-            )
-            logger.info("Single job completed successfully")
-            return_code = 0
-        except Exception as e:
-            logger.error(f"Single job failed: {e}")
-            return_code = 1
+        # Send notification with error details
+        send_github_notification(success=False, job_type="single", start_time=start_time, error=e)
 
-        # Generate notification files regardless of success/failure
-        generate_notification_files()
-
-        # Cleanup the job
-        try:
-            cleanup_fjob(
-                job_name=single_job_name,
-                namespace=config.project.get_config("fournos.namespace"),
-            )
-            logger.info(f"Cleaned up job: {single_job_name}")
-        except Exception as cleanup_e:
-            logger.warning(f"Failed to cleanup job {single_job_name}: {cleanup_e}")
-
-        return return_code
+        # Re-raise the exception for proper error handling by the CI system
+        raise

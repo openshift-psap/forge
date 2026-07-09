@@ -112,11 +112,12 @@ def test_failure_skips_pending_but_runs_always(monkeypatch):
     assert str(ei.value.__cause__) == "stop"
     assert events == ["a1", "a2", "a4"]
 
-    # After execute_tasks, find nested task.log and prove @always body ran (return logged).
-    candidates = list(env.ARTIFACT_DIR.glob("*__*/task.log"))
-    assert candidates, "expected nested artifact task.log"
-    task_log = max(candidates, key=lambda p: p.stat().st_mtime)
-    assert "TASK_A4_ALWAYS_RETURN_VALUE" in task_log.read_text(encoding="utf-8")
+    # After execute_tasks, find nested task-always.log and prove @always body ran (return logged).
+    # Since this is a failure scenario, @always task logs are split into task-always.log
+    always_candidates = list(env.ARTIFACT_DIR.glob("*__*/task-always.log"))
+    assert always_candidates, "expected nested artifact task-always.log"
+    always_log = max(always_candidates, key=lambda p: p.stat().st_mtime)
+    assert "TASK_A4_ALWAYS_RETURN_VALUE" in always_log.read_text(encoding="utf-8")
 
 
 def test_when_skips_task():

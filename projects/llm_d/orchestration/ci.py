@@ -15,7 +15,12 @@ from projects.core.agentic.on_failure import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
-from projects.core.library.export import caliper_export_entrypoint
+from projects.core.library.export import (
+    caliper_agentic_list_vaults,
+    caliper_export_entrypoint,
+    caliper_export_list_optional_vaults,
+    caliper_export_list_vaults,
+)
 from projects.core.library.replot import caliper_replot_entrypoint
 from projects.llm_d.orchestration.cleanup_phase import run as cleanup_toolbox_run
 from projects.llm_d.orchestration.preflight_phase import run as preflight_toolbox_run
@@ -30,11 +35,6 @@ def init():
     env.init()
     run.init()
     config.init(Path(__file__).parent)
-
-
-def list_vaults() -> list[str]:
-    """List all vaults (includes both mandatory and optional)."""
-    return vault.phase_vault_list_all()
 
 
 @click.group(cls=ci_lib.HelpfulGroup)
@@ -54,7 +54,7 @@ def main(ctx):
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def prepare(ctx) -> int:
     """Prepare phase - Set up environment and dependencies."""
@@ -63,7 +63,7 @@ def prepare(ctx) -> int:
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def preflight(ctx) -> int:
     """Preflight check phase - Validate required CRDs exist before testing."""
@@ -72,7 +72,7 @@ def preflight(ctx) -> int:
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def test(ctx) -> int:
     """Test phase - Execute the main testing logic."""
@@ -84,7 +84,7 @@ def test(ctx) -> int:
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def pre_cleanup(ctx) -> int:
     """Cleanup phase - Clean up resources and finalize."""
@@ -98,7 +98,7 @@ def pre_cleanup(ctx) -> int:
 
 @main.command()
 @click.pass_context
-@ci_lib.safe_ci_command
+@ci_lib.safe_ci_entrypoint
 @agent_review_on_failure
 def post_cleanup(ctx) -> int:
     """Cleanup phase - Clean up resources and finalize."""
@@ -110,7 +110,16 @@ def post_cleanup(ctx) -> int:
     return 0
 
 
-main.add_command(create_fournos_resolve_entrypoint(vault_list_func=vault.phase_vault_list_all))
+main.add_command(
+    create_fournos_resolve_entrypoint(
+        vault_list_funcs=[
+            vault.phase_vault_list_all,
+            caliper_export_list_vaults,
+            caliper_export_list_optional_vaults,
+            caliper_agentic_list_vaults,
+        ]
+    )
+)
 main.add_command(caliper_export_entrypoint)
 main.add_command(caliper_replot_entrypoint)
 

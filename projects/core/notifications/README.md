@@ -4,13 +4,7 @@ This directory contains the notifications system that integrates with the run_ci
 
 ## Overview
 
-The notifications system automatically sends notifications when CI operations complete, supporting both GitHub PR comments and Slack messages.
-
-## Integration Points
-
-### CI Entrypoint Integration
-
-The notifications are automatically triggered from `projects/core/ci_entrypoint/prepare_ci.py` in the `postchecks()` function, which is called after every CI operation through `run_ci.py`.
+The notifications system provides a generic interface for sending notifications to GitHub PR comments and Slack messages. It can be used by any component that needs to send notifications.
 
 ### Supported Platforms
 
@@ -49,31 +43,34 @@ run my_project test
 ## Architecture
 
 ```
-run_ci.py
-├── prepare_ci.prepare() (before execution)
-├── [CI operation execution]
-└── prepare_ci.postchecks() (after execution)
-    └── send_job_completion_notification()
-        ├── GitHub: send_job_completion_notification_to_github()
-        └── Slack: send_job_completion_notification_to_slack()
+Any calling component
+└── send_notification(message, github=True, slack=False)
+    ├── GitHub: send_notification_to_github()
+    └── Slack: send_notification_to_slack()
+```
+
+### Usage Example
+
+```python
+from projects.core.notifications.send import send_notification
+
+# Send a custom notification
+success = send_notification(
+    message="🟢 Test completed successfully\nResults: https://example.com/results",
+    github=True,
+    slack=False,
+    dry_run=False
+)
 ```
 
 ## Message Format
 
-### Success Notifications
-- GitHub: Green circle emoji with success message and links to artifacts
-- Slack: Check mark emoji with formatted success details
+The system accepts arbitrary message content and sends it directly to the configured platforms:
 
-### Failure Notifications
-- GitHub: Red circle emoji with failure details and failure logs
-- Slack: Error emoji with failure summary and artifact links
+- **GitHub**: Messages are posted as PR comments using Markdown formatting
+- **Slack**: Messages are posted as threaded messages using Slack's formatting
 
-Both formats include:
-- Test configuration (from variable_overrides.yaml)
-- Links to test results and reports
-- Failure details (if applicable)
-- Execution duration
-- CI environment context
+The calling component is responsible for formatting the message content appropriately for the target platform.
 
 ## Dependencies
 

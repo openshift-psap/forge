@@ -34,9 +34,9 @@ class SkeletonDefaultPlugin(PostProcessingPlugin):
             "throughput_chart": ThroughputChartPlot,
         }
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         """Parse test nodes using the skeleton parser."""
-        return self.parser.parse(base_dir, nodes)
+        return self.parser.parse(nodes)
 
     def visualize(
         self,
@@ -67,7 +67,7 @@ class SkeletonDefaultPlugin(PostProcessingPlugin):
         """Compute KPI values from the unified model."""
         return self.kpi_handler.compute_kpis(model)
 
-    def build_ai_eval_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
+    def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
         """Build AI evaluation payload from the unified model."""
         return {
             "schema_version": "1",

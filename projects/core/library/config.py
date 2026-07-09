@@ -292,8 +292,9 @@ class Config:
 
         self.save_config()
 
-    def save_config(self):
-        with open(self.config_path, "w") as f:
+    def save_config(self, dest=None):
+        config_path = dest if dest is not None else self.config_path
+        with open(config_path, "w") as f:
             yaml.dump(self.config, f, indent=4, default_flow_style=False, sort_keys=False)
 
     def resolve_reference(self, value, handled_secretly=False):

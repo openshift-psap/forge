@@ -16,7 +16,7 @@ benchmarks:
     outputs: json
     args:
       backend_type: openai_http
-      rate: 1
+      rate: [1, 4, 8]
       rate_type: concurrent
       max_seconds: 120
       sample_requests: 20

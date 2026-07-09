@@ -33,7 +33,7 @@ def run_parse(
     """
     Run full parse or load valid cache.
 
-    plugin must implement parse(base_dir, nodes).
+    plugin must implement parse(nodes).
     """
     base_dir = base_dir.resolve()
 
@@ -70,7 +70,7 @@ def run_parse(
             cache_refs.append(str(cache_file))
         else:
             # Parse this test base
-            result = parse_fn(base_dir, [node])  # Parse just this node
+            result = parse_fn([node])  # Parse just this node
             records = result.records
             warnings = getattr(result, "warnings", [])
 

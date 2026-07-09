@@ -14,6 +14,10 @@ main = CIApp(
             func="projects.mcp_gateway.orchestration.prepare_phase:run",
             help="Prepare phase - Install platform at MCP_GATEWAY_VERSION.",
         ),
+        "preflight": PhaseSpec(
+            func="projects.mcp_gateway.orchestration.preflight_phase:run",
+            help="Preflight check phase - Validate cluster readiness before testing.",
+        ),
         "test": PhaseSpec(
             func="projects.mcp_gateway.orchestration.test_phase:run",
             help="Test phase - Execute load tests across the experiment matrix.",

@@ -25,8 +25,8 @@ class RhaiisParser:
     def __init__(self) -> None:
         self._base_parser = GuideLLMParser()
 
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
-        base_result = self._base_parser.parse(base_dir, nodes)
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+        base_result = self._base_parser.parse(nodes)
 
         enriched_records = []
         for record in base_result.records:
@@ -34,7 +34,7 @@ class RhaiisParser:
                 enriched_records.append(record)
                 continue
 
-            node = _find_node_for_record(record, nodes, base_dir)
+            node = _find_node_for_record(record, nodes)
             if node:
                 extra = _extract_extra_metrics(node)
                 merged_metrics = {**record.metrics, **extra}
@@ -56,11 +56,9 @@ class RhaiisParser:
 def _find_node_for_record(
     record: UnifiedResultRecord,
     nodes: list[TestBaseNode],
-    base_dir: Path,
 ) -> TestBaseNode | None:
     for node in nodes:
-        rel = str(node.directory.relative_to(base_dir.resolve()))
-        if rel == record.test_base_path:
+        if str(node.test_path) == record.test_base_path:
             return node
     return None
 

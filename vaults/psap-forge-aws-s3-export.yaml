@@ -1,0 +1,12 @@
+env_key: PSAP_FORGE_AWS_S3_EXPORT_SECRET_PATH
+description: |
+  Vault to push data to AWS S3
+
+content:
+  aws.credentials:
+    description: |
+      AWS config file. The access key should allow exporting data to the configured S3 bucket.
+    sample: |
+      [default]
+      aws_access_key_id = AKIA...
+      aws_secret_access_key = .....

@@ -15,6 +15,7 @@ class TestBaseNode:
     directory: Path
     labels: dict[str, Any]
     artifact_paths: list[Path] = field(default_factory=list)
+    test_path: Path = field(default_factory=lambda: Path(""))  # Path relative to base_dir
 
 
 @dataclass
@@ -82,7 +83,7 @@ class PostProcessingPlugin(ABC):
     """Project plugin: parse required; other hooks optional with defaults."""
 
     @abstractmethod
-    def parse(self, base_dir: Path, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         """Parse each labeled test base into unified records."""
 
     def visualize(
@@ -104,6 +105,26 @@ class PostProcessingPlugin(ABC):
         """Return canonical-shaped KPI dicts (pre-validated)."""
         return []
 
-    def build_ai_eval_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
+    def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
         """Structured JSON for AI agent evaluation."""
         return {"schema_version": "1", "run_id": "", "metrics": {}}
+
+    def get_ai_data_artifact_files_for_test(self, test_dir: Path) -> list[str]:
+        """Return list of artifact files to copy for AI evaluation export from a specific test directory.
+
+        This method is called once per test record and should only search within the provided test_dir,
+        not across the entire base directory. This provides better security isolation.
+
+        Args:
+            test_dir: The specific test directory to search within (where __test_labels__.yaml is located)
+
+        Returns:
+            List of relative file paths from test_dir to copy for AI evaluation
+
+        Example:
+            return [
+                "003__benchmark/000__run_benchmark/artifacts/results/results.json",
+                "004__capture_service_state/artifacts/service_state.json"
+            ]
+        """
+        return []

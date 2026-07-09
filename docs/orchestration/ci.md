@@ -7,7 +7,7 @@ The CI entrypoint provides standardized CI operations for FORGE projects using C
 Each project has a `ci.py` file with:
 - Main click group for the project
 - Commands for CI phases (prepare, test, pre_cleanup)
-- Shared error handling via `@ci.safe_ci_command` decorator
+- Shared error handling via `@ci.safe_ci_entrypoint` decorator
 
 ## Standard Commands
 
@@ -40,7 +40,7 @@ or from the CI launcher:
 
 ## Error Handling
 
-All commands are wrapped with `@ci.safe_ci_command` which:
+All commands are wrapped with `@ci.safe_ci_entrypoint` which:
 - Catches exceptions and writes them to FAILURE files
 - Provides consistent exit codes
 - Maintains function metadata (name, docstring)

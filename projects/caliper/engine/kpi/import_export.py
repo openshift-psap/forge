@@ -42,6 +42,5 @@ def import_kpis_snapshot(
     return hits
 
 
-def load_kpis_jsonl(path: Path) -> list[dict[str, Any]]:
-    lines = path.read_text(encoding="utf-8").strip().splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
+def load_kpis_json(path: Path) -> list[dict[str, Any]]:
+    return json.loads(path.read_text(encoding="utf-8"))
