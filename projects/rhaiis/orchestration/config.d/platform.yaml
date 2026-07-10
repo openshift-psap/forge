@@ -52,5 +52,3 @@ cleanup:
     nfd: true
     gpu-operator-certified: true
     servicemeshoperator3: true
-    rhcl-operator: true
-    rhoai-operator: true
