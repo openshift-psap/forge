@@ -109,8 +109,13 @@ def _find_operator_csv(namespace: str, package: str) -> tuple[str | None, str | 
         log_stdout=False,
     )
     if result.returncode != 0:
+        logger.info("CSV query failed for %s in %s (rc=%d)", package, namespace, result.returncode)
         return None, None
-    for entry in result.stdout.strip().split(";"):
+    raw = result.stdout.strip()
+    logger.info(
+        "CSV query for %s in %s: %d chars, %d entries", package, namespace, len(raw), raw.count(";")
+    )
+    for entry in raw.split(";"):
         entry = entry.strip()
         if not entry:
             continue
