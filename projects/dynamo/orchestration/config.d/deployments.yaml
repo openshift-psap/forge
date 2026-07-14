@@ -3,8 +3,17 @@ defaults:
   replicas: 1
   tensor_parallelism: 1
   serving_mode: aggregated
+  router_mode: direct
   runtime_image: nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.2.1
   frontend_image: nvcr.io/nvidia/ai-dynamo/dynamo-frontend:1.2.1
+  hf_home: /opt/models
+  use_dra_resources: false
+  dra_resource_name: dra.llm-d.io/gpu-nic-pair
+  kv_transfer_config: null
+  kvbm_cpu_cache_gb: null
+  kv_block_size: "16"
+  frontend_cpu: "4"
+  router_args: []
   vllm_args:
     - --gpu-memory-utilization=0.90
     - --enable-prefix-caching
@@ -15,6 +24,25 @@ defaults:
 
 aggregated:
   serving_mode: aggregated
+
+aggregated-kv-router:
+  serving_mode: aggregated
+  router_mode: kv
+  router_args:
+    - --active-decode-blocks-threshold
+    - None
+    - --active-prefill-tokens-threshold
+    - None
+
+aggregated-kvbm:
+  serving_mode: aggregated
+  router_mode: kv
+  kvbm_cpu_cache_gb: 100
+  kv_transfer_config: '{"kv_connector":"DynamoConnector","kv_role":"kv_both"}'
+
+aggregated-dra:
+  serving_mode: aggregated
+  use_dra_resources: true
 
 disaggregated:
   serving_mode: disaggregated

@@ -37,3 +37,43 @@ benchmarks:
       rate: [32, 64, 128, 256, 512]
       data: prompt_tokens=128,output_tokens=128,turns=5,prefix_tokens=10000,prefix_count={2*rate}
       max_requests: "{10*rate}"
+
+aiperf_benchmarks:
+  mooncake-trace-2k:
+    tool: aiperf
+    timeout_seconds: 7200
+    dataset_url: https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/conversation_trace.jsonl
+    dataset_type: mooncake_trace
+    dataset_cap: 2000
+    endpoint_type: chat
+    endpoint_path: /v1/chat/completions
+    streaming: true
+    fixed_schedule: true
+    fixed_schedule_auto_offset: true
+    synthesis_max_isl: 131072
+
+  mooncake-trace-full:
+    tool: aiperf
+    timeout_seconds: 14400
+    dataset_url: https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/conversation_trace.jsonl
+    dataset_type: mooncake_trace
+    dataset_cap: null
+    endpoint_type: chat
+    endpoint_path: /v1/chat/completions
+    streaming: true
+    fixed_schedule: true
+    fixed_schedule_auto_offset: true
+    synthesis_max_isl: 131072
+
+  mooncake-toolagent:
+    tool: aiperf
+    timeout_seconds: 7200
+    dataset_url: https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/tool_agent_trace.jsonl
+    dataset_type: mooncake_trace
+    dataset_cap: 2000
+    endpoint_type: chat
+    endpoint_path: /v1/chat/completions
+    streaming: true
+    fixed_schedule: true
+    fixed_schedule_auto_offset: true
+    synthesis_max_isl: 131072

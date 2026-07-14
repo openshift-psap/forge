@@ -123,6 +123,8 @@ def do_test() -> int:
             run_smoke_request(endpoint_url=endpoint_url)
 
             run_guidellm_benchmark(endpoint_url=endpoint_url)
+
+            run_aiperf_benchmark(endpoint_url=endpoint_url)
         except Exception:
             primary_exc = sys.exc_info()
         except SignalInterrupt:
@@ -335,6 +337,42 @@ def run_guidellm_benchmark(*, endpoint_url: str) -> None:
                 pvc_size=benchmark.get("pvc_size"),
                 guidellm_args=guidellm_args,
             )
+
+
+def run_aiperf_benchmark(*, endpoint_url: str) -> None:
+    from projects.core.library import config
+    from projects.dynamo.orchestration import runtime_config
+
+    aiperf_key = config.project.get_config("runtime.aiperf_benchmark_key", None)
+    if not aiperf_key:
+        return
+
+    aiperf_config = config.project.get_config(f"workloads.aiperf_benchmarks.{aiperf_key}", None)
+    if not aiperf_config:
+        logger.warning("aiperf_benchmark_key '%s' not found in workloads config, skipping", aiperf_key)
+        return
+
+    from projects.dynamo.toolbox.run_aiperf_benchmark.main import run as run_aiperf
+
+    model_name = runtime_config.get_model_name()
+    artifact_name = f"aiperf_{slugify_identifier(aiperf_key, max_length=48)}"
+
+    with env.NextArtifactDir(artifact_name):
+        run_aiperf(
+            endpoint_url=endpoint_url,
+            model_name=model_name,
+            artifact_dir=env.ARTIFACT_DIR,
+            dataset_url=aiperf_config["dataset_url"],
+            dataset_type=aiperf_config["dataset_type"],
+            dataset_cap=aiperf_config.get("dataset_cap"),
+            endpoint_type=aiperf_config.get("endpoint_type", "chat"),
+            endpoint_path=aiperf_config.get("endpoint_path", "/v1/chat/completions"),
+            streaming=aiperf_config.get("streaming", True),
+            fixed_schedule=aiperf_config.get("fixed_schedule", True),
+            fixed_schedule_auto_offset=aiperf_config.get("fixed_schedule_auto_offset", True),
+            synthesis_max_isl=aiperf_config.get("synthesis_max_isl"),
+            namespace=runtime_config.get_namespace(),
+        )
 
 
 def capture_dynamo_state() -> None:

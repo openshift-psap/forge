@@ -10,6 +10,20 @@ disagg-smoke:
     deployment_profile: disaggregated
     benchmark_key: short
 
+aiperf-mooncake:
+  runtime:
+    model_name: Qwen/Qwen3-32B
+    deployment_profile: aggregated
+    benchmark_key: null
+    aiperf_benchmark_key: mooncake-trace-2k
+
+aiperf-mooncake-toolagent:
+  runtime:
+    model_name: Qwen/Qwen3-32B
+    deployment_profile: aggregated
+    benchmark_key: null
+    aiperf_benchmark_key: mooncake-toolagent
+
 full:
   runtime:
     model_name:
