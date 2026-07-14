@@ -34,246 +34,137 @@ def render_graph_deployment(
         "forge.openshift.io/project": "dynamo",
     })
 
-    backend_framework = deployment_profile.get("backend_framework", "vllm")
-    manifest["spec"]["backendFramework"] = backend_framework
+    p = deployment_profile
+    backend = p.get("backend_framework", "vllm")
+    manifest["spec"]["backendFramework"] = backend
 
-    serving_mode = deployment_profile.get("serving_mode", "aggregated")
-    router_mode = deployment_profile.get("router_mode", "direct")
-    runtime_image = deployment_profile["runtime_image"]
-    frontend_image = deployment_profile["frontend_image"]
-    tensor_parallelism = deployment_profile.get("tensor_parallelism", 1)
-    vllm_args = _build_vllm_args(deployment_profile.get("vllm_args", []))
-    env_vars = deployment_profile.get("env", {})
-    kv_block_size = deployment_profile.get("kv_block_size", "16")
-    use_dra_resources = deployment_profile.get("use_dra_resources", False)
-    dra_resource_name = deployment_profile.get("dra_resource_name", "dra.llm-d.io/gpu-nic-pair")
-    kv_transfer_config = deployment_profile.get("kv_transfer_config")
-    kvbm_cpu_cache_gb = deployment_profile.get("kvbm_cpu_cache_gb")
+    vllm_args = _build_vllm_args(p.get("vllm_args", []))
+    if p.get("kv_transfer_config"):
+        vllm_args.extend(["--kv-transfer-config", f"'{p['kv_transfer_config']}'"])
 
-    model_path = model_name
-    hf_home = deployment_profile.get("hf_home", "/opt/models")
-
+    hf_home = p.get("hf_home", "/opt/models")
     base_env = [
         {"name": "SERVED_MODEL_NAME", "value": model_name},
-        {"name": "MODEL_PATH", "value": model_path},
+        {"name": "MODEL_PATH", "value": model_name},
         {"name": "HF_HOME", "value": hf_home},
     ]
-    if kvbm_cpu_cache_gb:
-        base_env.append({"name": "DYN_KVBM_CPU_CACHE_GB", "value": str(kvbm_cpu_cache_gb)})
-    for key, value in env_vars.items():
+    if p.get("kvbm_cpu_cache_gb"):
+        base_env.append({"name": "DYN_KVBM_CPU_CACHE_GB", "value": str(p["kvbm_cpu_cache_gb"])})
+    for key, value in p.get("env", {}).items():
         base_env.append({"name": key, "value": str(value)})
 
-    # Add KVBM kv_transfer_config to vllm args if specified
-    if kv_transfer_config:
-        vllm_args.extend(["--kv-transfer-config", f"'{kv_transfer_config}'"])
-
-    common_kwargs = dict(
-        deployment_profile=deployment_profile,
-        runtime_image=runtime_image,
-        frontend_image=frontend_image,
-        model_name=model_name,
-        tensor_parallelism=tensor_parallelism,
-        vllm_args=vllm_args,
-        base_env=base_env,
-        kv_block_size=kv_block_size,
-        backend_framework=backend_framework,
-        router_mode=router_mode,
-        use_dra_resources=use_dra_resources,
-        dra_resource_name=dra_resource_name,
+    ctx = _BuildCtx(
+        profile=p, backend=backend, vllm_args=vllm_args, base_env=base_env,
+        hf_home=hf_home, model_name=model_name,
+        runtime_image=p["runtime_image"], frontend_image=p["frontend_image"],
+        tp=p.get("tensor_parallelism", 1),
+        kv_block_size=p.get("kv_block_size", "16"),
+        router_mode=p.get("router_mode", "direct"),
+        use_dra=p.get("use_dra_resources", False),
+        dra_name=p.get("dra_resource_name", "dra.llm-d.io/gpu-nic-pair"),
     )
 
+    serving_mode = p.get("serving_mode", "aggregated")
+    services = _build_routing_service(ctx)
     if serving_mode == "disaggregated":
-        services = _build_disagg_services(**common_kwargs)
+        services["VllmPrefillWorker"] = _build_worker(ctx, mode="prefill",
+            replicas=p.get("prefill_replicas", 1))
+        services["VllmDecodeWorker"] = _build_worker(ctx, mode="decode",
+            replicas=p.get("decode_replicas", 2))
     else:
-        services = _build_aggregated_services(**common_kwargs)
+        services["VllmWorker"] = _build_worker(ctx, mode="aggregated",
+            replicas=p.get("replicas", 1))
 
     manifest["spec"]["services"] = services
     return manifest
 
 
-def _build_aggregated_services(
-    *,
-    deployment_profile: dict[str, Any],
-    runtime_image: str,
-    frontend_image: str,
-    model_name: str,
-    tensor_parallelism: int,
-    vllm_args: list[str],
-    base_env: list[dict[str, str]],
-    kv_block_size: str,
-    backend_framework: str,
-    router_mode: str = "direct",
-    use_dra_resources: bool = False,
-    dra_resource_name: str = "dra.llm-d.io/gpu-nic-pair",
-) -> dict[str, Any]:
-    """Build services spec for aggregated (single-pool) mode."""
-    replicas = deployment_profile.get("replicas", 1)
-    router_args = deployment_profile.get("router_args", [])
-
-    worker_cmd = (
-        f"python3 -m dynamo.{backend_framework} "
-        f"--model $MODEL_PATH "
-        f"--served-model-name $SERVED_MODEL_NAME "
-        f"--tensor-parallel-size {tensor_parallelism} "
-        f"--data-parallel-size 1 "
-        + " ".join(vllm_args)
-        + " --kv-events-config '{\"enable_kv_cache_events\":true}'"
-        + f" --block-size {kv_block_size}"
+class _BuildCtx:
+    """Carries resolved config through the builder functions."""
+    __slots__ = (
+        "profile", "backend", "vllm_args", "base_env", "hf_home", "model_name",
+        "runtime_image", "frontend_image", "tp", "kv_block_size",
+        "router_mode", "use_dra", "dra_name",
     )
 
-    services: dict[str, Any] = {}
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
-    if router_mode == "kv":
-        # Standalone frontend with KV-aware router (no EPP)
-        frontend_args = ["--router-mode", "kv", "--router-reset-states"] + router_args
-        services["Frontend"] = {
-            "componentType": "frontend",
-            "replicas": 1,
-            "extraPodSpec": {
-                "mainContainer": {
-                    "image": runtime_image,
-                    "workingDir": "/workspace",
-                    "command": ["python3", "-m", "dynamo.frontend"],
-                    "args": frontend_args,
-                    "env": [{"name": "HF_HOME", "value": base_env[2]["value"]}],
-                },
-            },
-            "resources": {
-                "requests": {"cpu": deployment_profile.get("frontend_cpu", "4")},
-                "limits": {"cpu": deployment_profile.get("frontend_cpu", "4")},
-            },
-        }
-    else:
-        # EPP-based routing (production pattern)
-        services["Epp"] = _build_epp_service(
-            frontend_image=frontend_image,
-            model_name=model_name,
-            kv_block_size=kv_block_size,
-        )
 
-    worker_sidecar_args = ["-m", "dynamo.frontend", "--router-mode", router_mode]
-    if router_mode == "kv":
-        worker_sidecar_args = ["-m", "dynamo.frontend", "--router-mode", "direct"]
+def _build_worker(ctx: _BuildCtx, *, mode: str, replicas: int) -> dict[str, Any]:
+    disagg_flag = ""
+    if mode in ("prefill", "decode"):
+        disagg_flag = f" --disaggregation-mode {mode}"
 
-    services["VllmWorker"] = {
+    worker_cmd = (
+        f"python3 -m dynamo.{ctx.backend} "
+        f"--model $MODEL_PATH --served-model-name $SERVED_MODEL_NAME "
+        f"--tensor-parallel-size {ctx.tp} --data-parallel-size 1 "
+        + " ".join(ctx.vllm_args)
+        + " --kv-events-config '{\"enable_kv_cache_events\":true}'"
+        + f" --block-size {ctx.kv_block_size}"
+        + disagg_flag
+    )
+
+    sidecar_mode = "direct" if ctx.router_mode == "kv" else ctx.router_mode
+
+    return {
         "componentType": "worker",
-        "volumeMounts": [
-            {"name": "model-cache", "mountPoint": base_env[2]["value"]},
-        ],
+        "volumeMounts": [{"name": "model-cache", "mountPoint": ctx.hf_home}],
         "sharedMemory": {"size": "2Gi"},
         "frontendSidecar": {
-            "image": runtime_image,
-            "args": worker_sidecar_args,
+            "image": ctx.runtime_image,
+            "args": ["-m", "dynamo.frontend", "--router-mode", sidecar_mode],
         },
         "extraPodSpec": {
             "mainContainer": {
-                "env": copy.deepcopy(base_env),
+                "env": copy.deepcopy(ctx.base_env),
                 "args": [worker_cmd],
                 "command": ["/bin/sh", "-c"],
-                "image": runtime_image,
-                "workingDir": f"/workspace/examples/backends/{backend_framework}",
+                "image": ctx.runtime_image,
+                "workingDir": f"/workspace/examples/backends/{ctx.backend}",
             },
         },
         "replicas": replicas,
-        "resources": _build_gpu_resources(
-            tensor_parallelism,
-            use_dra=use_dra_resources,
-            dra_resource_name=dra_resource_name,
-        ),
+        "resources": _build_gpu_resources(ctx.tp, use_dra=ctx.use_dra, dra_name=ctx.dra_name),
     }
 
-    return services
 
-
-def _build_disagg_services(
-    *,
-    deployment_profile: dict[str, Any],
-    runtime_image: str,
-    frontend_image: str,
-    model_name: str,
-    tensor_parallelism: int,
-    vllm_args: list[str],
-    base_env: list[dict[str, str]],
-    kv_block_size: str,
-    backend_framework: str,
-    router_mode: str = "direct",
-    use_dra_resources: bool = False,
-    dra_resource_name: str = "dra.llm-d.io/gpu-nic-pair",
-) -> dict[str, Any]:
-    """Build services spec for disaggregated (prefill/decode) mode."""
-    prefill_replicas = deployment_profile.get("prefill_replicas", 1)
-    decode_replicas = deployment_profile.get("decode_replicas", 2)
-
-    common_args = " ".join(vllm_args)
-    base_cmd = (
-        f"python3 -m dynamo.{backend_framework} "
-        f"--model $MODEL_PATH "
-        f"--served-model-name $SERVED_MODEL_NAME "
-        f"--tensor-parallel-size {tensor_parallelism} "
-        f"--data-parallel-size 1 "
-        f"{common_args} "
-        f"--kv-events-config '{{\"enable_kv_cache_events\":true}}' "
-        f"--block-size {kv_block_size}"
-    )
-
-    prefill_cmd = f"{base_cmd} --disaggregation-mode prefill"
-    decode_cmd = f"{base_cmd} --disaggregation-mode decode"
-
-    def _worker_service(name: str, cmd: str, replicas: int) -> dict[str, Any]:
+def _build_routing_service(ctx: _BuildCtx) -> dict[str, Any]:
+    if ctx.router_mode == "kv":
+        router_args = ctx.profile.get("router_args", [])
+        args = ["--router-mode", "kv", "--router-reset-states"] + router_args
+        cpu = ctx.profile.get("frontend_cpu", "4")
         return {
-            "componentType": "worker",
-            "volumeMounts": [
-                {"name": "model-cache", "mountPoint": base_env[2]["value"]},
-            ],
-            "sharedMemory": {"size": "2Gi"},
-            "frontendSidecar": {
-                "image": runtime_image,
-                "args": ["-m", "dynamo.frontend", "--router-mode", "direct"],
-            },
-            "extraPodSpec": {
-                "mainContainer": {
-                    "env": copy.deepcopy(base_env),
-                    "args": [cmd],
-                    "command": ["/bin/sh", "-c"],
-                    "image": runtime_image,
-                    "workingDir": f"/workspace/examples/backends/{backend_framework}",
+            "Frontend": {
+                "componentType": "frontend",
+                "replicas": 1,
+                "extraPodSpec": {
+                    "mainContainer": {
+                        "image": ctx.runtime_image,
+                        "workingDir": "/workspace",
+                        "command": ["python3", "-m", "dynamo.frontend"],
+                        "args": args,
+                        "env": [{"name": "HF_HOME", "value": ctx.hf_home}],
+                    },
                 },
+                "resources": {"requests": {"cpu": cpu}, "limits": {"cpu": cpu}},
             },
-            "replicas": replicas,
-            "resources": _build_gpu_resources(
-                tensor_parallelism,
-                use_dra=use_dra_resources,
-                dra_resource_name=dra_resource_name,
-            ),
         }
-
-    return {
-        "Epp": _build_epp_service(
-            frontend_image=frontend_image,
-            model_name=model_name,
-            kv_block_size=kv_block_size,
-        ),
-        "VllmPrefillWorker": _worker_service("prefill", prefill_cmd, prefill_replicas),
-        "VllmDecodeWorker": _worker_service("decode", decode_cmd, decode_replicas),
-    }
+    return {"Epp": _build_epp_service(ctx)}
 
 
-def _build_epp_service(
-    *,
-    frontend_image: str,
-    model_name: str,
-    kv_block_size: str,
-) -> dict[str, Any]:
-    """Build the EPP (Endpoint Picker Plugin) service."""
+def _build_epp_service(ctx: _BuildCtx) -> dict[str, Any]:
     return {
         "componentType": "epp",
         "replicas": 1,
         "extraPodSpec": {
             "mainContainer": {
-                "image": frontend_image,
+                "image": ctx.frontend_image,
                 "env": [
-                    {"name": "DYN_KV_CACHE_BLOCK_SIZE", "value": kv_block_size},
-                    {"name": "DYN_MODEL_NAME", "value": model_name},
+                    {"name": "DYN_KV_CACHE_BLOCK_SIZE", "value": ctx.kv_block_size},
+                    {"name": "DYN_MODEL_NAME", "value": ctx.model_name},
                     {"name": "DYN_DECODE_FALLBACK", "value": "true"},
                 ],
             },
@@ -282,61 +173,42 @@ def _build_epp_service(
             "config": {
                 "plugins": [
                     {"type": "disagg-profile-handler"},
-                    {
-                        "name": "decode-filter",
-                        "type": "label-filter",
-                        "parameters": {
-                            "label": "nvidia.com/dynamo-sub-component-type",
-                            "validValues": ["decode"],
-                            "allowsNoLabel": True,
-                        },
-                    },
+                    {"name": "decode-filter", "type": "label-filter", "parameters": {
+                        "label": "nvidia.com/dynamo-sub-component-type",
+                        "validValues": ["decode"], "allowsNoLabel": True,
+                    }},
                     {"name": "picker", "type": "max-score-picker"},
                     {"name": "dyn-decode", "type": "dyn-decode-scorer"},
                 ],
-                "schedulingProfiles": [
-                    {
-                        "name": "decode",
-                        "plugins": [
-                            {"pluginRef": "decode-filter", "weight": 1},
-                            {"pluginRef": "dyn-decode", "weight": 1},
-                            {"pluginRef": "picker", "weight": 1},
-                        ],
-                    },
-                ],
+                "schedulingProfiles": [{
+                    "name": "decode",
+                    "plugins": [
+                        {"pluginRef": "decode-filter", "weight": 1},
+                        {"pluginRef": "dyn-decode", "weight": 1},
+                        {"pluginRef": "picker", "weight": 1},
+                    ],
+                }],
             },
         },
     }
 
 
-def _build_gpu_resources(
-    tensor_parallelism: int,
-    *,
-    use_dra: bool = False,
-    dra_resource_name: str = "dra.llm-d.io/gpu-nic-pair",
-) -> dict[str, Any]:
-    gpu_str = str(tensor_parallelism)
+def _build_gpu_resources(tp: int, *, use_dra: bool, dra_name: str) -> dict[str, Any]:
+    v = str(tp)
     if use_dra:
-        return {
-            "limits": {"custom": {dra_resource_name: gpu_str}},
-            "requests": {"custom": {dra_resource_name: gpu_str}},
-        }
-    return {
-        "limits": {"gpu": gpu_str},
-        "requests": {"gpu": gpu_str},
-    }
+        return {"limits": {"custom": {dra_name: v}}, "requests": {"custom": {dra_name: v}}}
+    return {"limits": {"gpu": v}, "requests": {"gpu": v}}
 
 
 def _build_vllm_args(vllm_args: dict[str, Any] | list[str]) -> list[str]:
     if isinstance(vllm_args, list):
         return [str(arg) for arg in vllm_args]
-
-    rendered_args: list[str] = []
+    rendered = []
     for key, value in vllm_args.items():
         cli_key = key.replace("_", "-")
         if isinstance(value, bool):
             if value:
-                rendered_args.append(f"--{cli_key}")
+                rendered.append(f"--{cli_key}")
             continue
-        rendered_args.append(f"--{cli_key}={value}")
-    return rendered_args
+        rendered.append(f"--{cli_key}={value}")
+    return rendered
