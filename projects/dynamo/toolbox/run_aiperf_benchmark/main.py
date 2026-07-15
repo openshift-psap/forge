@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -295,47 +296,166 @@ def wait_copy_pod_ready(args, ctx):
 
 @task
 def extract_results(args, ctx):
-    """Extract aiperf JSON results from PVC via copy pod."""
+    """Extract ALL aiperf output files from PVC via copy pod."""
     results_dir = args.artifact_dir / "artifacts" / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    remote_path = f"/results/{ctx.results_subpath}/profile_export_aiperf.json"
-    result = oc("exec", "-n", ctx.namespace, f"{ctx.job_name}-copy",
-                "--", "cat", remote_path, check=False, log_stdout=False)
+    copy_pod = f"{ctx.job_name}-copy"
+    remote_base = f"/results/{ctx.results_subpath}"
 
-    if result.returncode != 0 or not result.stdout:
-        logger.warning("Could not extract aiperf results from %s", remote_path)
-        # List what's there
-        oc("exec", "-n", ctx.namespace, f"{ctx.job_name}-copy",
-           "--", "find", f"/results/{ctx.results_subpath}", "-type", "f", check=False)
+    # List all files on PVC
+    listing = oc("exec", "-n", ctx.namespace, copy_pod,
+                 "--", "find", remote_base, "-type", "f", check=False, log_stdout=False)
+    if listing.returncode != 0:
+        logger.warning("Could not list aiperf results at %s", remote_base)
         return
 
-    write_text(results_dir / "profile_export_aiperf.json", result.stdout)
-    logger.info("Extracted results to %s", results_dir / "profile_export_aiperf.json")
+    remote_files = [l.strip() for l in (listing.stdout or "").split("\n") if l.strip()]
+    logger.info("Found %d result files on PVC", len(remote_files))
 
-    # Parse and write summary
+    for remote_path in remote_files:
+        rel = remote_path.replace(remote_base + "/", "", 1)
+        local_path = results_dir / rel
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+
+        result = oc("exec", "-n", ctx.namespace, copy_pod,
+                     "--", "cat", remote_path, check=False, log_stdout=False)
+        if result.returncode == 0 and result.stdout:
+            write_text(local_path, result.stdout)
+            logger.info("  extracted: %s (%d bytes)", rel, len(result.stdout))
+        else:
+            logger.warning("  failed: %s", rel)
+
+    # Parse summary
+    summary_path = results_dir / "profile_export_aiperf.json"
+    if summary_path.exists():
+        try:
+            full = json.loads(summary_path.read_text())
+            ctx.aiperf_results = full
+            summary = {
+                "request_count": _m(full, "request_count"),
+                "error_count": _m(full, "error_request_count"),
+                "duration_s": round(_m(full, "benchmark_duration") or 0, 1),
+                "throughput_rps": round(_m(full, "request_throughput") or 0, 2),
+                "output_tps": round(_m(full, "output_token_throughput") or 0, 2),
+                "total_tps": round(_m(full, "total_token_throughput") or 0, 2),
+                "ttft_avg_ms": round(_m(full, "time_to_first_token") or 0, 2),
+                "ttft_p95_ms": round(_m(full, "time_to_first_token", "p95") or 0, 2),
+                "itl_avg_ms": round(_m(full, "inter_token_latency") or 0, 2),
+                "itl_p95_ms": round(_m(full, "inter_token_latency", "p95") or 0, 2),
+                "latency_avg_ms": round(_m(full, "request_latency") or 0, 2),
+                "latency_p95_ms": round(_m(full, "request_latency", "p95") or 0, 2),
+            }
+            write_json(results_dir / "aiperf_summary.json", summary)
+            logger.info("=== aiperf Results ===")
+            for k, v in summary.items():
+                logger.info("  %s: %s", k, v)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("Failed to parse aiperf results: %s", e)
+
+
+@task
+def build_mlflow_metadata(args, ctx):
+    """Build MLflow-compatible metadata file for caliper-export."""
+    results = getattr(ctx, "aiperf_results", None)
+    if not results:
+        return
+
+    metadata = {
+        "parameters": {
+            "benchmark_tool": "aiperf",
+            "model": args.model_name,
+            "endpoint_url": args.endpoint_url,
+            "endpoint_type": args.endpoint_type,
+            "dataset_type": args.dataset_type,
+            "dataset_cap": str(args.dataset_cap or "full"),
+            "streaming": str(args.streaming),
+            "synthesis_max_isl": str(args.synthesis_max_isl or ""),
+        },
+        "metrics": {
+            "throughput/request_throughput": _m(results, "request_throughput") or 0,
+            "tokens/output_token_throughput": _m(results, "output_token_throughput") or 0,
+            "tokens/total_token_throughput": _m(results, "total_token_throughput") or 0,
+            "latency/request_latency_ms": _m(results, "request_latency") or 0,
+            "latency/request_latency_p95_ms": _m(results, "request_latency", "p95") or 0,
+            "ttft/time_to_first_token_ms": _m(results, "time_to_first_token") or 0,
+            "ttft/time_to_first_token_p95_ms": _m(results, "time_to_first_token", "p95") or 0,
+            "itl/inter_token_latency_ms": _m(results, "inter_token_latency") or 0,
+            "itl/inter_token_latency_p95_ms": _m(results, "inter_token_latency", "p95") or 0,
+            "request_count": _m(results, "request_count") or 0,
+            "error_request_count": _m(results, "error_request_count") or 0,
+            "total_output_tokens": _m(results, "total_output_tokens") or 0,
+        },
+        "tags": {
+            "benchmark_tool": "aiperf",
+            "framework": "dynamo",
+        },
+        "description": (
+            f"aiperf benchmark: {args.model_name}, "
+            f"dataset={args.dataset_type} cap={args.dataset_cap}, "
+            f"endpoint={args.endpoint_url}"
+        ),
+    }
+
+    meta_path = args.artifact_dir / "artifacts" / "mlflow_run_metadata.json"
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(meta_path, metadata)
+    logger.info("MLflow metadata written to %s", meta_path)
+
+
+@task
+def export_to_mlflow(args, ctx):
+    """Push results + metadata to MLflow via Caliper export (if configured)."""
+    meta_path = args.artifact_dir / "artifacts" / "mlflow_run_metadata.json"
+    results_dir = args.artifact_dir / "artifacts" / "results"
+
+    if not meta_path.exists() or not results_dir.exists():
+        logger.info("No metadata or results to export, skipping MLflow push")
+        return
+
     try:
-        full = json.loads(result.stdout)
-        summary = {
-            "request_count": _m(full, "request_count"),
-            "error_count": _m(full, "error_request_count"),
-            "duration_s": round(_m(full, "benchmark_duration") or 0, 1),
-            "throughput_rps": round(_m(full, "request_throughput") or 0, 2),
-            "output_tps": round(_m(full, "output_token_throughput") or 0, 2),
-            "total_tps": round(_m(full, "total_token_throughput") or 0, 2),
-            "ttft_avg_ms": round(_m(full, "time_to_first_token") or 0, 2),
-            "ttft_p95_ms": round(_m(full, "time_to_first_token", "p95") or 0, 2),
-            "itl_avg_ms": round(_m(full, "inter_token_latency") or 0, 2),
-            "itl_p95_ms": round(_m(full, "inter_token_latency", "p95") or 0, 2),
-            "latency_avg_ms": round(_m(full, "request_latency") or 0, 2),
-            "latency_p95_ms": round(_m(full, "request_latency", "p95") or 0, 2),
-        }
-        write_json(results_dir / "aiperf_summary.json", summary)
-        logger.info("=== aiperf Results ===")
-        for k, v in summary.items():
-            logger.info("  %s: %s", k, v)
-    except (json.JSONDecodeError, TypeError) as e:
-        logger.warning("Failed to parse aiperf results: %s", e)
+        from projects.caliper.engine.file_export.runner import run_file_export
+    except ImportError:
+        logger.info("Caliper not available, skipping MLflow export")
+        return
+
+    # Read MLflow connection from env (set by vault or manually)
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if not tracking_uri:
+        logger.info("MLFLOW_TRACKING_URI not set, skipping MLflow export")
+        return
+
+    run_metadata = json.loads(meta_path.read_text())
+    insecure = os.environ.get("MLFLOW_TRACKING_INSECURE_TLS", "").lower() == "true"
+    connection = {}
+    if os.environ.get("MLFLOW_TRACKING_USERNAME"):
+        connection["username"] = os.environ["MLFLOW_TRACKING_USERNAME"]
+        connection["password"] = os.environ.get("MLFLOW_TRACKING_PASSWORD", "")
+    if insecure:
+        connection["insecure_tls"] = True
+
+    experiment = os.environ.get("MLFLOW_EXPERIMENT", "forge-dynamo")
+    run_name = os.environ.get("MLFLOW_RUN_NAME", f"forge-{args.name}")
+
+    logger.info("Exporting to MLflow: %s experiment=%s", tracking_uri, experiment)
+    results = run_file_export(
+        source=results_dir,
+        backends=["mlflow"],
+        dry_run=False,
+        mlflow_tracking_uri=tracking_uri,
+        mlflow_experiment=experiment,
+        mlflow_run_id=None,
+        mlflow_run_name=run_name,
+        mlflow_insecure_tls=insecure,
+        mlflow_connection=connection if connection else None,
+        mlflow_run_metadata=run_metadata,
+        verbose=True,
+    )
+    for r in results:
+        logger.info("MLflow export: %s — %s", r.status, r.detail)
+        if r.metadata:
+            for k, v in r.metadata.items():
+                logger.info("  %s: %s", k, v)
 
 
 @task
