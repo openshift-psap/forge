@@ -28,7 +28,8 @@ def create_test_labels() -> None:
 
     model_name = runtime_config.get_model_name()
     deployment_profile = runtime_config.get_deployment_profile_name()
-    benchmark_keys = runtime_config.get_benchmark_keys()
+    benchmark_tool = runtime_config.get_benchmark_tool()
+    benchmark_key = runtime_config.get_benchmark_key()
 
     labels = {
         "model_name": model_name,
@@ -36,10 +37,10 @@ def create_test_labels() -> None:
         "framework": "dynamo",
     }
 
-    if benchmark_keys:
-        labels["guidellm_loadshape"] = (
-            benchmark_keys[0] if len(benchmark_keys) == 1 else benchmark_keys
-        )
+    if benchmark_tool:
+        labels["benchmark_tool"] = benchmark_tool
+    if benchmark_key:
+        labels["benchmark_key"] = benchmark_key
 
     write_test_labels(env.ARTIFACT_DIR, labels)
     logger.info("Created test labels: %s", labels)
@@ -122,9 +123,7 @@ def do_test() -> int:
                 raise ValueError("Failed to discover endpoint URL from DynamoGraphDeployment")
             run_smoke_request(endpoint_url=endpoint_url)
 
-            run_guidellm_benchmark(endpoint_url=endpoint_url)
-
-            run_aiperf_benchmark(endpoint_url=endpoint_url)
+            run_benchmark(endpoint_url=endpoint_url)
         except Exception:
             primary_exc = sys.exc_info()
         except SignalInterrupt:
@@ -221,16 +220,6 @@ def _wait_for_dynamo_ready(
     deadline = time.time() + timeout_seconds
 
     while time.time() < deadline:
-        result = oc(
-            "get", "pods", "-n", namespace,
-            "-l", "forge.openshift.io/project=dynamo",
-            "-o", "jsonpath={.items[*].status.phase}",
-            check=False,
-        )
-        if result.returncode != 0:
-            time.sleep(poll_interval)
-            continue
-
         pods_data = oc_get_json("pods", namespace=namespace, ignore_not_found=True)
         if not pods_data:
             time.sleep(poll_interval)
@@ -262,31 +251,39 @@ def _wait_for_dynamo_ready(
 
 
 def _discover_endpoint(*, namespace: str) -> str:
-    """Discover the inference endpoint URL from the Dynamo deployment."""
-    svc_data = oc_get_json(
-        "services", namespace=namespace,
-        selector="app.kubernetes.io/managed-by=forge",
-        ignore_not_found=True,
-    )
+    """Discover the inference endpoint URL from the Dynamo deployment.
 
+    Checks in order:
+    1. Frontend service (standalone router, port 8000)
+    2. Gateway service (inference-gateway, port 80)
+    3. Any service on port 8000
+    """
+    # Check for standalone frontend service first
+    svc_data = oc_get_json("services", namespace=namespace, ignore_not_found=True)
     if svc_data:
         items = svc_data.get("items", [])
+        # Prefer frontend service
         for svc in items:
-            ports = svc.get("spec", {}).get("ports", [])
             svc_name = svc.get("metadata", {}).get("name", "")
-            for port in ports:
-                if port.get("port") in (8000, 80):
-                    return f"http://{svc_name}.{namespace}.svc.cluster.local:{port['port']}"
+            if "frontend" in svc_name:
+                for port in svc.get("spec", {}).get("ports", []):
+                    if port.get("port") == 8000:
+                        return f"http://{svc_name}.{namespace}.svc.cluster.local:8000"
 
-    route_data = oc_get_json("routes", namespace=namespace, ignore_not_found=True)
-    if route_data:
-        items = route_data.get("items", [])
-        for route in items:
-            host = route.get("spec", {}).get("host", "")
-            if host:
-                tls = route.get("spec", {}).get("tls")
-                scheme = "https" if tls else "http"
-                return f"{scheme}://{host}"
+        # Then gateway
+        for svc in items:
+            svc_name = svc.get("metadata", {}).get("name", "")
+            if "inference-gateway" in svc_name:
+                for port in svc.get("spec", {}).get("ports", []):
+                    if port.get("port") in (80, 8080):
+                        return f"http://{svc_name}.{namespace}.svc.cluster.local:{port['port']}"
+
+        # Fallback: any service on 8000
+        for svc in items:
+            for port in svc.get("spec", {}).get("ports", []):
+                if port.get("port") == 8000:
+                    svc_name = svc["metadata"]["name"]
+                    return f"http://{svc_name}.{namespace}.svc.cluster.local:8000"
 
     raise RuntimeError(f"Could not discover Dynamo endpoint in namespace {namespace}")
 
@@ -313,55 +310,78 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
     )
 
 
-def run_guidellm_benchmark(*, endpoint_url: str) -> None:
-    from projects.dynamo.orchestration import runtime_config
+def run_benchmark(*, endpoint_url: str) -> None:
+    """Dispatch to guidellm or aiperf based on runtime.benchmark_tool."""
+    from projects.core.library import config
 
-    namespace = runtime_config.get_namespace()
-    benchmark_configs = runtime_config.get_benchmark_configs()
+    tool = config.project.get_config("runtime.benchmark_tool", None)
+    key = config.project.get_config("runtime.benchmark_key", None)
 
-    if not benchmark_configs:
+    if not tool or not key:
+        logger.info("No benchmark configured (benchmark_tool=%s, benchmark_key=%s), skipping", tool, key)
         return
 
-    for benchmark_key, benchmark in benchmark_configs:
-        guidellm_args = build_guidellm_args(benchmark)
-        if not any(arg.startswith("--processor=") for arg in guidellm_args):
-            guidellm_args.append(f"--processor={runtime_config.get_model_name()}")
-        artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
-        with env.NextArtifactDir(artifact_name):
-            run_guidellm_benchmark_command.run(
-                endpoint_url=endpoint_url,
-                name=benchmark.get("job_name"),
-                namespace=namespace,
-                image=benchmark.get("image"),
-                timeout=benchmark.get("timeout_seconds"),
-                pvc_size=benchmark.get("pvc_size"),
-                guidellm_args=guidellm_args,
+    if tool == "guidellm":
+        bench_config = config.project.get_config(f"workloads.guidellm_benchmarks.{key}", None)
+        if bench_config is None:
+            raise ValueError(
+                f"benchmark_key '{key}' not found in workloads.guidellm_benchmarks. "
+                f"Available: {list(config.project.get_config('workloads.guidellm_benchmarks', {}).keys())}"
             )
+        _run_guidellm_benchmark(endpoint_url=endpoint_url)
+    elif tool == "aiperf":
+        bench_config = config.project.get_config(f"workloads.aiperf_benchmarks.{key}", None)
+        if bench_config is None:
+            raise ValueError(
+                f"benchmark_key '{key}' not found in workloads.aiperf_benchmarks. "
+                f"Available: {list(config.project.get_config('workloads.aiperf_benchmarks', {}).keys())}"
+            )
+        _run_aiperf_benchmark(endpoint_url=endpoint_url)
+    else:
+        raise ValueError(f"Unknown benchmark_tool '{tool}'. Must be 'guidellm' or 'aiperf'.")
 
 
-def run_aiperf_benchmark(*, endpoint_url: str) -> None:
+def _run_guidellm_benchmark(*, endpoint_url: str) -> None:
     from projects.core.library import config
     from projects.dynamo.orchestration import runtime_config
 
-    aiperf_key = config.project.get_config("runtime.aiperf_benchmark_key", None)
-    if not aiperf_key:
-        return
+    namespace = runtime_config.get_namespace()
+    key = config.project.get_config("runtime.benchmark_key")
+    benchmark = config.project.get_config(f"workloads.guidellm_benchmarks.{key}")
 
-    aiperf_config = config.project.get_config(f"workloads.aiperf_benchmarks.{aiperf_key}", None)
-    if not aiperf_config:
-        logger.warning("aiperf_benchmark_key '%s' not found in workloads config, skipping", aiperf_key)
-        return
+    guidellm_args = build_guidellm_args(benchmark)
+    if not any(arg.startswith("--processor=") for arg in guidellm_args):
+        guidellm_args.append(f"--processor={runtime_config.get_model_name()}")
 
+    artifact_name = f"benchmark_{slugify_identifier(key, max_length=48)}"
+    with env.NextArtifactDir(artifact_name):
+        run_guidellm_benchmark_command.run(
+            endpoint_url=endpoint_url,
+            name=benchmark.get("job_name", "guidellm-benchmark"),
+            namespace=namespace,
+            image=benchmark.get("image", "ghcr.io/vllm-project/guidellm:v0.5.4"),
+            timeout=benchmark.get("timeout_seconds", 3600),
+            pvc_size=benchmark.get("pvc_size", "1Gi"),
+            guidellm_args=guidellm_args,
+        )
+
+
+def _run_aiperf_benchmark(*, endpoint_url: str) -> None:
+    from projects.core.library import config
+    from projects.dynamo.orchestration import runtime_config
     from projects.dynamo.toolbox.run_aiperf_benchmark.main import run as run_aiperf
 
+    key = config.project.get_config("runtime.benchmark_key")
+    aiperf_config = config.project.get_config(f"workloads.aiperf_benchmarks.{key}")
     model_name = runtime_config.get_model_name()
-    artifact_name = f"aiperf_{slugify_identifier(aiperf_key, max_length=48)}"
 
+    artifact_name = f"aiperf_{slugify_identifier(key, max_length=48)}"
     with env.NextArtifactDir(artifact_name):
         run_aiperf(
             endpoint_url=endpoint_url,
             model_name=model_name,
-            artifact_dir=env.ARTIFACT_DIR,
+            name=f"aiperf-{slugify_identifier(key, max_length=32)}",
+            namespace=runtime_config.get_namespace(),
             dataset_url=aiperf_config["dataset_url"],
             dataset_type=aiperf_config["dataset_type"],
             dataset_cap=aiperf_config.get("dataset_cap"),
@@ -371,7 +391,6 @@ def run_aiperf_benchmark(*, endpoint_url: str) -> None:
             fixed_schedule=aiperf_config.get("fixed_schedule", True),
             fixed_schedule_auto_offset=aiperf_config.get("fixed_schedule_auto_offset", True),
             synthesis_max_isl=aiperf_config.get("synthesis_max_isl"),
-            namespace=runtime_config.get_namespace(),
         )
 
 

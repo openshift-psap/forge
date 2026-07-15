@@ -1,17 +1,14 @@
-job_name: guidellm-benchmark
-image: ghcr.io/vllm-project/guidellm:v0.5.4
-pvc_size: 1Gi
-timeout_seconds: 3600
-args: {}
-
 smoke_requests:
   default:
     prompt: San Francisco is a
     max_tokens: 50
     temperature: 0.7
 
-benchmarks:
+guidellm_benchmarks:
   short:
+    job_name: guidellm-benchmark
+    image: ghcr.io/vllm-project/guidellm:v0.5.4
+    pvc_size: 1Gi
     timeout_seconds: 900
     outputs: json
     args:
@@ -23,6 +20,10 @@ benchmarks:
       data: prompt_tokens=256,output_tokens=128
 
   concurrent-1k-1k:
+    job_name: guidellm-benchmark
+    image: ghcr.io/vllm-project/guidellm:v0.5.4
+    pvc_size: 1Gi
+    timeout_seconds: 3600
     args:
       backend_type: openai_http
       rate_type: concurrent
@@ -31,6 +32,10 @@ benchmarks:
       max_seconds: 600
 
   multi-turn:
+    job_name: guidellm-benchmark
+    image: ghcr.io/vllm-project/guidellm:v0.5.4
+    pvc_size: 1Gi
+    timeout_seconds: 3600
     args:
       backend_type: openai_http
       rate_type: concurrent
@@ -40,7 +45,6 @@ benchmarks:
 
 aiperf_benchmarks:
   mooncake-trace-2k:
-    tool: aiperf
     timeout_seconds: 7200
     dataset_url: https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/conversation_trace.jsonl
     dataset_type: mooncake_trace
@@ -53,7 +57,6 @@ aiperf_benchmarks:
     synthesis_max_isl: 131072
 
   mooncake-trace-full:
-    tool: aiperf
     timeout_seconds: 14400
     dataset_url: https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/conversation_trace.jsonl
     dataset_type: mooncake_trace
@@ -66,7 +69,6 @@ aiperf_benchmarks:
     synthesis_max_isl: 131072
 
   mooncake-toolagent:
-    tool: aiperf
     timeout_seconds: 7200
     dataset_url: https://raw.githubusercontent.com/kvcache-ai/Mooncake/refs/heads/main/FAST25-release/traces/tool_agent_trace.jsonl
     dataset_type: mooncake_trace

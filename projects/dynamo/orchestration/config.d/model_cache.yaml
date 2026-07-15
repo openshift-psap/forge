@@ -1,5 +1,6 @@
 enabled: true
 marker_filename: .forge-model-cache.json
+pvc_name: dynamo-model-cache
 
 pvc:
   name_prefix: dynamo-model

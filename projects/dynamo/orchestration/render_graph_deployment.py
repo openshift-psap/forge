@@ -38,6 +38,9 @@ def render_graph_deployment(
     backend = p.get("backend_framework", "vllm")
     manifest["spec"]["backendFramework"] = backend
 
+    pvc_name = model_cache.get("pvc_name", "model-cache")
+    manifest["spec"]["pvcs"] = [{"name": pvc_name, "create": False}]
+
     vllm_args = _build_vllm_args(p.get("vllm_args", []))
     if p.get("kv_transfer_config"):
         vllm_args.extend(["--kv-transfer-config", f"'{p['kv_transfer_config']}'"])
@@ -55,7 +58,7 @@ def render_graph_deployment(
 
     ctx = _BuildCtx(
         profile=p, backend=backend, vllm_args=vllm_args, base_env=base_env,
-        hf_home=hf_home, model_name=model_name,
+        hf_home=hf_home, model_name=model_name, pvc_name=pvc_name,
         runtime_image=p["runtime_image"], frontend_image=p["frontend_image"],
         tp=p.get("tensor_parallelism", 1),
         kv_block_size=p.get("kv_block_size", "16"),
@@ -83,7 +86,7 @@ class _BuildCtx:
     """Carries resolved config through the builder functions."""
     __slots__ = (
         "profile", "backend", "vllm_args", "base_env", "hf_home", "model_name",
-        "runtime_image", "frontend_image", "tp", "kv_block_size",
+        "pvc_name", "runtime_image", "frontend_image", "tp", "kv_block_size",
         "router_mode", "use_dra", "dra_name",
     )
 
@@ -111,7 +114,7 @@ def _build_worker(ctx: _BuildCtx, *, mode: str, replicas: int) -> dict[str, Any]
 
     return {
         "componentType": "worker",
-        "volumeMounts": [{"name": "model-cache", "mountPoint": ctx.hf_home}],
+        "volumeMounts": [{"name": ctx.pvc_name, "mountPoint": ctx.hf_home}],
         "sharedMemory": {"size": "2Gi"},
         "frontendSidecar": {
             "image": ctx.runtime_image,

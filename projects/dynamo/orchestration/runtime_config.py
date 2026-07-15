@@ -182,51 +182,33 @@ def get_model_cache_config() -> dict[str, Any]:
     return copy.deepcopy(config.project.get_config("model_cache"))
 
 
+def get_benchmark_tool() -> str | None:
+    return _get_runtime_value("benchmark_tool")
+
+
+def get_benchmark_key() -> str | None:
+    return _get_runtime_value("benchmark_key")
+
+
 def get_benchmark_keys() -> list[str]:
     return _normalize_string_or_list(_get_runtime_value("benchmark_key"), "runtime.benchmark_key")
 
 
-def _resolve_benchmark_config(benchmark_name: str) -> dict[str, Any]:
-    benchmark = copy.deepcopy(
-        config.project.get_config(f"workloads.benchmarks['{benchmark_name}']")
-    )
-    workload_defaults = copy.deepcopy(config.project.get_config("workloads"))
-
-    default_keys = ("job_name", "image", "pvc_size", "timeout_seconds")
-    for key in default_keys:
-        if key in workload_defaults and key not in benchmark:
-            benchmark[key] = workload_defaults[key]
-
-    benchmark_args = benchmark.get("args", {})
-    workload_args = workload_defaults.get("args", {})
-    if workload_args:
-        benchmark["args"] = _deep_merge(workload_args, benchmark_args)
-
-    return benchmark
-
-
-def get_benchmark_config() -> dict[str, Any] | None:
-    benchmark_keys = get_benchmark_keys()
-    if not benchmark_keys:
-        return None
-    if len(benchmark_keys) != 1:
-        raise ValueError(
-            "Expected exactly one runtime.benchmark_key in the active dynamo run, "
-            f"got {benchmark_keys}"
-        )
-    return _resolve_benchmark_config(benchmark_keys[0])
-
-
-def get_benchmark_configs() -> list[tuple[str, dict[str, Any]]]:
-    return [
-        (benchmark_key, _resolve_benchmark_config(benchmark_key))
-        for benchmark_key in get_benchmark_keys()
-    ]
-
-
 def get_benchmark_job_names() -> list[str]:
-    all_names = [benchmark.get("job_name") for _, benchmark in get_benchmark_configs()]
-    return list(dict.fromkeys(name for name in all_names if name))
+    """Job names to clean up, based on benchmark_tool + benchmark_key."""
+    tool = get_benchmark_tool()
+    key = get_benchmark_key()
+    if not tool or not key:
+        return []
+
+    if tool == "guidellm":
+        bench = config.project.get_config(f"workloads.guidellm_benchmarks.{key}", {})
+        name = bench.get("job_name", "guidellm-benchmark")
+        return [name] if name else []
+    elif tool == "aiperf":
+        from projects.core.dsl.utils import slugify_identifier
+        return [f"aiperf-{slugify_identifier(key, max_length=32)}"]
+    return []
 
 
 def get_deployment_profile_name() -> str:
