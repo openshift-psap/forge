@@ -149,6 +149,13 @@ def _handle_caliper_output_and_completion_with_header(
                 "success": False,
                 "error": "Status file is empty or contains no valid YAML data",
             }
+        # Normalize non-mapping payloads (lists, strings, integers) into failure dict
+        elif not isinstance(status_data, dict):
+            status_data = {
+                "success": False,
+                "error": f"Status file contains non-mapping data: {type(status_data).__name__}",
+                "raw_data": status_data,
+            }
     except Exception as e:
         status_data = {"success": False, "error": f"Failed to read status file: {e}"}
 
