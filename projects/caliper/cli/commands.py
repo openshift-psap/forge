@@ -423,12 +423,20 @@ def ai_eval_export(
 @_workspace_cli_options
 @click.option("--output", type=click.Path(path_type=Path), required=True)
 @click.option(
+    "--format",
+    "format_type",
+    type=click.Choice(["hierarchical", "jsonl"], case_sensitive=False),
+    default="hierarchical",
+    help="Output format: hierarchical JSON (default) or JSONL",
+)
+@click.option(
     "--status-file", type=click.Path(path_type=Path), help="YAML file to write operation status"
 )
 @click.pass_context
 def kpi_generate(
     ctx: click.Context,
     output: Path,
+    format_type: str,
     artifacts_dir: Path | None,
     postprocess_config: Path | None,
     plugin_module_override: str | None,
@@ -453,6 +461,7 @@ def kpi_generate(
             output=output,
             use_cache=True,
             cache_path=None,
+            format_type=format_type,
         )
         status_data = {"success": True, "output_file": str(output)}
         click.echo(f"Generated {output}")
@@ -519,16 +528,10 @@ def kpi_csv_export(
     status_data = {"success": False}
 
     try:
-        # Read KPI JSON Lines file (one JSON object per line)
-        import json
+        # Read KPI file (supports both hierarchical JSON and JSONL formats)
+        from projects.caliper.engine.kpi.format import read_kpis_from_file
 
-        kpi_records = []
-        with open(input_file, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:  # Skip empty lines
-                    kpi_record = json.loads(line)
-                    kpi_records.append(kpi_record)
+        kpi_records = read_kpis_from_file(input_file)
 
         # Export to CSV
         from projects.caliper.engine.kpi.csv_export import export_kpis_to_csv

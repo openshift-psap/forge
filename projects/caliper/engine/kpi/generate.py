@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.engine.kpi.format import write_kpis_in_format
 from projects.caliper.engine.parse import run_parse
 from projects.caliper.engine.validation import load_schema, schema_path, validate_instance
 
@@ -18,7 +18,22 @@ def run_kpi_generate(
     output: Path | None,
     use_cache: bool,
     cache_path: Path | None,
+    format_type: str = "hierarchical",
 ) -> list[dict[str, Any]]:
+    """Generate KPI output in specified format.
+
+    Args:
+        base_dir: Directory containing test artifacts
+        plugin_module: Name of the plugin module
+        plugin: Plugin instance
+        output: Path to write output file
+        use_cache: Whether to use cached parse results
+        cache_path: Path to cache file (not used currently)
+        format_type: Output format - "hierarchical" (default) or "jsonl"
+
+    Returns:
+        List of KPI records
+    """
     model = run_parse(
         base_dir=base_dir,
         plugin_module=plugin_module,
@@ -30,7 +45,8 @@ def run_kpi_generate(
     kpi_schema = load_schema(schema_path("kpi_record.schema.json"))
     for row in rows:
         validate_instance(row, kpi_schema, "KPI record")
-    text = "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + ("\n" if rows else "")
+
     if output:
-        output.write_text(text, encoding="utf-8")
+        write_kpis_in_format(rows, output, format_type, model)
+
     return rows
