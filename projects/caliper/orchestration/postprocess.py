@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import time
 import traceback
 from pathlib import Path
@@ -28,11 +27,11 @@ from projects.caliper.orchestration.cli_builder import (
     build_s3_export_command,
     build_s3_import_command,
     build_visualize_command,
-    log_caliper_start_banner,
 )
 from projects.caliper.orchestration.postprocess_config import (
     CaliperOrchestrationPostprocessConfig,
 )
+from projects.caliper.orchestration.postprocess_logging import _execute_caliper_command
 from projects.caliper.orchestration.postprocess_outcome import (
     FINAL_KPI_PIPELINE_FAILED,
     FINAL_SUCCESS,
@@ -45,212 +44,6 @@ from projects.caliper.orchestration.step_logging import (
 from projects.core.library import env
 
 logger = logging.getLogger(__name__)
-
-
-def _format_command_for_log(command: list[str]) -> str:
-    """Format command for log file display with only --arguments on new lines.
-
-    Args:
-        command: Command arguments list
-
-    Returns:
-        Formatted command string for log file
-    """
-    if not command:
-        return ""
-
-    # Start with base command parts until we hit options
-    lines = []
-    base_parts = []
-    i = 0
-
-    # Collect all non-flag arguments into base_parts
-    while i < len(command) and not command[i].startswith("--"):
-        base_parts.append(command[i])
-        i += 1
-
-    if base_parts:
-        lines.append(" ".join(base_parts))
-
-    # Handle --flag arguments on separate lines
-    while i < len(command):
-        if command[i].startswith("--"):
-            if i + 1 < len(command) and not command[i + 1].startswith("--"):
-                # Flag with value
-                lines.append(f"{command[i]} {command[i + 1]}")
-                i += 2
-            else:
-                # Boolean flag
-                lines.append(command[i])
-                i += 1
-        else:
-            # Standalone argument
-            lines.append(command[i])
-            i += 1
-
-    return " \\\n  ".join(lines)
-
-
-def _write_step_header_to_log_file(log_file: Path, command: list[str], step_name: str) -> None:
-    """Write step header to log file.
-
-    Args:
-        log_file: Path to log file
-        command: Command that will be executed
-        step_name: Name of the step (e.g., "CALIPER PARSE")
-    """
-    formatted_command = _format_command_for_log(command)
-    header = f"""{"=" * 60}
-🚀 STARTING {step_name} (fork/exec)
-📄 Command:
-  {formatted_command}
-{"=" * 60}
-
-"""
-    with open(log_file, "w", encoding="utf-8") as f:
-        f.write(header)
-
-
-def _write_step_footer_to_log_file(
-    log_file: Path, result: subprocess.CompletedProcess, step_name: str
-) -> None:
-    """Write step footer to log file.
-
-    Args:
-        log_file: Path to log file
-        result: Subprocess result
-        step_name: Name of the step (e.g., "CALIPER PARSE")
-    """
-    footer = f"""
-
-{"=" * 60}
-🏁 {step_name} COMPLETED
-📊 Exit code: {result.returncode}
-📄 Log file: {log_file}
-{"=" * 60}
-"""
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write(footer)
-
-
-def _handle_caliper_output_and_completion_with_header(
-    result: subprocess.CompletedProcess,
-    log_file: Path,
-    status_file: Path,
-    step_name: str,
-) -> dict:
-    """Handle Caliper output writing, status parsing, and log completion banner.
-
-    This version appends to the log file instead of overwriting it, since we've
-    already written a header.
-
-    Args:
-        result: Subprocess result from caliper execution
-        log_file: Path to write the step log file
-        status_file: Path to the status file to read and parse
-        step_name: Name of the Caliper step (e.g., "PARSE", "VISUALIZE")
-
-    Returns:
-        Parsed status data dictionary
-    """
-    import yaml
-
-    # Append output to log file (don't overwrite since we've written header)
-    with open(log_file, "a", encoding="utf-8") as log_f:
-        if result.stdout:
-            log_f.write(result.stdout)
-
-    # Also display output in main orchestration logs
-    if result.stdout:
-        prefix = step_name.upper()
-        for line in result.stdout.splitlines():
-            logger.info("%s: %s", prefix, line)
-
-    # Log banner indicating Caliper execution completed
-    logger.info("=" * 60)
-    logger.info("🏁 CALIPER %s COMPLETED", step_name.upper())
-    logger.info("📊 Exit code: %s", result.returncode)
-    logger.info("📄 Log file: %s", log_file)
-
-    # Read and parse status file
-    try:
-        with open(status_file, encoding="utf-8") as f:
-            status_data = yaml.safe_load(f)
-        # Handle case where YAML file is empty or invalid
-        if status_data is None:
-            status_data = {
-                "success": False,
-                "error": "Status file is empty or contains no valid YAML data",
-            }
-    except Exception as e:
-        status_data = {"success": False, "error": f"Failed to read status file: {e}"}
-
-    # Log status file content for visibility
-    logger.info("📄 Status file content:")
-    if isinstance(status_data, dict):
-        for key, value in status_data.items():
-            logger.info("   %s: %s", key, value)
-    else:
-        logger.info("   %s", status_data)
-
-    logger.info("=" * 60)
-
-    return status_data
-
-
-def _execute_caliper_command(
-    command: list[str],
-    step_name: str,
-    status_file: Path,
-    step_logs_dir: Path,
-) -> tuple[subprocess.CompletedProcess, dict[str, Any], Path]:
-    """Execute a Caliper CLI command and return result and status data.
-
-    Args:
-        command: CLI command arguments list
-        step_name: Name for logging banners (e.g., "caliper parse", "caliper visualize")
-        status_file: Path to read status YAML from
-        step_logs_dir: Directory to create log file in
-
-    Returns:
-        Tuple of (subprocess result, parsed status data, log file path)
-    """
-    # Create log file path with proper step index
-    from projects.caliper.orchestration.step_logging import _get_next_step_index
-
-    step_index = _get_next_step_index(step_logs_dir)
-    step_name_safe = step_name.replace(" ", "_")
-    log_file = step_logs_dir / f"{step_index:03d}__{step_name_safe}.log"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Create script file for debugging in step_scripts directory with index prefix
-    step_scripts_dir = env.ARTIFACT_DIR / "step_scripts"
-    step_scripts_dir.mkdir(parents=True, exist_ok=True)
-    script_file = step_scripts_dir / f"{step_index:03d}__{step_name_safe}.sh"
-
-    # Log start banner and save script
-    log_caliper_start_banner(command, script_file, step_name.upper())
-
-    # Write header to log file
-    _write_step_header_to_log_file(log_file, command, step_name.upper())
-
-    # Execute command with combined stdout/stderr
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,  # Combine stderr into stdout
-        text=True,
-    )
-
-    # Handle output, status parsing, and log completion banner
-    status_data = _handle_caliper_output_and_completion_with_header(
-        result, log_file, status_file, step_name.upper()
-    )
-
-    # Write footer to log file
-    _write_step_footer_to_log_file(log_file, result, step_name.upper())
-
-    return result, status_data, log_file
 
 
 def _make_path_relative_to_base(file_path: str | Path, base_dir: Path) -> str:
