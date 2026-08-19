@@ -530,7 +530,7 @@ python3 -m projects.rhaiis.orchestration.cli test \
 # Spec decoding comparison (H200 Zeus): presets.d/spec-decoding.yaml
 #   deepseek-v4-baseline | deepseek-v4-mtp | deepseek-v4-dspark | deepseek-v4-dspark-dynamic
 python3 -m projects.rhaiis.orchestration.cli test \
-  --preset deepseek-v4-dspark --preset profile1
+  --preset deepseek-v4-dspark
 ```
 
 Per-cluster presets (e.g. `presets.d/mehulvalidation.yaml`) set cluster-specific

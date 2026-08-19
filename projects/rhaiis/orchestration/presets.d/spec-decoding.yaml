@@ -1,7 +1,7 @@
 __multiple: true
 
 # DeepSeek-V4-Pro-0813 speculative decoding comparison on H200 Zeus (TP=8).
-# Combine with a workload preset (profile1/profile2/profile3/profile4).
+# Runs all four workload profiles so they land on the staging dashboard.
 #
 # Adaptive verification (enable_adaptive_verification) is omitted: DeepSeek-V4
 # indexer/MLA backends only support the device-side trim + varlen full CUDA
@@ -11,6 +11,12 @@ deepseek-v4-spec-base:
   rhaiis.accelerator: nvidia
   rhaiis.cluster_tag: zeus
   rhaiis.engines.vllm.args.gpu-memory-utilization: 0.9
+  tests.rhaiis.workload_keys:
+    - profile1
+    - profile2
+    - profile3
+    - profile4
+  rhaiis.profiler.enabled: true
 
 # 1. No speculative decoding
 deepseek-v4-baseline:
