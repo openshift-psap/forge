@@ -16,6 +16,10 @@ init = runtime_config.init
 def test(_cfg):
     workload_keys = config.project.get_config("tests.rhaiis.workload_keys", [])
     if not workload_keys:
+        all_workloads = config.project.get_config("workloads", {})
+        project_args = config.project.get_config("project.args", [])
+        workload_keys = [a for a in project_args if a in all_workloads]
+    if not workload_keys:
         workload_keys = [_cfg.workload_key]
 
     test_phase.run(
