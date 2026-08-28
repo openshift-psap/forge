@@ -62,7 +62,13 @@ def format_postprocess_status_notification(
 
     # Check overall status (keep unchanged regardless of abort status)
     status_emoji = "✅" if result.success else "❌"
+    lines.append("")
+    lines.append("---")
     lines.append(f"**Post-processing Status** {status_emoji}")
+
+    # Add directory path if available
+    if result.base_directory:
+        lines.append(f"`{result.base_directory}`")
 
     # Add steps information if available, sorted by completion time
     if result.steps:
