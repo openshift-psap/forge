@@ -29,11 +29,11 @@ def resolve_config_content(benchmark: dict) -> str | None:
 
     try:
         import benchconf
-    except ImportError:
+    except ImportError as exc:
         raise ImportError(
             "benchconf package is required for benchconf-based benchmarks. "
             "Install with: pip install 'benchconf @ git+https://github.com/openshift-psap/benchconf'"
-        )
+        ) from exc
 
     parts = benchconf_ref.split("/", 1)
     if len(parts) != 2:

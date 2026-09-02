@@ -107,10 +107,8 @@ def test_benchmark_workloads_are_available() -> None:
         assert benchmark["timeout_seconds"] == 3600
     assert multi_turn["timeout_seconds"] == 7200
 
-    assert concurrent["args"]["rate"] == [1, 50, 100, 200, 300]
-    assert heavy["args"]["max_seconds"] == 600
-    assert "prompt_tokens_stdev=8500" in heavy["args"]["data"]
-    assert "output_tokens_max=8000" in heavy["args"]["data"]
+    assert concurrent["benchconf"] == "llm-d/concurrent-1k-1k"
+    assert heavy["benchconf"] == "llm-d/concurrent-heavy-heterogeneous"
     assert multi_turn["args"]["rate"] == [32, 64, 128, 256, 512]
     assert "turns=5" in multi_turn["args"]["data"]
     assert "prefix_count={2*rate}" in multi_turn["args"]["data"]
