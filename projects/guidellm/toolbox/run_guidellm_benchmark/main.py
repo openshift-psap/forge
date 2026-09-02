@@ -57,7 +57,7 @@ def run(
     pvc_size: str = "1Gi",
     pvc_storage_class: str | None = None,
     guidellm_args: list[str] | None = None,
-    benchconf_content: str | None = None,
+    config_content: str | None = None,
     hf_token_secret: str = "",
     fs_group: int | None = None,
     keep_full_benchmark_file: bool = False,
@@ -74,7 +74,7 @@ def run(
         timeout: Active deadline for the Job and timeout in seconds to wait for completion
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
         guidellm_args: List of additional guidellm arguments (e.g., ["--rate=10", "--max-seconds=30"])
-        benchconf_content: Raw YAML content of a benchconf config file. When set,
+        config_content: Raw YAML content of a GuideLLM config file. When set,
             the config is written to a file inside the container and GuideLLM is
             invoked with --config pointing to it.
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
@@ -166,7 +166,7 @@ def create_guidellm_resources_task(args, ctx):
     # Ensure src directory exists
     (args.artifact_dir / "src").mkdir(parents=True, exist_ok=True)
 
-    benchconf_content = args.benchconf_content
+    config_content = args.config_content
 
     # Create the job based on mode
     if args.use_pvc:
@@ -182,7 +182,7 @@ def create_guidellm_resources_task(args, ctx):
                 timeout_seconds=args.timeout,
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
-                benchconf_content=benchconf_content,
+                config_content=config_content,
             ),
         )
 
@@ -226,7 +226,7 @@ def create_guidellm_resources_task(args, ctx):
                 timeout_seconds=args.timeout,
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
-                benchconf_content=benchconf_content,
+                config_content=config_content,
             ),
         )
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS
