@@ -4,6 +4,7 @@ Utilities for the GuideLL-M benchmark toolbox module.
 
 from __future__ import annotations
 
+import logging
 import re
 import shlex
 from dataclasses import dataclass
@@ -12,6 +13,10 @@ from typing import Any
 import yaml
 
 from projects.core.dsl import template
+
+logger = logging.getLogger(__name__)
+
+CONFIG_FILE_PATH = "/tmp/guidellm-config.yaml"
 
 
 @dataclass(frozen=True)
@@ -126,8 +131,20 @@ def build_guidellm_args(benchmark: dict[str, object]) -> list[str]:
     return guidellm_args
 
 
-def _build_multi_run_script(*, endpoint_url: str, runs: list[GuideLLMRun]) -> str:
+def _build_config_heredoc(config_content: str) -> str:
+    """Build a shell heredoc that writes a GuideLLM config YAML to a file."""
+    return f"cat > {CONFIG_FILE_PATH} <<'__CONFIG_EOF__'\n{config_content}__CONFIG_EOF__"
+
+
+def _build_multi_run_script(
+    *,
+    endpoint_url: str,
+    runs: list[GuideLLMRun],
+    config_content: str | None = None,
+) -> str:
     lines = ["set -euo pipefail", "mkdir -p /results"]
+    if config_content:
+        lines.append(_build_config_heredoc(config_content))
     for run in runs:
         lines.append("rm -f /results/benchmarks.json")
         command = [
@@ -194,6 +211,7 @@ def render_guidellm_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
+    config_content: str | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest from individual components.
 
@@ -208,6 +226,9 @@ def render_guidellm_job_from_parts(
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the PVC is writable by the container. Needed on clusters where the
             CSI driver provisions volumes with root-only permissions.
+        config_content: Raw YAML content of a GuideLLM config file to embed
+            in the container. When set, the job uses a shell script that writes
+            the config before invoking guidellm with --config.
 
     Returns:
         Job manifest as dict
@@ -226,7 +247,10 @@ def render_guidellm_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
     container = manifest["spec"]["template"]["spec"]["containers"][0]
-    if len(runs) == 1 and runs[0].rate is None:
+
+    # Config file mode requires a shell script to write the file first.
+    # Plain single runs can invoke guidellm directly.
+    if not config_content and len(runs) == 1 and runs[0].rate is None:
         container["command"] = ["/opt/app-root/bin/guidellm"]
         container["args"] = [
             "benchmark",
@@ -237,7 +261,9 @@ def render_guidellm_job_from_parts(
         return manifest
 
     container["command"] = ["/bin/sh", "-lc"]
-    container["args"] = [_build_multi_run_script(endpoint_url=endpoint_url, runs=runs)]
+    container["args"] = [
+        _build_multi_run_script(endpoint_url=endpoint_url, runs=runs, config_content=config_content)
+    ]
     return manifest
 
 
@@ -251,6 +277,7 @@ def render_guidellm_shared_volume_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
+    config_content: str | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest with shared volume (main + sidecar containers).
 
@@ -264,6 +291,8 @@ def render_guidellm_shared_volume_job_from_parts(
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the shared volume is writable by both containers.
+        config_content: Raw YAML content of a GuideLLM config file to embed
+            in the container.
 
     Returns:
         Job manifest as dict with main and sidecar containers
@@ -282,20 +311,21 @@ def render_guidellm_shared_volume_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
 
-    # Build the main container script
-    if len(runs) == 1 and runs[0].rate is None:
+    # Build the main container script.
+    # Config file mode always uses a shell script to write the file first.
+    if not config_content and len(runs) == 1 and runs[0].rate is None:
         main_script_lines = [
             "set -euo pipefail",
             "mkdir -p /results",
             f"/opt/app-root/bin/guidellm benchmark run --target={endpoint_url} {' '.join(runs[0].args)}",
         ]
         main_script = "\n".join(main_script_lines)
-        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
-        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
     else:
-        main_script = _build_multi_run_script(endpoint_url=endpoint_url, runs=runs)
-        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
-        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
+        main_script = _build_multi_run_script(
+            endpoint_url=endpoint_url, runs=runs, config_content=config_content
+        )
+    manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
+    manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
 
     return manifest
 

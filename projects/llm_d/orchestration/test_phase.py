@@ -17,8 +17,10 @@ from projects.core.library import config, env
 from projects.core.library.postprocess import run_and_postprocess, write_test_labels
 from projects.core.library.run import SignalInterrupt
 from projects.core.orchestration.utils.k8s import ensure_namespace
+from projects.guidellm.library.benchconf import resolve_config_content as resolve_benchconf
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark import main as run_guidellm_benchmark_command
+from projects.guidellm.toolbox.run_guidellm_benchmark.utils import CONFIG_FILE_PATH
 from projects.guidellm.toolbox.run_smoke_request import main as run_smoke_request_command
 from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state
 from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
@@ -784,7 +786,10 @@ def run_guidellm_benchmark(*, endpoint_url: str) -> None:
 
     try:
         benchmark_key = runtime_config.get_benchmark_keys()[0]
+        config_content = resolve_benchconf(benchmark)
         guidellm_args = build_guidellm_args(benchmark)
+        if config_content:
+            guidellm_args.append(f"--config={CONFIG_FILE_PATH}")
         if not any(arg.startswith("--processor=") for arg in guidellm_args):
             guidellm_args.append(f"--processor={runtime_config.get_model_name()}")
         artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
@@ -798,6 +803,7 @@ def run_guidellm_benchmark(*, endpoint_url: str) -> None:
                 pvc_size=benchmark.get("pvc_size"),
                 pvc_storage_class=benchmark.get("pvc_storage_class"),
                 guidellm_args=guidellm_args,
+                config_content=config_content,
             )
     finally:
         # Add benchmark end timing (even if benchmark failed)
