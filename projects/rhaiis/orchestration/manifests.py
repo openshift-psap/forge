@@ -219,6 +219,10 @@ def _build_vllm_sglang_container(
     gpu_count: int,
     env_vars_list: list[dict],
 ) -> dict[str, Any]:
+    raw_args = dict(engine_args or {})
+    nsys_wrap = bool(raw_args.pop("_nsys_wrap", False))
+    nsys_output = str(raw_args.pop("_nsys_output", "/tmp/vllm_profile/nsys_capture"))
+
     if engine == "sglang":
         command = ["sglang", "serve"]
         if storage_source == "hf":
@@ -226,13 +230,28 @@ def _build_vllm_sglang_container(
         else:
             args = ["--model-path=/mnt/models", "--port=8080", "--host=0.0.0.0"]
     else:
-        command = ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        vllm_cmd = ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        if nsys_wrap:
+            command = [
+                "nsys",
+                "profile",
+                "--trace-fork-before-exec=true",
+                "--cuda-graph-trace=node",
+                "--capture-range=cudaProfilerApi",
+                "--capture-range-end=repeat",
+                f"--output={nsys_output}",
+                *vllm_cmd,
+            ]
+        else:
+            command = vllm_cmd
         if storage_source == "hf":
             args = [f"--model={model_id}", "--port=8080"]
         else:
             args = ["--model=/mnt/models", f"--served-model-name={model_id}", "--port=8080"]
 
-    for key, val in (engine_args or {}).items():
+    for key, val in raw_args.items():
+        if str(key).startswith("_"):
+            continue
         if isinstance(val, bool):
             if val:
                 args.append(f"--{key}")

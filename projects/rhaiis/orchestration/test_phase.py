@@ -11,6 +11,14 @@ import yaml
 from projects.core.library import env
 from projects.core.library.postprocess import run_and_postprocess, write_test_labels
 from projects.rhaiis.orchestration import runtime_config
+from projects.rhaiis.orchestration.profiler import (
+    apply_native_profiler_deploy,
+    build_sglang_start_body,
+    engine_supports_profiler,
+    is_native_backend,
+    native_options,
+    traces_dir as profiler_traces_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +178,7 @@ def _run_test(
 
     profiler_cfg = runtime_config.get_profiler_config()
     profiler_enabled = profiler_cfg.get("enabled", False)
+    profiler_native = is_native_backend(profiler_cfg)
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
 
     # Standalone analysis only — no deployment needed
@@ -203,11 +212,17 @@ def _run_test(
 
     try:
         isvc_labels = {"opendatahub.io/dashboard": "true"}
-        if profiler_enabled and engine == "vllm":
-            isvc_labels["vllm-profiler/enabled"] = "true"
-        elif profiler_enabled and engine != "vllm":
-            logger.warning("Profiler is only supported with vLLM engine, skipping profiler")
+        if profiler_enabled and not engine_supports_profiler(engine, profiler_cfg):
+            logger.warning(
+                "Profiler backend=%s is not supported with engine=%s, skipping profiler",
+                "native" if profiler_native else "webhook",
+                engine,
+            )
             profiler_enabled = False
+        elif profiler_enabled and profiler_native:
+            apply_native_profiler_deploy(engine, engine_args, env_vars, profiler_cfg)
+        elif profiler_enabled and engine == "vllm":
+            isvc_labels["vllm-profiler/enabled"] = "true"
 
         logger.info("Deploying %s to %s/%s", model_cfg["hf_model_id"], namespace, deployment_name)
         ea = engine_args or {}
@@ -291,6 +306,7 @@ def _run_test(
                 workload=runtime_config.get_workload(wl_key),
                 workload_key=wl_key,
                 benchmark_timeout=benchmark_timeout,
+                engine=engine,
             )
             if profiler_enabled:
                 logger.info("Running profiler for workload=%s", wl_key)
@@ -708,8 +724,10 @@ def _run_warmup_step(
     workload: dict,
     workload_key: str,
     benchmark_timeout: int,
+    engine: str = "vllm",
 ) -> None:
     """Run a short warmup benchmark to prime KV cache and CUDA kernels."""
+    _ = engine
     from projects.core.library import config
     from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
         run as run_guidellm_benchmark,
@@ -755,11 +773,95 @@ def _run_profiler_step(
     workload: dict,
     workload_key: str,
     benchmark_timeout: int,
+    engine: str = "vllm",
 ) -> None:
-    """Run profiler-gated benchmarks: verify prereqs → enable gate → benchmark → disable gate → copy traces."""
+    """Phase-1 profiler capture, then copy traces. S3 upload stays in the caller."""
+    profiler_cfg = runtime_config.get_profiler_config()
+    if is_native_backend(profiler_cfg):
+        _run_native_profiler_step(
+            deployment_name=deployment_name,
+            namespace=namespace,
+            endpoint_url=endpoint_url,
+            benchmark_cfg=benchmark_cfg,
+            model_cfg=model_cfg,
+            workload=workload,
+            workload_key=workload_key,
+            benchmark_timeout=benchmark_timeout,
+            engine=engine,
+            profiler_cfg=profiler_cfg,
+        )
+        return
+    _run_webhook_profiler_step(
+        deployment_name=deployment_name,
+        namespace=namespace,
+        endpoint_url=endpoint_url,
+        benchmark_cfg=benchmark_cfg,
+        model_cfg=model_cfg,
+        workload=workload,
+        workload_key=workload_key,
+        benchmark_timeout=benchmark_timeout,
+        profiler_cfg=profiler_cfg,
+    )
+
+
+def _profiler_labels(profiler_cfg: dict, workload: dict) -> list[str]:
+    labels = profiler_cfg.get("labels", [])
+    if labels:
+        return list(labels)
+    label = _derive_profiler_label(workload)
+    logger.info("Auto-generated profiler label from workload: %s", label)
+    return [label]
+
+
+def _run_guidellm_profiler_load(
+    *,
+    deployment_name: str,
+    namespace: str,
+    endpoint_url: str,
+    benchmark_cfg: dict,
+    model_cfg: dict,
+    workload: dict,
+    workload_key: str,
+    benchmark_timeout: int,
+    profiler_cfg: dict,
+) -> None:
     from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
         run as run_guidellm_benchmark,
     )
+
+    guidellm_args = runtime_config.build_guidellm_args(
+        benchmark_cfg=benchmark_cfg,
+        model_id=model_cfg["hf_model_id"],
+        data=workload["data"],
+        rates=profiler_cfg.get("rates", [1]),
+        max_seconds=profiler_cfg.get("max_seconds", 60),
+    )
+    run_guidellm_benchmark(
+        endpoint_url=f"{endpoint_url}/v1",
+        name=_guidellm_job_name("guidellm-profiler", workload_key, deployment_name),
+        namespace=namespace,
+        image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0"),
+        timeout=benchmark_timeout,
+        pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
+        guidellm_args=guidellm_args,
+        hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
+        fs_group=benchmark_cfg.get("fs_group"),
+    )
+
+
+def _run_webhook_profiler_step(
+    *,
+    deployment_name: str,
+    namespace: str,
+    endpoint_url: str,
+    benchmark_cfg: dict,
+    model_cfg: dict,
+    workload: dict,
+    workload_key: str,
+    benchmark_timeout: int,
+    profiler_cfg: dict,
+) -> None:
+    """Webhook path: verify prereqs → gate file → GuideLLM → disable gate → copy /tmp/trace_*."""
     from projects.rhaiis.toolbox.copy_profiler_traces.main import run as copy_profiler_traces
     from projects.rhaiis.toolbox.enable_profiler_gate.main import run as enable_profiler_gate
     from projects.rhaiis.toolbox.verify_profiler_prereqs.main import run as verify_profiler_prereqs
@@ -767,44 +869,25 @@ def _run_profiler_step(
     logger.info("Verifying profiler prerequisites")
     verify_profiler_prereqs(namespace=namespace)
 
-    profiler_cfg = runtime_config.get_profiler_config()
-    labels = profiler_cfg.get("labels", [])
-    if not labels:
-        labels = [_derive_profiler_label(workload)]
-        logger.info("Auto-generated profiler label from workload: %s", labels[0])
-
-    profiler_max_seconds = profiler_cfg.get("max_seconds", 60)
-
+    labels = _profiler_labels(profiler_cfg, workload)
     for label in labels:
-        logger.info("Profiling label=%s", label)
-
-        gate_value = label if isinstance(label, str) else str(label)
+        logger.info("Profiling label=%s (webhook gate)", label)
         enable_profiler_gate(
             name=deployment_name,
             namespace=namespace,
-            gate_value=gate_value,
+            gate_value=label if isinstance(label, str) else str(label),
         )
-
-        profiler_rates = profiler_cfg.get("rates", [1])
-        guidellm_args = runtime_config.build_guidellm_args(
-            benchmark_cfg=benchmark_cfg,
-            model_id=model_cfg["hf_model_id"],
-            data=workload["data"],
-            rates=profiler_rates,
-            max_seconds=profiler_max_seconds,
-        )
-
         try:
-            run_guidellm_benchmark(
-                endpoint_url=f"{endpoint_url}/v1",
-                name=_guidellm_job_name("guidellm-profiler", workload_key, deployment_name),
+            _run_guidellm_profiler_load(
+                deployment_name=deployment_name,
                 namespace=namespace,
-                image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0"),
-                timeout=benchmark_timeout,
-                pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
-                guidellm_args=guidellm_args,
-                hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
-                fs_group=benchmark_cfg.get("fs_group"),
+                endpoint_url=endpoint_url,
+                benchmark_cfg=benchmark_cfg,
+                model_cfg=model_cfg,
+                workload=workload,
+                workload_key=workload_key,
+                benchmark_timeout=benchmark_timeout,
+                profiler_cfg=profiler_cfg,
             )
         finally:
             enable_profiler_gate(
@@ -816,6 +899,81 @@ def _run_profiler_step(
     logger.info("Copying profiler traces from pod")
     try:
         copy_profiler_traces(name=deployment_name, namespace=namespace)
+    except Exception:
+        logger.warning("Failed to copy profiler traces", exc_info=True)
+
+
+def _run_native_profiler_step(
+    *,
+    deployment_name: str,
+    namespace: str,
+    endpoint_url: str,
+    benchmark_cfg: dict,
+    model_cfg: dict,
+    workload: dict,
+    workload_key: str,
+    benchmark_timeout: int,
+    engine: str,
+    profiler_cfg: dict,
+) -> None:
+    """Native path: POST /start_profile → GuideLLM → POST /stop_profile → copy traces_dir."""
+    from projects.rhaiis.toolbox.control_native_profiler.main import run as control_native_profiler
+    from projects.rhaiis.toolbox.copy_profiler_traces.main import run as copy_profiler_traces
+
+    labels = _profiler_labels(profiler_cfg, workload)
+    native = native_options(profiler_cfg)
+    directory = profiler_traces_dir(profiler_cfg)
+    stop_timeout = int(native.get("stop_timeout_seconds", 1800) or 1800)
+    start_body = build_sglang_start_body(profiler_cfg) if engine == "sglang" else ""
+
+    for label in labels:
+        logger.info("Profiling label=%s (native HTTP start/stop)", label)
+        control_native_profiler(
+            endpoint_url=endpoint_url,
+            action="start",
+            timeout_seconds=60,
+            body=start_body,
+            name=deployment_name,
+            namespace=namespace,
+            traces_dir=directory,
+        )
+        try:
+            _run_guidellm_profiler_load(
+                deployment_name=deployment_name,
+                namespace=namespace,
+                endpoint_url=endpoint_url,
+                benchmark_cfg=benchmark_cfg,
+                model_cfg=model_cfg,
+                workload=workload,
+                workload_key=workload_key,
+                benchmark_timeout=benchmark_timeout,
+                profiler_cfg=profiler_cfg,
+            )
+        finally:
+            try:
+                control_native_profiler(
+                    endpoint_url=endpoint_url,
+                    action="stop",
+                    timeout_seconds=stop_timeout,
+                    name=deployment_name,
+                    namespace=namespace,
+                    traces_dir=directory,
+                )
+            except Exception:
+                logger.warning(
+                    "Native /stop_profile failed (ok if num_steps already ended the session)",
+                    exc_info=True,
+                )
+
+    logger.info("Copying native profiler traces from %s", directory)
+    try:
+        copy_profiler_traces(
+            name=deployment_name,
+            namespace=namespace,
+            remote_dir=directory,
+            file_glob="*",
+            run_label=labels[0] if labels else "",
+        )
     except Exception:
         logger.warning("Failed to copy profiler traces", exc_info=True)
 

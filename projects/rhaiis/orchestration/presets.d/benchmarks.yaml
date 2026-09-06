@@ -6,3 +6,67 @@ benchmark:
   rhaiis.profiler.enabled: true
   caliper.postprocess.csv_dashboard.enabled: true
   rhaiis.agent_analysis.enabled: false
+
+# Cluster webhook + /tmp/profiler_gate (vLLM only). This is also the
+# default when rhaiis.profiler.backend is unset.
+profiler-webhook:
+  rhaiis.profiler.enabled: true
+  rhaiis.profiler.backend: webhook
+
+# vLLM 0.13+ HTTP /start_profile + /stop_profile (torch Chrome traces).
+# Example:
+#   --preset llama-8b --preset profile1 --preset profiler-native
+profiler-native:
+  rhaiis.profiler.enabled: true
+  rhaiis.profiler.backend: native
+  rhaiis.profiler.kind: torch
+
+# Short native capture: one concurrent stream, 60s GuideLLM window.
+# Prefer this over profiler-native when you only need a trace, not a 200s soak.
+profiler-native-short:
+  rhaiis.profiler.enabled: true
+  rhaiis.profiler.backend: native
+  rhaiis.profiler.kind: torch
+  rhaiis.profiler.rates: [1]
+  rhaiis.profiler.max_seconds: 60
+
+# Skip 50 engine iterations, then record 10. GuideLLM still runs for max_seconds;
+# the engine stops recording after max_iterations.
+profiler-native-window:
+  rhaiis.profiler.enabled: true
+  rhaiis.profiler.backend: native
+  rhaiis.profiler.kind: torch
+  rhaiis.profiler.rates: [1]
+  rhaiis.profiler.max_seconds: 120
+  rhaiis.profiler.native.delay_iterations: 50
+  rhaiis.profiler.native.max_iterations: 10
+  rhaiis.profiler.native.ignore_frontend: true
+
+# Nsight Systems via CUDA profiler API. The serving image must contain `nsys`.
+profiler-native-cuda:
+  rhaiis.profiler.enabled: true
+  rhaiis.profiler.backend: native
+  rhaiis.profiler.kind: cuda
+  rhaiis.profiler.native.nsys_wrap: true
+  rhaiis.profiler.rates: [1]
+  rhaiis.profiler.max_seconds: 60
+
+# Triton Proton (eager mode). Open chrome_trace in Perfetto; hatchet needs proton-viewer.
+profiler-native-proton:
+  rhaiis.profiler.enabled: true
+  rhaiis.profiler.backend: native
+  rhaiis.profiler.kind: proton
+  rhaiis.profiler.native.proton_output_format: chrome_trace
+  rhaiis.profiler.rates: [1]
+  rhaiis.profiler.max_seconds: 60
+
+# SGLang native profiler (SGLANG_TORCH_PROFILER_DIR + /start_profile).
+# num_steps auto-stops the engine profiler; /stop_profile is still attempted.
+profiler-native-sglang:
+  rhaiis.engine: sglang
+  rhaiis.profiler.enabled: true
+  rhaiis.profiler.backend: native
+  rhaiis.profiler.rates: [1]
+  rhaiis.profiler.max_seconds: 60
+  rhaiis.profiler.native.num_steps: 10
+  rhaiis.profiler.native.start_step: 5
