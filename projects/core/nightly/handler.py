@@ -13,11 +13,10 @@ import importlib
 import logging
 import os
 
-import yaml
-
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
 from projects.core.library.config import requires
+from projects.core.library.postprocess import write_test_labels
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +126,7 @@ def _create_fournos_job(project: str, version: str, source_cfg: dict, _cfg) -> N
 
 
 def _write_test_labels() -> None:
-    """Write ``__test_labels__.yaml`` so the caliper export ``run_naming``
+    """Write Caliper test metadata so the caliper export ``run_naming``
     templates can resolve the ``{outcome}`` placeholder."""
     result_file = env.ARTIFACT_DIR / "result.txt"
     if result_file.exists():
@@ -136,8 +135,7 @@ def _write_test_labels() -> None:
         outcome = "error"
 
     labels = {"outcome": outcome}
-    labels_path = env.ARTIFACT_DIR / "__test_labels__.yaml"
-    labels_path.write_text(yaml.dump({"labels": labels}))
+    write_test_labels(env.ARTIFACT_DIR, labels, dump_config=False)
     logger.info("Wrote test labels: %s", labels)
 
 

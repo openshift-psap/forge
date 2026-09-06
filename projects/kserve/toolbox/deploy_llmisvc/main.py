@@ -16,6 +16,7 @@ from projects.core.dsl import (
     retry,
     task,
 )
+from projects.core.dsl.template import render_template
 from projects.core.dsl.utils import slugify_identifier, write_text
 from projects.core.dsl.utils.k8s import (
     oc,
@@ -41,6 +42,7 @@ def run(
     gateway_status_address_name: str | None = "gateway-external",
     dry_run: bool = False,
     wait_long_scheduling: bool = False,
+    deploy_monitor: bool = True,
 ) -> str:
     """
     Deploy an LLMInferenceService and wait for its endpoint.
@@ -51,6 +53,7 @@ def run(
         gateway_status_address_name: Gateway status address name for endpoint resolution
         dry_run: If True, only prepare the manifest without deploying
         wait_long_scheduling: If True, wait for all pods to be scheduled before checking service readiness with extended retry
+        deploy_monitor: If True, deploy ServiceMonitor for monitoring the ISVC
     """
 
     ctx = execute_tasks(locals())
@@ -164,6 +167,63 @@ def apply_inference_service(args, ctx):
     manifest = load_yaml(Path(src_manifest_path))
     oc_apply(src_manifest_path, manifest)
     return f"Applied LLMInferenceService manifest from {src_manifest_path} for {ctx.inference_service_name}"
+
+
+@task
+def deploy_servicemonitor(args, ctx):
+    """Deploy ServiceMonitor for ISVC if deploy_monitor flag is enabled"""
+
+    if not args.deploy_monitor:
+        return "ServiceMonitor deployment disabled (deploy_monitor=False)"
+
+    if args.dry_run:
+        return "Dry-run, ServiceMonitor would be generated and applied"
+
+    # Get ISVC name from context
+    isvc_name = getattr(ctx, "inference_service_name", None)
+    if not isvc_name:
+        logger.warning("ISVC name not available, skipping ServiceMonitor deployment")
+        return "Skipped: ISVC name not available"
+
+    logger.info(f"Deploying ServiceMonitor for ISVC: {isvc_name}")
+
+    # Get ISVC UID for owner reference
+    owner_uid = _get_isvc_uid(isvc_name, args.namespace)
+    if owner_uid:
+        logger.info(f"Found ISVC UID: {owner_uid}")
+    else:
+        logger.warning("ISVC UID not found - ServiceMonitor will not have owner reference")
+
+    # Render ServiceMonitor template using DSL template utilities
+    # Add additional template variables to ctx for template access
+    ctx.llmisvc_name = isvc_name
+    ctx.owner_uid = owner_uid
+
+    # Pass real args and ctx to template
+    template_context = {
+        "args": args,
+        "ctx": ctx,
+    }
+
+    # Render the Jinja2 template (owner references are included in template)
+    rendered_content = render_template("servicemonitor.yaml.j2", template_context)
+
+    # Parse the rendered YAML content
+    processed_manifests = list(yaml.safe_load_all(rendered_content))
+
+    # Save manifests to artifacts
+    artifacts_dir = args.artifact_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    servicemonitor_path = artifacts_dir / "servicemonitor.yaml"
+
+    with servicemonitor_path.open("w") as f:
+        yaml.dump_all(processed_manifests, f, default_flow_style=False, sort_keys=False)
+
+    # Apply to cluster
+    oc("apply", "-f", str(servicemonitor_path))
+
+    logger.info("✅ ServiceMonitor deployed successfully")
+    return f"ServiceMonitor deployed for ISVC '{isvc_name}' and saved to {servicemonitor_path}"
 
 
 @on_failure(on_wait_pods_appear_failure)
@@ -906,6 +966,33 @@ def capture_pod_yaml(args, ctx):
 
     except Exception as e:
         return f"Failed to capture pod YAML: {e}"
+
+
+def _get_isvc_uid(isvc_name: str, namespace: str) -> str | None:
+    """Get ISVC UID for owner reference using oc command."""
+    try:
+        result = oc(
+            "get",
+            "llminferenceservice",
+            isvc_name,
+            "-n",
+            namespace,
+            "-o",
+            "jsonpath={.metadata.uid}",
+            check=False,
+        )
+
+        if result.returncode != 0:
+            logger.warning(
+                f"Failed to get ISVC UID: oc command failed with return code {result.returncode}"
+            )
+            return None
+
+        uid = result.stdout.strip()
+        return uid if uid else None
+    except Exception as e:
+        logger.warning(f"Failed to get ISVC UID: {e}")
+        return None
 
 
 if __name__ == "__main__":

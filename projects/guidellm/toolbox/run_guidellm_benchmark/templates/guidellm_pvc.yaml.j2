@@ -9,7 +9,7 @@ metadata:
     forge.openshift.io/project: llm_d
 spec:
   accessModes:
-    - {{ "ReadWriteMany" if pvc_storage_class else "ReadWriteOnce" }}
+    - ReadWriteOnce
 {% if pvc_storage_class %}
   storageClassName: {{ pvc_storage_class }}
 {% endif %}

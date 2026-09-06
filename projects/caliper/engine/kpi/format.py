@@ -8,15 +8,24 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.engine.kpi.dataclasses import (
+    HierarchicalKpi,
+    HierarchicalKpiFormat,
+    HierarchicalTestEntry,
+    KpiCatalogEntry,
+    TestMetadata,
+)
+
 logger = logging.getLogger(__name__)
 
 
-def transform_kpis_to_hierarchical_format(kpis: list[dict], model) -> dict:
+def transform_kpis_to_hierarchical_format(kpis: list[dict], model) -> HierarchicalKpiFormat:
     """
-    Transform flat KPI list into hierarchical JSON structure.
+    Transform flat KPI list into hierarchical JSON structure using dataclasses.
 
-    Groups KPIs by test (run_id), extracting common labels and organizing
-    KPI metadata (name, help, unit, etc.) for improved readability.
+    Groups KPIs by test (run_id) using HierarchicalTestEntry dataclasses,
+    with TestMetadata for test metadata and direct field access from
+    KpiCatalogEntry dataclasses for improved type safety.
 
     The plugin catalog is used for *enrichment* only: KPIs that appear in
     the catalog get richer metadata; KPIs not in the catalog are still
@@ -27,23 +36,36 @@ def transform_kpis_to_hierarchical_format(kpis: list[dict], model) -> dict:
         model: Unified model for accessing plugin metadata
 
     Returns:
-        Hierarchical JSON structure organized by test
+        HierarchicalKpiFormat dataclass containing structured test entries
+        with TestMetadata and KPI data
     """
 
     if not kpis:
-        return {"schema_version": "2", "tests": []}
+        return HierarchicalKpiFormat()
 
-    # Group KPIs by test (run_id)
-    tests_data = defaultdict(lambda: {"kpis": [], "labels": {}, "metadata": {}})
+    # Group KPIs by test (run_id) using dataclasses
+    tests_data: dict[str, HierarchicalTestEntry] = {}
 
     # Build catalog index for enrichment (not validation)
     kpi_models: dict[str, dict] = {}
     try:
         plugin_module_obj = __import__(model.plugin_module, fromlist=[""])
         kpi_catalog = plugin_module_obj.get_plugin().kpi_catalog()
-        kpi_models = {e["kpi_id"]: e for e in kpi_catalog}
     except Exception:
         logger.warning("Could not load KPI catalog for enrichment", exc_info=True)
+        kpi_catalog = None
+
+    if kpi_catalog:
+        # Normalize catalog entries to KpiCatalogEntry dataclasses for consistent indexing
+        kpi_models = {}
+        for entry in kpi_catalog:
+            if isinstance(entry, dict):
+                # Convert dictionary to KpiCatalogEntry dataclass
+                catalog_entry = KpiCatalogEntry.from_dict(entry)
+            else:
+                # Already a KpiCatalogEntry instance
+                catalog_entry = entry
+            kpi_models[catalog_entry.kpi_id] = catalog_entry
 
     # First pass: determine which labels vary across KPIs in the same run
     run_label_values: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
@@ -59,78 +81,81 @@ def transform_kpis_to_hierarchical_format(kpis: list[dict], model) -> dict:
     for kpi in kpis:
         kpi_id = kpi.get("kpi_id")
         run_id = kpi.get("run_id", "unknown")
+
+        # Get or create test entry using dataclass
+        if run_id not in tests_data:
+            tests_data[run_id] = HierarchicalTestEntry(run_id=run_id)
+
         test_data = tests_data[run_id]
         varying_keys = per_kpi_label_keys.get(run_id, set())
 
         # Split labels: constant → test-level, varying → per-KPI
         kpi_labels = kpi.get("labels", {})
         test_labels = {k: v for k, v in kpi_labels.items() if k not in varying_keys}
-        test_data["labels"].update(test_labels)
+        test_data.labels.update(test_labels)
 
         # Store test metadata from first KPI
-        if not test_data["metadata"]:
-            test_data["metadata"] = {
-                "timestamp": kpi.get("timestamp"),
-                "source": kpi.get("source", {}),
-                "run_id": run_id,
-            }
+        if not test_data.metadata.timestamp:
+            test_data.metadata = TestMetadata(
+                timestamp=kpi.get("timestamp", ""),
+                run_id=run_id,
+            )
 
-        raw_value = kpi.get("value")
-
-        # Prefer catalog metadata when present; otherwise use the flat record.
+        # Get catalog entry or create one from the KPI record
         catalog_entry = kpi_models.get(kpi_id)
-        if catalog_entry is not None:
-            is_curve = catalog_entry.get("is_curve", False)
+        if catalog_entry is None:
+            # Create catalog entry from flat KPI record
+            catalog_entry = KpiCatalogEntry(
+                kpi_id=kpi_id,
+                name=kpi.get("name") or kpi_id,
+                unit=kpi.get("unit", ""),
+                higher_is_better=kpi.get("higher_is_better", True),
+                is_curve=kpi.get("is_curve", False),
+                help=kpi.get("help", ""),
+                x_unit=kpi.get("x_unit", ""),
+                x_help=kpi.get("x_help", ""),
+                y_unit=kpi.get("y_unit", ""),
+                y_help=kpi.get("y_help", ""),
+            )
+
+        # Get the appropriate value field based on curve type
+        if catalog_entry.is_curve:
+            raw_value = kpi.get("values")
+            if raw_value is None:
+                raw_value = kpi.get("value", [])  # Backward compatibility
         else:
-            is_curve = kpi.get("is_curve", False)
+            raw_value = kpi.get("value")
 
-        if is_curve:
-            final_value = {
-                "data_points": [{"x": float(x), "y": float(y)} for x, y in raw_value],
-                "count": len(raw_value),
-            }
+        # Build KPI record using catalog entry (either real or constructed from KPI)
+        kpi_record = {
+            "kpi_id": kpi_id,
+            "name": catalog_entry.name,
+            "unit": catalog_entry.unit,
+            "higher_is_better": catalog_entry.higher_is_better,
+            "is_curve": catalog_entry.is_curve,
+            "help": catalog_entry.help,
+            "x_unit": catalog_entry.x_unit,
+            "x_help": catalog_entry.x_help,
+            "y_unit": catalog_entry.y_unit,
+            "y_help": catalog_entry.y_help,
+        }
+
+        if catalog_entry.is_curve:
+            kpi_record["values"] = raw_value  # Raw coordinate pairs for curve KPIs
         else:
-            final_value = raw_value
+            kpi_record["value"] = raw_value  # Scalar value for scalar KPIs
 
-        if catalog_entry is not None:
-            kpi_record: dict[str, Any] = catalog_entry.copy()
-            for fmt_key in "x_format", "y_format", "format":
-                kpi_record.pop(fmt_key, None)
-        else:
-            kpi_record = {
-                "name": kpi.get("name") or kpi_id,
-                "unit": kpi.get("unit", ""),
-                "higher_is_better": kpi.get("higher_is_better", True),
-                "is_curve": is_curve,
-            }
+        # Build output record using HierarchicalKpi dataclass
+        kpi_output = HierarchicalKpi(**kpi_record)
 
-        # Normalize field name: hierarchical format uses "id", not "kpi_id"
-        kpi_record.pop("kpi_id", None)
-        kpi_record["id"] = kpi_id
-        kpi_record["value"] = final_value
-        # Hierarchical schema v2 nested KPIs use "id" (catalog uses "kpi_id").
-        if "kpi_id" in kpi_record:
-            kpi_record["id"] = kpi_record.pop("kpi_id")
+        test_data.kpis.append(kpi_output)
 
-        kpi_specific_labels = {k: kpi_labels[k] for k in varying_keys if k in kpi_labels}
-        if kpi_specific_labels:
-            kpi_record["labels"] = kpi_specific_labels
+    # Convert to hierarchical format using dataclass
+    hierarchical_format = HierarchicalKpiFormat(
+        tests=list(tests_data.values()),
+    )
 
-        test_data["kpis"].append(kpi_record)
-
-    # Convert to final structure
-    tests_list = []
-    for run_id, test_data in tests_data.items():
-        tests_list.append(
-            {
-                "run_id": run_id,
-                "labels": test_data["labels"],
-                "metadata": test_data["metadata"],
-                "kpis": test_data["kpis"],
-            }
-        )
-
-    return {"schema_version": "2", "tests": tests_list}
+    return hierarchical_format
 
 
 def write_kpis_in_format(
@@ -152,10 +177,10 @@ def write_kpis_in_format(
             raise ValueError("Model is required for hierarchical format")
 
         # Transform to hierarchical format (schema v2)
-        hierarchical_data = transform_kpis_to_hierarchical_format(kpis, model)
+        hierarchical_format = transform_kpis_to_hierarchical_format(kpis, model)
 
         with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(hierarchical_data, f, indent=2, ensure_ascii=False)
+            json.dump(hierarchical_format.to_dict(), f, indent=2, ensure_ascii=False)
             # Add EOL at EOF if we have data
             if kpis:
                 f.write("\n")
@@ -191,9 +216,9 @@ def flatten_hierarchical_kpis(data: dict[str, Any]) -> list[dict[str, Any]]:
         }
         for kpi in test.get("kpis", []):
             record = dict(test_base)
-            record["kpi_id"] = kpi.get("id") or kpi.get("kpi_id")
+            record["kpi_id"] = kpi.get("kpi_id")
             for k, v in kpi.items():
-                if k in ("id", "kpi_id"):
+                if k == "kpi_id":
                     pass
                 elif k == "labels":
                     record[k] = {} | test_base["labels"] | v

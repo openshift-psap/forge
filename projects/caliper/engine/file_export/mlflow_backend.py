@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.engine.file_export.mlflow_secrets import (
     assert_tracking_uri_has_no_userinfo,
     mlflow_connection_env,
@@ -349,7 +350,7 @@ def log_artifacts(
     upload_workers: int = 10,
     run_metadata: dict[str, Any] | None = None,
     workspace: str | None = None,
-) -> tuple[str, dict[str, Any] | None]:
+) -> tuple[str, dict[str, Any] | None, bool]:
     try:
         import mlflow
     except ImportError as e:
@@ -419,6 +420,8 @@ def log_artifacts(
         if run_name:
             start_kw["run_name"] = run_name
 
+        partial_failure = []
+
         meta: dict[str, Any] | None = None
         client = mlflow.tracking.MlflowClient()
         with mlflow.start_run(**start_kw):
@@ -428,7 +431,7 @@ def log_artifacts(
             _apply_run_metadata(effective_meta)
             _apply_log_model(artifact_root, effective_meta, verbose=verbose)
 
-            _log_metrics_and_params_from_tree(artifact_root)
+            partial_failure += _log_metrics_and_params_from_tree(artifact_root)
 
             _upload_mlflow_files_parallel(
                 client=client,
@@ -440,13 +443,19 @@ def log_artifacts(
             )
             tu = mlflow.get_tracking_uri() or ""
             meta = _capture_mlflow_run_metadata(tu, workspace=workspace)
-        if verbose:
+
+        if partial_failure:
+            logger.info(f"MLflow upload partially failed ({mlflow.get_tracking_uri()})")
+
+        elif verbose:
             logger.info(f"MLflow upload finished ({mlflow.get_tracking_uri()})")
-        return f"mlflow:{mlflow.get_tracking_uri()}", meta
+
+        return f"mlflow:{mlflow.get_tracking_uri()}", meta, any(partial_failure)
 
     if connection is not None:
         with mlflow_connection_env(connection):
             return _run(tracking_uri or connection.get("tracking_uri"))
+
     return _run(tracking_uri)
 
 
@@ -463,28 +472,32 @@ def _load_json_file(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _log_curve_metrics(metrics_curve: dict[str, Any]) -> None:
+def _log_curve_metrics(metrics_curve: dict[str, Any]) -> list[str]:
     """Log curve metrics as stepped MLflow metrics.
 
     Each key maps to a list of ``{"x": ..., "y": ...}`` dicts (already
     sorted by x in ``metrics_from_kpis``).  Each data point is logged
     with ``step=int(x)`` so MLflow renders the curve.
 
-    Raises:
-        ValueError: If a data point has a non-integer x value (MLflow
-            steps must be integers) or if x/y are not numeric.
+    Returns:
+        List of error messages for curves that could not be logged.
     """
     import mlflow
+
+    errors = []
 
     for metric_name, data_points in metrics_curve.items():
         if not isinstance(data_points, list):
             continue
+
+        curve_errors = []
         for i, pt in enumerate(data_points):
             if not isinstance(pt, dict):
-                raise ValueError(
-                    f"2D metric {metric_name!r}: data_points[{i}] is {type(pt).__name__}, "
+                curve_errors.append(
+                    f"curve {metric_name!r}: data_points[{i}] is {type(pt).__name__}, "
                     f"expected dict with 'x' and 'y' keys"
                 )
+                continue
             x = pt.get("x")
             y = pt.get("y")
             if (
@@ -493,32 +506,53 @@ def _log_curve_metrics(metrics_curve: dict[str, Any]) -> None:
                 or not isinstance(y, int | float)
                 or isinstance(y, bool)
             ):
-                raise ValueError(
-                    f"2D metric {metric_name!r}: data_points[{i}] has non-numeric "
-                    f"x={x!r} or y={y!r}"
+                curve_errors.append(
+                    f"curve {metric_name!r}: data_points[{i}] has non-numeric x={x!r} or y={y!r}"
                 )
+                continue
             if x != int(x):
-                raise ValueError(
-                    f"2D metric {metric_name!r}: data_points[{i}] has non-integer "
+                curve_errors.append(
+                    f"curve {metric_name!r}: data_points[{i}] has non-integer "
                     f"step x={x!r} (MLflow steps must be integers)"
                 )
-            mlflow.log_metric(str(metric_name), float(y), step=int(x))
+                continue
+
+            try:
+                mlflow.log_metric(str(metric_name), float(y), step=int(x))
+            except Exception as e:
+                curve_errors.append(f"curve {metric_name!r}: failed to log point {i}: {e}")
+
+        if curve_errors:
+            errors.extend(curve_errors)
+
+    return errors
 
 
-def _log_metrics_and_params_from_tree(artifact_root: Path) -> None:
-    """Find metrics.json/parameters.json under __test_labels__.yaml-marked dirs and log them."""
+def _log_metrics_and_params_from_tree(artifact_root: Path) -> list[str]:
+    """Find metrics.json/parameters.json under metadata-marked dirs and log them (with backwards compatibility)."""
     import mlflow
 
-    for marker in sorted(artifact_root.rglob("__test_labels__.yaml")):
-        if not marker.is_file():
-            continue
-        run_dir = marker.parent
+    # Collect directories with either metadata file (new format or legacy)
+    metadata_dirs = set()
 
+    for marker in artifact_root.rglob(METADATA_FILE):
+        if marker.is_file():
+            metadata_dirs.add(marker.parent)
+
+    # Look for legacy format (for directories that don't have new format)
+    for marker in artifact_root.rglob(LEGACY_METADATA_FILE):
+        if marker.is_file() and marker.parent not in metadata_dirs:
+            metadata_dirs.add(marker.parent)
+
+    all_errors = []
+
+    for run_dir in sorted(metadata_dirs):
         mf = run_dir / "metrics.json"
         if mf.is_file():
             for k, v in _load_json_file(mf).items():
                 if isinstance(v, list):
-                    _log_curve_metrics({k: v})
+                    curve_errors = _log_curve_metrics({k: v})
+                    all_errors.extend(curve_errors)
                 elif isinstance(v, int | float) and not isinstance(v, bool):
                     mlflow.log_metric(str(k), float(v))
 
@@ -526,6 +560,11 @@ def _log_metrics_and_params_from_tree(artifact_root: Path) -> None:
         if pf.is_file():
             for k, v in _load_json_file(pf).items():
                 mlflow.log_param(str(k), "" if v is None else str(v))
+
+    for error in all_errors:
+        logger.warning("MLflow metric error: %s", error)
+
+    return all_errors
 
 
 def log_multi_run_artifacts(
@@ -596,6 +635,7 @@ def log_multi_run_artifacts(
 
         parent_meta: dict[str, Any] | None = None
         child_runs_meta: list[dict[str, Any]] = []
+        all_curve_errors: list[str] = []
         client = mlflow.tracking.MlflowClient()
 
         start_kw: dict[str, Any] = {}
@@ -645,7 +685,11 @@ def log_multi_run_artifacts(
                     if mf.is_file():
                         for k, v in _load_json_file(mf).items():
                             if isinstance(v, list):
-                                _log_curve_metrics({k: v})
+                                curve_errors = _log_curve_metrics({k: v})
+                                if curve_errors:
+                                    # Add child run context to errors
+                                    for error in curve_errors:
+                                        all_curve_errors.append(f"Run '{child_name}': {error}")
                             elif isinstance(v, int | float) and not isinstance(v, bool):
                                 mlflow.log_metric(str(k), float(v))
 
@@ -685,6 +729,12 @@ def log_multi_run_artifacts(
             parent_meta = _capture_mlflow_run_metadata(tu, workspace=workspace)
             if child_runs_meta:
                 parent_meta["child_runs"] = child_runs_meta
+            if all_curve_errors:
+                parent_meta["curve_errors"] = all_curve_errors
+
+        # Log any curve errors as warnings instead of failing
+        for error in all_curve_errors:
+            logger.warning("MLflow curve metric error: %s", error)
 
         if verbose:
             logger.info("MLflow multi-run upload finished (%s)", mlflow.get_tracking_uri())

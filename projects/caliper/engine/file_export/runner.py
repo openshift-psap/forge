@@ -86,7 +86,7 @@ def run_file_export(
         try:
             if verbose:
                 print(f"caliper: starting backend {b!r} …", file=sys.stderr)
-            detail, ml_meta = mlflow_backend.log_artifacts(
+            detail, ml_meta, failures = mlflow_backend.log_artifacts(
                 artifact_root=source,
                 paths=paths,
                 tracking_uri=mlflow_tracking_uri,
@@ -103,7 +103,7 @@ def run_file_export(
             results.append(
                 FileExportBackendResult(
                     backend="mlflow",
-                    status="success",
+                    status="success" if not failures else "failure",
                     detail=detail,
                     metadata=ml_meta,
                 )

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from projects.caliper.engine.parse import run_parse
-from projects.caliper.engine.validation import load_schema, schema_path, validate_instance
 
 
 def run_ai_eval_export(
@@ -54,10 +53,6 @@ def run_ai_eval_export(
 
     # Add exported entries info to payload
     payload["exported_test_entries"] = exported_entries
-
-    # Validate and write the main payload file
-    schema = load_schema(schema_path("ai_eval_payload.schema.json"))
-    validate_instance(payload, schema, "AI eval payload")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")

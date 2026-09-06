@@ -1,4 +1,4 @@
-"""Discover test base directories via __test_labels__.yaml or MatrixBenchmarking settings.yaml."""
+"""Discover test base directories via caliper metadata file or MatrixBenchmarking settings.yaml."""
 
 from __future__ import annotations
 
@@ -8,10 +8,18 @@ from typing import Any
 
 import yaml
 
+from projects.caliper.engine.constants import (
+    LEGACY_METADATA_FILE,
+    MATRIXBENCHMARKING_SETTINGS_FILE,
+    METADATA_FILE,
+)
 from projects.caliper.engine.model import TestBaseNode
 
-MARKER = "__test_labels__.yaml"
-MATRIXBENCHMARKING_MARKER = "settings.yaml"
+# Primary marker
+MARKER = METADATA_FILE
+# Legacy marker for backwards compatibility
+LEGACY_MARKER = LEGACY_METADATA_FILE
+MATRIXBENCHMARKING_MARKER = MATRIXBENCHMARKING_SETTINGS_FILE
 
 
 def discover_test_bases(
@@ -40,6 +48,8 @@ def discover_test_bases(
         marker_found = None
         if MARKER in filenames:
             marker_found = MARKER
+        elif LEGACY_MARKER in filenames:
+            marker_found = LEGACY_MARKER  # Backwards compatibility
         elif MATRIXBENCHMARKING_MARKER in filenames:
             marker_found = MATRIXBENCHMARKING_MARKER
 
@@ -49,7 +59,7 @@ def discover_test_bases(
         path = Path(dirpath)
 
         # Use hierarchical label loading for both marker types
-        if marker_found == MARKER:
+        if marker_found == MARKER or marker_found == LEGACY_MARKER:
             test_labels = _load_hierarchical_test_labels(path, base_dir)
             # For filtering, use the labels directly (hierarchical loading returns the labels dict)
             # Normalize missing "labels" entry to empty mapping to allow discovery of empty marker files
@@ -144,15 +154,16 @@ def discover_test_bases(
 
 
 def _load_hierarchical_test_labels(test_dir: Path, base_dir: Path) -> dict[str, Any]:
-    """Load and merge __test_labels__.yaml files hierarchically from base_dir down to test_dir.
+    """Load and merge test metadata files hierarchically from base_dir down to test_dir.
 
-    Merges in order:
-    1. base_dir/__test_labels__.*.yaml (all variants)
-    2. parent_dir/__test_labels__.*.yaml (all variants)
-    3. test_dir/__test_labels__.*.yaml (all variants)
-    4. test_dir/__test_labels__.yaml (final, cannot be overridden)
+    Merges in order (for each directory):
+    1. __caliper_test_metadata__.*.yaml (all variants, new format)
+    2. __test_labels__.*.yaml (all variants, legacy format)
+    3. __caliper_test_metadata__.yaml (final, new format)
+    4. __test_labels__.yaml (final, legacy fallback)
 
-    Later files override earlier ones, with the main __test_labels__.yaml having final priority.
+    Later files override earlier ones, with the main metadata file having final priority.
+    New format files are preferred over legacy format when both exist.
     """
     import glob
 
@@ -172,14 +183,19 @@ def _load_hierarchical_test_labels(test_dir: Path, base_dir: Path) -> dict[str, 
         # test_dir is not under base_dir, just use test_dir
         path_parts = [test_dir_abs]
 
-    # For each directory in the hierarchy, merge __test_labels__.*.yaml files (excluding plain __test_labels__.yaml)
+    # For each directory in the hierarchy, merge variant files (new format first, then legacy)
     for dir_path in path_parts:
         if not dir_path.is_dir():
             continue
 
-        # Find all __test_labels__.*.yaml files (but not __test_labels__.yaml itself)
-        pattern = str(dir_path / "__test_labels__.*.yaml")
-        variant_files = sorted(glob.glob(pattern))
+        # Find all variant files - new format first
+        new_pattern = str(dir_path / f"{METADATA_FILE.replace('.yaml', '.*.yaml')}")
+        legacy_pattern = str(dir_path / f"{LEGACY_METADATA_FILE.replace('.yaml', '.*.yaml')}")
+
+        # Collect all variant files, prioritizing new format
+        variant_files = []
+        variant_files.extend(sorted(glob.glob(new_pattern)))
+        variant_files.extend(sorted(glob.glob(legacy_pattern)))
 
         for variant_file in variant_files:
             variant_path = Path(variant_file)
@@ -192,8 +208,12 @@ def _load_hierarchical_test_labels(test_dir: Path, base_dir: Path) -> dict[str, 
                     # Skip files that can't be loaded
                     pass
 
-    # Finally, load the main __test_labels__.yaml from the test directory (final priority)
+    # Finally, load the main metadata file from the test directory (final priority)
+    # Prefer new format, fall back to legacy format
     main_labels_path = test_dir / MARKER
+    if not main_labels_path.is_file():
+        main_labels_path = test_dir / LEGACY_MARKER
+
     if main_labels_path.is_file():
         try:
             main_labels = _load_labels(main_labels_path, is_matrixbenchmarking=False)
@@ -277,7 +297,7 @@ def _deep_merge_dict(target: dict[str, Any], source: dict[str, Any]) -> None:
 
 
 def _load_labels(path: Path, is_matrixbenchmarking: bool = False) -> dict[str, Any]:
-    """Load labels from either __test_labels__.yaml or MatrixBenchmarking settings.yaml."""
+    """Load labels from either caliper metadata file or MatrixBenchmarking settings.yaml."""
     raw = path.read_text(encoding="utf-8")
     data = yaml.safe_load(raw)
     if data is None:

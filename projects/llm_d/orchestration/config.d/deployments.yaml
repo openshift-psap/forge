@@ -6,6 +6,7 @@ defaults:
   tensor_parallelism: 1
   serving_image: null
   router_image: null
+  enable_monitors: true
   vllm_extra:
     args:
       gpu_memory_utilization: 0.92

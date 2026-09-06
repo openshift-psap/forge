@@ -128,7 +128,7 @@ def test_notification_formatting_regression():
     assert "📊 [analysis.yaml](https://example.com/artifacts/analysis.yaml)" in notification_text
 
     # Verify baseline files count
-    assert "📈 Baseline files analyzed: 5" in notification_text
+    assert "📈 Baseline files analyzed: `5`" in notification_text
 
     print("✅ Regression notification formatting test passed")
 

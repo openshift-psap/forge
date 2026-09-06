@@ -115,6 +115,28 @@ def _translate_args(args: dict, engine: str) -> dict:
     return translated
 
 
+def _resolve_boolean_flag_conflicts(args: dict) -> dict:
+    """If both "no-<flag>" and "<flag>" are set, drop the earlier one.
+
+    A config override can add one without clearing the other's default.
+    Keeping only the later-set key matches argparse's last-flag-wins
+    behavior for these paired CLI flags.
+    """
+    keys_in_order = list(args.keys())
+    losers = set()
+    for key in keys_in_order:
+        if not key.startswith("no-"):
+            continue
+        positive_key = key[len("no-") :]
+        if positive_key not in args:
+            continue
+        earlier_key = (
+            key if keys_in_order.index(key) < keys_in_order.index(positive_key) else positive_key
+        )
+        losers.add(earlier_key)
+    return {key: value for key, value in args.items() if key not in losers}
+
+
 def merge_engine_args(
     overrides: dict,
     model: dict,
@@ -144,7 +166,7 @@ def merge_engine_args(
 
     base.update(wl)
     base.update(overrides)
-    return base
+    return _resolve_boolean_flag_conflicts(base)
 
 
 def merge_env_vars(accelerator: str, model: dict) -> dict:

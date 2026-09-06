@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from projects.caliper.engine.constants import METADATA_FILE
 from projects.core.notifications.provider import NotificationContext
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ def get_test_artifacts_root(context: NotificationContext) -> Path | None:
 
     if context.artifact_dir:
         parent = context.artifact_dir.parent
-        if parent.exists() and any(parent.glob("*/__test_labels__.yaml")):
+        if parent.exists() and any(parent.glob(f"*/{METADATA_FILE}")):
             return parent
 
     return context.artifact_dir
@@ -93,16 +94,19 @@ def read_test_duration(context: NotificationContext) -> str:
 
 
 def get_label_value(artifact_root: Path | None, key: str) -> str | None:
-    """Extract a value from __test_labels__.yaml in the artifact tree.
+    """Extract a value from __caliper_test_metadata__.yaml in the artifact tree.
 
     The labels file format is: {"version": "1", "labels": {"key": "value", ...}}
     """
     if not artifact_root:
         return None
 
-    labels_file = artifact_root / "__test_labels__.yaml"
+    labels_file = artifact_root / METADATA_FILE
+
     if not labels_file.exists():
-        labels_glob = list(artifact_root.glob("**/__test_labels__.yaml"))
+        # Search in subdirectories - new format first
+        labels_glob = list(artifact_root.glob(f"**/{METADATA_FILE}"))
+
         if not labels_glob:
             return None
         labels_file = labels_glob[0]

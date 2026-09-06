@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import inspect
 from datetime import UTC, datetime
-from typing import Any
 
 from projects.caliper.engine.kpi import (
     Format,
     HigherBetter,
     KpiCatalogEntry,
+    KpiComputationStatus,
     KPIMetadata,
     KpiRecord,
     LowerBetter,
-    SourceInfo,
     build_catalog_from_functions,
     create_label_extractor,
     get_kpi_functions,
@@ -254,35 +253,16 @@ class MCPGatewayKpiHandler:
     )
 
     @staticmethod
-    def get_catalog() -> list[dict[str, Any]]:
+    def get_catalog() -> list[KpiCatalogEntry]:
         """Return the KPI catalog built from decorated functions using dataclasses."""
         current_module = inspect.getmodule(MCPGatewayKpiHandler)
-        raw_catalog = build_catalog_from_functions(current_module)
-
-        # Convert to structured dataclass format
-        catalog_entries = []
-        for entry in raw_catalog:
-            catalog_entry = KpiCatalogEntry(
-                kpi_id=entry.get("kpi_id", ""),
-                name=entry.get("name", ""),
-                unit=entry.get("unit", ""),
-                higher_is_better=entry.get("higher_is_better", True),
-                is_curve=entry.get("is_curve", False),
-                help=entry.get("help", ""),
-                x_unit=entry.get("x_unit", ""),
-                x_help=entry.get("x_help", ""),
-                y_unit=entry.get("y_unit", ""),
-                y_help=entry.get("y_help", ""),
-            )
-            catalog_entries.append(catalog_entry.to_dict())
-
-        return catalog_entries
+        return build_catalog_from_functions(current_module)
 
     @staticmethod
-    def compute_kpis(model: UnifiedRunModel) -> list[dict[str, Any]]:
+    def compute_kpis(model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
         """Compute KPI values from the unified model."""
         ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        out: list[dict[str, Any]] = []
+        out: list[KpiRecord] = []
         current_module = inspect.getmodule(MCPGatewayKpiHandler)
         kpi_functions = get_kpi_functions(current_module)
 
@@ -293,7 +273,8 @@ class MCPGatewayKpiHandler:
         ]
 
         if not valid_records:
-            return out
+            status = KpiComputationStatus.success_status(0, len(model.unified_result_records))
+            return out, status
 
         for r in valid_records:
             base_labels = {**r.distinguishing_labels}
@@ -319,21 +300,17 @@ class MCPGatewayKpiHandler:
 
                 # Create structured KPI record using core dataclass
                 kpi_record = KpiRecord(
-                    schema_version="1",
                     kpi_id=kpi_id,
                     value=value,  # Core enforces int|float only
                     unit=kpi_func._kpi_unit,
                     run_id=r.test_base_path,
                     timestamp=ts,
                     labels=all_labels,
-                    metadata={},
                     is_curve=False,  # Scalar KPI
-                    source=SourceInfo(
-                        test_base_path=r.test_base_path,
-                        plugin_module=model.plugin_module,
-                    ),
                 )
 
-                out.append(kpi_record.to_dict())
+                out.append(kpi_record)
 
-        return out
+        # Create success status
+        status = KpiComputationStatus.success_status(len(valid_records), len(valid_records))
+        return out, status

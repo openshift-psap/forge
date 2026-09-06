@@ -2,7 +2,7 @@
 Tests for the multi-run caliper export pipeline.
 
 Covers:
-- Run directory auto-detection via __test_labels__.yaml markers
+- Run directory auto-detection via caliper metadata file markers
 - Shared vs run-specific file partitioning
 - metrics.json / parameters.json reading and MLflow logging
 - Parent + nested child run creation
@@ -20,15 +20,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from projects.caliper.engine.constants import METADATA_FILE, METRICS_FILE, PARAMETERS_FILE
 from projects.caliper.engine.file_export.artifacts_export_run import discover_run_dirs
 
-METRICS_FILE = "metrics.json"
-PARAMETERS_FILE = "parameters.json"
-TEST_LABELS_MARKER = "__test_labels__.yaml"
+# Use new format for tests
+TEST_LABELS_MARKER = METADATA_FILE
 
 
 def _write_test_labels(directory: Path, labels: dict) -> None:
-    """Helper to write a __test_labels__.yaml marker file."""
+    """Helper to write a test metadata marker file."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / TEST_LABELS_MARKER).write_text(
         yaml.safe_dump({"version": "1", "labels": labels}, sort_keys=False),
@@ -138,7 +138,7 @@ def artifact_tree(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def single_run_tree(tmp_path: Path) -> Path:
-    """Artifact tree without any __test_labels__.yaml markers."""
+    """Artifact tree without any caliper metadata file markers."""
     base = tmp_path / "artifacts"
 
     prepare = base / "001__prepare"

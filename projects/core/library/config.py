@@ -5,8 +5,10 @@ import logging
 import os
 import pathlib
 import re
+import sys
 import types
 
+import click
 import jsonpath_ng
 import yaml
 
@@ -249,7 +251,7 @@ class Config:
                     "apply_presets_from_project_args: failed to apply preset %r: %s", arg_name, e
                 )
 
-    def apply_presets_from_cluster_config(self):
+    def apply_presets_from_cluster_config(self, *, lenient_presets=False):
         """Apply cluster-specific configuration if ci_job.cluster matches cluster_config keys."""
 
         # Get the current cluster name from ci_job.cluster
@@ -283,8 +285,17 @@ class Config:
             )
             return
 
-        self.apply_preset(preset_name)
-        logger.info(f"Applied cluster preset: {preset_name}")
+        try:
+            self.apply_preset(preset_name)
+            logger.info(f"Applied cluster preset: {preset_name}")
+        except Exception as e:
+            if not lenient_presets:
+                raise
+            logger.warning(
+                "apply_presets_from_cluster_config: failed to apply cluster preset %r: %s",
+                preset_name,
+                e,
+            )
 
     def _get_cluster_from_configmap(self):
         """Get cluster name from forge-config ConfigMap as fallback."""
@@ -524,6 +535,10 @@ def _load_project_config(config_file_src, config_chunk_files):
         return config
 
     for chunk_file in config_chunk_files:
+        if chunk_file.name.startswith("."):
+            logger.info(f"Ignore hidden file '{chunk_file.parent}'")
+            continue
+
         with open(chunk_file) as chunk_f:
             chunk_value = yaml.safe_load(chunk_f)
 
@@ -597,14 +612,22 @@ def init(orchestration_dir, *, apply_config_overrides=True, apply_cluster_config
     presets_applied_file.parent.mkdir(parents=True, exist_ok=True)
     presets_applied_file.touch(exist_ok=True)
 
-    import sys
+    # Derive lenient_presets from Click context when available, fallback to sys.argv
+    lenient_presets = False
+    try:
+        ctx = click.get_current_context()
+        lenient_presets = ctx.info_name == "resolve-fournos-config"
+    except (ImportError, RuntimeError):
+        # Fallback to sys.argv when Click context is not available
+        lenient_presets = "resolve-fournos-config" in sys.argv
 
-    lenient_presets = len(sys.argv) > 1 and sys.argv[1] == "resolve-fournos-config"
+    if lenient_presets:
+        logging.info("Fournos resolve step detected. Applying the presets in lenient mode.")
 
     project.apply_config_overrides(ignore_not_found=lenient_presets)
     project.apply_presets_from_project_args(lenient=lenient_presets)
     if apply_cluster_config:
-        project.apply_presets_from_cluster_config()
+        project.apply_presets_from_cluster_config(lenient_presets=lenient_presets)
     project.apply_config_overrides(
         ignore_not_found=lenient_presets
     )  # reapply so that the value overrides are applied last

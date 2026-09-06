@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from projects.caliper.engine.kpi.dataclasses import KpiCatalogEntry
+
 
 class KPIMetadata:
     """Decorator to add metadata to KPI functions."""
@@ -16,6 +18,7 @@ class KPIMetadata:
     def __call__(self, func: Callable) -> Callable:
         func._kpi_help = self.help
         func._kpi_unit = self.unit
+
         return func
 
 
@@ -52,25 +55,25 @@ class Curve:
     def __init__(
         self,
         x_unit: str,
-        x_help: str,
         y_unit: str | None = None,
+        x_help: str | None = None,
         y_help: str | None = None,
         x_format: str | None = None,
         y_format: str | None = None,
     ):
         self.x_unit = x_unit
-        self.x_help = x_help
         self.y_unit = y_unit
-        self.y_help = y_help
         self.x_format = x_format
         self.y_format = y_format
+        self.x_help = x_help
+        self.y_help = y_help
 
     def __call__(self, func: Callable) -> Callable:
         func._kpi_is_curve = True
         func._kpi_x_unit = self.x_unit
+        func._kpi_y_help = self.y_help
         func._kpi_x_help = self.x_help
         func._kpi_y_unit = self.y_unit
-        func._kpi_y_help = self.y_help
         func._kpi_x_format = self.x_format
         func._kpi_y_format = self.y_format
         return func
@@ -179,7 +182,7 @@ def is_curve_kpi(func: Callable) -> bool:
     return getattr(func, "_kpi_is_curve", False)
 
 
-def build_catalog_from_functions(module) -> list[dict[str, Any]]:
+def build_catalog_from_functions(module) -> list[KpiCatalogEntry]:
     """
     Build KPI catalog from decorated functions in a module.
 
@@ -187,7 +190,7 @@ def build_catalog_from_functions(module) -> list[dict[str, Any]]:
         module: The module containing KPI functions
 
     Returns:
-        List of KPI definitions
+        List of KpiCatalogEntry dataclasses
     """
     catalog = []
     kpi_functions = get_kpi_functions(module)
@@ -198,39 +201,29 @@ def build_catalog_from_functions(module) -> list[dict[str, Any]]:
             func.__doc__.replace(" KPI.", "") if func.__doc__ else kpi_id.replace("_", " ").title()
         )
 
-        kpi_def = {
-            "kpi_id": kpi_id,
-            "name": name,
-            "unit": func._kpi_unit,
-            "higher_is_better": func._kpi_higher_is_better,
-            "help": func._kpi_help,
-        }
-
-        # Add curve-specific metadata if this is a curve KPI
+        # Create KpiCatalogEntry dataclass
         if is_curve_kpi(func):
-            kpi_def.update(
-                {
-                    "is_curve": True,
-                    "x_unit": func._kpi_x_unit,
-                    "x_help": func._kpi_x_help,
-                    "y_unit": getattr(func, "_kpi_y_unit", None) or func._kpi_unit,
-                    "y_help": getattr(func, "_kpi_y_help", None) or func._kpi_help,
-                }
+            catalog_entry = KpiCatalogEntry(
+                kpi_id=kpi_id,
+                name=name,
+                higher_is_better=func._kpi_higher_is_better,
+                is_curve=True,
+                help=func._kpi_help,
+                x_unit=func._kpi_x_unit,
+                x_help=func._kpi_x_help,
+                y_unit=func._kpi_y_unit,
+                y_help=func._kpi_y_help,
+            )
+        else:
+            catalog_entry = KpiCatalogEntry(
+                kpi_id=kpi_id,
+                name=name,
+                unit=func._kpi_unit,
+                higher_is_better=func._kpi_higher_is_better,
+                is_curve=False,
+                help=func._kpi_help,
             )
 
-            # Add formatting info if available
-            if hasattr(func, "_kpi_x_format"):
-                kpi_def["x_format"] = func._kpi_x_format
-            if hasattr(func, "_kpi_y_format"):
-                kpi_def["y_format"] = func._kpi_y_format
-            elif hasattr(func, "_kpi_format"):
-                kpi_def["y_format"] = func._kpi_format
-        else:
-            kpi_def["is_curve"] = False
-            # Add scalar formatting info if available
-            if hasattr(func, "_kpi_format"):
-                kpi_def["format"] = func._kpi_format
-
-        catalog.append(kpi_def)
+        catalog.append(catalog_entry)
 
     return catalog

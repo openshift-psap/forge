@@ -1,8 +1,8 @@
-# Test Labels Format (`__test_labels__.yaml`)
+# Test Labels Format (`__caliper_test_metadata__.yaml`)
 
 ## Purpose
 
-The `__test_labels__.yaml` file marks directories as Caliper test bases and provides metadata for test identification, grouping, and status tracking.
+The `__caliper_test_metadata__.yaml` file marks directories as Caliper test bases and provides metadata for test identification, grouping, and status tracking.
 
 ## File Format
 
@@ -132,7 +132,7 @@ Caliper will not discover or process this directory at all. The `skip` field can
 
 ## Usage
 
-- **Test Discovery**: Caliper scans for `__test_labels__.yaml` files to find test results
+- **Test Discovery**: Caliper scans for `__caliper_test_metadata__.yaml` files to find test results
 - **Test Analysis**: Labels enable filtering and comparative analysis of test configurations
 - **KPI Labeling**: KPI labels are automatically applied to all generated KPI metrics
 - **Cross-Environment Analysis**: KPI labels enable performance comparisons across different platforms/hardware

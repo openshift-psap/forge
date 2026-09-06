@@ -10,7 +10,7 @@ kserve:
   wait_readiness: true
   wait_long_scheduling: false
   reuse_existing: false
-  delete_all_on_start: true
+  delete_all_on_start: true #  ignored if reuse_existing: true
 kueue:
   enabled: false
   queue_name: default-queue

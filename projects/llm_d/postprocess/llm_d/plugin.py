@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
     ParseResult,
@@ -44,6 +45,9 @@ analysis_config = AnalysisConfig(
 class LlmDGuideLLMPlugin(GuideLLMPlugin):
     """Keep generic GuideLLM outputs and add the llm-d dashboard projection."""
 
+    def __init__(self):
+        super().__init__()
+
     def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         parsed = enrich_guidellm_parse_result(super().parse(nodes), nodes)
         nodes_by_path = {str(node.test_path): node for node in nodes}
@@ -66,22 +70,29 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
             records.append(record)
         return ParseResult(records=records, warnings=parsed.warnings)
 
-    def kpi_catalog(self) -> list[dict[str, Any]]:
+    def kpi_catalog(self) -> list[KpiCatalogEntry]:
         return self.kpi_handler.get_catalog()
 
-    def compute_kpis(self, model: UnifiedRunModel) -> list[dict[str, Any]]:
+    def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
+        """Compute KPI values using dataclasses with status details."""
+        # Store model for independent dashboard KPI generation in CSV export
+        self._cached_model = model
         return super().compute_kpis(model)
 
     def export_kpis_to_csv(
         self,
-        kpi_records: list[dict[str, Any]],
+        kpi_records: list[KpiRecord],
         output_path: Path,
         include_header_comments: bool = True,
     ) -> str:
         """Export KPI records to CSV format with llm-d dashboard schema."""
         from . import csv_dashboard
 
-        return csv_dashboard.export_kpis_to_csv(kpi_records, output_path, include_header_comments)
+        # Pass the cached model to the CSV export function
+        cached_model = getattr(self, "_cached_model", None)
+        return csv_dashboard.export_kpis_to_csv(
+            kpi_records, output_path, include_header_comments, model=cached_model
+        )
 
 
 def get_plugin() -> PostProcessingPlugin:

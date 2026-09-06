@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from projects.caliper.engine.kpi.dataclasses import (
+    HierarchicalKpi,
+    HierarchicalKpiFormat,
+    HierarchicalTestEntry,
+)
+from projects.caliper.engine.kpi.report_dataclasses import (
     Algorithm,
     AnalysisSection,
     AnalysisSummary,
@@ -20,15 +25,10 @@ from projects.caliper.engine.kpi.dataclasses import (
     OverallStatus,
     RegressionReport,
     RegressionTestResult,
-    ResultBaselineValue,
-    ResultCurrentValue,
     ResultEntry,
     ResultLabels,
     TestedSection,
     Verdict,
-)
-from projects.caliper.engine.kpi.format import (
-    flatten_hierarchical_kpis as _extract_kpi_records_from_hierarchical,
 )
 from projects.caliper.public import KpiAnalysisStatus, StatusLevel
 from projects.caliper.public.status_models import (
@@ -244,51 +244,60 @@ def _is_relevant_baseline(
 
 
 def _build_baseline_index(
-    baseline_kpi_data: dict[Path, dict[str, Any]],
+    baseline_kpi_data: dict[Path, HierarchicalKpiFormat],
     config: AnalysisConfig,
     current_keys: dict[str, set[str]],
-) -> dict[tuple, dict[frozenset, dict[str, Any]]]:
+) -> dict[tuple, dict[frozenset, tuple[HierarchicalKpi, HierarchicalTestEntry]]]:
     """Index baseline records by (kpi_id, match_key) for fast lookup.
 
     Records with unexpected labels or irrelevant values are excluded.
     Deduplication by comparison keys: only one record per unique comparison
     key combination is kept (last one wins across baseline files).
 
-    Returns mapping from (kpi_id, match_key) -> {comparison_keys_frozenset: record}.
+    Returns mapping from (kpi_id, match_key) -> {comparison_keys_frozenset: (kpi, test)}.
     Same-version entries are excluded at query time by the caller.
     """
 
-    index: dict[tuple, dict[frozenset, dict[str, Any]]] = {}
-    for _path, data in baseline_kpi_data.items():
-        records = _extract_kpi_records_from_hierarchical(data)
-        for rec in records:
-            labels = rec.get("labels", {})
-            if not _is_relevant_baseline(labels, current_keys, config):
+    index: dict[tuple, dict[frozenset, tuple[HierarchicalKpi, HierarchicalTestEntry]]] = {}
+    for _path, kpi_format in baseline_kpi_data.items():
+        for test_entry in kpi_format.tests:
+            test_labels = test_entry.labels
+            if not _is_relevant_baseline(test_labels, current_keys, config):
                 continue
 
-            kpi_id = rec.get("kpi_id")
-            mk = _match_key(labels, config.ignored_labels, config.comparison_labels)
-            ck = frozenset((k, labels[k]) for k in config.comparison_labels if k in labels)
-            index.setdefault((kpi_id, mk), {})[ck] = rec
+            for kpi in test_entry.kpis:
+                kpi_id = kpi.kpi_id
+                mk = _match_key(test_labels, config.ignored_labels, config.comparison_labels)
+                ck = frozenset(
+                    (k, test_labels[k]) for k in config.comparison_labels if k in test_labels
+                )
+                index.setdefault((kpi_id, mk), {})[ck] = (kpi, test_entry)
     return index
 
 
 def _run_regression_test(
-    current: dict[str, Any],
-    baselines: list[dict[str, Any]],
+    current: HierarchicalKpi,
+    current_test: HierarchicalTestEntry,
+    baselines: list[tuple[HierarchicalKpi, HierarchicalTestEntry]],
     config: AnalysisConfig,
 ) -> RegressionTestResult:
     """Run a regression test for a single KPI record against its baselines.
 
     Handles all skip logic internally (non-scalar value, insufficient baselines).
     Returns a complete result dict ready for inclusion in the report.
+
+    Args:
+        current: Current KPI dataclass
+        current_test: Current test entry containing labels and metadata
+        baselines: List of (baseline_kpi, baseline_test) tuples
+        config: Analysis configuration
     """
-    kpi_id = current["kpi_id"]
-    run_id = current.get("run_id")
-    raw_labels = current.get("labels", {})
-    value = current.get("value")
-    higher_is_better = current.get("higher_is_better", True)
-    is_curve = current.get("is_curve", False)
+    kpi_id = current.kpi_id
+    run_id = current_test.run_id
+    raw_labels = current_test.labels
+    is_curve = current.is_curve
+    value = current.values if is_curve else current.value
+    higher_is_better = current.higher_is_better
 
     if "higher_is_better" not in config.ignored_labels:
         logging.info(
@@ -313,11 +322,13 @@ def _run_regression_test(
     baseline_values_list = [
         {
             "comparison_keys": {
-                k: b["labels"][k] for k in config.comparison_labels if k in b.get("labels", {})
+                k: baseline_test.labels[k]
+                for k in config.comparison_labels
+                if k in baseline_test.labels
             },
-            "value": b["value"],
+            "value": baseline_kpi.values if is_curve else baseline_kpi.value,
         }
-        for b in baselines
+        for baseline_kpi, baseline_test in baselines
     ]
 
     base = RegressionTestResult(
@@ -327,7 +338,11 @@ def _run_regression_test(
         run_id=run_id,
         is_curve=is_curve,
         higher_is_better=higher_is_better,
-        current_value=CurrentValueInfo(comparison_keys=current_comparison_keys, value=value),
+        current_value=CurrentValueInfo(
+            comparison_keys=current_comparison_keys,
+            values=value if is_curve else None,
+            value=None if is_curve else value,
+        ),
         baseline_values=baseline_values_list,
         baseline_count=len(baseline_values_list),
     )
@@ -413,24 +428,21 @@ def _curve_auc_change_regression(
     min_baseline_points = curve_config.get("min_baseline_points", 1)
     max_relative_regression = curve_config.get("max_relative_regression", 0.1)
 
-    current_curve = current_value.get("data_points")
-    if not current_curve:
-        base.verdict = Verdict.SKIPPED
-        base.reason = "no data points in the KPI"
-        return base
-
-    auc_baselines = [e for e in baseline_values_list if e and "data_points" in e["value"]]
+    # Filter for curve baselines that have coordinate pair data
+    auc_baselines = [
+        e for e in baseline_values_list if e and isinstance(e.get("value"), list) and e["value"]
+    ]
 
     if len(auc_baselines) < min_baseline_points:
         base.verdict = Verdict.SKIPPED
         base.reason = f"insufficient curve baselines ({len(auc_baselines)} < {min_baseline_points})"
         return base
 
-    current_auc = _compute_auc(current_curve)
+    current_auc = _compute_auc(current_value)
 
     baseline_auc_entries = [
         {
-            "value": round(_compute_auc(e["value"]["data_points"]), 6),
+            "value": round(_compute_auc(e["value"]), 6),
             "comparison_keys": e["comparison_keys"],
         }
         for e in auc_baselines
@@ -505,7 +517,7 @@ def _sort_results(
 
 
 def _summarize_label_sets(
-    data: dict[str, Any],
+    data: HierarchicalKpiFormat,
     config: AnalysisConfig,
     current_keys: dict[str, set[str]] | None = None,
     current_comparison_combinations: set[frozenset] | None = None,
@@ -525,7 +537,7 @@ def _summarize_label_sets(
       - relevant_common_keys: labels whose value is identical across all test entries (as key=val string)
       - relevant_distinct_keys: per-entry labels that differ (as key=val string), relevant entries only
     """
-    all_labels = [test.get("labels", {}) for test in data.get("tests", [])]
+    all_labels = [test.labels for test in data.tests]
 
     def _unique_values(key: str) -> list[str]:
         seen: list[str] = []
@@ -660,36 +672,27 @@ def _build_report(
         details = result.details or {}
         current_value_info = result.current_value
 
-        # For all KPIs, use the original value from current_value_info
-        # The processed AUC is already in details for curve KPIs
-        algorithm = details.get("algorithm")
-        current_val = current_value_info.value if current_value_info else 0
+        # Skip KPIs without current value data - this indicates a data problem
+        if not current_value_info:
+            logger.warning(
+                "Skipping KPI %s (run_id=%s) - missing current value data",
+                result.kpi_id,
+                result.run_id,
+            )
+            continue
 
-        # Extract labels
-        current_labels = current_value_info.comparison_keys if current_value_info else {}
-
-        # Only create baseline values if they actually exist and have meaningful comparison keys
-        baseline_values_list = []
-        if hasattr(result, "baseline_values") and result.baseline_values:
-            for baseline_entry in result.baseline_values:
-                baseline_labels = baseline_entry.get("comparison_keys", {})
-                baseline_value = baseline_entry.get("value", 0)
-                # Only include baselines that have comparison keys (can be meaningfully compared)
-                # Empty comparison_keys means the baseline lacks required labels for comparison
-                if baseline_labels:
-                    baseline_values_list.append(
-                        ResultBaselineValue(comparison_keys=baseline_labels, value=baseline_value)
-                    )
+        # Extract labels for ResultLabels
+        current_labels = current_value_info.comparison_keys
 
         entry = ResultEntry(
             kpi_id=result.kpi_id,
             verdict=result.verdict,  # Already a Verdict enum
             labels=ResultLabels(comparison_keys=current_labels, distinct_keys={}, ignore_keys={}),
             run_id=result.run_id,
-            is_curve=(algorithm == Algorithm.CURVE_AUC_CHANGE),
+            is_curve=result.is_curve,
             higher_is_better=result.higher_is_better,
-            current_value=ResultCurrentValue(comparison_keys=current_labels, value=current_val),
-            baseline_values=baseline_values_list,
+            current_value=current_value_info,
+            baseline_values=result.baseline_values,
             baseline_count=result.baseline_count,
             details=details,
         )
@@ -710,7 +713,7 @@ def _build_report(
 def _log_baseline_miss(
     kpi_id: str,
     current_mk: tuple,
-    baseline_index: dict[tuple, dict[frozenset, dict[str, Any]]],
+    baseline_index: dict[tuple, dict[frozenset, tuple[HierarchicalKpi, HierarchicalTestEntry]]],
 ) -> None:
     """Log why no baseline matched for a KPI record."""
     candidate_keys = [k for k in baseline_index if k[0] == kpi_id]
@@ -794,11 +797,11 @@ def run_kpi_analysis(
             config.ignored_labels,
         )
 
-        # Load current KPIs
+        # Load current KPIs using dataclasses
         with open(current_kpi_file) as f:
-            current_data = json.load(f)
+            current_raw_data = json.load(f)
 
-        if current_data.get("schema_version") != "2":
+        if current_raw_data.get("schema_version") != "2":
             logger.error("Current KPI file must be schema_version 2 (hierarchical)")
             return create_failure_status(
                 KpiAnalysisStatus,
@@ -806,8 +809,19 @@ def run_kpi_analysis(
                 exit_code=1,
             ), None
 
-        current_records = _extract_kpi_records_from_hierarchical(current_data)
-        if not current_records:
+        try:
+            current_data = HierarchicalKpiFormat.from_dict(current_raw_data)
+        except Exception as e:
+            logger.error("Failed to parse current KPI data: %s", e)
+            return create_failure_status(
+                KpiAnalysisStatus,
+                error=f"Invalid current KPI data: {e}",
+                exit_code=1,
+            ), None
+
+        # Count total KPI records
+        total_current_records = sum(len(test.kpis) for test in current_data.tests)
+        if total_current_records == 0:
             logger.warning("No KPI records found in current file")
             return create_failure_status(
                 KpiAnalysisStatus,
@@ -819,7 +833,7 @@ def run_kpi_analysis(
         baseline_kpi_data = find_baseline_kpis(historical_data_dir)
         if not baseline_kpi_data:
             _write_no_baseline_report(
-                output_file, current_kpi_file, plugin_module, len(current_records), config
+                output_file, current_kpi_file, plugin_module, total_current_records, config
             )
             return KpiAnalysisStatus(
                 status=StatusLevel.WARNING,
@@ -828,7 +842,7 @@ def run_kpi_analysis(
                 output_file=str(output_file),
                 exit_code=2,
                 completed_at=time.time(),
-                total_kpis=len(current_records),
+                total_kpis=total_current_records,
                 baseline_files_count=0,
             ), None
 
@@ -836,8 +850,8 @@ def run_kpi_analysis(
         current_keys: dict[str, set[str]] = {}
         current_comparison_combinations: set[frozenset] = set()
 
-        for test in current_data.get("tests", []):
-            labels = test.get("labels", {})
+        for test in current_data.tests:
+            labels = test.labels
             for k, v in labels.items():
                 current_keys.setdefault(k, set()).add(str(v))
 
@@ -856,21 +870,28 @@ def run_kpi_analysis(
 
         baseline_skipped_totals: dict[str, int] = {"same_version": 0, "duplicate": 0}
 
-        for rec in current_records:
-            labels = rec.get("labels", {})
-            mk = _match_key(labels, config.ignored_labels, config.comparison_labels)
-            key = (rec.get("kpi_id"), mk)
+        for test in current_data.tests:
+            test_labels = test.labels
+            for kpi in test.kpis:
+                mk = _match_key(test_labels, config.ignored_labels, config.comparison_labels)
+                key = (kpi.kpi_id, mk)
 
-            baseline_dict = baseline_index.get(key, {})
-            current_ck = frozenset((k, labels[k]) for k in config.comparison_labels if k in labels)
-            baselines = [r for ck, r in baseline_dict.items() if ck != current_ck]
-            baseline_skipped_totals["same_version"] += len(baseline_dict) - len(baselines)
+                baseline_dict = baseline_index.get(key, {})
+                current_ck = frozenset(
+                    (k, test_labels[k]) for k in config.comparison_labels if k in test_labels
+                )
+                baselines = [
+                    baseline_entry
+                    for ck, baseline_entry in baseline_dict.items()
+                    if ck != current_ck
+                ]
+                baseline_skipped_totals["same_version"] += len(baseline_dict) - len(baselines)
 
-            if not baselines:
-                _log_baseline_miss(rec.get("kpi_id"), mk, baseline_index)
+                if not baselines:
+                    _log_baseline_miss(kpi.kpi_id, mk, baseline_index)
 
-            result = _run_regression_test(rec, baselines, config)
-            results.append(result)
+                result = _run_regression_test(kpi, test, baselines, config)
+                results.append(result)
 
         # Sort results
         results = _sort_results(results, config.sorting_labels)
@@ -880,29 +901,27 @@ def run_kpi_analysis(
         relevant_sources = []
         irrelevant_sources = []
 
-        for path, data in baseline_kpi_data.items():
+        for path, kpi_format in baseline_kpi_data.items():
             summary = _summarize_label_sets(
-                data,
+                kpi_format,
                 config,
                 current_keys,
                 current_comparison_combinations,
             )
 
-            unexpected_labels: list[str] = []
-            irrelevant_keys: list[str] = []
-            for test in data.get("tests", []):
-                for k, v in test.get("labels", {}).items():
-                    if k not in current_keys:
-                        if k not in unexpected_labels:
-                            unexpected_labels.append(k)
-                        continue
+            unexpected_labels: set[str] = set()
+            irrelevant_keys: set[str] = set()
+            for test in kpi_format.tests:
+                for k, v in test.labels.items():
                     if k in excluded_labels:
+                        continue
+                    if k not in current_keys:
+                        unexpected_labels.add(k)
                         continue
                     sv = str(v)
                     if sv not in current_keys[k]:
                         entry = f"{k}={sv}"
-                        if entry not in irrelevant_keys:
-                            irrelevant_keys.append(entry)
+                        irrelevant_keys.add(entry)
 
             source_entry = {
                 "path": str(path),
@@ -954,13 +973,13 @@ def run_kpi_analysis(
         logger.info(
             "Analysis complete: %d/%d KPIs tested, %d regressions",
             total,
-            len(current_records),
+            total_current_records,
             regressions,
         )
 
         # Return status based on the overall verdict from the enum
         baseline_files_count = len(baseline_kpi_data)
-        total_kpis = len(current_records)
+        total_kpis = total_current_records
 
         if overall_status == OverallStatus.REGRESSION_DETECTED:
             return KpiAnalysisStatus(
@@ -1055,12 +1074,12 @@ def _write_no_baseline_report(
         json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
 
 
-def find_baseline_kpis(historical_dir: Path) -> dict[Path, dict[str, Any]]:
+def find_baseline_kpis(historical_dir: Path) -> dict[Path, HierarchicalKpiFormat]:
     """Load all kpis.json files from historical directory.
 
     Returns mapping of file paths to loaded hierarchical KPI data (schema v2 only).
     """
-    baseline_kpis: dict[Path, dict[str, Any]] = {}
+    baseline_kpis: dict[Path, HierarchicalKpiFormat] = {}
     kpi_files = list(historical_dir.rglob("kpis.json"))
 
     if not kpi_files:
@@ -1076,17 +1095,23 @@ def find_baseline_kpis(historical_dir: Path) -> dict[Path, dict[str, Any]]:
                 continue
 
             with open(kpi_file) as f:
-                kpi_data = json.load(f)
+                raw_kpi_data = json.load(f)
 
-            schema_version = kpi_data.get("schema_version", "unknown")
+            schema_version = raw_kpi_data.get("schema_version", "unknown")
             if schema_version != "2":
                 logger.warning(
                     "Skipping %s: unsupported schema version %s", kpi_file, schema_version
                 )
                 continue
 
-            baseline_kpis[kpi_file] = kpi_data
-            logger.debug("Loaded baseline: %s", kpi_file)
+            # Parse into dataclass
+            try:
+                kpi_data = HierarchicalKpiFormat.from_dict(raw_kpi_data)
+                baseline_kpis[kpi_file] = kpi_data
+                logger.debug("Loaded baseline: %s", kpi_file)
+            except Exception as parse_error:
+                logger.error("Failed to parse KPI data from %s: %s", kpi_file, parse_error)
+                continue
 
         except json.JSONDecodeError as e:
             # Try to read first line to check if it's v1 format (JSONL)

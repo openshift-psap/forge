@@ -4,7 +4,7 @@ Test phase for MCP Gateway performance tests.
 Iterates over the experiment matrix (servers x concurrency x target)
 and executes a load test for each combination. Each test iteration
 gets its own artifact directory (via ``NextArtifactDir``) containing
-raw Locust output and a ``__test_labels__.yaml`` marker for Caliper
+raw Locust output and a ``caliper metadata file`` marker for Caliper
 post-processing.
 """
 

@@ -9,7 +9,6 @@ from typing import Any
 
 from projects.caliper.engine.kpi import (
     KpiRecord,
-    SourceInfo,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import (
     create_report_filename,
@@ -93,10 +92,6 @@ def generate_kpi_report(
                 "format": getattr(kpi_func, "_kpi_format", "{:.2f}"),
                 "is_curve": is_curve_kpi(kpi_func),
             },
-            source=SourceInfo(
-                test_base_path=first_record.test_base_path,
-                plugin_module="guidellm.plotting.kpi_report",
-            ),
         )
 
         # Add 2D-specific metadata if applicable
@@ -511,10 +506,6 @@ def _generate_multi_test_kpi_report(
                     "format": getattr(kpi_func, "_kpi_format", "{:.2f}"),
                     "is_curve": is_curve_kpi(kpi_func),
                 },
-                source=SourceInfo(
-                    test_base_path=record.test_base_path,
-                    plugin_module="guidellm.plotting.kpi_report",
-                ),
             )
 
             # Add 2D-specific metadata if applicable

@@ -7,7 +7,7 @@ import time
 import yaml
 
 from projects.core.library import config, env, vault
-from projects.core.library.postprocess import run_and_postprocess
+from projects.core.library.postprocess import run_and_postprocess, write_test_labels
 from projects.skeleton.toolbox.cluster_info.main import run as cluster_info
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ def seed_skeleton_caliper_artifacts() -> pathlib.Path:
     """
     Create minimal Caliper inputs under the FORGE artifact root:
 
-    * ``__test_labels__.yaml`` + ``metrics.json`` per scenario (required by the skeleton plugin).
+    * ``__caliper_test_metadata__.yaml`` + ``metrics.json`` per scenario (required by the skeleton plugin).
     """
     demo_dir = env.ARTIFACT_DIR
     FAKE_DATA = (
@@ -27,10 +27,7 @@ def seed_skeleton_caliper_artifacts() -> pathlib.Path:
     for scenario, throughput, latency_ms in FAKE_DATA:
         d = demo_dir / scenario
         d.mkdir(parents=True, exist_ok=True)
-        (d / "__test_labels__.yaml").write_text(
-            yaml.dump({"labels": {"scenario": scenario}}, sort_keys=False),
-            encoding="utf-8",
-        )
+        write_test_labels(d, {"scenario": scenario}, dump_config=False)
         (d / "metrics.json").write_text(
             json.dumps({"throughput": throughput, "latency_ms": latency_ms}),
             encoding="utf-8",

@@ -14,7 +14,6 @@ from typing import Any
 from projects.caliper.engine.kpi import (
     KpiCatalogEntry,
     KpiRecord,
-    SourceInfo,
 )
 from projects.caliper.engine.model import (
     ParseResult,
@@ -256,6 +255,10 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         "guidellm_version": metadata.get("guidellm_version", ""),
         "prompt_toks": int(float(tokens["prompt_tokens"])) if "prompt_tokens" in tokens else "",
         "output_toks": int(float(tokens["output_tokens"])) if "output_tokens" in tokens else "",
+        "turns": int(float(tokens["turns"])) if "turns" in tokens else "",
+        "prefix_tokens": int(float(tokens["prefix_tokens"])) if "prefix_tokens" in tokens else "",
+        "prefix_count": int(float(tokens["prefix_count"])) if "prefix_count" in tokens else "",
+        "request_type": args.get("request_type", "") if isinstance(args, dict) else "",
         "guidellm_start_time_ms": int(min(starts) * 1000) if starts else "",
         "guidellm_end_time_ms": int(max(ends) * 1000) if ends else "",
     }
@@ -351,112 +354,211 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
     return extra, curves
 
 
-def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[dict[str, Any]]:
-    """Emit one scalar KPI per dashboard metric and rate point."""
+def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRecord]:
+    """Generate curve KPIs for dashboard metrics."""
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    output: list[dict[str, Any]] = []
+    output: list[KpiRecord] = []
+
     for record in model.unified_result_records:
         curves = record.metrics.get("performance_curves", {})
         rates = record.metrics.get("request_rate", [])
         if not record.run_identity.get("guidellm") or not rates:
             continue
+
+        # Base labels for this run including operational data
+        labels = {**record.distinguishing_labels}
         metadata_labels = {
             "guidellm_version": str(record.metrics.get("guidellm_version", "")),
             "prompt_toks": str(record.metrics.get("prompt_toks", "")),
             "output_toks": str(record.metrics.get("output_toks", "")),
+            "turns": str(record.metrics.get("turns", "")),
+            "prefix_tokens": str(record.metrics.get("prefix_tokens", "")),
+            "prefix_count": str(record.metrics.get("prefix_count", "")),
+            "request_type": str(record.metrics.get("request_type", "")),
+            # Operational properties now in labels to avoid hierarchical metadata overwrite
             "guidellm_start_time_ms": str(record.metrics.get("guidellm_start_time_ms", "")),
             "guidellm_end_time_ms": str(record.metrics.get("guidellm_end_time_ms", "")),
+            "runtime_args": str(
+                record.distinguishing_labels.get("runtime_args", "")
+            ),  # From test labels
+            "mlflow_run_id": str(record.metrics.get("mlflow_run_id", "")),
+            "mlflow_experiment_id": str(record.metrics.get("mlflow_experiment_id", "")),
         }
         metadata_labels.update(dashboard_metadata_labels(record.metrics))
-        run_uuids = record.metrics.get("run_uuids", [])
-        for index in range(len(rates)):
-            labels = {**record.distinguishing_labels, **metadata_labels, "rate_index": str(index)}
-            if index < len(run_uuids):
-                labels["run_uuid"] = run_uuids[index]
-            for suffix, curve_key, _, unit, higher_is_better in DASHBOARD_METRICS:
-                values = curves.get(curve_key, [])
-                if index >= len(values) or values[index] is None:
-                    continue
-                kpi_labels = dict(labels)
-                if higher_is_better is not None:
-                    kpi_labels["higher_is_better"] = higher_is_better
 
-                # Create structured KPI record using core dataclass
-                kpi_record = KpiRecord(
-                    schema_version="1",
-                    kpi_id=f"{prefix}_{suffix}",
-                    value=float(values[index]),
-                    unit=unit,
-                    run_id=record.test_base_path,
-                    timestamp=timestamp,
-                    labels=kpi_labels,
-                    metadata={"run_path": record.test_base_path},  # Move run_path to metadata
-                    is_curve=False,  # Scalar KPI
-                    source=SourceInfo(
-                        test_base_path=record.test_base_path,
-                        plugin_module=model.plugin_module,
-                    ),
+        # Simple metadata for hierarchical compatibility
+        metadata_dict = {
+            "run_path": record.test_base_path,
+        }
+
+        # Create curve KPI for each metric
+        for suffix, curve_key, _, unit, higher_is_better in DASHBOARD_METRICS:
+            curve_values = curves.get(curve_key, [])
+            if not curve_values or all(v is None for v in curve_values):
+                continue
+
+            # Create [intended_concurrency, metric_value] pairs using intended concurrency from strategy
+            curve_data = []
+            intended_concurrency_values = curves.get("intended_concurrency", [])
+
+            # Track data quality for warnings
+            total_values = len([v for v in curve_values if v is not None])
+            skipped_count = 0
+
+            for i, value in enumerate(curve_values):
+                if value is None:
+                    continue
+
+                if (
+                    i < len(intended_concurrency_values)
+                    and intended_concurrency_values[i] is not None
+                ):
+                    x_value = float(intended_concurrency_values[i])
+                    curve_data.append([x_value, float(value)])
+                else:
+                    skipped_count += 1
+
+            # Log warnings for data quality issues
+            if not intended_concurrency_values:
+                logger.warning(
+                    f"Curve KPI '{suffix}' for {record.test_base_path}: no intended_concurrency values found, skipping all {total_values} data points"
                 )
-                output.append(kpi_record.to_dict())
+            elif skipped_count > 0:
+                logger.warning(
+                    f"Curve KPI '{suffix}' for {record.test_base_path}: skipped {skipped_count}/{total_values} data points due to missing intended_concurrency values"
+                )
+
+            if not curve_data:
+                continue
+
+            kpi_labels = dict(labels)
+            kpi_labels.update(metadata_labels)
+
+            # Create curve KPI record
+            kpi_record = KpiRecord(
+                schema_version="1",
+                kpi_id=f"{prefix}_{suffix}",
+                values=curve_data,  # [[x, y], [x, y], ...] format
+                x_unit="rps",
+                y_unit=unit,
+                x_help="Request rate (concurrency)",
+                y_help=f"Dashboard metric: {suffix}",
+                run_id=record.test_base_path,
+                timestamp=timestamp,
+                labels=kpi_labels,
+                metadata=metadata_dict,
+                is_curve=True,
+                higher_is_better=higher_is_better if higher_is_better is not None else True,
+            )
+            output.append(kpi_record)
+
     return output
 
 
-def dashboard_kpi_catalog(*, prefix: str) -> list[dict[str, Any]]:
+def dashboard_kpi_catalog(*, prefix: str) -> list[KpiCatalogEntry]:
     """Return catalog entries for the shared dashboard KPI set using dataclasses."""
     catalog_entries = []
     for suffix, _, _, unit, higher_is_better in DASHBOARD_METRICS:
         catalog_entry = KpiCatalogEntry(
             kpi_id=f"{prefix}_{suffix}",
             name=f"{prefix}_{suffix}",
-            unit=unit,
+            y_unit=unit,  # For curve KPIs, use y_unit
+            x_unit="rps",  # Concurrency/request rate
             higher_is_better=higher_is_better if higher_is_better is not None else True,
-            is_curve=False,
-            help=f"Dashboard metric: {suffix}",
+            is_curve=True,  # Now curve KPIs
+            help=f"Dashboard curve metric: {suffix}",
+            x_help="Request rate (concurrency)",
+            y_help=f"Performance metric: {suffix}",
         )
-        catalog_entries.append(catalog_entry.to_dict())
+        catalog_entries.append(catalog_entry)
     return catalog_entries
 
 
 def export_dashboard_kpis_to_csv(
-    kpi_records: list[dict[str, Any]],
+    kpi_records: list[KpiRecord],
     output_path: Path,
     *,
     prefix: str,
     fieldnames: list[str],
     metadata_row: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> str:
-    """Pivot scalar per-rate KPIs into a dashboard-compatible CSV."""
+    """Extract dashboard metrics from curve KPIs and export to CSV."""
     validate_dashboard_fieldnames(fieldnames)
-    kpi_to_column = {f"{prefix}_{suffix}": column for suffix, _, column, _, _ in DASHBOARD_METRICS}
-    groups: dict[tuple[str, str], dict[str, Any]] = {}
-    labels_by_group: dict[tuple[str, str], dict[str, Any]] = {}
+
+    # Group KPIs by run_id to process runs together
+    runs_by_id: dict[str, list[dict[str, Any]]] = {}
+
     for kpi in kpi_records:
-        labels = kpi.get("labels", {})
-        metadata = kpi.get("metadata", {})
-        key = (
-            str(metadata.get("run_path") or kpi.get("run_id", "")),
-            str(labels.get("rate_index", "0")),
-        )
-        column = kpi_to_column.get(kpi.get("kpi_id", ""))
-        if column:
-            groups.setdefault(key, {})[column] = kpi.get("value")
-        if key not in labels_by_group or len(labels) > len(labels_by_group[key]):
-            labels_by_group[key] = labels
+        # Handle both KpiRecord objects and dictionaries
+        if hasattr(kpi, "to_dict"):
+            kpi_dict = kpi.to_dict()
+        elif isinstance(kpi, dict):
+            kpi_dict = kpi
+        else:
+            # Skip invalid entries (might be tuple or other unexpected types)
+            continue
+
+        run_id = kpi_dict.get("run_id", "")
+        runs_by_id.setdefault(run_id, []).append(kpi_dict)
 
     rows: list[dict[str, Any]] = []
-    for key in sorted(groups, key=lambda k: (k[0], int(k[1]) if k[1].isdigit() else k[1])):
-        metrics = groups[key]
-        labels = labels_by_group.get(key, {})
-        row: dict[str, Any] = dict.fromkeys(fieldnames, "")
-        row.update(metadata_row(labels))
-        row.update(metrics)
-        if "intended concurrency" in row and row["intended concurrency"] in ("", None):
-            row["intended concurrency"] = labels.get("intended_concurrency", "")
-        for column in SECONDS_TO_MS_COLUMNS:
-            value = row.get(column)
-            if value not in ("", None):
-                row[column] = float(value) * 1000.0
-        rows.append(row)
+
+    for _run_id, run_kpis in runs_by_id.items():
+        # Find curve KPIs for this run
+        curve_kpis = {
+            kpi["kpi_id"]: kpi
+            for kpi in run_kpis
+            if kpi.get("is_curve", False) and kpi.get("values")
+        }
+
+        if not curve_kpis:
+            continue  # Skip runs without curve data
+
+        # Get representative labels from any KPI in this run
+        representative_kpi = run_kpis[0]
+        labels = representative_kpi.get("labels", {})
+        metadata = representative_kpi.get("metadata", {})
+
+        # Merge metadata into labels for backward compatibility with metadata_row functions
+        combined_labels = {**labels, **metadata}
+
+        # Map KPI IDs to dashboard columns
+        kpi_to_column = {
+            f"{prefix}_{suffix}": column for suffix, _, column, _, _ in DASHBOARD_METRICS
+        }
+
+        # Extract rate points from primary curve KPI to determine concurrency levels
+        primary_kpi = next(iter(curve_kpis.values()))
+        values = primary_kpi.get("values", [])  # [[x, y], [x, y], ...]
+
+        # Create one row per concurrency level
+        for concurrency, _ in values:
+            row: dict[str, Any] = dict.fromkeys(fieldnames, "")
+            row.update(metadata_row(combined_labels))
+
+            # Set intended concurrency from the x-value (concurrency level)
+            if "intended concurrency" in fieldnames:
+                row["intended concurrency"] = int(concurrency)
+
+            # Fill in data from each curve KPI
+            for kpi_id, kpi in curve_kpis.items():
+                column = kpi_to_column.get(kpi_id)
+                if column and column in fieldnames:
+                    # Find the value for this concurrency level
+                    for conc, value in kpi["values"]:
+                        if conc == concurrency:
+                            row[column] = float(value)
+                            break
+
+            # Convert seconds to milliseconds for timing metrics
+            for column in SECONDS_TO_MS_COLUMNS:
+                if column in row and row[column] not in ("", None):
+                    try:
+                        row[column] = float(row[column]) * 1000
+                    except (ValueError, TypeError):
+                        pass
+
+            rows.append(row)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as output:

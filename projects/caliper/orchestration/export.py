@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.engine.file_export.artifacts_export_run import (
     discover_run_dirs,
     run_artifacts_export,
@@ -50,8 +51,11 @@ def _extract_timestamp_from_fjob() -> str:
 
 
 def _read_test_labels(run_dir: Path) -> dict[str, str]:
-    """Read labels from __test_labels__.yaml in a run directory."""
-    marker = run_dir / "__test_labels__.yaml"
+    """Read labels from test metadata file in a run directory."""
+    # Try new format first, fall back to legacy
+    marker = run_dir / METADATA_FILE
+    if not marker.exists():
+        marker = run_dir / LEGACY_METADATA_FILE
     if not marker.is_file():
         return {}
     try:
@@ -278,22 +282,27 @@ def run_from_orchestration_config(
         return yaml.safe_load(f.read())
 
 
-TEST_LABELS_FILENAME = "__test_labels__.yaml"
-
-
 @requires(
     vault_name="caliper.export.backend.mlflow.secrets.vault.name",
     vault_key="caliper.export.backend.mlflow.secrets.vault.mlflow_secret",
     experiment="caliper.export.backend.mlflow.config.experiment",
     workspace="caliper.export.backend.mlflow.config.workspace",
 )
-def precreate_mlflow_run_if_configured(_cfg) -> dict[str, str] | None:
+def precreate_mlflow_run_if_configured(_cfg, force=False) -> dict[str, str] | None:
     """Pre-create an MLflow run and return the ``mlflow_destination`` dict.
 
     Uses ``@requires`` to read vault and MLflow config from the project config.
     Returns ``None`` if MLflow is not configured or pre-creation fails.
     The returned dict contains ``run_id``, ``experiment_id``, and ``workspace``.
+
+    Args:
+      force: if not forced, precreate only on FournosCI
     """
+
+    if not (force or env.running_inside_fournos()):
+        logging.info("Not running inside FOURNOS CI, skipping the MLFLow run_id precreation.")
+        return
+
     vault_name = _cfg.vault_name
     vault_key = _cfg.vault_key
     if not vault_name or not vault_key:
@@ -334,7 +343,7 @@ def precreate_mlflow_run(
     will resume it via ``mlflow.start_run(run_id=...)`` to upload artifacts.
 
     The caller is responsible for persisting the returned IDs (e.g. via the
-    ``mlflow_destination`` section of ``__test_labels__.yaml``).
+    ``mlflow_destination`` section of test metadata files).
 
     Returns a dict with ``run_id`` and ``experiment_id``.
     """
@@ -384,7 +393,12 @@ def _read_mlflow_ids_from_test_labels() -> tuple[str, str]:
     if not artifact_dir:
         logger.warning("ARTIFACT_DIR not set, cannot read MLflow destination from test labels")
         return "", ""
-    for labels_file in sorted(artifact_dir.rglob(TEST_LABELS_FILENAME)):
+    # Search for both new and legacy metadata files
+    metadata_files = []
+    metadata_files.extend(artifact_dir.rglob(METADATA_FILE))
+    metadata_files.extend(artifact_dir.rglob(LEGACY_METADATA_FILE))
+
+    for labels_file in sorted(metadata_files):
         try:
             data = yaml.safe_load(labels_file.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
@@ -464,7 +478,12 @@ def build_mlflow_run_url(
 
 def _discover_precreated_mlflow_run_id(from_path: Path) -> str | None:
     """Find a pre-created MLflow run_id from ``mlflow_destination`` in test labels."""
-    for labels_file in sorted(from_path.rglob(TEST_LABELS_FILENAME)):
+    # Search for both new and legacy metadata files
+    metadata_files = []
+    metadata_files.extend(from_path.rglob(METADATA_FILE))
+    metadata_files.extend(from_path.rglob(LEGACY_METADATA_FILE))
+
+    for labels_file in sorted(metadata_files):
         try:
             data = yaml.safe_load(labels_file.read_text(encoding="utf-8"))
             if not isinstance(data, dict):

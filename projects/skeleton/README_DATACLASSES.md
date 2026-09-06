@@ -49,7 +49,7 @@ class SkeletonKpiCatalogEntry:
     name: str
     unit: str
     higher_is_better: bool
-    is_2d: bool
+    is_curve: bool
     help: str = ""
     x_unit: str = ""
     x_help: str = ""
@@ -92,7 +92,7 @@ class SkeletonRegressionReport:
 The plugin automatically extracts dates and stores them as the `version` label from:
 
 1. **Test Labels**: `version` or `date` fields in test metadata
-2. **Directory Paths**: Date patterns (YYYY-MM-DD) in test paths  
+2. **Directory Paths**: Date patterns (YYYY-MM-DD) in test paths
 3. **Fallback**: Current date if no date found
 
 ## Usage Examples
@@ -137,7 +137,7 @@ catalog = SkeletonKpiHandler.get_catalog()
 #     "name": "Throughput",
 #     "unit": "req/s",
 #     "higher_is_better": true,
-#     "is_2d": false,
+#     "is_curve": false,
 #     "help": "Number of requests processed per second"
 # }
 ```
@@ -241,7 +241,7 @@ analysis_config = AnalysisConfig(
 ## Benefits
 
 1. **Type Safety**: Full type checking with mypy/IDE support
-2. **Structured Data**: Clear data models with validation  
+2. **Structured Data**: Clear data models with validation
 3. **Easy Serialization**: `asdict()` provides clean JSON serialization
 4. **Maintainability**: Self-documenting data structures
 5. **Extensibility**: Easy to add new fields without breaking compatibility
@@ -259,7 +259,7 @@ python projects/skeleton/test_dataclasses_kpi.py
 This tests:
 - KPI record creation and serialization
 - KPI catalog generation with dataclasses
-- Regression analysis with structured reports  
+- Regression analysis with structured reports
 - JSON serialization compatibility
 - All dataclass functionality
 

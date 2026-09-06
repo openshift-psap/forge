@@ -7,8 +7,8 @@ from typing import Any
 
 from projects.caliper.engine.kpi import (
     KpiCatalogEntry,
+    KpiComputationStatus,
     KpiRecord,
-    SourceInfo,
     build_catalog_from_functions,
     get_kpi_functions,
     is_curve_kpi,
@@ -59,41 +59,22 @@ class GuideLLMKpiHandler:
         }
 
     @staticmethod
-    def get_catalog() -> list[dict[str, Any]]:
+    def get_catalog() -> list[KpiCatalogEntry]:
         """
         Return the KPI catalog for GuideLLM metrics using dataclasses.
 
         Returns:
-            List of KPI catalog entries as dictionaries
+            List of KPI catalog entries as KpiCatalogEntry dataclasses
         """
         # Import the module containing the KPI functions
         from projects.guidellm.postprocess.guidellm.parsing import kpis as guidellm_kpis
 
-        raw_catalog = build_catalog_from_functions(guidellm_kpis)
-
-        # Convert to structured dataclass format
-        catalog_entries = []
-        for entry in raw_catalog:
-            catalog_entry = KpiCatalogEntry(
-                kpi_id=entry.get("kpi_id", ""),
-                name=entry.get("name", ""),
-                unit=entry.get("unit", ""),
-                higher_is_better=entry.get("higher_is_better", True),
-                is_curve=entry.get("is_curve", False),
-                help=entry.get("help", ""),
-                x_unit=entry.get("x_unit", ""),
-                x_help=entry.get("x_help", ""),
-                y_unit=entry.get("y_unit", ""),
-                y_help=entry.get("y_help", ""),
-            )
-            catalog_entries.append(catalog_entry.to_dict())
-
-        return catalog_entries
+        return build_catalog_from_functions(guidellm_kpis)
 
     @staticmethod
     def compute_kpis(
         model: UnifiedRunModel,
-    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
+    ) -> tuple[list[KpiRecord], KpiComputationStatus]:
         """
         Compute KPI values from the unified model.
 
@@ -104,7 +85,7 @@ class GuideLLMKpiHandler:
             List of KPI records, or tuple of (KPI records, status details) if warnings present
         """
         ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        out: list[dict[str, Any]] = []
+        out: list[KpiRecord] = []
 
         # Import the module containing the KPI functions
         from projects.guidellm.postprocess.guidellm.parsing import kpis as guidellm_kpis
@@ -119,7 +100,8 @@ class GuideLLMKpiHandler:
         ]
 
         if not valid_records:
-            return out
+            status = KpiComputationStatus.success_status(0, len(model.unified_result_records))
+            return out, status
 
         # Check for unknown gpu_type in records
         unknown_gpu_records = []
@@ -129,7 +111,7 @@ class GuideLLMKpiHandler:
             if gpu_type and gpu_type.lower() == "unknown":
                 unknown_gpu_records.append(r.test_base_path)
 
-        # If unknown GPU types found, return empty KPIs with error status
+        # If unknown GPU types found, return failure status
         if unknown_gpu_records:
             error_msg = (
                 f"Found gpu_type='unknown' in {len(unknown_gpu_records)} test paths: "
@@ -137,15 +119,8 @@ class GuideLLMKpiHandler:
                 "Unknown GPU types prevent reliable KPI analysis. "
                 "Please ensure GPU detection is working correctly or set gpu_type manually in test labels."
             )
-
-            status_details = {
-                "status": "failed",
-                "success": False,
-                "message": error_msg,
-                "warnings": [],
-            }
-
-            return [], status_details
+            status = KpiComputationStatus.failure_status(error_msg)
+            return [], status
 
         # Group records by test path for curve KPIs (same test, different rates)
         from collections import defaultdict
@@ -153,6 +128,9 @@ class GuideLLMKpiHandler:
         records_by_test = defaultdict(list)
         for r in valid_records:
             records_by_test[r.test_base_path].append(r)
+
+        # Track which records actually produced KPIs
+        processed_records = set()
 
         # Generate scalar KPIs for each record
         for r in valid_records:
@@ -181,7 +159,6 @@ class GuideLLMKpiHandler:
 
                 # Create structured KPI record using core dataclass
                 kpi_record = KpiRecord(
-                    schema_version="1",
                     kpi_id=kpi_id,
                     value=value,  # Core enforces int|float only
                     unit=kpi_func._kpi_unit,
@@ -190,13 +167,10 @@ class GuideLLMKpiHandler:
                     labels=all_labels,
                     metadata=metadata_fields,
                     is_curve=False,  # Scalar KPI
-                    source=SourceInfo(
-                        test_base_path=r.test_base_path,
-                        plugin_module=model.plugin_module,
-                    ),
                 )
 
-                out.append(kpi_record.to_dict())
+                out.append(kpi_record)
+                processed_records.add(r.test_base_path)  # Track that this record produced a KPI
 
         # Generate curve KPIs for records that have performance curves
         for r in valid_records:
@@ -218,35 +192,36 @@ class GuideLLMKpiHandler:
 
                 try:
                     # Pass the single record with performance curves to the curve KPI function
-                    value = kpi_func(r)
+                    raw_values = kpi_func(r)
+                    # Convert list of tuples to list of lists for schema compatibility
+                    values = [[float(x), float(y)] for x, y in raw_values] if raw_values else []
                 except (TypeError, ValueError, KeyError):
-                    value = []  # Empty list for failed curve KPIs
+                    values = []  # Empty list for failed curve KPIs
 
                 # Skip curve KPIs with empty or null values
-                if not value or value is None:
+                if not values or values is None:
                     continue
 
                 # Create structured curve KPI record using core dataclass
                 kpi_record = KpiRecord(
                     schema_version="1",
                     kpi_id=kpi_id,
-                    value=value,
+                    values=values,
                     unit=kpi_func._kpi_unit,
                     run_id=r.test_base_path,
                     timestamp=ts,
                     labels=kpi_labels,
                     metadata=metadata_fields,
                     is_curve=True,  # curve KPI
-                    source=SourceInfo(
-                        test_base_path=r.test_base_path,
-                        plugin_module=model.plugin_module,
-                    ),
                     x_unit=kpi_func._kpi_x_unit,
                     x_help=kpi_func._kpi_x_help,
-                    y_unit=getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit,
-                    y_help=getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help,
+                    y_unit=kpi_func._kpi_y_unit,
+                    y_help=kpi_func._kpi_y_help,
                 )
 
-                out.append(kpi_record.to_dict())
+                out.append(kpi_record)
+                processed_records.add(r.test_base_path)  # Track that this record produced a KPI
 
-        return out
+        # Create success status
+        status = KpiComputationStatus.success_status(len(processed_records), len(valid_records))
+        return out, status

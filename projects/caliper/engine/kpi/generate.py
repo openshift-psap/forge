@@ -60,13 +60,22 @@ def run_kpi_generate(
 
     # Check if plugin returned status details
     if isinstance(result, tuple) and len(result) == 2:
-        rows, status_details = result
-        status = status_details.get("status", "success")
-        message = status_details.get("message")
-        warnings = status_details.get("warnings", [])
+        rows, status_obj = result
 
-        # Add success field based on status
-        status_details["success"] = status != "failed"
+        # Handle both new dataclass and legacy dict formats
+        from projects.caliper.engine.kpi import KpiComputationStatus
+
+        if isinstance(status_obj, KpiComputationStatus):
+            status = status_obj.status
+            message = status_obj.message
+            warnings = status_obj.warnings
+            status_details = status_obj.to_dict()
+        else:
+            # Legacy dict format
+            status = status_obj.get("status", "success")
+            message = status_obj.get("message")
+            warnings = status_obj.get("warnings", [])
+            status_details = status_obj
 
         # Log warnings if present
         if warnings:
@@ -83,12 +92,23 @@ def run_kpi_generate(
         rows = result
         status_details = {"status": "success", "success": True, "message": None, "warnings": []}
 
-    kpi_schema = load_schema(schema_path("kpi_record.schema.json"))
+    # Convert KpiRecord objects to dictionaries for validation and output
+    from projects.caliper.engine.kpi import KpiRecord
+
+    rows_as_dicts = []
     for row in rows:
-        validate_instance(row, kpi_schema, "KPI record")
+        if isinstance(row, KpiRecord):
+            rows_as_dicts.append(row.to_dict())
+        else:
+            rows_as_dicts.append(row)
+
+    # Validate using dictionary representations
+    kpi_schema = load_schema(schema_path("kpi_record.schema.json"))
+    for row_dict in rows_as_dicts:
+        validate_instance(row_dict, kpi_schema, "KPI record")
 
     if output:
-        write_kpis_in_format(rows, output, format_type, model)
+        write_kpis_in_format(rows_as_dicts, output, format_type, model)
 
     # Always return tuple with KPI records and status details
     return rows, status_details

@@ -16,6 +16,7 @@ import click
 import yaml
 from pydantic import ValidationError
 
+from projects.caliper.engine.constants import METADATA_FILE
 from projects.caliper.engine.kpi.dataclasses import CaliperTestMetadata
 from projects.caliper.orchestration.postprocess import (
     run_postprocess_from_orchestration_config,
@@ -44,7 +45,7 @@ def write_test_labels(
 ) -> Path:
     """Write Caliper test metadata files to mark a directory as a Caliper test base.
 
-    Creates both __caliper_test_metadata__.yaml (new format) and __test_labels__.yaml
+    Creates both caliper metadata file (new format) and __test_labels__.yaml
     (legacy format) with identical content for backward compatibility.
 
     Args:
@@ -57,7 +58,7 @@ def write_test_labels(
         timing: Optional dictionary of timing information for test phases
 
     Returns:
-        Path to the created __caliper_test_metadata__.yaml file
+        Path to the created caliper metadata file file
 
     Example:
         write_test_labels(
@@ -86,18 +87,13 @@ def write_test_labels(
     payload = metadata.to_dict()
 
     # Define both file paths
-    metadata_path = directory / "__caliper_test_metadata__.yaml"
-    legacy_path = directory / "__test_labels__.yaml"
+    metadata_path = directory / METADATA_FILE
 
     # Create directory and write to both files for backward compatibility
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Write new format
     with metadata_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(payload, handle, sort_keys=False)
-
-    # Write legacy format (identical content)
-    with legacy_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(payload, handle, sort_keys=False)
 
     # Optionally save project configuration
@@ -449,7 +445,7 @@ def run_orchestration_postprocess(
     type=click.Path(path_type=Path, exists=True, file_okay=False, dir_okay=True),
     required=True,
     help=(
-        "Caliper artifact tree root (directories with __test_labels__.yaml). "
+        "Caliper artifact tree root (directories with caliper metadata file)."
         "Required parameter for post-processing."
     ),
 )

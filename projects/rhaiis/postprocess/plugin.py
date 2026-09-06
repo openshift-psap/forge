@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.engine.kpi import KpiComputationStatus, KpiRecord
 from projects.caliper.engine.model import (
     ParseResult,
     PostProcessingPlugin,
@@ -13,6 +14,25 @@ from projects.guidellm.postprocess.guidellm.dashboard import export_dashboard_kp
 
 from .kpis import RhaiisKpiHandler
 from .parser import RhaiisParser
+
+
+def _prefix_caching_from_runtime_args(runtime_args: str) -> str:
+    """Return "yes"/"no" from the enable/no-enable-prefix-caching flag in
+    runtime_args, or "" if neither is set. If both appear, the last one
+    wins (matches vLLM/argparse's BooleanOptionalAction behavior).
+    """
+    result = ""
+    for part in runtime_args.split(";"):
+        key, sep, value = part.strip().partition(":")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip().lower()
+        if key == "no-enable-prefix-caching":
+            result = "no" if value == "true" else "yes"
+        elif key == "enable-prefix-caching":
+            result = "yes" if value == "true" else "no"
+    return result
 
 
 class RhaiisPlugin(PostProcessingPlugin):
@@ -55,12 +75,13 @@ class RhaiisPlugin(PostProcessingPlugin):
     ) -> list[str]:
         return []
 
-    def compute_kpis(self, model: UnifiedRunModel) -> list[dict[str, Any]]:
+    def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
+        """Compute KPIs using dataclasses with status details."""
         return self.kpi_handler.compute_kpis(model)
 
     def export_kpis_to_csv(
         self,
-        kpi_records: list[dict[str, Any]],
+        kpi_records: list[KpiRecord],
         output_path: Path,
         include_header_comments: bool = True,
     ) -> str:
@@ -91,6 +112,11 @@ class RhaiisPlugin(PostProcessingPlugin):
                 "guidellm_version": labels.get("guidellm_version", ""),
                 "mlflow_run_id": labels.get("mlflow_run_id", ""),
                 "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+                "turns": labels.get("turns", ""),
+                "prefix_tokens": labels.get("prefix_tokens", ""),
+                "prefix_count": labels.get("prefix_count", ""),
+                "request_type": labels.get("request_type", ""),
+                "prefix_caching": _prefix_caching_from_runtime_args(labels.get("runtime_args", "")),
             }
 
         return export_dashboard_kpis_to_csv(

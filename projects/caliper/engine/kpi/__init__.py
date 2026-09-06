@@ -1,16 +1,9 @@
 """KPI generation, OpenSearch, regression."""
 
 from .dataclasses import (
-    AnalysisSummary,
-    BaselineSummary,
-    ConfigSummary,
     KpiCatalogEntry,
     KpiRecord,
-    OverallStatus,
     RegressionFinding,
-    RegressionReport,
-    SourceInfo,
-    TestSummary,
 )
 from .decorators import (
     Curve,
@@ -24,6 +17,15 @@ from .decorators import (
     get_kpi_functions,
     is_curve_kpi,
 )
+from .report_dataclasses import (
+    AnalysisSummary,
+    BaselineSummary,
+    ConfigSummary,
+    KpiComputationStatus,
+    OverallStatus,
+    RegressionReport,
+    TestSummary,
+)
 
 __all__ = [
     # Core dataclasses - plugins should use these
@@ -31,8 +33,8 @@ __all__ = [
     "KpiCatalogEntry",
     "RegressionFinding",
     "RegressionReport",
-    "SourceInfo",
-    # Status enum
+    # Status dataclasses
+    "KpiComputationStatus",
     "OverallStatus",
     # Summary dataclasses
     "AnalysisSummary",

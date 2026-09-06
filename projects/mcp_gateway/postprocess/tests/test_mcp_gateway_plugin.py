@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from projects.caliper.engine.constants import METADATA_FILE
 from projects.caliper.engine.model import TestBaseNode, UnifiedRunModel
 from projects.caliper.prometheus_metrics.queries import load_queries
 from projects.mcp_gateway.postprocess.mcp_gateway.parsing.kpis import MCPGatewayKpiHandler
@@ -82,13 +83,13 @@ def _make_test_node(
     *,
     prom_files: dict[str, dict] | None = None,
 ) -> TestBaseNode:
-    """Create a test base directory with stats.csv and __test_labels__.yaml."""
+    """Create a test base directory with stats.csv and __caliper_test_metadata__.yaml."""
     node_dir = base_dir / name
     node_dir.mkdir(parents=True, exist_ok=True)
 
     (node_dir / "stats.csv").write_text(stats_csv, encoding="utf-8")
     (node_dir / "master.log").write_text("log output", encoding="utf-8")
-    (node_dir / "__test_labels__.yaml").write_text(
+    (node_dir / METADATA_FILE).write_text(
         yaml.safe_dump({"version": "1", "labels": labels}, sort_keys=False),
         encoding="utf-8",
     )
@@ -100,7 +101,7 @@ def _make_test_node(
             (raw_dir / filename).write_text(json.dumps(payload), encoding="utf-8")
 
     artifact_paths = sorted(
-        p for p in node_dir.rglob("*") if p.is_file() and p.name != "__test_labels__.yaml"
+        p for p in node_dir.rglob("*") if p.is_file() and p.name != METADATA_FILE
     )
     return TestBaseNode(
         directory=node_dir,

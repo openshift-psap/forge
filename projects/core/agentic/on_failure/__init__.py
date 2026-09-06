@@ -164,7 +164,7 @@ def agent_review_on_failure(func):
             raise e
 
         # Success - no agent needed
-        if exit_code == 0:
+        if exit_code in (0, None):
             logger.info(f"✅ CI command '{function_name}' succeeded - no agent review needed")
             return exit_code
 

@@ -307,7 +307,7 @@ def build_kpis_to_mlflow_command(
     """Build CLI command for caliper kpi kpis-to-mlflow.
 
     Args:
-        tree_root: Root of the artifact tree with __test_labels__.yaml markers
+        tree_root: Root of the artifact tree with __caliper_test_metadata__.yaml markers
         status_file: Where to write status YAML
         input_file: Input kpis.json file (schema v2)
 

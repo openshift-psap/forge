@@ -228,19 +228,31 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
     if output_file:
         lines.append(_create_file_link(output_file, "📊", get_file_link))
 
-    # Show regression analysis results
-    if step_data.get("regressions_detected"):
-        lines.append("  - ❌ Regression detected")
-        lines.append(
-            f"  - {step_data.get('regression_count')} regressions out of {step_data.get('total_kpis')} KPIs"
-        )
-    else:
-        lines.append(f"  - No regression in {step_data.get('total_kpis')} KPIs")
+    step_status = step_data.get("status")
 
-    # Show baseline files count if available
-    baseline_files_count = step_data.get("baseline_files_count")
-    if baseline_files_count is not None:
-        lines.append(f"  - 📈 Baseline files analyzed: {baseline_files_count}")
+    # Show error message if step failed
+    if step_status == "failed":
+        error_msg = step_data.get("error")
+        if error_msg:
+            lines.append(f"  - ❌ `{error_msg}`")
+
+    # Show regression analysis results if the step was successful
+    elif step_status in ("success", "warning", "regression_detected"):
+        # Show regression analysis results
+        if step_data.get("regressions_detected"):
+            lines.append("  - ❌ Regression detected")
+            lines.append(
+                f"  - `{step_data.get('regression_count')}` regressions out of `{step_data.get('total_kpis')}` KPIs"
+            )
+        else:
+            total_kpis = step_data.get("total_kpis")
+            if total_kpis is not None:
+                lines.append(f"  - No regression in `{total_kpis}` KPIs")
+
+        # Show baseline files count if available
+        baseline_files_count = step_data.get("baseline_files_count")
+        if baseline_files_count is not None:
+            lines.append(f"  - 📈 Baseline files analyzed: `{baseline_files_count}`")
 
     return lines
 

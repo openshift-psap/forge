@@ -10,6 +10,7 @@ import yaml
 
 from projects.caliper.cli.s3_import import run_s3_import_with_explicit_params
 from projects.caliper.engine.ai_eval import run_ai_eval_export
+from projects.caliper.engine.constants import METADATA_FILE
 from projects.caliper.engine.file_export.artifacts_export_run import run_artifacts_export
 from projects.caliper.engine.file_export.artifacts_import_run import run_artifacts_import
 from projects.caliper.engine.file_export.mlflow_config import load_mlflow_config_yaml
@@ -21,6 +22,7 @@ from projects.caliper.engine.load_plugin import load_plugin
 from projects.caliper.engine.parse import run_parse
 from projects.caliper.engine.plugin_config import resolve_plugin_module_string
 from projects.caliper.engine.visualize import run_visualize
+from projects.caliper.public import StatusLevel
 
 
 def _exit_with_help(ctx: click.Context, msg: str, code: int = 1) -> None:
@@ -650,7 +652,7 @@ def kpi_generate(
                 "excluded_test_directories": excluded_summary,
             }
             click.echo("❌ No test directories found - KPI generation failed", err=True)
-            click.echo("   No __test_labels__.yaml files found in artifact directory", err=True)
+            click.echo(f"   No {METADATA_FILE} files found in artifact directory", err=True)
 
             # Show excluded directories if any
             if model.excluded_test_directories:
@@ -844,7 +846,7 @@ def kpi_csv_export(
     "artifacts_dir",
     type=click.Path(path_type=Path, exists=True),
     required=True,
-    help="Root of the artifact tree containing __test_labels__.yaml markers",
+    help=f"Root of the artifact tree containing {METADATA_FILE} markers",
 )
 @click.option(
     "--status-file", type=click.Path(path_type=Path), help="YAML file to write operation status"
@@ -861,28 +863,35 @@ def kpis_to_mlflow_cmd(
 
     try:
         result = generate_metrics_from_kpis(input_file, artifacts_dir)
-        status = result.get("status", "unknown")
-        if status == "success":
-            status_data = {
-                "success": True,
-                "tests_processed": result.get("tests_processed", 0),
-                "total_tests": result.get("total_tests", 0),
-            }
+        # Convert dataclass result to status_data format for YAML file
+        status_data = result.to_status_data()
+
+        if result.is_success():
             click.echo(
-                f"Generated metrics.json for {result.get('tests_processed', 0)}/"
-                f"{result.get('total_tests', 0)} test(s)"
+                f"Generated metrics.json for {result.tests_processed}/{result.total_tests} test(s)"
             )
-        elif status == "skipped":
-            status_data = {"success": True, "skipped": True, "reason": result.get("reason", "")}
-            click.echo(f"Skipped: {result.get('reason', '')}")
-        else:
-            status_data = {"success": False, "error": result.get("error", "unknown error")}
-            click.echo(f"kpis-to-mlflow failed: {result.get('error', 'unknown')}", err=True)
+            if result.partial:
+                click.echo(f"Warning: {result.message}")
+        elif result.is_skipped():
+            click.echo(f"Skipped: {result.reason}")
+        else:  # failed
+            click.echo(f"kpis-to-mlflow failed: {result.error}", err=True)
     except Exception as e:  # noqa: BLE001
         import traceback
 
         full_traceback = traceback.format_exc()
-        status_data = {"success": False, "error": str(e), "traceback": full_traceback}
+
+        # Create failure result for unexpected exceptions
+        from projects.caliper.engine.kpi.report_dataclasses import MlflowConversionResult
+
+        exception_result = MlflowConversionResult(
+            status="failed",
+            error=str(e),
+            tests_processed=0,
+            total_tests=0,
+        )
+        status_data = exception_result.to_status_data(traceback=full_traceback)
+
         click.echo(f"kpis-to-mlflow failed: {e}", err=True)
         click.echo(f"Full traceback:\n{full_traceback}", err=True)
 
@@ -1002,11 +1011,16 @@ def analyse_kpis_cmd(
     )
 
     # Display result
-    if status_data.success:
+    if status_data.success and status_data.status == StatusLevel.WARNING:
+        click.echo("⚠️ KPI analysis completed with warning")
+    elif status_data.success:
         click.echo("✅ KPI analysis completed with success")
     else:
         error_msg = status_data.error or f"Status: {status_data.status}"
         click.echo(f"❌ KPI analysis failed: {error_msg}", err=True)
+
+    if status_data.message:
+        click.echo("> " + status_data.message)
 
     # Write status file if requested
     if status_file:

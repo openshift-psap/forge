@@ -10,7 +10,7 @@ from typing import Any
 
 @dataclass
 class TestBaseNode:
-    """Directory containing __test_labels__.yaml or MatrixBenchmarking settings.yaml."""
+    """Directory containing __caliper_test_metadata__.yaml or MatrixBenchmarking settings.yaml."""
 
     directory: Path
     test_labels: dict[str, Any]
@@ -173,7 +173,7 @@ class PostProcessingPlugin(ABC):
         not across the entire base directory. This provides better security isolation.
 
         Args:
-            test_dir: The specific test directory to search within (where __test_labels__.yaml is located)
+            test_dir: The specific test directory to search within (where test metadata file is located)
 
         Returns:
             List of relative file paths from test_dir to copy for AI evaluation

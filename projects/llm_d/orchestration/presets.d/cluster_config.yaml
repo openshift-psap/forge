@@ -52,8 +52,19 @@ cluster_eks-h100:
     operator: Equal
     effect: NoSchedule
 
+  workloads.pvc_storage_class: gp2
+  workloads.use_pvc: true
+  workloads.fs_group: 0
+
 cluster_athena-fire:
   cpt.kpi.labels.platform: OCP
   model_cache.pvc.access_mode: ReadWriteMany
   model_cache.pvc.storage_class_name: nfs-rwx
   workloads.pvc_storage_class: nfs-rwx
+
+cluster_dodo:
+  cpt.kpi.labels.platform: OCP
+  model_cache.pvc.access_mode: ReadWriteMany
+  model_cache.pvc.storage_class_name: rook-cephfs-fast
+  workloads.pvc_storage_class: rook-cephfs-fast
+  platform.gateway.status_address_name: gateway-external

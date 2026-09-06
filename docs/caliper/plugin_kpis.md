@@ -92,7 +92,7 @@ Curve KPIs generate structured JSON output:
   "name": "Throughput vs Request Rate Curve",
   "help": "Throughput achieved at different request rates",
   "x_unit": "req/s",
-  "x_help": "Request rate", 
+  "x_help": "Request rate",
   "y_unit": "tokens/s",
   "y_help": "Achieved throughput"
 }
@@ -178,10 +178,8 @@ class MyKpiHandler:
                                 "is_curve": True,
                                 "x_unit": kpi_func._kpi_x_unit,
                                 "x_help": kpi_func._kpi_x_help,
-                                "y_unit": getattr(kpi_func, "_kpi_y_unit", None)
-                                or kpi_func._kpi_unit,
-                                "y_help": getattr(kpi_func, "_kpi_y_help", None)
-                                or kpi_func._kpi_help,
+                                "y_unit": kpi_func._kpi_y_unit
+                                "y_help": kpi_func._kpi_y_help,
                             }
                         )
 
@@ -210,11 +208,11 @@ def robust_kpi(unified_record) -> float:
     value = unified_record.metrics.get("my_metric")
     if value is None:
         raise ValueError("my_metric not found in record")
-    
+
     # Validate data type
     if not isinstance(value, (int, float)):
         raise ValueError(f"Expected numeric value, got {type(value)}")
-    
+
     return float(value)
 ```
 
@@ -239,13 +237,13 @@ def performance_curve(unified_record) -> list[tuple[float, float]]:
     """Performance Curve KPI."""
     x_values = unified_record.metrics.get("x_data", [])
     y_values = unified_record.metrics.get("y_data", [])
-    
+
     if len(x_values) != len(y_values):
         raise ValueError("X and Y data arrays must have same length")
-    
+
     if not x_values:
         return []  # Return empty list for missing data
-    
+
     return [(float(x), float(y)) for x, y in zip(x_values, y_values)]
 ```
 
@@ -259,7 +257,7 @@ def optional_kpi(unified_record) -> float:
     # Only compute for certain test types
     if not unified_record.metrics.get("enable_optional_metrics", False):
         raise ValueError("Optional metrics disabled for this test")
-    
+
     return unified_record.metrics.get("optional_value", 0.0)
 ```
 
@@ -275,8 +273,8 @@ if getattr(kpi_func, "_kpi_is_curve", False):
             "is_curve": True,
             "x_unit": kpi_func._kpi_x_unit,
             "x_help": kpi_func._kpi_x_help,
-            "y_unit": getattr(kpi_func, "_kpi_y_unit", None) or kpi_func._kpi_unit,
-            "y_help": getattr(kpi_func, "_kpi_y_help", None) or kpi_func._kpi_help,
+            "y_unit": kpi_func._kpi_y_unit,
+            "y_help": kpi_func._kpi_y_help,
         }
     )
 ```
@@ -356,7 +354,7 @@ def test_request_rate_kpi_missing_data():
 def test_kpi_generation(sample_unified_model):
     handler = MyKpiHandler()
     kpis = handler.compute_kpis(sample_unified_model)
-    
+
     assert len(kpis) > 0
     assert all("kpi_id" in kpi for kpi in kpis)
     assert all("value" in kpi for kpi in kpis)
@@ -374,7 +372,7 @@ def average_performance(unified_record) -> float:
     values = unified_record.metrics.get("performance_samples", [])
     if not values:
         raise ValueError("No performance samples found")
-    
+
     return sum(values) / len(values)
 ```
 
@@ -387,13 +385,13 @@ def efficiency_ratio(unified_record) -> float:
     """Efficiency Ratio KPI."""
     throughput = unified_record.metrics.get("throughput")
     latency = unified_record.metrics.get("latency")
-    
+
     if throughput is None or latency is None:
         raise ValueError("Both throughput and latency required")
-    
+
     if latency == 0:
         raise ValueError("Latency cannot be zero")
-    
+
     return throughput / latency
 ```
 

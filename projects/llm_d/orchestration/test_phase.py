@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from projects.caliper.engine.constants import METADATA_FILE
+from projects.cluster.toolbox.capture_prometheus.main import run as capture_prometheus
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.dsl import shell
 from projects.core.dsl.utils import slugify_identifier
@@ -170,7 +172,7 @@ def get_iso_timestamp() -> str:
 def create_test_labels(
     mlflow_destination: dict[str, str] | None = None,
 ) -> None:
-    """Create __test_labels__.yaml with model name, guidellm configuration, and test start time."""
+    """Create caliper metadata file with model name, guidellm configuration, and test start time."""
 
     model_name = runtime_config.get_model_name()
     deployment_profile = runtime_config.get_deployment_profile_name()
@@ -221,27 +223,25 @@ def create_test_labels(
         logger.debug("No fournos job file found at: %s", fournos_source)
 
 
-def update_test_labels_with_timing(
-    timing_section: str, timing_event: str, timestamp: str | None = None
-) -> None:
-    """Update __test_labels__.yaml with timing information.
+def update_test_labels_with_timing(timing_section: str, timing_event: str) -> datetime:
+    """Update caliper metadata file with timing information.
 
     Args:
         timing_section: Section name (e.g., 'benchmark', 'test')
         timing_event: Event name (e.g., 'start', 'end')
-        timestamp: Optional ISO timestamp. If None, uses current time.
     """
-    if timestamp is None:
-        timestamp = get_iso_timestamp()
+    timestamp_dt = datetime.now(UTC)
+    timestamp = timestamp_dt.isoformat().replace("+00:00", "Z")
 
-    test_labels_path = env.ARTIFACT_DIR / "__test_labels__.yaml"
+    test_labels_path = env.ARTIFACT_DIR / METADATA_FILE
+
+    if not test_labels_path.exists():
+        logging.error("Caliper metadata file not found ...")
+        return datetime.now(UTC)
 
     # Read existing labels
-    if test_labels_path.exists():
-        with test_labels_path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    else:
-        data = {"version": "1", "labels": {}}
+    with test_labels_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
 
     # Ensure timing section exists
     if "timing" not in data:
@@ -261,23 +261,25 @@ def update_test_labels_with_timing(
         "Updated test labels with timing: %s.%s = %s", timing_section, timing_event, timestamp
     )
 
+    return timestamp_dt
+
 
 def update_test_labels_with_status(success: bool, message: str) -> None:
-    """Update __test_labels__.yaml with test execution status and end time.
+    """Update caliper metadata file with test execution status and end time.
 
     Args:
         success: True if test succeeded, False if failed
         message: Status message describing the result
     """
-    test_labels_path = env.ARTIFACT_DIR / "__test_labels__.yaml"
+    test_labels_path = env.ARTIFACT_DIR / METADATA_FILE
 
     # Read existing labels
-    if test_labels_path.exists():
-        with test_labels_path.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    else:
-        # Fallback if labels file doesn't exist
-        data = {"version": "1", "labels": {}}
+    if not test_labels_path.exists():
+        logging.error("Caliper metadata file not found ...")
+        return
+
+    with test_labels_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
 
     # Add completion information as separate top-level field
     data["completion"] = {
@@ -474,6 +476,7 @@ def do_test() -> int:
 
         if not endpoint_url:
             raise ValueError("Failed to extract the endpoint_url from the LLMISVC deployment")
+
         run_smoke_request(endpoint_url=endpoint_url)
 
         run_guidellm_benchmark(endpoint_url=endpoint_url)
@@ -682,12 +685,16 @@ def deploy_inference_service_from_manifest(manifest_path: Path, actual_llmisvc_n
     # Get scheduling wait configuration
     wait_long_scheduling = config.project.get_config("runtime.kserve.wait_long_scheduling")
 
+    # Get monitoring configuration
+    deploy_monitor = config.project.get_config("deployments.defaults.enable_monitors")
+
     endpoint_url = deploy_llmisvc.run(
         namespace=namespace,
         inference_service_manifest_path=str(manifest_path),
         gateway_status_address_name=gateway_status_address_name,
         dry_run=dry_run,
         wait_long_scheduling=wait_long_scheduling,
+        deploy_monitor=deploy_monitor,
     )
 
     if dry_run:
@@ -775,18 +782,25 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
 def run_guidellm_benchmark(*, endpoint_url: str) -> None:
     namespace = runtime_config.get_namespace()
     benchmark = runtime_config.get_benchmark_config()
+    workload = runtime_config.get_workload_config()
 
     if benchmark is None:
         return
 
     # Add benchmark start timing
-    update_test_labels_with_timing("benchmark", "start")
+    start_time = update_test_labels_with_timing("benchmark", "start")
 
     try:
         benchmark_key = runtime_config.get_benchmark_keys()[0]
         guidellm_args = build_guidellm_args(benchmark)
         if not any(arg.startswith("--processor=") for arg in guidellm_args):
             guidellm_args.append(f"--processor={runtime_config.get_model_name()}")
+
+        # Get fs_group from workload config
+        fs_group = None
+        if workload:
+            fs_group = workload.get("fs_group")
+
         artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
         with env.NextArtifactDir(artifact_name):
             run_guidellm_benchmark_command.run(
@@ -798,10 +812,16 @@ def run_guidellm_benchmark(*, endpoint_url: str) -> None:
                 pvc_size=benchmark.get("pvc_size"),
                 pvc_storage_class=benchmark.get("pvc_storage_class"),
                 guidellm_args=guidellm_args,
+                fs_group=fs_group,
+                use_pvc=benchmark.get("use_pvc"),
             )
     finally:
         # Add benchmark end timing (even if benchmark failed)
-        update_test_labels_with_timing("benchmark", "end")
+        end_time = update_test_labels_with_timing("benchmark", "end")
+
+        # Capture prometheus metrics if enabled
+        if config.project.get_config("prom.capture.enabled"):
+            capture_prometheus(start_time, end_time)
 
 
 def capture_inference_service_state(llmisvc_name: str) -> None:

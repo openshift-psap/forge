@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.model import (
     ParseResult,
     PostProcessingPlugin,
@@ -233,15 +234,13 @@ class GuideLLMPlugin(PostProcessingPlugin):
 
         return paths
 
-    def compute_kpis(
-        self, model: UnifiedRunModel
-    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Compute KPI values from the unified model with optional status details."""
+    def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
+        """Compute KPI values using dataclasses with status details."""
         return self.kpi_handler.compute_kpis(model)
 
     def export_kpis_to_csv(
         self,
-        kpi_records: list[dict[str, Any]],
+        kpi_records: list[KpiRecord],
         output_path: Path,
         include_header_comments: bool = True,
     ) -> str:
@@ -258,6 +257,10 @@ class GuideLLMPlugin(PostProcessingPlugin):
         from projects.llm_d.postprocess.llm_d import csv_dashboard
 
         return csv_dashboard.export_kpis_to_csv(kpi_records, output_path, include_header_comments)
+
+    def kpi_catalog(self) -> list[KpiCatalogEntry]:
+        """Return catalog of available KPIs for hierarchical formatting."""
+        return self.kpi_handler.get_catalog()
 
     def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
         """Build AI evaluation payload from the unified model."""

@@ -144,6 +144,7 @@ def test_guidellm_benchmark_uses_original_model_name_as_processor(
     core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
     core_config.project.set_config("runtime.deployment_profile", "release-distributed-default")
     core_config.project.set_config("runtime.benchmark_key", "concurrent-1k-1k")
+    core_config.project.set_config("prom.capture.enabled", False)
 
     captured: dict[str, object] = {}
 

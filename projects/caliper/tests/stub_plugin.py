@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
+from projects.caliper.engine.kpi.dataclasses import KpiCatalogEntry
 from projects.caliper.engine.model import (
     ParseResult,
     PostProcessingPlugin,
@@ -100,30 +101,30 @@ class StubPlugin(PostProcessingPlugin):
             "optional": {},
         }
 
-    def kpi_catalog(self) -> list[dict[str, object]]:
+    def kpi_catalog(self) -> list[KpiCatalogEntry]:
         """Return catalog of available KPIs for testing."""
         return [
-            {
-                "kpi_id": "generic",
-                "name": "generic",
-                "unit": "count",
-                "higher_is_better": True,
-                "is_curve": False,
-            },
-            {
-                "kpi_id": "dashboard",
-                "name": "dashboard",
-                "unit": "score",
-                "higher_is_better": True,
-                "is_curve": False,
-            },
-            {
-                "kpi_id": "throughput_rps",
-                "name": "throughput_rps",
-                "unit": "req/s",
-                "higher_is_better": True,
-                "is_curve": False,
-            },
+            KpiCatalogEntry(
+                kpi_id="generic",
+                name="generic",
+                unit="count",
+                higher_is_better=True,
+                is_curve=False,
+            ),
+            KpiCatalogEntry(
+                kpi_id="dashboard",
+                name="dashboard",
+                unit="score",
+                higher_is_better=True,
+                is_curve=False,
+            ),
+            KpiCatalogEntry(
+                kpi_id="throughput_rps",
+                name="throughput_rps",
+                unit="req/s",
+                higher_is_better=True,
+                is_curve=False,
+            ),
         ]
 
 

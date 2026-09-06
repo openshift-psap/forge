@@ -17,7 +17,6 @@ def test_kpi_record_dataclass():
 
     # Create a KPI record
     kpi_record = SkeletonKpiRecord(
-        schema_version="1",
         kpi_id="kpi_skeleton_throughput_rps",
         value=1000.0,
         unit="req/s",
@@ -27,11 +26,6 @@ def test_kpi_record_dataclass():
             "scenario": "test1",
             "version": "2024-03-15",
             "higher_is_better": True,
-        },
-        metadata={"test_config": {}, "environment": "test"},
-        source={
-            "test_base_path": "/artifacts/2024-03-15/test1",
-            "plugin_module": "skeleton",
         },
     )
 

@@ -33,7 +33,7 @@ from projects.caliper.engine.kpi import (
     build_catalog_from_functions,
     create_label_extractor,
     get_kpi_functions,
-    is_2d_kpi,
+    is_curve_kpi,
 )
 ```
 
@@ -86,7 +86,7 @@ class KpiCatalogEntry:
     # Measurement characteristics
     unit: str
     higher_is_better: bool
-    is_2d: bool
+    is_curve: bool
 
     # Documentation and help
     help: str = ""
@@ -201,7 +201,7 @@ class PluginKpiHandler:
                 name=entry["name"],
                 unit=entry["unit"],
                 higher_is_better=entry["higher_is_better"],
-                is_2d=entry["is_2d"],
+                is_curve=entry["is_curve"],
                 help=entry.get("help", ""),
                 description=entry.get("description", ""),
             )
@@ -312,7 +312,7 @@ catalog = KpiCatalogEntry(
     name="Throughput",
     unit="req/s",
     higher_is_better=True,
-    is_2d=False,
+    is_curve=False,
     help="Requests processed per second",
     description="Measures system throughput under load",
     category="performance",

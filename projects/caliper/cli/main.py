@@ -99,7 +99,7 @@ def parse_mlflow_url(url: str) -> dict[str, str | None]:
 
 _ARTIFACTS_DIR_HELP = (
     "Root directory of the test artifact tree (directories containing "
-    "__test_labels__.yaml). Optional manifest files (e.g. caliper.yaml) are searched here "
+    "__caliper_test_metadata__.yaml). Optional manifest files (e.g. caliper.yaml) are searched here "
     "unless --postprocess-config is set."
 )
 _PLUGIN_MODULE_HELP = (

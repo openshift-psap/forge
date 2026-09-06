@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
+from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
     ParseResult,
@@ -41,11 +41,11 @@ class MCPGatewayPlugin(PostProcessingPlugin):
     def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
         return self.parser.parse(nodes)
 
-    def compute_kpis(self, model: UnifiedRunModel) -> list[dict[str, Any]]:
+    def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
         return self.kpi_handler.compute_kpis(model)
 
-    def kpi_catalog(self) -> list[dict[str, Any]]:
-        """Expose KPI metadata so hierarchical format keeps computed KPIs."""
+    def kpi_catalog(self) -> list[KpiCatalogEntry]:
+        """Return catalog of available KPIs for hierarchical formatting."""
         return self.kpi_handler.get_catalog()
 
 

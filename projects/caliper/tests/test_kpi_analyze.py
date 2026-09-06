@@ -11,12 +11,23 @@ from projects.caliper.engine.kpi.analyze import (
     AnalysisConfig,
     Verdict,
     _build_baseline_index,
-    _extract_kpi_records_from_hierarchical,
     _match_key,
     _run_regression_test,
     run_kpi_analysis,
 )
-from projects.caliper.engine.kpi.dataclasses import OverallStatus, RegressionReport
+from projects.caliper.engine.kpi.dataclasses import (
+    HierarchicalKpi,
+    HierarchicalTestEntry,
+)
+from projects.caliper.engine.kpi.dataclasses import (
+    # so that pytest doesn't try to collect 'TestMetadata' as a test class since it starts with "Test"
+    TestMetadata as _TestMetadata,
+)
+from projects.caliper.engine.kpi.format import flatten_hierarchical_kpis
+from projects.caliper.engine.kpi.report_dataclasses import (
+    OverallStatus,
+    RegressionReport,
+)
 
 
 def _make_hierarchical_kpi(
@@ -40,7 +51,7 @@ def _make_test_entry(
 
 
 def _make_kpi(kpi_id: str, value, unit: str = "tokens/s", higher_is_better: bool = True) -> dict:
-    return {"id": kpi_id, "value": value, "unit": unit, "higher_is_better": higher_is_better}
+    return {"kpi_id": kpi_id, "value": value, "unit": unit, "higher_is_better": higher_is_better}
 
 
 class TestMatchKey:
@@ -71,7 +82,7 @@ class TestExtractRecords:
                 ),
             ]
         )
-        records = _extract_kpi_records_from_hierarchical(data)
+        records = flatten_hierarchical_kpis(data)
         assert len(records) == 2
         assert records[0]["kpi_id"] == "throughput"
         assert records[0]["labels"] == {"platform": "A100"}
@@ -79,12 +90,14 @@ class TestExtractRecords:
 
     def test_empty_tests(self):
         data = _make_hierarchical_kpi([])
-        assert _extract_kpi_records_from_hierarchical(data) == []
+        assert flatten_hierarchical_kpis(data) == []
 
 
 class TestBuildBaselineIndex:
     def test_indexes_by_kpi_and_match_key(self):
-        data = _make_hierarchical_kpi(
+        from projects.caliper.engine.kpi.dataclasses import HierarchicalKpiFormat
+
+        data_dict = _make_hierarchical_kpi(
             [
                 _make_test_entry(
                     "run1",
@@ -102,9 +115,12 @@ class TestBuildBaselineIndex:
                 ),
             ]
         )
+        # Convert to dataclass format
+        kpi_format = HierarchicalKpiFormat.from_dict(data_dict)
+
         config = AnalysisConfig(comparison_labels=["version"])
         current_keys = {"platform": {"A100"}, "version": {"1.0", "2.0"}}
-        baseline_data = {Path("/fake/kpis.json"): data}
+        baseline_data = {Path("/fake/kpis.json"): kpi_format}
         index = _build_baseline_index(baseline_data, config, current_keys)
 
         mk = _match_key({"platform": "A100"}, ignored_labels=[], comparison_labels=["version"])
@@ -115,34 +131,78 @@ class TestBuildBaselineIndex:
 
 class TestRegressionTest:
     def test_no_regression_higher_is_better(self):
-        current = {"kpi_id": "throughput", "value": 100.0, "higher_is_better": True, "labels": {}}
-        baselines = [{"value": 95.0, "labels": {}}, {"value": 100.0, "labels": {}}]
-        config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
-        result = _run_regression_test(current, baselines, config)
+        current_kpi = HierarchicalKpi(kpi_id="throughput", value=100.0, higher_is_better=True)
+        current_test = HierarchicalTestEntry(run_id="test", metadata=_TestMetadata())
+        baselines = [
+            (
+                HierarchicalKpi(kpi_id="throughput", value=95.0),
+                HierarchicalTestEntry(run_id="baseline1", metadata=_TestMetadata()),
+            ),
+            (
+                HierarchicalKpi(kpi_id="throughput", value=100.0),
+                HierarchicalTestEntry(run_id="baseline2", metadata=_TestMetadata()),
+            ),
+        ]
+        config = AnalysisConfig(
+            regression_config={"SCALAR_RELATIVE_CHANGE": {"max_relative_regression": 0.1}}
+        )
+        result = _run_regression_test(current_kpi, current_test, baselines, config)
         assert result.verdict != Verdict.REGRESSION
         assert result.details["relative_change"] > 0
 
     def test_regression_higher_is_better(self):
-        current = {"kpi_id": "throughput", "value": 80.0, "higher_is_better": True, "labels": {}}
-        baselines = [{"value": 100.0, "labels": {}}, {"value": 100.0, "labels": {}}]
-        config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
-        result = _run_regression_test(current, baselines, config)
+        current_kpi = HierarchicalKpi(kpi_id="throughput", value=80.0, higher_is_better=True)
+        current_test = HierarchicalTestEntry(run_id="test", metadata=_TestMetadata())
+        baselines = [
+            (
+                HierarchicalKpi(kpi_id="throughput", value=100.0),
+                HierarchicalTestEntry(run_id="baseline1", metadata=_TestMetadata()),
+            ),
+            (
+                HierarchicalKpi(kpi_id="throughput", value=100.0),
+                HierarchicalTestEntry(run_id="baseline2", metadata=_TestMetadata()),
+            ),
+        ]
+        config = AnalysisConfig(
+            regression_config={"SCALAR_RELATIVE_CHANGE": {"max_relative_regression": 0.1}}
+        )
+        result = _run_regression_test(current_kpi, current_test, baselines, config)
         assert result.verdict == Verdict.REGRESSION
         assert result.details["relative_change"] < -0.1
 
     def test_regression_lower_is_better(self):
-        current = {"kpi_id": "latency", "value": 1.5, "higher_is_better": False, "labels": {}}
-        baselines = [{"value": 1.0, "labels": {}}, {"value": 1.0, "labels": {}}]
-        config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
-        result = _run_regression_test(current, baselines, config)
+        current_kpi = HierarchicalKpi(kpi_id="latency", value=1.5, higher_is_better=False)
+        current_test = HierarchicalTestEntry(run_id="test", metadata=_TestMetadata())
+        baselines = [
+            (
+                HierarchicalKpi(kpi_id="latency", value=1.0),
+                HierarchicalTestEntry(run_id="baseline1", metadata=_TestMetadata()),
+            ),
+            (
+                HierarchicalKpi(kpi_id="latency", value=1.0),
+                HierarchicalTestEntry(run_id="baseline2", metadata=_TestMetadata()),
+            ),
+        ]
+        config = AnalysisConfig(
+            regression_config={"SCALAR_RELATIVE_CHANGE": {"max_relative_regression": 0.1}}
+        )
+        result = _run_regression_test(current_kpi, current_test, baselines, config)
         assert result.verdict == Verdict.REGRESSION
         assert result.details["relative_change"] > 0.1
 
     def test_no_regression_lower_is_better(self):
-        current = {"kpi_id": "latency", "value": 0.9, "higher_is_better": False, "labels": {}}
-        baselines = [{"value": 1.0, "labels": {}}]
-        config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
-        result = _run_regression_test(current, baselines, config)
+        current_kpi = HierarchicalKpi(kpi_id="latency", value=0.9, higher_is_better=False)
+        current_test = HierarchicalTestEntry(run_id="test", metadata=_TestMetadata())
+        baselines = [
+            (
+                HierarchicalKpi(kpi_id="latency", value=1.0),
+                HierarchicalTestEntry(run_id="baseline1", metadata=_TestMetadata()),
+            ),
+        ]
+        config = AnalysisConfig(
+            regression_config={"SCALAR_RELATIVE_CHANGE": {"max_relative_regression": 0.1}}
+        )
+        result = _run_regression_test(current_kpi, current_test, baselines, config)
         assert result.verdict != Verdict.REGRESSION
 
 

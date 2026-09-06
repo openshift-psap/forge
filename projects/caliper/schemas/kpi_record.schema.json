@@ -4,28 +4,52 @@
   "required": [
     "schema_version",
     "kpi_id",
-    "value",
-    "unit",
     "run_id",
     "timestamp",
     "labels",
-    "source"
+    "metadata",
+    "is_curve",
+    "name",
+    "help"
   ],
   "properties": {
     "schema_version": { "type": "string" },
     "kpi_id": { "type": "string" },
-    "value": {},
+    "name": { "type": "string" },
+    "help": { "type": "string" },
+    "value": { "type": ["number", "string", "null"] },
+    "values": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "number" },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
     "unit": { "type": "string" },
     "run_id": { "type": "string" },
     "timestamp": { "type": "string" },
     "labels": { "type": "object" },
-    "source": {
-      "type": "object",
-      "properties": {
-        "test_base_path": { "type": "string" },
-        "plugin_module": { "type": "string" }
-      }
-    }
+    "metadata": { "type": "object" },
+    "higher_is_better": { "type": "boolean" },
+    "is_curve": { "type": "boolean" },
+    "x_unit": { "type": "string" },
+    "x_help": { "type": "string" },
+    "y_unit": { "type": "string" },
+    "y_help": { "type": "string" }
   },
-  "additionalProperties": true
+  "allOf": [
+    {
+      "if": { "properties": { "is_curve": { "const": false } } },
+      "then": { "required": ["value"] },
+      "else": { "required": ["values"] }
+    },
+    {
+      "if": { "properties": { "is_curve": { "const": false } } },
+      "then": { "required": ["unit"] },
+      "else": { "required": ["x_unit", "y_unit"] }
+    }
+  ],
+  "additionalProperties": false
 }

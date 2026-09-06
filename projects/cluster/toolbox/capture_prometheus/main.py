@@ -20,8 +20,8 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from projects.core.dsl import always, entrypoint, execute_tasks, task
-from projects.core.dsl.utils.k8s import oc, oc_cp_from_pod, oc_exec
+from projects.core.dsl import always, entrypoint, execute_tasks, shell, task
+from projects.core.dsl.utils.k8s import oc, oc_exec
 
 logger = logging.getLogger("DSL")
 
@@ -35,11 +35,12 @@ TSDB_PATH = "/prometheus"
 def run(
     start_time: datetime,
     end_time: datetime,
-    output_dir: str | Path,
+    output_dir: str | Path | None = None,
     *,
     pod_name: str = PROMETHEUS_POD,
     namespace: str = PROMETHEUS_NAMESPACE,
     container: str = PROMETHEUS_CONTAINER,
+    head_only: bool = True,
 ) -> int:
     """
     Capture Prometheus metrics for a specific time window.
@@ -50,10 +51,11 @@ def run(
     Args:
         start_time: Start of the capture window (UTC)
         end_time: End of the capture window (UTC)
-        output_dir: Directory to write the metrics archive into
+        output_dir: Directory to write the metrics archive into (optional, defaults to artifacts_dir/prom_db)
         pod_name: Prometheus pod to extract from
         namespace: Namespace where Prometheus runs
         container: Container name within the Prometheus pod
+        head_only: if true, restrict the TSDB scan to the recent in-memory data
     """
     execute_tasks(locals())
     return 0
@@ -97,7 +99,10 @@ def validate_parameters(args, ctx):
             f"Tests longer than 2 hours require persistent block handling (not yet implemented)."
         )
 
-    ctx.output_dir = Path(args.output_dir)
+    if args.output_dir is not None:
+        ctx.output_dir = Path(args.output_dir)
+    else:
+        ctx.output_dir = args.artifact_dir / "prom_db"
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
     ctx.start_ms = int(ctx.start_time.timestamp() * 1000)
     ctx.end_ms = int(ctx.end_time.timestamp() * 1000)
@@ -144,6 +149,10 @@ def create_temp_tsdb_dir(args, ctx):
     instead of the full TSDB which can be tens of GB.
     """
 
+    if not args.head_only:
+        logger.info("head_only isn't set, skipping.")
+        return
+
     ctx.temp_dir = f"{TSDB_PATH}/.capture-tmp-{ctx.start_ms}"
 
     oc_exec(
@@ -162,35 +171,26 @@ def create_temp_tsdb_dir(args, ctx):
 def dump_metrics(args, ctx):
     """Run promtool tsdb dump-openmetrics with time filtering against the temp dir."""
 
-    ctx.remote_raw = f"{TSDB_PATH}/.capture-metrics-{ctx.start_ms}"
-    ctx.remote_output = f"{ctx.remote_raw}.gz"
-
+    output_file = ctx.output_dir / "open_metrics.gz"
     oc_exec(
         "sh",
         "-c",
-        f"promtool tsdb dump-openmetrics"
+        f"set -o pipefail && promtool tsdb dump-openmetrics"
         f" --min-time={ctx.start_ms} --max-time={ctx.end_ms}"
-        f" {ctx.temp_dir} > {ctx.remote_raw}"
-        f" && gzip -f {ctx.remote_raw}",
+        f" {ctx.temp_dir if args.head_only else TSDB_PATH}"
+        f" | gzip",
+        stdout_dest=output_file,
+        text=False,
         **_pod_kwargs(ctx),
     )
 
-    size_result = oc_exec("stat", "-c", "%s", ctx.remote_output, check=False, **_pod_kwargs(ctx))
+    size_result = shell.run(
+        ["stat", "-c", "%s", str(output_file)], shell=False, check=False, capture_output=True
+    )
 
     ctx.archive_size_bytes = int(size_result.stdout.strip()) if size_result.success else 0
 
     return f"Dumped metrics ({ctx.archive_size_bytes} bytes compressed)"
-
-
-@task
-def copy_to_output(args, ctx):
-    """Copy the compressed metrics file from the pod to the output directory."""
-
-    ctx.output_file = ctx.output_dir / "metrics.openmetrics.gz"
-
-    oc_cp_from_pod(ctx.remote_output, ctx.output_file, **_pod_kwargs(ctx))
-
-    return f"Copied metrics to {ctx.output_file}"
 
 
 @always
@@ -199,11 +199,9 @@ def cleanup_pod(args, ctx):
     """Remove temp files from the Prometheus pod."""
 
     temp_dir = getattr(ctx, "temp_dir", None)
-    remote_output = getattr(ctx, "remote_output", None)
-    remote_raw = getattr(ctx, "remote_raw", None)
     kwargs = _pod_kwargs(ctx)
 
-    for path in [temp_dir, remote_output, remote_raw]:
+    for path in (temp_dir,):
         if path:
             oc_exec("rm", "-rf", path, check=False, **kwargs)
 

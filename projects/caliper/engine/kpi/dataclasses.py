@@ -1,73 +1,59 @@
 """
 Core dataclasses for Caliper KPI analysis.
 
-Provides strongly-typed data structures for KPI records, regression findings,
-and analysis reports used across all Caliper plugins.
+Provides strongly-typed data structures for KPI records and hierarchical formats
+used across all Caliper plugins. Report-related dataclasses are in report_dataclasses.py.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from enum import StrEnum
 from typing import Any
 
 
-class OverallStatus(StrEnum):
-    """Overall analysis status."""
+def _convert_historical_kpi_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Convert historical KPI format to current format.
 
-    PASS = "PASS"
-    REGRESSION_DETECTED = "REGRESSION_DETECTED"
-    NO_BASELINE = "NO_BASELINE"
-    NO_TEST_PERFORMED = "NO_TEST_PERFORMED"
+    Historical format uses:
+    - 'id' instead of 'kpi_id'
+    - 'is_2d' instead of 'is_curve'
+    - value.data_points structure for curve data
+    """
 
+    # Convert historical format
+    converted = data.copy()
 
-@dataclass
-class SourceInfo:
-    """Source information for KPI records."""
+    # Convert ID field
+    converted["kpi_id"] = data["id"]
 
-    test_base_path: str = ""
-    plugin_module: str = ""
+    # Convert curve flag
+    converted["is_curve"] = data.get("is_2d", False) or data.get("is_curve", False)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
+    # Convert curve data structure
+    if converted["is_curve"] and isinstance(data.get("value"), dict):
+        data_points = data["value"].get("data_points", [])
+        converted["values"] = [
+            [point["x"], point["y"]] for point in data_points if isinstance(point, dict)
+        ]
+        converted["value"] = None  # Clear value since it's curve data
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SourceInfo:
-        """Create SourceInfo from dictionary data."""
-        return cls(**data)
-
-
-class Algorithm(StrEnum):
-    """Regression testing algorithms."""
-
-    SCALAR_RELATIVE_CHANGE = "SCALAR_RELATIVE_CHANGE"
-    CURVE_AUC_CHANGE = "CURVE_AUC_CHANGE"
-
-
-class Verdict(StrEnum):
-    """Individual KPI test verdict."""
-
-    PASS = "PASS"
-    REGRESSION = "REGRESSION"
-    SKIPPED = "SKIPPED"
+    return converted
 
 
 @dataclass
-class KpiRecord:
-    """Core KPI record structure used by all plugins."""
+class HierarchicalKpi:
+    """Base KPI structure with common fields for both hierarchical and flat formats."""
 
-    kpi_id: str
-    value: Any  # Can be scalar, list, or complex data structure
-    schema_version: str = "1"
+    kpi_id: str  # KPI identifier
+    value: Any = None  # For scalar KPIs
+    values: list[list[float]] = field(
+        default_factory=list
+    )  # For curve KPIs (list of [x, y] coordinate pairs)
+    name: str = ""
     unit: str = ""
     higher_is_better: bool = True
-    labels: dict[str, str] = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    source: dict[str, Any] = field(default_factory=dict)
-    timestamp: str = ""
-    run_id: str = ""
     is_curve: bool = False
+    help: str = ""  # noqa: A003
     # Curve KPI support fields
     x_unit: str = ""
     x_help: str = ""
@@ -78,9 +64,68 @@ class KpiRecord:
         """Convert to dictionary for JSON serialization."""
         result = asdict(self)
 
-        # Only include curve fields if this is a curve KPI
-        if not self.is_curve:
-            # Remove curve-specific fields for scalar KPIs
+        # Include correct value field based on curve type
+        if self.is_curve:
+            # For curve KPIs: include 'values', remove 'value' and scalar-specific fields
+            result.pop("value", None)
+            result.pop("unit", None)
+        else:
+            # For scalar KPIs: include 'value', remove 'values' and curve-specific fields
+            result.pop("values", None)
+            result.pop("x_unit", None)
+            result.pop("y_unit", None)
+            result.pop("x_help", None)
+            result.pop("y_help", None)
+
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HierarchicalKpi:
+        """Create HierarchicalKpi from dictionary data."""
+
+        # Convert historical format to current format if needed
+        if "id" in data or "kpi_id" not in data:
+            data = _convert_historical_kpi_data(data)
+
+        return cls(
+            kpi_id=data.get("kpi_id", ""),
+            value=data.get("value"),
+            values=data.get("values", []),
+            name=data.get("name", ""),
+            unit=data.get("unit", ""),
+            higher_is_better=data.get("higher_is_better", False),
+            is_curve=data.get("is_curve", False),
+            help=data.get("help", ""),
+            x_unit=data.get("x_unit", ""),
+            x_help=data.get("x_help", ""),
+            y_unit=data.get("y_unit", ""),
+            y_help=data.get("y_help", ""),
+        )
+
+
+@dataclass
+class KpiRecord(HierarchicalKpi):
+    """Core KPI record structure used by all plugins - extends HierarchicalKpi with flat format fields."""
+
+    # Flat format specific fields
+    schema_version: str = "1"
+    labels: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: str = ""
+    run_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = asdict(self)
+
+        # Include correct value field based on curve type
+        if self.is_curve:
+            # For curve KPIs: include 'values', remove 'value' and scalar-specific fields
+            result.pop("value", None)
+            result.pop("unit", None)
+        else:
+            # For scalar KPIs: include 'value', remove 'values' and curve-specific fields
+            result.pop("values", None)
             result.pop("x_unit", None)
             result.pop("x_help", None)
             result.pop("y_unit", None)
@@ -91,7 +136,25 @@ class KpiRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> KpiRecord:
         """Create KpiRecord from dictionary data."""
-        return cls(**data)
+        is_curve = data.get("is_curve", False)
+
+        return cls(
+            kpi_id=data["kpi_id"],
+            value=data.get("value") if not is_curve else None,
+            values=data.get("values", []) if is_curve else [],
+            schema_version=data.get("schema_version", "1"),
+            unit=data.get("unit", ""),
+            higher_is_better=data.get("higher_is_better", True),
+            labels=data.get("labels", {}),
+            metadata=data.get("metadata", {}),
+            timestamp=data.get("timestamp", ""),
+            run_id=data.get("run_id", ""),
+            is_curve=is_curve,
+            x_unit=data.get("x_unit", ""),
+            x_help=data.get("x_help", ""),
+            y_unit=data.get("y_unit", ""),
+            y_help=data.get("y_help", ""),
+        )
 
 
 @dataclass
@@ -121,262 +184,6 @@ class RegressionFinding:
 
 
 @dataclass
-class TestSummary:
-    """Summary of KPI test results."""
-
-    total_kpis: int
-    pass_count: int = 0
-    regression_count: int = 0
-    skipped_count: int = 0
-    improvement_count: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-
-@dataclass
-class ConfigSummary:
-    """Summary of analysis configuration."""
-
-    comparison_labels: list[str] = field(default_factory=list)
-    ignored_labels: list[str] = field(default_factory=list)
-    sorting_labels: list[str] = field(default_factory=list)
-    regression_config: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-
-@dataclass
-class BaselineSummary:
-    """Summary of baseline data sources."""
-
-    relevant_sources: list[dict[str, Any]] = field(default_factory=list)
-    irrelevant_sources: list[dict[str, Any]] = field(default_factory=list)
-    baseline_source_count: int = 0
-    baseline_skipped: dict[str, int] = field(default_factory=dict)
-    current_source: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-
-@dataclass
-class AnalysisSummary:
-    """Comprehensive analysis summary with structured components."""
-
-    tested: TestSummary
-    config: ConfigSummary
-    baseline_info: BaselineSummary
-    message: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> AnalysisSummary:
-        """Create AnalysisSummary from dictionary data."""
-        # Convert nested dictionaries to their respective dataclass instances
-        converted_data = data.copy()
-
-        if "tested" in converted_data:
-            converted_data["tested"] = TestSummary(**converted_data["tested"])
-
-        if "config" in converted_data:
-            converted_data["config"] = ConfigSummary(**converted_data["config"])
-
-        if "baseline_info" in converted_data:
-            converted_data["baseline_info"] = BaselineSummary(**converted_data["baseline_info"])
-
-        return cls(**converted_data)
-
-
-@dataclass
-class ReportMetadata:
-    """Analysis report metadata."""
-
-    total_tested: int = 0
-    total_skipped: int = 0
-    plugin_module: str = ""
-    caliper_version: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ReportMetadata:
-        """Create ReportMetadata from dictionary data."""
-        return cls(**data)
-
-
-@dataclass
-class AnalysisSection:
-    """Analysis section of the regression report."""
-
-    status: OverallStatus
-    timestamp: str
-
-
-@dataclass
-class TestedSection:
-    """Tested section of the regression report."""
-
-    total_kpis: int
-    pass_count: int = field(default=0, metadata={"json_name": "pass"})
-    regression: int = 0
-    skipped: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-
-@dataclass
-class OverallSection:
-    """Overall section of the regression report."""
-
-    verdict: OverallStatus
-    regression_count: int
-    total_tested: int
-    total_skipped: int
-
-
-@dataclass
-class InputDataSection:
-    """Input data section of the regression report."""
-
-    current_source: dict[str, Any] = field(default_factory=dict)
-    baseline_sources: dict[str, Any] = field(default_factory=dict)
-    baseline_source_count: int = 0
-    baseline_skipped: dict[str, int] = field(default_factory=dict)
-
-
-@dataclass
-class ResultLabels:
-    """Labels section for result entry."""
-
-    comparison_keys: dict[str, Any] = field(default_factory=dict)
-    distinct_keys: dict[str, Any] = field(default_factory=dict)
-    ignore_keys: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ResultCurrentValue:
-    """Current value section for result entry."""
-
-    comparison_keys: dict[str, Any] = field(default_factory=dict)
-    value: Any = None
-
-
-@dataclass
-class ResultBaselineValue:
-    """Baseline value entry for result entry."""
-
-    comparison_keys: dict[str, Any] = field(default_factory=dict)
-    value: Any = None
-
-
-@dataclass
-class ResultEntry:
-    """Individual result entry in the results array."""
-
-    kpi_id: str
-    verdict: Verdict
-    labels: ResultLabels = field(default_factory=ResultLabels)
-    run_id: str = ""
-    is_curve: bool = False
-    higher_is_better: bool = True
-    current_value: ResultCurrentValue = field(default_factory=ResultCurrentValue)
-    baseline_values: list[ResultBaselineValue] = field(default_factory=list)
-    baseline_count: int = 0
-    details: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class RegressionReport:
-    """Regression analysis report matching the original format exactly."""
-
-    analysis: AnalysisSection
-    config: dict[str, Any] = field(default_factory=dict)
-    tested: TestedSection = field(default_factory=lambda: TestedSection(total_kpis=0))
-    overall: OverallSection = field(
-        default_factory=lambda: OverallSection(
-            verdict=OverallStatus.PASS, regression_count=0, total_tested=0, total_skipped=0
-        )
-    )
-    input_data: InputDataSection = field(default_factory=InputDataSection)
-    results: list[ResultEntry] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        result = asdict(self)
-        # Handle the TestedSection's special to_dict method
-        if hasattr(self.tested, "to_dict"):
-            result["tested"] = self.tested.to_dict()
-        return result
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> RegressionReport:
-        """Create RegressionReport from dictionary data."""
-        # Convert nested sections
-        analysis_data = data.get("analysis", {})
-        analysis = AnalysisSection(
-            status=OverallStatus(analysis_data["status"])
-            if isinstance(analysis_data.get("status"), str)
-            else analysis_data.get("status", OverallStatus.PASS),
-            timestamp=analysis_data.get("timestamp", ""),
-        )
-
-        tested_data = data.get("tested", {})
-        tested = TestedSection(**tested_data)
-
-        overall_data = data.get("overall", {})
-        overall = OverallSection(
-            verdict=OverallStatus(overall_data["verdict"])
-            if isinstance(overall_data.get("verdict"), str)
-            else overall_data.get("verdict", OverallStatus.PASS),
-            regression_count=overall_data.get("regression_count", 0),
-            total_tested=overall_data.get("total_tested", 0),
-            total_skipped=overall_data.get("total_skipped", 0),
-        )
-
-        input_data_raw = data.get("input_data", {})
-        input_data = InputDataSection(
-            current_source=input_data_raw.get("current_source", {}),
-            baseline_sources=input_data_raw.get("baseline_sources", {}),
-            baseline_source_count=input_data_raw.get("baseline_source_count", 0),
-            baseline_skipped=input_data_raw.get("baseline_skipped", {}),
-        )
-
-        results_data = data.get("results", [])
-        results = [
-            ResultEntry(**result) if isinstance(result, dict) else result for result in results_data
-        ]
-
-        return cls(
-            analysis=analysis,
-            config=data.get("config", {}),
-            tested=tested,
-            overall=overall,
-            input_data=input_data,
-            results=results,
-        )
-
-    def has_regressions(self) -> bool:
-        """Check if any regressions were detected."""
-        return self.overall.regression_count > 0
-
-    def is_successful(self) -> bool:
-        """Check if analysis completed successfully."""
-        return self.analysis.status in (OverallStatus.PASS, OverallStatus.NO_BASELINE)
-
-
-@dataclass
 class KpiCatalogEntry:
     """KPI catalog entry for plugin metadata."""
 
@@ -399,6 +206,99 @@ class KpiCatalogEntry:
     def from_dict(cls, data: dict[str, Any]) -> KpiCatalogEntry:
         """Create KpiCatalogEntry from dictionary data."""
         return cls(**data)
+
+
+@dataclass
+class TestMetadata:
+    """Test metadata structure for hierarchical format."""
+
+    timestamp: str = ""
+    run_id: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TestMetadata:
+        """Create TestMetadata from dictionary data."""
+
+        return cls(
+            timestamp=data.get("timestamp", ""),
+            run_id=data.get("run_id", ""),
+        )
+
+
+@dataclass
+class HierarchicalTestEntry:
+    """Test entry in hierarchical KPI format."""
+
+    run_id: str
+    labels: dict[str, str] = field(default_factory=dict)
+    metadata: TestMetadata = field(default_factory=TestMetadata)
+    kpis: list[HierarchicalKpi] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "run_id": self.run_id,
+            "labels": self.labels,
+            "metadata": self.metadata.to_dict()
+            if isinstance(self.metadata, TestMetadata)
+            else self.metadata,
+            "kpis": [kpi.to_dict() for kpi in self.kpis],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HierarchicalTestEntry:
+        """Create HierarchicalTestEntry from dictionary data."""
+        # Convert metadata if it's a dict
+        metadata_data = data.get("metadata", {})
+        if isinstance(metadata_data, dict):
+            metadata = TestMetadata.from_dict(metadata_data)
+        else:
+            metadata = metadata_data
+
+        # Convert kpis if they're dicts
+        kpis_data = data.get("kpis", [])
+        kpis = [
+            HierarchicalKpi.from_dict(kpi) if isinstance(kpi, dict) else kpi for kpi in kpis_data
+        ]
+
+        return cls(
+            run_id=data["run_id"],
+            labels=data.get("labels", {}),
+            metadata=metadata,
+            kpis=kpis,
+        )
+
+
+@dataclass
+class HierarchicalKpiFormat:
+    """Hierarchical KPI format structure (schema version 2)."""
+
+    schema_version: str = "2"
+    tests: list[HierarchicalTestEntry] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "schema_version": self.schema_version,
+            "tests": [test.to_dict() for test in self.tests],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HierarchicalKpiFormat:
+        """Create HierarchicalKpiFormat from dictionary data."""
+        tests_data = data.get("tests", [])
+        tests = [
+            HierarchicalTestEntry.from_dict(test) if isinstance(test, dict) else test
+            for test in tests_data
+        ]
+        return cls(
+            schema_version=data.get("schema_version", "2"),
+            tests=tests,
+        )
 
 
 @dataclass
@@ -437,87 +337,14 @@ class CaliperTestMetadata:
         )
 
 
-@dataclass
-class CurrentValueInfo:
-    """Structured current_value field for RegressionTestResult."""
-
-    value: Any
-    comparison_keys: dict[str, str] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CurrentValueInfo:
-        """Create CurrentValueInfo from dictionary data."""
-        return cls(**data)
-
-
-@dataclass
-class RegressionTestResult:
-    """Result of an individual KPI regression test."""
-
-    verdict: Verdict
-    kpi_id: str = ""
-    baseline_count: int = 0
-    current_value: CurrentValueInfo | None = None
-    details: dict[str, Any] = field(default_factory=dict)
-    reason: str = ""
-    labels: dict[str, Any] = field(default_factory=dict)
-    run_id: str = ""
-    is_curve: bool = False
-    higher_is_better: bool = True
-    baseline_values: list[dict[str, Any]] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> RegressionTestResult:
-        """Create RegressionTestResult from dictionary data."""
-        # Convert current_value if it's a dict
-        current_value = data.get("current_value")
-        if isinstance(current_value, dict):
-            current_value = CurrentValueInfo.from_dict(current_value)
-
-        return cls(
-            verdict=Verdict(data["verdict"])
-            if isinstance(data["verdict"], str)
-            else data["verdict"],
-            kpi_id=data.get("kpi_id", ""),
-            baseline_count=data.get("baseline_count", 0),
-            current_value=current_value,
-            details=data.get("details", {}),
-            reason=data.get("reason", ""),
-        )
-
-
 # Export all public classes
 __all__ = [
-    "OverallStatus",
-    "SourceInfo",
-    "Algorithm",
-    "Verdict",
+    "HierarchicalKpi",
     "KpiRecord",
     "RegressionFinding",
-    "TestSummary",
-    "ConfigSummary",
-    "BaselineSummary",
-    "AnalysisSummary",
-    "ReportMetadata",
-    "AnalysisSection",
-    "TestedSection",
-    "OverallSection",
-    "InputDataSection",
-    "ResultEntry",
-    "ResultLabels",
-    "ResultCurrentValue",
-    "ResultBaselineValue",
-    "RegressionReport",
     "KpiCatalogEntry",
+    "TestMetadata",
+    "HierarchicalTestEntry",
+    "HierarchicalKpiFormat",
     "CaliperTestMetadata",
-    "CurrentValueInfo",
-    "RegressionTestResult",
 ]

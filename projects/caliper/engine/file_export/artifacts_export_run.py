@@ -14,6 +14,7 @@ import click
 import yaml
 from click.core import Context, ParameterSource
 
+from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.engine.file_export.mlflow_config import (
     project_metadata_fields,
     validate_mlflow_config,
@@ -310,12 +311,20 @@ def run_artifacts_export(
 
 
 def discover_run_dirs(from_path: Path) -> list[Path]:
-    """Auto-detect test run directories via ``__test_labels__.yaml`` markers."""
-    run_dirs: list[Path] = []
-    for marker in sorted(from_path.rglob("__test_labels__.yaml")):
+    """Auto-detect test run directories via metadata markers (with backwards compatibility)."""
+    # Collect directories with either metadata file (new format or legacy)
+    metadata_dirs = set()
+
+    for marker in from_path.rglob(METADATA_FILE):
         if marker.is_file():
-            run_dirs.append(marker.parent)
-    return run_dirs
+            metadata_dirs.add(marker.parent)
+
+    # Look for legacy format (for directories that don't have new format)
+    for marker in from_path.rglob(LEGACY_METADATA_FILE):
+        if marker.is_file() and marker.parent not in metadata_dirs:
+            metadata_dirs.add(marker.parent)
+
+    return sorted(metadata_dirs)
 
 
 def run_multi_run_artifacts_export(

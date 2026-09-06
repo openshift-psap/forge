@@ -6,7 +6,7 @@ Artifact post-processing: parse labeled test trees, visualize, KPIs, export to O
 
 ## CLI
 
-- `--artifacts-dir` (`--base-dir`): root directory of the **test artifact tree** (where `__test_labels__.yaml` lives). Manifest YAML is discovered here unless `--postprocess-config` points elsewhere.
+- `--artifacts-dir` (`--base-dir`): root directory of the **test artifact tree** (where `__caliper_test_metadata__.yaml` lives). Manifest YAML is discovered here unless `--postprocess-config` points elsewhere.
 - `--plugin-module` (`--plugin`): dotted Python **import path** for the plugin module (`get_plugin()`), overriding `plugin_module` in the manifest when both are set.
 
 ```bash

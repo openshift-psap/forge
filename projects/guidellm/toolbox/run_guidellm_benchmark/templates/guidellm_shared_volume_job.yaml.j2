@@ -21,6 +21,22 @@ spec:
       securityContext:
         fsGroup: {{ fs_group }}
 {% endif %}
+      initContainers:
+        - name: prepare-results
+          image: {{ image }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /results
+              touch /results/benchmarks.json
+              rm -f /results/benchmarks.json
+              echo "Results directory prepared"
+          volumeMounts:
+            - name: home
+              mountPath: /home/guidellm
+            - name: results
+              mountPath: /results
       containers:
         - name: guidellm-main
           image: {{ image }}

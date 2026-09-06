@@ -1,0 +1,64 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ ctx.llmisvc_name }}-kserve
+  namespace: {{ args.namespace }}
+  {%- if ctx.owner_uid %}
+  ownerReferences:
+  - apiVersion: serving.kserve.io/v1alpha2
+    kind: LLMInferenceService
+    name: {{ ctx.llmisvc_name }}
+    uid: {{ ctx.owner_uid }}
+    controller: true
+    blockOwnerDeletion: true
+  {%- endif %}
+spec:
+  endpoints:
+  - interval: 5s
+    path: /metrics
+    port: https
+    scheme: https
+    scrapeTimeout: 4s
+    tlsConfig:
+      ca:
+        secret:
+          key: ca.crt
+          name: {{ ctx.llmisvc_name }}-kserve-self-signed-certs
+      serverName: {{ ctx.llmisvc_name }}-kserve-workload-svc.{{ args.namespace }}.svc
+  namespaceSelector:
+    matchNames:
+    - {{ args.namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: llminferenceservice-workload
+      app.kubernetes.io/name: {{ ctx.llmisvc_name }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ ctx.llmisvc_name }}-epp
+  namespace: {{ args.namespace }}
+  {%- if ctx.owner_uid %}
+  ownerReferences:
+  - apiVersion: serving.kserve.io/v1alpha2
+    kind: LLMInferenceService
+    name: {{ ctx.llmisvc_name }}
+    uid: {{ ctx.owner_uid }}
+    controller: true
+    blockOwnerDeletion: true
+  {%- endif %}
+spec:
+  endpoints:
+  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    interval: 5s
+    path: /metrics
+    port: metrics
+    scheme: http
+    scrapeTimeout: 4s
+  namespaceSelector:
+    matchNames:
+    - {{ args.namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: llminferenceservice-router-scheduler
+      app.kubernetes.io/name: {{ ctx.llmisvc_name }}

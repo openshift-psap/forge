@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.orchestration.caliper_invocation import (
     _execute_caliper_command,
     _generate_automatic_status_file_path,
@@ -287,29 +288,40 @@ def _run_artifacts_to_ai_data(
 
 
 def _load_test_labels(test_dir: Path) -> dict[str, Any]:
-    """Load test labels from __test_labels__.yaml file if it exists.
+    """Load test labels from metadata file (new format preferred, legacy fallback).
 
     Args:
-        test_dir: Directory to search for __test_labels__.yaml
+        test_dir: Directory to search for metadata files
 
     Returns:
-        Dictionary containing test labels, or empty dict if file doesn't exist
+        Dictionary containing test labels, or empty dict if no file exists
     """
     import yaml
 
-    test_labels_file = test_dir / "__test_labels__.yaml"
-    if test_labels_file.exists():
+    # Try new format first
+    metadata_file = test_dir / METADATA_FILE
+    if metadata_file.exists():
         try:
-            with open(test_labels_file, encoding="utf-8") as f:
+            with open(metadata_file, encoding="utf-8") as f:
                 labels = yaml.safe_load(f)
-                logger.debug(f"Loaded test labels from {test_labels_file}: {labels}")
+                logger.debug(f"Loaded test metadata from {metadata_file}: {labels}")
                 return labels or {}
         except Exception as e:
-            logger.warning(f"Failed to load test labels from {test_labels_file}: {e}")
-            return {}
-    else:
-        logger.debug(f"No test labels file found at {test_labels_file}")
-        return {}
+            logger.error(f"Failed to load test metadata from {metadata_file}: {e}")
+
+    # Fallback to legacy format
+    legacy_file = test_dir / LEGACY_METADATA_FILE
+    if legacy_file.exists():
+        try:
+            with open(legacy_file, encoding="utf-8") as f:
+                labels = yaml.safe_load(f)
+                logger.debug(f"Loaded test labels from legacy file {legacy_file}: {labels}")
+                return labels or {}
+        except Exception as e:
+            logger.error(f"Failed to load test labels from {legacy_file}: {e}")
+
+    logger.debug(f"No metadata or test labels file found in {test_dir}")
+    return {}
 
 
 def _run_kpis_to_csv(

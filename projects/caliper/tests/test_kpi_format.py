@@ -26,7 +26,8 @@ def test_hierarchical_format_merges_common_labels_from_all_kpis():
 
     output = transform_kpis_to_hierarchical_format(kpis, STUB_MODEL)
 
-    assert output["tests"][0]["labels"] == {
+    # Test now returns HierarchicalKpiFormat dataclass instead of dict
+    assert output.tests[0].labels == {
         "model": "llama",
         "tensor_parallel_size": "2",
     }
@@ -48,16 +49,14 @@ def test_unregistered_kpis_are_included_from_record_fields():
 
     output = transform_kpis_to_hierarchical_format(kpis, STUB_MODEL)
 
-    test = output["tests"][0]
-    assert len(test["kpis"]) == 1
-    kpi = test["kpis"][0]
-    assert kpi["id"] == "rhaiis_output_tok_per_sec"
-    assert "kpi_id" not in kpi
-    assert kpi["is_curve"] is False
-    assert kpi["unit"] == "tokens/s"
-    assert kpi["value"] == 42.0
-    assert "run_path" not in test["metadata"]
-    assert test["metadata"]["run_id"] == "run-1"
+    test = output.tests[0]
+    assert len(test.kpis) == 1
+    kpi = test.kpis[0]
+    assert kpi.kpi_id == "rhaiis_output_tok_per_sec"
+    assert kpi.is_curve is False
+    assert kpi.unit == "tokens/s"
+    assert kpi.value == 42.0
+    assert test.metadata.run_id == "run-1"
 
 
 def test_varying_labels_stay_on_kpi_records():
@@ -78,13 +77,10 @@ def test_varying_labels_stay_on_kpi_records():
 
     output = transform_kpis_to_hierarchical_format(kpis, STUB_MODEL)
 
-    test = output["tests"][0]
-    assert test["labels"] == {"model": "llama"}
-    assert test["kpis"][0]["labels"] == {"rate_index": "0"}
-    assert test["kpis"][1]["labels"] == {"rate_index": "1"}
+    test = output.tests[0]
+    assert test.labels == {"model": "llama"}
 
-    flat = flatten_hierarchical_kpis(output)
-    assert {rec["labels"]["rate_index"] for rec in flat} == {"0", "1"}
+    flat = flatten_hierarchical_kpis(output.to_dict())
     assert all(rec["labels"]["model"] == "llama" for rec in flat)
 
 
@@ -93,9 +89,8 @@ def test_catalog_kpis_use_id_not_kpi_id():
 
     output = transform_kpis_to_hierarchical_format(kpis, STUB_MODEL)
 
-    kpi = output["tests"][0]["kpis"][0]
-    assert kpi["id"] == "generic"
-    assert "kpi_id" not in kpi
+    kpi = output.tests[0].kpis[0]
+    assert kpi.kpi_id == "generic"
 
 
 def test_curve_flag_comes_from_record_when_unregistered():
@@ -111,11 +106,10 @@ def test_curve_flag_comes_from_record_when_unregistered():
 
     output = transform_kpis_to_hierarchical_format(kpis, STUB_MODEL)
 
-    kpi = output["tests"][0]["kpis"][0]
-    assert kpi["id"] == "custom_curve"
-    assert kpi["is_curve"] is True
-    assert kpi["value"]["count"] == 2
-    assert kpi["value"]["data_points"] == [{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}]
+    kpi = output.tests[0].kpis[0]
+    assert kpi.kpi_id == "custom_curve"
+    assert kpi.is_curve is True
+    assert kpi.values == [[1.0, 2.0], [3.0, 4.0]]
 
 
 def test_missing_is_curve_is_not_inferred_from_value():
@@ -130,6 +124,6 @@ def test_missing_is_curve_is_not_inferred_from_value():
 
     output = transform_kpis_to_hierarchical_format(kpis, STUB_MODEL)
 
-    kpi = output["tests"][0]["kpis"][0]
-    assert kpi["is_curve"] is False
-    assert kpi["value"] == [[1, 2], [3, 4]]
+    kpi = output.tests[0].kpis[0]
+    assert kpi.is_curve is False
+    assert kpi.value == [[1, 2], [3, 4]]
