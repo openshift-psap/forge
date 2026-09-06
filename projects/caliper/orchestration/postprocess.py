@@ -324,7 +324,7 @@ def _load_test_labels(test_dir: Path) -> dict[str, Any]:
     return {}
 
 
-def _run_kpis_to_csv(
+def _run_dashboard_csv(
     postprocess_config: CaliperOrchestrationPostprocessConfig,
     output_dir: Path,
     kpi_json_path: Path,
@@ -332,7 +332,7 @@ def _run_kpis_to_csv(
     manifest_path: Path | None,
     step_logs_dir: Path,
 ) -> dict[str, Any]:
-    """Export KPI data to CSV format using fork/exec subprocess execution."""
+    """Export dashboard CSV independently from model data using fork/exec subprocess execution."""
 
     if not postprocess_config.kpi.enabled:
         result = CsvExportStepResult(
@@ -342,20 +342,20 @@ def _run_kpis_to_csv(
             log_file=None,
         )
         return result
-    if not postprocess_config.kpi.kpis_to_csv.enabled:
+    if not postprocess_config.kpi.dashboard_csv.enabled:
         result = CsvExportStepResult(
             status=StepStatus.DISABLED,
             completed_at=time.time(),
-            reason="kpi.kpis_to_csv disabled",
+            reason="kpi.dashboard_csv disabled",
             log_file=None,
         )
         return result
 
     try:
-        csv_output = postprocess_config.kpi.kpis_to_csv.output
+        csv_output = postprocess_config.kpi.dashboard_csv.output
         if Path(csv_output).is_absolute() or ".." in Path(csv_output).parts:
             raise ValueError(
-                f"kpi.kpis_to_csv.output must be a relative path without '..': {csv_output}"
+                f"kpi.dashboard_csv.output must be a relative path without '..': {csv_output}"
             )
         output_file = output_dir / csv_output
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -369,7 +369,6 @@ def _run_kpis_to_csv(
             tree_root=base_dir,
             manifest_path=manifest_path,
             status_file=status_file,
-            input_file=kpi_json_path,
             output_file=output_file,
         )
 
@@ -980,7 +979,7 @@ class CaliperPostprocessOrchestrator:
             # Only mark all steps as failed if basic setup fails
             for step_name in [
                 "artifacts_to_kpis",
-                "kpis_to_csv",
+                "dashboard_csv",
                 "artifacts_to_ai_data",
                 "s3_import",
                 "analyse_kpis",
@@ -1009,7 +1008,7 @@ class CaliperPostprocessOrchestrator:
         self._run_kpis_to_metrics_step()
 
         # KPI CSV export
-        self._run_kpis_to_csv_step()
+        self._run_dashboard_csv_step()
 
         # AI evaluation export
         self._run_artifacts_to_ai_data_step(mod_str)
@@ -1092,21 +1091,21 @@ class CaliperPostprocessOrchestrator:
             error = status_data.get("error", f"exit code {result.returncode}")
             logger.error("kpis-to-mlflow step failed: %s", error)
 
-    def _run_kpis_to_csv_step(self) -> None:
-        """Execute the KPI CSV export step."""
-        if not self.config.kpi.kpis_to_csv.enabled:
+    def _run_dashboard_csv_step(self) -> None:
+        """Execute the dashboard CSV export step."""
+        if not self.config.kpi.dashboard_csv.enabled:
             self._add_step(
-                "kpis_to_csv",
+                "dashboard_csv",
                 CsvExportStepResult(
                     status=StepStatus.DISABLED,
                     completed_at=time.time(),
-                    reason="kpi.kpis_to_csv disabled",
+                    reason="kpi.dashboard_csv disabled",
                 ),
             )
             return
 
         kpi_json_path = self.output_dir / self.config.kpi.artifacts_to_kpis.output
-        result = _run_kpis_to_csv(
+        result = _run_dashboard_csv(
             self.config,
             self.output_dir,
             kpi_json_path,
@@ -1115,7 +1114,7 @@ class CaliperPostprocessOrchestrator:
             self.step_logs_dir,
         )
         log_file = result.log_file
-        self._add_step("kpis_to_csv", result, log_file)
+        self._add_step("dashboard_csv", result, log_file)
         if result.status == StepStatus.FAILED:
             # CSV export failure doesn't affect overall status - it's supplementary
             logger.warning("KPI CSV export failed but continuing execution")
@@ -1335,14 +1334,14 @@ class CaliperPostprocessOrchestrator:
             ):
                 kpis_file = self.output_dir / self.config.kpi.artifacts_to_kpis.output
 
-            # Get CSV file from kpis_to_csv step
-            kpis_to_csv_step = self._get_step("kpis_to_csv")
+            # Get CSV file from dashboard_csv step
+            dashboard_csv_step = self._get_step("dashboard_csv")
             if (
-                kpis_to_csv_step
-                and kpis_to_csv_step.get("status") == "success"
-                and kpis_to_csv_step.get("output_file")
+                dashboard_csv_step
+                and dashboard_csv_step.get("status") == "success"
+                and dashboard_csv_step.get("output_file")
             ):
-                csv_output = self.config.kpi.kpis_to_csv.output
+                csv_output = self.config.kpi.dashboard_csv.output
                 csv_file = self.output_dir / csv_output
 
             # Get AI data directory from artifacts_to_ai_data step

@@ -79,14 +79,13 @@ class RhaiisPlugin(PostProcessingPlugin):
         """Compute KPIs using dataclasses with status details."""
         return self.kpi_handler.compute_kpis(model)
 
-    def export_kpis_to_csv(
-        self,
-        kpi_records: list[KpiRecord],
-        output_path: Path,
-        include_header_comments: bool = True,
-    ) -> str:
-        """Export KPI records to the RHAIIS dashboard schema."""
+    def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
+        """Generate dashboard CSV independently from model data using clean architecture."""
+        from projects.guidellm.postprocess.guidellm.dashboard import compute_dashboard_kpis
         from projects.rhaiis.postprocess.csv_export import FIELDNAMES
+
+        # Generate dashboard KPIs independently from model
+        dashboard_kpis = compute_dashboard_kpis(model, prefix="rhaiis")
 
         def metadata_row(labels: dict[str, Any]) -> dict[str, Any]:
             acc = labels.get("accelerator", "").upper()
@@ -120,7 +119,7 @@ class RhaiisPlugin(PostProcessingPlugin):
             }
 
         return export_dashboard_kpis_to_csv(
-            kpi_records,
+            dashboard_kpis,
             output_path,
             prefix="rhaiis",
             fieldnames=FIELDNAMES,

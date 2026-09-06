@@ -238,25 +238,49 @@ class GuideLLMPlugin(PostProcessingPlugin):
         """Compute KPI values using dataclasses with status details."""
         return self.kpi_handler.compute_kpis(model)
 
-    def export_kpis_to_csv(
-        self,
-        kpi_records: list[KpiRecord],
-        output_path: Path,
-        include_header_comments: bool = True,
-    ) -> str:
-        """Export KPI records to CSV format using GuideLLM's CSV exporter.
+    def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
+        """Generate dashboard CSV independently from model data using clean architecture."""
+        from projects.guidellm.postprocess.guidellm.dashboard import (
+            compute_dashboard_kpis,
+            export_dashboard_kpis_to_csv,
+        )
+        from projects.llm_d.postprocess.llm_d.csv_dashboard import DASHBOARD_FIELDNAMES
 
-        Args:
-            kpi_records: KPI records from compute_kpis()
-            output_path: Path where to write the CSV file
-            include_header_comments: Whether to include descriptive header comments
+        # Generate dashboard KPIs independently from model
+        dashboard_kpis = compute_dashboard_kpis(model, prefix="guidellm")
 
-        Returns:
-            Path to the generated CSV file
-        """
-        from projects.llm_d.postprocess.llm_d import csv_dashboard
+        def metadata_row(labels: dict[str, Any]) -> dict[str, Any]:
+            """Extract metadata for CSV row from dashboard KPI labels."""
+            accelerator = labels.get("gpu_type") or labels.get("accelerator", "")
+            model_id = labels.get("hf_model_id") or labels.get("model_name", "")
+            run_model = model_id.replace("/", "-")
+            tp = labels.get("tensor_parallel_size", "")
 
-        return csv_dashboard.export_kpis_to_csv(kpi_records, output_path, include_header_comments)
+            return {
+                "run": "-".join(str(value) for value in (accelerator, run_model, tp) if value),
+                "accelerator": accelerator,
+                "model": model_id,
+                "version": labels.get("version", ""),
+                "prompt toks": labels.get("prompt_toks", ""),
+                "output toks": labels.get("output_toks", ""),
+                "TP": tp,
+                "uuid": labels.get("run_uuid", ""),
+                "runtime_args": labels.get("runtime_args", ""),
+                "guidellm_start_time_ms": labels.get("guidellm_start_time_ms", ""),
+                "guidellm_end_time_ms": labels.get("guidellm_end_time_ms", ""),
+                "image_tag": labels.get("image_tag", ""),
+                "guidellm_version": labels.get("guidellm_version", ""),
+                "mlflow_run_id": labels.get("mlflow_run_id", ""),
+                "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+            }
+
+        return export_dashboard_kpis_to_csv(
+            dashboard_kpis,
+            output_path,
+            prefix="guidellm",
+            fieldnames=DASHBOARD_FIELDNAMES,
+            metadata_row=metadata_row,
+        )
 
     def kpi_catalog(self) -> list[KpiCatalogEntry]:
         """Return catalog of available KPIs for hierarchical formatting."""

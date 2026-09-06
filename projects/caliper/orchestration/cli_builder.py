@@ -207,7 +207,6 @@ def build_kpi_csv_export_command(
     tree_root: Path,
     manifest_path: Path | None,
     status_file: Path,
-    input_file: Path,
     output_file: Path,
 ) -> list[str]:
     """Build CLI command for caliper kpi csv-export.
@@ -217,7 +216,6 @@ def build_kpi_csv_export_command(
         tree_root: Base directory for artifacts
         manifest_path: Optional manifest file path
         status_file: Where to write status YAML
-        input_file: Input KPI JSON file
         output_file: Output CSV file
 
     Returns:
@@ -235,10 +233,9 @@ def build_kpi_csv_export_command(
         cmd.extend(["--plugin", config.plugin_module])
 
     # CSV export specific options
-    cmd.extend(["--input", str(input_file)])
     cmd.extend(["--output", str(output_file)])
 
-    if config.kpi.kpis_to_csv.include_header_comments:
+    if config.kpi.dashboard_csv.include_header_comments:
         cmd.append("--include-header-comments")
 
     # Status file for orchestration

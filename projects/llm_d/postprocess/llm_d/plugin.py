@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -78,21 +77,6 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
         # Store model for independent dashboard KPI generation in CSV export
         self._cached_model = model
         return super().compute_kpis(model)
-
-    def export_kpis_to_csv(
-        self,
-        kpi_records: list[KpiRecord],
-        output_path: Path,
-        include_header_comments: bool = True,
-    ) -> str:
-        """Export KPI records to CSV format with llm-d dashboard schema."""
-        from . import csv_dashboard
-
-        # Pass the cached model to the CSV export function
-        cached_model = getattr(self, "_cached_model", None)
-        return csv_dashboard.export_kpis_to_csv(
-            kpi_records, output_path, include_header_comments, model=cached_model
-        )
 
 
 def get_plugin() -> PostProcessingPlugin:

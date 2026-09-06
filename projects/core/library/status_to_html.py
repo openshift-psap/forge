@@ -275,7 +275,7 @@ def convert_status_yaml_to_html(
         "parse",
         "visualize",
         "artifacts_to_kpis",
-        "kpis_to_csv",
+        "dashboard_csv",
         "artifacts_to_ai_data",
         "s3_import",
         "analyse_kpis",
@@ -298,7 +298,7 @@ def convert_status_yaml_to_html(
         # Format step name
         step_display_map = {
             "artifacts_to_kpis": "KPI Generation",
-            "kpis_to_csv": "KPI CSV Export",
+            "dashboard_csv": "Dashboard CSV Export",
             "artifacts_to_ai_data": "AI Data Export",
             "s3_import": "S3 Import",
             "s3_export": "S3 Export",
@@ -449,7 +449,7 @@ def convert_status_yaml_to_html(
                 file_name = Path(output_file).name
                 file_links.append((f"📈 {file_name}", full_path))
 
-        elif step_name == "kpis_to_csv" and step_status in ["ok", "success"]:
+        elif step_name == "dashboard_csv" and step_status in ["ok", "success"]:
             output_file = step_info.get("output_file", "")
             if output_file:
                 full_path = _get_full_path(output_file)

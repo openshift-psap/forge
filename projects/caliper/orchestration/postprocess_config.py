@@ -73,14 +73,14 @@ class CaliperOrchestrationArtifactsToKpisSection(BaseModel):
     )
 
 
-class CaliperOrchestrationKpisToCsvSection(BaseModel):
-    """Export KPI data to CSV format."""
+class CaliperOrchestrationDashboardCsvSection(BaseModel):
+    """Export dashboard CSV independently from model data."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
     output: str | None = Field(
-        default="kpis.csv",
+        default="dashboard.csv",
         description="CSV filename or path; relative paths resolve under the post-processing artifact dir.",
     )
     include_header_comments: bool = Field(
@@ -110,8 +110,8 @@ class CaliperOrchestrationKpiSection(BaseModel):
     artifacts_to_kpis: CaliperOrchestrationArtifactsToKpisSection = Field(
         default_factory=CaliperOrchestrationArtifactsToKpisSection
     )
-    kpis_to_csv: CaliperOrchestrationKpisToCsvSection = Field(
-        default_factory=CaliperOrchestrationKpisToCsvSection
+    dashboard_csv: CaliperOrchestrationDashboardCsvSection = Field(
+        default_factory=CaliperOrchestrationDashboardCsvSection
     )
     artifacts_to_ai_data: CaliperOrchestrationArtifactsToAiDataSection = Field(
         default_factory=CaliperOrchestrationArtifactsToAiDataSection

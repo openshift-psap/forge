@@ -295,7 +295,7 @@ def run_artifacts_to_ai_data(
         return {"status": "failed", "error": str(e), "completed_at": time.time(), "log_file": None}
 
 
-def run_kpis_to_csv(
+def run_dashboard_csv(
     postprocess_config: CaliperOrchestrationPostprocessConfig,
     plugin,
     model,
@@ -305,7 +305,7 @@ def run_kpis_to_csv(
     manifest_path: Path | None,
     step_logs_dir: Path,
 ) -> dict[str, Any]:
-    """Export KPI JSON to CSV using fork/exec subprocess execution."""
+    """Export dashboard CSV independently from model data using fork/exec subprocess execution."""
 
     if not postprocess_config.kpi.csv.enabled:
         return {

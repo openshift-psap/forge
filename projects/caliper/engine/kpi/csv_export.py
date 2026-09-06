@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 
-def export_kpis_to_csv(
+def export_dashboard_csv(
     *,
     plugin: object,
-    kpi_records: list[dict[str, Any]],
+    model: object,
     output_path: Path,
     include_header_comments: bool = True,
 ) -> str:
     """
-    Export KPI records to CSV format using the plugin's CSV export method.
+    Export dashboard CSV using the plugin's new export_dashboard_csv method.
 
     Args:
-        plugin: PostProcessingPlugin instance with export_kpis_to_csv method
-        kpi_records: List of KPI record dictionaries
+        plugin: PostProcessingPlugin instance with export_dashboard_csv method
+        model: UnifiedRunModel for generating dashboard KPIs independently
         output_path: Path where to write the CSV file
         include_header_comments: Whether to include descriptive header comments
 
@@ -26,18 +25,17 @@ def export_kpis_to_csv(
         Path to the generated CSV file as string
 
     Raises:
-        AttributeError: If plugin doesn't have export_kpis_to_csv method
+        AttributeError: If plugin doesn't have export_dashboard_csv method
     """
-    if not hasattr(plugin, "export_kpis_to_csv"):
+    if not hasattr(plugin, "export_dashboard_csv"):
         raise AttributeError(
-            f"Plugin {plugin.__class__.__name__} does not implement export_kpis_to_csv method"
+            f"Plugin {plugin.__class__.__name__} does not implement export_dashboard_csv method"
         )
 
-    # Delegate to plugin-specific CSV export implementation
-    result_path = plugin.export_kpis_to_csv(
-        kpi_records=kpi_records,
+    # Delegate to plugin-specific dashboard CSV export implementation
+    result_path = plugin.export_dashboard_csv(
+        model=model,
         output_path=output_path,
-        include_header_comments=include_header_comments,
     )
 
     return result_path

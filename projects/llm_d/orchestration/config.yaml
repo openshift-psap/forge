@@ -61,7 +61,7 @@ caliper:
       artifacts_to_kpis:
         enabled: true
         output: kpis/kpis.json
-      kpis_to_csv:
+      dashboard_csv:
         enabled: true
         output: kpis/dashboard.csv
         include_header_comments: false

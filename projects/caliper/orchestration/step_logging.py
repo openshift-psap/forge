@@ -567,12 +567,12 @@ def log_analyze_command(
     )
 
 
-def log_kpis_to_csv_command(
+def log_dashboard_csv_command(
     input_path: Path,
     output_path: Path,
 ) -> None:
-    """Log the CLI command to reproduce the KPI CSV export step."""
-    command = f'caliper kpi csv-export --input "{input_path}" --output "{output_path}"'
+    """Log the CLI command to reproduce the dashboard CSV export step."""
+    command = f'caliper kpi csv-export --output "{output_path}"'
 
     step_args = {
         "input_path": str(input_path),

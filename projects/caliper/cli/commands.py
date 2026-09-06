@@ -751,13 +751,6 @@ def kpi_generate(
 
 @click.command("csv-export")
 @_workspace_cli_options
-@click.option(
-    "--input",
-    "input_file",
-    type=click.Path(path_type=Path),
-    required=True,
-    help="Input KPI JSON file",
-)
 @click.option("--output", type=click.Path(path_type=Path), required=True, help="Output CSV file")
 @click.option(
     "--include-header-comments", is_flag=True, default=True, help="Include header comments in CSV"
@@ -768,7 +761,6 @@ def kpi_generate(
 @click.pass_context
 def kpi_csv_export(
     ctx: click.Context,
-    input_file: Path,
     output: Path,
     artifacts_dir: Path | None,
     postprocess_config: Path | None,
@@ -783,21 +775,31 @@ def kpi_csv_export(
         plugin_module_override=plugin_module_override,
     )
     mod, plugin = _plugin_tuple(ctx)
+    artifact_root: Path = _root_obj(ctx)["base_dir"]
 
     status_data = {"success": False}
 
     try:
-        # Read KPI file (supports both hierarchical JSON and JSONL formats)
-        from projects.caliper.engine.kpi.format import read_kpis_from_file
+        # Parse artifacts to get the unified model for dashboard CSV generation
+        from projects.caliper.engine.parse import run_parse
 
-        kpi_records = read_kpis_from_file(input_file)
-
-        # Export to CSV
-        from projects.caliper.engine.kpi.csv_export import export_kpis_to_csv
-
-        result_path = export_kpis_to_csv(
+        model = run_parse(
+            base_dir=artifact_root,
+            plugin_module=mod,
             plugin=plugin,
-            kpi_records=kpi_records,
+            use_cache=True,  # Use cache for performance
+            show_parameter_matrix=False,  # No need to show matrix for CSV export
+            include_label_filter=None,
+            exclude_label_filter=None,
+            verbose_parsing=False,
+        )
+
+        # Export to dashboard CSV using the new architecture
+        from projects.caliper.engine.kpi.csv_export import export_dashboard_csv
+
+        result_path = export_dashboard_csv(
+            plugin=plugin,
+            model=model,
             output_path=output,
             include_header_comments=include_header_comments,
         )
@@ -805,9 +807,11 @@ def kpi_csv_export(
         status_data = {
             "success": True,
             "output_file": str(result_path),
-            "kpi_count": len(kpi_records),
+            "record_count": len(model.unified_result_records),
         }
-        click.echo(f"Exported {len(kpi_records)} KPI records to CSV: {result_path}")
+        click.echo(
+            f"Generated dashboard CSV from {len(model.unified_result_records)} records: {result_path}"
+        )
     except Exception as e:  # noqa: BLE001
         import traceback
 
