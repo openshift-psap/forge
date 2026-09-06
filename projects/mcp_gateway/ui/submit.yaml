@@ -1,0 +1,27 @@
+schema_version: 1
+project: mcp_gateway
+title: MCP Gateway
+description: "Kuadrant MCP Gateway performance testing (locust-driven load against mock MCP servers behind the gateway)."
+
+modes:
+  - id: single
+    label: Submit Job
+    default: true
+    sections:
+      - id: run
+        label: Run
+        fields:
+          - key: preset
+            label: Preset
+            type: select
+            required: true
+            help: "Predefined server/concurrency/duration combinations — see orchestration/presets.d/presets.yaml in Forge."
+            options_ref:
+              dir: presets.d
+              preset_pool: true
+          - key: gateway_version
+            label: Gateway Version
+            type: text
+            maps_to: infrastructure.mcp_gateway_version
+            placeholder: main
+            help: "Chart/image ref for the MCP Gateway instance under test. Defaults to main if left blank."
