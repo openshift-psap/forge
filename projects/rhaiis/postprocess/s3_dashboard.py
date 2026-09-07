@@ -101,7 +101,7 @@ def upload_profiler_traces_to_s3(
     trace_files = [
         f
         for f in traces_dir.iterdir()
-        if f.name.startswith("trace") and "rank0" in f.name and f.suffix in (".json", ".gz")
+        if f.is_file() and _is_uploadable_trace(f)
     ]
     if not trace_files:
         return {"status": "skipped", "reason": "no trace files found"}
@@ -194,6 +194,21 @@ def upload_predictor_log_to_s3(
     except Exception as e:
         logger.error("Predictor log upload failed: %s", e)
         return {"status": "failed", "error": str(e)}
+
+
+def _is_uploadable_trace(path: Path) -> bool:
+    """Rank-0 Chrome/Perfetto (and Proton/Nsight) artifacts after copy_profiler_traces."""
+    name = path.name
+    if not name.startswith("trace") or "rank0" not in name:
+        return False
+    return (
+        name.endswith(".json")
+        or name.endswith(".json.gz")
+        or name.endswith(".gz")
+        or name.endswith(".hatchet")
+        or name.endswith(".nsys-rep")
+        or name.endswith(".qdrep")
+    )
 
 
 def _accelerator_s3_folder(accelerator: str) -> str:

@@ -281,7 +281,9 @@ Available configOverrides:
 | `rhaiis.engines.sglang.args.*` | SGLang CLI args (e.g. `tp-size`, `mem-fraction-static`, `context-length`) |
 | `rhaiis.engines.trtllm.args.*` | TRT-LLM CLI args (e.g. `tp_size`, `ep_size`, `max_batch_size`) |
 | `rhaiis.engines.trtllm.trtllm_config.*` | TRT-LLM server config (kv_cache, cuda_graph, moe) |
-| `rhaiis.profiler.enabled` | Enable PyTorch profiler |
+| `rhaiis.profiler.enabled` | Enable profiler Phase 1 |
+| `rhaiis.profiler.backend` | `webhook` (default) or `native` (HTTP start/stop) |
+| `rhaiis.profiler.kind` | Native kind: `torch`, `cuda`, or `proton` |
 | `rhaiis.agent_analysis.enabled` | Enable AI agent regression analysis |
 | `caliper.postprocess.csv_dashboard.enabled` | Enable dashboard CSV S3 sync |
 | `benchmarks.guidellm.timeout` | Benchmark timeout in seconds |
@@ -322,6 +324,7 @@ oc patch fournosjob <name> -n psap-automation \
 | `enable_profiler_gate` | [rhaiis](./toolbox/enable_profiler_gate/) | Enable/disable the PyTorch profiler gate file on the vLLM pod |
 | `verify_profiler_prereqs` | [rhaiis](./toolbox/verify_profiler_prereqs/) | Verify profiler prerequisites (gate file, sitecustomize.py) |
 | `copy_profiler_traces` | [rhaiis](./toolbox/copy_profiler_traces/) | Copy Chrome trace JSON files from the vLLM pod |
+| `control_native_profiler` | [rhaiis](./toolbox/control_native_profiler/) | POST `/start_profile` and `/stop_profile` on the predictor |
 
 ## Usage
 
@@ -336,6 +339,16 @@ python3 -m projects.rhaiis.orchestration.cli test \
 # Dry run with a specific model
 python3 -m projects.rhaiis.orchestration.cli test \
   --model llama-4-scout-fp8 --workload profile2 --dry-run
+
+# Native vLLM torch profiler (HTTP start/stop)
+python3 -m projects.rhaiis.orchestration.cli test \
+  --preset llama-8b --preset profile1 --preset profiler-native-short \
+  --namespace kserve-e2e-perf --dry-run
+
+# SGLang native profiler (10 engine steps after 5 warmup steps)
+python3 -m projects.rhaiis.orchestration.cli test \
+  --preset llama-8b --preset profile1 --preset profiler-native-sglang \
+  --namespace kserve-e2e-perf --dry-run
 
 # Full E2E test
 python3 -m projects.rhaiis.orchestration.cli test \
@@ -440,17 +453,52 @@ step also detects infrastructure failures that occur before the test step runs.
 
 ## PyTorch profiling
 
-When `rhaiis.profiler.enabled: true`, the pipeline runs profiler-gated benchmarks
-before the main benchmarks:
+Set `rhaiis.profiler.enabled: true`. Phase 1 still copies traces and uploads them to S3 the same way; only **how capture is started** differs.
 
-1. Verify profiler prerequisites on the vLLM pod (gate file, sitecustomize.py)
-2. Enable the profiler gate with a workload-specific label (e.g. `isl1000_osl1000`)
-3. Run a GuideLLM benchmark at the configured profiler rates
-4. Disable the profiler gate
-5. Copy Chrome trace JSON files from the vLLM pod
-6. Upload traces to S3 organized by accelerator/model/TP/version/profile
+### Backend: `webhook` (default)
 
-Traces are viewable in `chrome://tracing` or Perfetto UI.
+vLLM-only. Labels the InferenceService `vllm-profiler/enabled=true` so the cluster webhook injects `sitecustomize.py`. Then:
+
+1. Verify webhook prerequisites
+2. Write `/tmp/profiler_gate` with a workload label (e.g. `isl1000_osl1000`)
+3. Run GuideLLM at `rhaiis.profiler.rates` / `max_seconds` (default 200 concurrent for 200s)
+4. Remove the gate file
+5. Copy `/tmp/trace_*.json*` and upload rank-0 traces to S3
+
+The webhook records configured `execute_model` ranges (typically 500–503). GuideLLM does **not** stop when that range ends; it always runs for `max_seconds`.
+
+### Backend: `native`
+
+vLLM 0.13+ and SGLang. No webhook. The server is started with engine profiler support, then Forge calls HTTP start/stop around the same short GuideLLM load:
+
+```bash
+--preset profiler-native          # torch, default profiler rates/duration
+--preset profiler-native-short    # torch, concurrency 1 for 60s
+--preset profiler-native-window   # skip 50 engine steps, record 10
+--preset profiler-native-cuda     # Nsight (nsys in the serving image)
+--preset profiler-native-proton   # Triton Proton chrome_trace
+--preset profiler-native-sglang   # SGLang engine + /start_profile
+```
+
+1. Deploy with `--profiler-config` (vLLM) or `SGLANG_TORCH_PROFILER_DIR` (SGLang)
+2. `POST /start_profile`
+3. Run GuideLLM at profiler rates / max_seconds
+4. `POST /stop_profile` (flush can take many minutes; `native.stop_timeout_seconds` default 1800)
+5. Copy `rhaiis.profiler.traces_dir` (default `/tmp/vllm_profile`) and upload to S3
+
+vLLM native knobs (under `rhaiis.profiler.native`): `delay_iterations`, `max_iterations`, `wait_iterations` / `warmup_iterations` / `active_iterations` (torch.profiler schedule), `with_stack`, `record_shapes`, `with_memory`, `ignore_frontend`.
+
+SGLang uses the same HTTP API with `num_steps` / `start_step` / `activities` in the start body.
+
+### Native `kind`
+
+| kind | What it is |
+|------|------------|
+| `torch` (default) | PyTorch profiler → Chrome/Perfetto `.json.gz` under `torch_profiler_dir` |
+| `cuda` | CUDA Profiler API (`cudaProfilerStart/Stop`). Pair with Nsight: set `native.nsys_wrap: true` (serving image must contain `nsys`) |
+| `proton` | Triton Proton (CUPTI). Needs `--enforce-eager`. Output `hatchet` tree or `chrome_trace` via `proton_output_format` |
+
+Traces are viewable in `chrome://tracing` or Perfetto UI (Proton hatchet trees use `proton-viewer`).
 
 ## Parallel job isolation
 
@@ -510,6 +558,9 @@ Full list: `grep "^[a-z]" orchestration/config.d/models.yaml`
 | `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 450 |
 | `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 450 |
 | `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 450 |
+| `profile5` | 100000 | 1000 | 1, 2, 5 | 450 |
+| `profile6` | 1000 (5 turns, prefix 512) | 1000 | 1, 25, 50, 75, 100 | 450 |
+| `profile7` | 8000 (stdev 8500, 50–30000) | 800 (stdev 1500) | 1, 50, 100, 200, 300 | 450 |
 
 ## Presets
 
@@ -521,10 +572,18 @@ python3 -m projects.rhaiis.orchestration.cli test \
   --preset llama-8b --preset profile1 \
   --namespace kserve-e2e-perf
 
+# Native torch profiler, short capture
+python3 -m projects.rhaiis.orchestration.cli test \
+  --preset llama-8b --preset profile1 --preset profiler-native-short \
+  --namespace kserve-e2e-perf
+
 # Available model presets: llama-8b, llama-70b, llama-405b, llama-4-scout,
 #   llama-4-maverick, granite-8b, mistral-24b, qwen25-7b, qwen3-235b,
 #   deepseek-r1, deepseek-v3, gpt-oss
-# Workload presets: profile1, profile2, profile3, profile4
+# Workload presets: profile1 … profile7
+# Profiler presets: profiler-webhook, profiler-native, profiler-native-short,
+#   profiler-native-window, profiler-native-cuda, profiler-native-proton,
+#   profiler-native-sglang
 # Accelerator presets: nvidia, amd
 ```
 

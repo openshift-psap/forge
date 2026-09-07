@@ -81,12 +81,42 @@ warmup:
 
 profiler:
   enabled: false
+  # webhook: mutating injector + /tmp/profiler_gate (vLLM only)
+  # native: vLLM --profiler-config + POST /start_profile /stop_profile
+  #         (SGLang uses the same HTTP API with SGLANG_TORCH_PROFILER_DIR)
+  backend: webhook
+  # native kind: torch (Chrome/Perfetto), cuda (Nsight CUDA profiler API),
+  # proton (Triton Proton; requires enforce-eager)
+  kind: torch
+  traces_dir: /tmp/vllm_profile
   s3_bucket: psap-dashboard-data
   s3_prefix: pytorch-profiles/rhaiis
   vault: psap-forge-dashboard-s3
   labels: []
   rates: [200]
   max_seconds: 200
+  native:
+    delay_iterations: 0
+    max_iterations: 0
+    wait_iterations: 0
+    warmup_iterations: 0
+    active_iterations: 5
+    ignore_frontend: true
+    record_shapes: false
+    with_stack: true
+    with_memory: false
+    with_flops: false
+    use_gzip: true
+    dump_cuda_time_total: true
+    stop_timeout_seconds: 1800
+    nsys_wrap: false
+    proton_output_format: chrome_trace
+    proton_hook: triton
+    num_steps: 0
+    start_step: 0
+    activities:
+      - CPU
+      - GPU
 
 agent_analysis:
   enabled: false
