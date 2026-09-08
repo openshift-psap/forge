@@ -52,6 +52,12 @@ Key paths:
 9. **Never pass secrets via Pod environment variables**
    The Pod definition will be stored in public artifacts. Do no use plain text Pod environment variables to pass secrets to the Pod. Instead, use Secret resources and Pod environment variables that reference this secret.
 
+10. **Never create secrets from literal values in commands.**
+   Do not pass secret material through command-line arguments or other command text, including
+   `--from-literal`, because commands may be captured in logs or artifacts. Write the secret to a
+   securely created temporary file outside `ARTIFACT_DIR` and use `--from-file`. Never log the
+   secret contents or the command containing them.
+
 ### Safe Patterns
 
 ```python
@@ -72,6 +78,13 @@ def safe_oc_apply(artifact_path, manifest):
             "Use apply_secret() instead."
         )
     oc_apply(artifact_path, manifest)
+
+
+# GOOD: Pass secret data by file path; the value must never appear in command text
+run_command(
+    "create", "secret", "generic", "example-secret",
+    "--from-file=SECRET_VALUE=/secure/temp/path",
+)
 ```
 
 ### Forbidden Patterns
@@ -86,6 +99,9 @@ logger.info(f"Applying secret: {manifest}")  # LEAKS if manifest has sensitive d
 
 # BAD: Including tokens in error messages
 raise RuntimeError(f"Failed to auth with token {token}")  # LEAKS TOKEN
+
+# BAD: Passing secret material as a command-line literal; command text may be logged
+run_command("create", "secret", "generic", "example-secret", "--from-literal=SECRET_VALUE=" + secret)
 ```
 
 ## Error Handling: Never Swallow Exceptions

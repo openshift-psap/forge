@@ -10,7 +10,6 @@ from projects.caliper.engine.model import (
     TestBaseNode,
     UnifiedRunModel,
 )
-from projects.guidellm.postprocess.guidellm.dashboard import export_dashboard_kpis_to_csv
 
 from .kpis import RhaiisKpiHandler
 from .parser import RhaiisParser
@@ -79,16 +78,13 @@ class RhaiisPlugin(PostProcessingPlugin):
         """Compute KPIs using dataclasses with status details."""
         return self.kpi_handler.compute_kpis(model)
 
-    def export_kpis_to_csv(
-        self,
-        kpi_records: list[KpiRecord],
-        output_path: Path,
-        include_header_comments: bool = True,
-    ) -> str:
-        """Export KPI records to the RHAIIS dashboard schema."""
-        from projects.rhaiis.postprocess.csv_export import FIELDNAMES
+    def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
+        """Generate dashboard CSV using shared architecture."""
+        from projects.guidellm.postprocess.guidellm.dashboard import DashboardCsvExporter
+        from projects.rhaiis.postprocess.csv_dashboard import RHAIIS_FIELDNAMES
 
-        def metadata_row(labels: dict[str, Any]) -> dict[str, Any]:
+        def metadata_row_mapper(labels: dict[str, Any]) -> dict[str, Any]:
+            """Extract RHAIIS metadata for CSV row from dashboard KPI labels."""
             acc = labels.get("accelerator", "").upper()
             cluster_tag = labels.get("cluster_tag", "")
             model_id = labels.get("hf_model_id", "")
@@ -117,14 +113,18 @@ class RhaiisPlugin(PostProcessingPlugin):
                 "prefix_count": labels.get("prefix_count", ""),
                 "request_type": labels.get("request_type", ""),
                 "prefix_caching": _prefix_caching_from_runtime_args(labels.get("runtime_args", "")),
+                "DP": labels.get("DP", ""),
+                "dataset": labels.get("dataset", ""),
+                "spec_decoding": labels.get("spec_decoding", ""),
             }
 
-        return export_dashboard_kpis_to_csv(
-            kpi_records,
+        exporter = DashboardCsvExporter()
+        return exporter.export_dashboard_csv(
+            model,
             output_path,
             prefix="rhaiis",
-            fieldnames=FIELDNAMES,
-            metadata_row=metadata_row,
+            fieldnames=RHAIIS_FIELDNAMES,
+            metadata_row_mapper=metadata_row_mapper,
         )
 
     def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:

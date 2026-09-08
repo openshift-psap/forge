@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
@@ -43,6 +44,30 @@ class MCPGatewayPlugin(PostProcessingPlugin):
     def kpi_catalog(self) -> list[KpiCatalogEntry]:
         """Return catalog of available KPIs for hierarchical formatting."""
         return self.kpi_handler.get_catalog()
+
+    def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
+        """Generate dashboard CSV without header comments."""
+        import csv
+
+        # Get KPIs from the handler
+        kpis, _ = self.kpi_handler.compute_kpis(model)
+
+        # Write CSV without any header comments
+        with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+
+            if not kpis:
+                # Write empty CSV with just headers
+                writer.writerow(["kpi_id", "value", "timestamp", "labels"])
+                return str(output_path)
+
+            # Write column headers and data rows only (no comment headers)
+            writer.writerow(["kpi_id", "value", "timestamp", "labels"])
+
+            for kpi in kpis:
+                writer.writerow([kpi.kpi_id, kpi.value, kpi.timestamp, str(kpi.labels)])
+
+        return str(output_path)
 
 
 def get_plugin() -> PostProcessingPlugin:

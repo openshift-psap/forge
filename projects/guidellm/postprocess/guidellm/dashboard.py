@@ -474,7 +474,44 @@ def dashboard_kpi_catalog(*, prefix: str) -> list[KpiCatalogEntry]:
     return catalog_entries
 
 
-def export_dashboard_kpis_to_csv(
+class DashboardCsvExporter:
+    """Generic dashboard CSV export with customizable field mapping."""
+
+    def export_dashboard_csv(
+        self,
+        model: UnifiedRunModel,
+        output_path: Path,
+        *,
+        prefix: str,
+        fieldnames: list[str],
+        metadata_row_mapper: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> str:
+        """
+        Generic dashboard CSV export implementation.
+
+        Args:
+            model: UnifiedRunModel for generating dashboard KPIs independently
+            output_path: Path where to write the CSV file
+            prefix: Prefix for KPI generation (e.g., "guidellm", "rhaiis", "llmd")
+            fieldnames: List of CSV column names for this schema
+            metadata_row_mapper: Function to map KPI labels to CSV row metadata
+
+        Returns:
+            Path to the generated CSV file
+        """
+        # Generate dashboard KPIs independently from model
+        dashboard_kpis = compute_dashboard_kpis(model, prefix=prefix)
+
+        return write_dashboard_csv(
+            dashboard_kpis,
+            output_path,
+            prefix=prefix,
+            fieldnames=fieldnames,
+            metadata_row=metadata_row_mapper,
+        )
+
+
+def write_dashboard_csv(
     kpi_records: list[KpiRecord],
     output_path: Path,
     *,

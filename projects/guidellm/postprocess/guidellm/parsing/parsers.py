@@ -178,7 +178,7 @@ class GuideLLMParser:
                             if product_version:
                                 normalized = normalize_product_version(product_version)
                                 result["product_version"] = normalized
-                                logger.info(
+                                logger.debug(
                                     f"Extracted product_version '{product_version}' (normalized to '{normalized}') from annotation '{annotation_key}' in {file_path}"
                                 )
                                 break  # Use the first matching version annotation found
@@ -189,13 +189,15 @@ class GuideLLMParser:
             )
             if deployment_profile:
                 result["deployment_profile"] = deployment_profile
-                logger.info(f"Extracted deployment_profile '{deployment_profile}' from {file_path}")
+                logger.debug(
+                    f"Extracted deployment_profile '{deployment_profile}' from {file_path}"
+                )
 
             # Extract model name from spec
             model_name = extract_field_by_jsonpath(yaml_data, "spec.model.name")
             if model_name:
                 result["model_name"] = model_name
-                logger.info(f"Extracted model_name '{model_name}' from {file_path}")
+                logger.debug(f"Extracted model_name '{model_name}' from {file_path}")
 
             replicas = extract_field_by_jsonpath(yaml_data, "spec.replicas")
             if replicas is not None:
@@ -332,7 +334,7 @@ class GuideLLMParser:
                     logger.warning(f"Failed to parse benchmark data: {e}")
                     continue
 
-            logger.info(f"Parsed {len(benchmarks)} GuideLLM benchmarks from {file_path}")
+            logger.debug(f"Parsed {len(benchmarks)} GuideLLM benchmarks from {file_path}")
             return benchmarks, configuration, warnings
 
         except json.JSONDecodeError as e:
@@ -638,6 +640,7 @@ class GuideLLMParser:
         warnings: list[str] = []
 
         for node in nodes:
+            logger.info(f"Parsing '{node.test_path}' ...")
             # Look for the legacy single-file artifact and the newer per-rate artifacts.
             benchmarks_files = [p for p in node.artifact_paths if self._is_benchmarks_artifact(p)]
             benchmarks_files.sort(key=lambda path: path.name)
@@ -721,7 +724,7 @@ class GuideLLMParser:
                 # Add product_version as a KPI label if it was extracted
                 if "product_version" in metrics:
                     kpi_labels["product_version"] = metrics["product_version"]
-                    logger.info(
+                    logger.debug(
                         f"Added product_version '{metrics['product_version']}' to KPI labels"
                     )
 
@@ -740,5 +743,5 @@ class GuideLLMParser:
                     )
                 )
 
-        logger.info(f"GuideLLM parser created {len(records)} unified result records")
+        logger.debug(f"GuideLLM parser created {len(records)} unified result records")
         return ParseResult(records=records, warnings=warnings)

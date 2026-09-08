@@ -1,8 +1,9 @@
-"""LLM_D CSV dashboard export functionality."""
+"""RHAIIS CSV dashboard export functionality."""
 
 from __future__ import annotations
 
-DASHBOARD_FIELDNAMES = [
+# RHAIIS fieldnames with RHAIIS-specific fields
+RHAIIS_FIELDNAMES = [
     "run",
     "accelerator",
     "model",
@@ -10,12 +11,6 @@ DASHBOARD_FIELDNAMES = [
     "prompt toks",
     "output toks",
     "TP",
-    "DP",
-    "EP",
-    "replicas",
-    "prefill_pod_count",
-    "decode_pod_count",
-    "router_config",
     "measured concurrency",
     "intended concurrency",
     "measured rps",
@@ -53,7 +48,14 @@ DASHBOARD_FIELDNAMES = [
     "guidellm_end_time_ms",
     "image_tag",
     "guidellm_version",
+    "DP",
+    "dataset",
+    "spec_decoding",
+    "prefix_caching",
+    "turns",
+    "prefix_tokens",
+    "prefix_count",
+    "request_type",
     "mlflow_run_id",
     "mlflow_experiment_id",
-    "notes",
 ]

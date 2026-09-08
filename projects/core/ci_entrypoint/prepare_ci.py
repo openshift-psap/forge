@@ -24,6 +24,7 @@ import yaml
 import projects.core.ci_entrypoint.fournos as fournos
 import projects.core.ci_entrypoint.github.pr_args as github_pr_args
 from projects.core.library import ci as ci_lib
+from projects.core.library import run
 
 IS_LIGHTWEIGHT_IMAGE = os.environ.get("FORGE_LIGHT_IMAGE")
 
@@ -687,6 +688,55 @@ def record_test_start_time(start_time: float | None = None):
         logger.warning(f"Failed to record test start time: {e}")
 
 
+def save_pip_freeze():
+    """Save pip freeze output to metadata directory.
+
+    Runs 'uv pip freeze' and saves the output to pip_freeze.txt in the CI metadata directory.
+    """
+    try:
+        artifact_dir = os.environ.get("ARTIFACT_DIR")
+        if not artifact_dir:
+            logger.warning("ARTIFACT_DIR not set, cannot save pip freeze")
+            return
+
+        artifact_path = pathlib.Path(artifact_dir)
+        metadata_dir = artifact_path / CI_METADATA_DIRNAME
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        pip_freeze_file = metadata_dir / "pip_freeze.txt"
+
+        # Check if uv is available
+        if not shutil.which("uv"):
+            logger.warning("uv not found, cannot run pip freeze")
+            return
+
+        # Run uv pip freeze using the run library
+        result = run.run(
+            "uv pip freeze",
+            capture_stdout=True,
+            check=False,
+        )
+
+        if result.returncode == 0:
+            with open(pip_freeze_file, "w", encoding="utf-8") as f:
+                f.write(f"# Generated on: {datetime.now().isoformat()}\n")
+                f.write("# Command: uv pip freeze\n\n")
+                f.write(result.stdout)
+
+            logger.info(f"Saved pip freeze output to {pip_freeze_file}")
+        else:
+            logger.warning(f"uv pip freeze failed (exit code {result.returncode}): {result.stderr}")
+            # Save the error information
+            with open(pip_freeze_file, "w", encoding="utf-8") as f:
+                f.write(f"# Generated on: {datetime.now().isoformat()}\n")
+                f.write("# Command: uv pip freeze\n")
+                f.write(f"# ERROR: Command failed with exit code {result.returncode}\n")
+                f.write(f"# STDERR: {result.stderr}\n")
+
+    except Exception as e:
+        logger.error(f"Failed to save pip freeze: {e}")
+
+
 def prepare(
     verbose: bool = False,
     project: str = "",
@@ -731,6 +781,9 @@ def prepare(
 
         # Parse and save PR arguments if in PR context
         parse_and_save_pr_arguments()
+
+        # Save pip freeze output to metadata
+        save_pip_freeze()
 
         # Wait for dependent step completion if configured
         wait_for_step_completion()

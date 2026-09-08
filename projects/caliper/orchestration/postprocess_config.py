@@ -73,19 +73,15 @@ class CaliperOrchestrationArtifactsToKpisSection(BaseModel):
     )
 
 
-class CaliperOrchestrationKpisToCsvSection(BaseModel):
-    """Export KPI data to CSV format."""
+class CaliperOrchestrationDashboardCsvSection(BaseModel):
+    """Export dashboard CSV independently from model data."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
     output: str | None = Field(
-        default="kpis.csv",
+        default="dashboard.csv",
         description="CSV filename or path; relative paths resolve under the post-processing artifact dir.",
-    )
-    include_header_comments: bool = Field(
-        default=True,
-        description="Whether to include descriptive header comments in the CSV file.",
     )
 
 
@@ -110,8 +106,8 @@ class CaliperOrchestrationKpiSection(BaseModel):
     artifacts_to_kpis: CaliperOrchestrationArtifactsToKpisSection = Field(
         default_factory=CaliperOrchestrationArtifactsToKpisSection
     )
-    kpis_to_csv: CaliperOrchestrationKpisToCsvSection = Field(
-        default_factory=CaliperOrchestrationKpisToCsvSection
+    dashboard_csv: CaliperOrchestrationDashboardCsvSection = Field(
+        default_factory=CaliperOrchestrationDashboardCsvSection
     )
     artifacts_to_ai_data: CaliperOrchestrationArtifactsToAiDataSection = Field(
         default_factory=CaliperOrchestrationArtifactsToAiDataSection
@@ -171,7 +167,7 @@ class CaliperOrchestrationS3ImportSection(BaseModel):
     )
     include_kpis_csv: bool = Field(
         default=False,
-        description="Whether to download kpis.csv files.",
+        description="Whether to download dashboard CSV files from kpi.dashboard_csv output.",
     )
     include_ai_data: bool = Field(
         default=False,
@@ -199,7 +195,7 @@ class CaliperOrchestrationS3ExportSection(BaseModel):
     )
     include_csv: bool = Field(
         default=True,
-        description="Whether to include CSV exports in S3 upload.",
+        description="Whether to include dashboard CSV exports from kpi.dashboard_csv in S3 upload.",
     )
     include_kpis_json: bool = Field(
         default=True,
