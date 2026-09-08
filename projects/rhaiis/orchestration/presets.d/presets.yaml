@@ -64,6 +64,9 @@ profile6:
 profile7:
   tests.rhaiis.workload_key: profile7
 
+configiq:
+  tests.rhaiis.workload_key: configiq
+
 # ── Models ──────────────────────────────────────────────────
 # Short aliases default to the FP8 variant where available.
 # Use the full name (e.g. llama-70b-w4a16) for other quants.
