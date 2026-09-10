@@ -585,6 +585,12 @@ def ai_eval_export(
     default=False,
     help="Enable verbose parsing logs.",
 )
+@click.option(
+    "--html",
+    is_flag=True,
+    default=False,
+    help="Generate HTML report in addition to JSON output.",
+)
 @click.pass_context
 def kpi_generate(
     ctx: click.Context,
@@ -597,6 +603,7 @@ def kpi_generate(
     plugin_module_override: str | None,
     status_file: Path | None,
     verbose_parsing: bool,
+    html: bool,
 ) -> None:
     _apply_workspace_cli_overrides(
         ctx,
@@ -719,6 +726,21 @@ def kpi_generate(
             }
             click.echo(f"Generated {output}")
             click.echo(f"📁 Processed {test_dir_count} test directories")
+
+            # Generate HTML report if requested
+            if html:
+                try:
+                    from projects.caliper.engine.kpi.html_generator import (
+                        generate_kpi_html_from_file,
+                    )
+
+                    html_output = output.with_suffix(".html")
+                    generate_kpi_html_from_file(output, html_output)
+                    click.echo(f"📄 Generated HTML report: {html_output}")
+                    status_data["html_file"] = str(html_output)
+                except Exception as e:
+                    click.echo(f"⚠️  Failed to generate HTML report: {e}", err=True)
+                    status_data["html_generation_error"] = str(e)
 
             # Log any warnings from KPI generation
             if status_details and status_details.get("warnings"):
@@ -957,12 +979,19 @@ def kpi_import(ctx: click.Context, snapshot: Path) -> None:
 @click.option(
     "--status-file", type=click.Path(path_type=Path), help="YAML file to write operation status"
 )
+@click.option(
+    "--html",
+    is_flag=True,
+    default=False,
+    help="Generate HTML report in addition to JSON output.",
+)
 def analyse_kpis_cmd(
     output: Path,
     current_kpis_file: Path,
     historical_kpis_dir: Path,
     plugin_module: str,
     status_file: Path | None,
+    html: bool,
 ) -> None:
     """Analyze KPIs for orchestration (fork/exec)."""
     import time
@@ -1027,6 +1056,22 @@ def analyse_kpis_cmd(
 
     if status_data.message:
         click.echo("> " + status_data.message)
+
+    # Generate HTML report if requested and analysis was successful
+    if html and status_data.success:
+        try:
+            from projects.caliper.engine.kpi.html_generator import (
+                generate_regression_html_from_file,
+            )
+
+            html_output = output.with_suffix(".html")
+            generate_regression_html_from_file(output, html_output)
+            click.echo(f"📄 Generated HTML regression report: {html_output}")
+
+            # Store HTML file path in status data for notifications
+            status_data.html_file = str(html_output)
+        except Exception as e:
+            click.echo(f"⚠️  Failed to generate HTML report: {e}", err=True)
 
     # Write status file if requested
     if status_file:
@@ -1355,3 +1400,31 @@ def artifacts_import(
     except Exception as e:  # noqa: BLE001
         click.echo(f"❌ artifacts import failed: {e}", err=True)
         sys.exit(3)
+
+
+@click.command("html-export")
+@click.option(
+    "--input",
+    "input_file",
+    type=click.Path(path_type=Path, exists=True),
+    required=True,
+    help="Input JSON file (KPI data or regression report)",
+)
+@click.option(
+    "--output",
+    "output_file",
+    type=click.Path(path_type=Path),
+    help="Output HTML file (default: input file with .html extension)",
+)
+def html_export_cmd(input_file: Path, output_file: Path | None) -> None:
+    """Convert JSON file (KPI data or regression report) to HTML."""
+    from projects.caliper.engine.kpi.html_generator import HTMLGenerator
+
+    try:
+        generator = HTMLGenerator()
+        html_output = generator.convert_json_to_html(input_file, output_file)
+        click.echo(f"📄 Generated HTML report: {html_output}")
+
+    except Exception as e:
+        click.echo(f"❌ HTML generation failed: {e}", err=True)
+        sys.exit(1)

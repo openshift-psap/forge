@@ -202,7 +202,10 @@ def _run_test(
         mlflow_destination = None
 
     try:
-        isvc_labels = {"opendatahub.io/dashboard": "true"}
+        isvc_labels = {
+            "opendatahub.io/dashboard": "true",
+            "deployment_uuid": run_uuid,
+        }
         if profiler_enabled and engine == "vllm":
             isvc_labels["vllm-profiler/enabled"] = "true"
         elif profiler_enabled and engine != "vllm":

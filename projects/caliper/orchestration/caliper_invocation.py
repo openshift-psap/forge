@@ -420,6 +420,17 @@ def run_analyse_kpis(
             # Convert relative paths back to absolute for proper path handling
             if status_data.get("output_file"):
                 status_data["output_file"] = str(Path(status_data["output_file"]).resolve())
+            if status_data.get("html_file"):
+                # Make html_file relative to output_dir for MLflow compatibility
+                html_path = Path(status_data["html_file"])
+                if html_path.is_absolute():
+                    try:
+                        status_data["html_file"] = str(html_path.relative_to(output_dir))
+                    except ValueError:
+                        # If can't make relative, use resolved absolute path as fallback
+                        status_data["html_file"] = str(html_path.resolve())
+                else:
+                    status_data["html_file"] = str(html_path)
 
             # Ensure required fields are present with defaults
             status_data.setdefault("completed_at", time.time())

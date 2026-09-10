@@ -80,6 +80,7 @@ class KpiGenerateStatus(BaseStatus):
     output_file: str | None = None
     kpi_count: int | None = None
     plugin_module: str | None = None
+    html_file: str | None = None
 
     @property
     def success(self) -> bool:
@@ -95,6 +96,7 @@ class KpiAnalysisStatus(BaseStatus):
     exit_code: int = 0
     output_file: str | None = None
     regressions_detected: bool = False
+    html_file: str | None = None
 
     # Additional analysis-specific fields
     regression_count: int | None = None

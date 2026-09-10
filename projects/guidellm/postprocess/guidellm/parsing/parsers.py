@@ -681,10 +681,10 @@ class GuideLLMParser:
             if node_benchmarks:
                 # Create aggregated metrics with performance curves for this node
                 labels = _labels_from_node(node)
-                kpi_labels = _kpi_labels_from_node(node)
+                node_kpi_labels = _kpi_labels_from_node(node)
 
-                # Merge kpi_labels into distinguishing_labels
-                distinguishing_labels = {**labels, **kpi_labels}
+                # Start with base labels from node
+                distinguishing_labels = {**labels, **node_kpi_labels}
 
                 metrics = self._create_aggregated_metrics(node_benchmarks)
                 if node_config:
@@ -711,27 +711,27 @@ class GuideLLMParser:
                         if field_value and field_name not in metrics:
                             metrics[field_name] = field_value
 
-                # Extract kpi_labels from the extracted fields and and
-                # the test labels from the node file
+                # Merge extracted artifact fields into distinguishing_labels
+                # This creates a single unified label set for both KPI computation and visualization
+                extracted_label_fields = [
+                    "gpu_type",
+                    "product_version",
+                    "deployment_profile",
+                    "model_name",
+                    "cluster",
+                    "benchmark_key",
+                ]
 
-                kpi_labels = {}
+                for field_name in extracted_label_fields:
+                    if field_name in metrics:
+                        distinguishing_labels[field_name] = metrics[field_name]
+                        logger.debug(
+                            f"Merged {field_name}='{metrics[field_name]}' into distinguishing_labels"
+                        )
 
-                # Add gpu_type as a KPI label if it was extracted
-                if "gpu_type" in metrics:
-                    kpi_labels["gpu_type"] = metrics["gpu_type"]
-                    logger.info(f"Added gpu_type '{metrics['gpu_type']}' to KPI labels")
-
-                # Add product_version as a KPI label if it was extracted
-                if "product_version" in metrics:
-                    kpi_labels["product_version"] = metrics["product_version"]
-                    logger.debug(
-                        f"Added product_version '{metrics['product_version']}' to KPI labels"
-                    )
-
-                kpi_labels.update(_kpi_labels_from_node(node))
-
-                if kpi_labels:
-                    metrics["kpi_labels"] = kpi_labels
+                # For backwards compatibility, also store the merged labels as kpi_labels in metrics
+                # This ensures existing KPI computation code continues to work
+                metrics["kpi_labels"] = dict(distinguishing_labels)
 
                 records.append(
                     UnifiedResultRecord(

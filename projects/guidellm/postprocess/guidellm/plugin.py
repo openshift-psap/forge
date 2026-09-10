@@ -32,7 +32,6 @@ class _PlotRegistry:
         if self._registry is not None:
             return self._registry
 
-        from .plotting.kpi_report import generate_kpi_report
         from .plotting.performance_analysis import (
             generate_comprehensive_performance_report,
             generate_deployment_profile_report,
@@ -47,15 +46,6 @@ class _PlotRegistry:
                     "report_title": "GuideLLM Performance Analysis",
                 },
                 "description": "comprehensive performance analysis report (recommended)",
-            },
-            "report_kpi_summary": {
-                "function": generate_kpi_report,
-                "type": "report",
-                "kwargs": {
-                    "report_number": 1,
-                    "report_title": "GuideLLM KPI Summary",
-                },
-                "description": "KPI summary with test conditions and metrics",
             },
             "report_deployment_profile": {
                 "function": generate_deployment_profile_report,

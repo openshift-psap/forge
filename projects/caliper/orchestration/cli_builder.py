@@ -116,6 +116,9 @@ def build_kpi_generate_command(
     # Status file for orchestration
     cmd.extend(["--status-file", str(status_file)])
 
+    # Always enable HTML generation
+    cmd.append("--html")
+
     return cmd
 
 
@@ -421,6 +424,9 @@ def build_analyse_kpis_command(
 
     # Status file for orchestration
     cmd.extend(["--status-file", str(status_file)])
+
+    # Always enable HTML generation
+    cmd.append("--html")
 
     return cmd
 

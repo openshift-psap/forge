@@ -190,13 +190,16 @@ class GuideLLMKpiHandler:
                 if not is_curve_kpi(kpi_func):
                     continue
 
-                try:
-                    # Pass the single record with performance curves to the curve KPI function
-                    raw_values = kpi_func(r)
-                    # Convert list of tuples to list of lists for schema compatibility
-                    values = [[float(x), float(y)] for x, y in raw_values] if raw_values else []
-                except (TypeError, ValueError, KeyError):
-                    values = []  # Empty list for failed curve KPIs
+                # Pass the single record with performance curves to the curve KPI function
+                raw_values = kpi_func(r)
+                # Convert list of tuples to list of lists for schema compatibility and sort by X value
+                # Preserve original numeric types (int/float) instead of forcing conversion to float
+                if raw_values:
+                    coordinate_pairs = [[x, y] for x, y in raw_values]
+                    # Sort by X value (first element of each coordinate pair)
+                    values = sorted(coordinate_pairs, key=lambda point: point[0])
+                else:
+                    values = []
 
                 # Skip curve KPIs with empty or null values
                 if not values or values is None:

@@ -57,6 +57,134 @@ def _image_to_base64(image_path: str | Path) -> str:
         return ""
 
 
+def _read_html_content(html_path: str | Path) -> str:
+    """Read HTML file content for embedding.
+
+    Args:
+        html_path: Path to the HTML file
+
+    Returns:
+        HTML content string
+    """
+    try:
+        logger.info(f"🔍 Reading HTML content from: {html_path}")
+
+        # Check if file exists
+        if not Path(html_path).exists():
+            logger.warning(f"❌ HTML file not found: {html_path}")
+            return ""
+
+        with open(html_path, encoding="utf-8") as html_file:
+            content = html_file.read()
+            content_size_kb = len(content.encode("utf-8")) / 1024
+            logger.info(f"   📄 Read {content_size_kb:.1f} KB from HTML file")
+
+            # Import re for regex operations
+            import re
+
+            # Extract body content to avoid HTML document conflicts but keep all scripts
+            body_match = re.search(r"<body[^>]*>(.*?)</body>", content, re.DOTALL | re.IGNORECASE)
+            if body_match:
+                body_content = body_match.group(1)
+                body_size_kb = len(body_content.encode("utf-8")) / 1024
+                logger.info(f"   ✅ Extracted body content: {body_size_kb:.1f} KB")
+                return body_content
+            else:
+                # If no body tags found, use full content
+                logger.warning("   ⚠️  No body tags found, using full content")
+                logger.info(f"   📄 Using full HTML content: {content_size_kb:.1f} KB")
+                return content
+    except Exception as e:
+        logger.warning(f"❌ Failed to read HTML content from {html_path}: {e}")
+        return ""
+
+
+def _create_plot_with_optional_png_spoiler(
+    html_content: str,
+    png_path: str | Path | None,
+    plot_name: str,
+    output_dir: Path,
+    html_path: str | Path | None = None,
+) -> str:
+    """Create HTML content with embedded plot and optional PNG spoiler.
+
+    Args:
+        html_content: HTML content to embed directly
+        png_path: Relative path to PNG file (None if PNG generation failed)
+        plot_name: Name of the plot for alt text
+        output_dir: Base output directory to resolve PNG path
+        html_path: Relative path to HTML file (for large content linking)
+
+    Returns:
+        HTML string with embedded plot and optional PNG spoiler
+    """
+    # Embed directly as requested
+    result = f"""
+        <div style="width: 100%; height: 600px; margin: 10px 0;">
+            {html_content}
+        </div>"""
+
+    # Add simple link to PNG version if it exists
+    if png_path is not None:
+        full_png_path = Path(output_dir) / png_path
+        if full_png_path.exists():
+            result += f"""
+        <div style="margin-top: 15px; text-align: center;">
+            <a href="{png_path}" target="_blank" style="color: #007acc; text-decoration: underline; font-size: 14px;">📸 Image version</a>
+        </div>"""
+        else:
+            logger.debug(f"PNG file not found for {plot_name} at {full_png_path}")
+    else:
+        logger.debug(f"PNG generation was skipped for {plot_name} (HTML-only mode)")
+
+    return result
+
+
+def embed_plot_for_report(
+    png_path: str | Path | None, html_path: str | Path, plot_name: str, output_dir: Path
+) -> str:
+    """
+    Centralized function to embed plots in reports with HTML content and optional PNG spoiler.
+
+    This is the single point to modify if we want to change how plots are embedded across all reports.
+    Currently embeds HTML directly with an optional PNG spoiler, but can be easily modified to change
+    the embedding behavior project-wide.
+
+    Args:
+        png_path: Relative path to PNG file (None if PNG generation failed)
+        html_path: Relative path to HTML file
+        plot_name: Name of the plot for alt text
+        output_dir: Base output directory to resolve paths
+
+    Returns:
+        HTML string with embedded plot content
+    """
+    logger.info(f"🔗 Embedding plot: {plot_name}")
+    logger.info(f"   📁 Output dir: {output_dir}")
+    logger.info(f"   🌐 HTML path: {html_path}")
+    logger.info(f"   🖼️  PNG path: {png_path}")
+
+    # Resolve full HTML path
+    full_html_path = Path(output_dir) / html_path
+    logger.info(f"   📄 Full HTML path: {full_html_path}")
+
+    # Read HTML content for direct embedding
+    plot_html_content = _read_html_content(full_html_path)
+
+    if not plot_html_content.strip():
+        logger.warning(f"   ⚠️  Empty HTML content for {plot_name}")
+        return f"<p>⚠️ Could not load interactive plot for {plot_name}</p>"
+
+    # Create plot with optional PNG spoiler
+    result = _create_plot_with_optional_png_spoiler(
+        plot_html_content, png_path, plot_name, output_dir, html_path
+    )
+
+    result_size_kb = len(result.encode("utf-8")) / 1024
+    logger.info(f"   ✅ Successfully embedded {plot_name} ({result_size_kb:.1f} KB)")
+    return result
+
+
 # Filesystem-unsafe characters for path sanitization
 _PATH_UNSAFE_CHARS = ["/", "\\", ":", "*", "?", "|", "<", ">", '"']
 
@@ -483,6 +611,24 @@ def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
             logger.info("⚠️  No data available for TTFT analysis plot")
             return None
 
+        # Debug: Check TTFT data availability
+        if "ttft_median_ms" not in df.columns:
+            logger.warning("⚠️  TTFT column 'ttft_median_ms' not found in dataframe")
+            logger.info(f"   Available columns: {list(df.columns)}")
+            return None
+
+        ttft_data = df["ttft_median_ms"]
+        non_zero_count = (ttft_data > 0).sum()
+        logger.info(
+            f"   TTFT data: {len(ttft_data)} total points, {non_zero_count} non-zero values"
+        )
+        logger.info(f"   TTFT range: {ttft_data.min():.1f} - {ttft_data.max():.1f} ms")
+
+        if ttft_data.max() == 0:
+            logger.warning("⚠️  All TTFT values are zero - plot may appear empty")
+        if non_zero_count < 2:
+            logger.warning("⚠️  Insufficient non-zero TTFT data for meaningful plot")
+
         title = f"TTFT vs Concurrency{title_context}<br><sub>Lower is better</sub>"
 
         # Get ordered configuration list to maintain consistent legend order
@@ -532,6 +678,37 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
         if df.empty:
             logger.info("⚠️  No data available for token throughput percentiles plot")
             return None
+
+        # Debug: Check percentile data availability
+        percentile_cols = [
+            "output_tokens_per_second_p10",
+            "output_tokens_per_second_p25",
+            "output_tokens_per_second_p50",
+            "output_tokens_per_second_p75",
+            "output_tokens_per_second_p90",
+        ]
+        missing_cols = [col for col in percentile_cols if col not in df.columns]
+        if missing_cols:
+            logger.warning(f"⚠️  Missing percentile columns: {missing_cols}")
+
+        available_cols = [col for col in percentile_cols if col in df.columns]
+        if not available_cols:
+            logger.warning("⚠️  No percentile columns found - cannot create percentiles plot")
+            return None
+
+        logger.info(
+            f"   Available percentile columns: {len(available_cols)}/{len(percentile_cols)}"
+        )
+
+        # Check if any percentile data is non-zero
+        has_data = False
+        for col in available_cols:
+            if col in df.columns and (df[col] > 0).any():
+                has_data = True
+                break
+
+        if not has_data:
+            logger.warning("⚠️  All percentile values are zero - plot may appear empty")
 
         title = f"Output Token Throughput Percentiles{title_context}<br><sub>Higher is better</sub>"
 
@@ -966,16 +1143,25 @@ def generate_deployment_profile_report(
                         # Save HTML version
                         html_path = save_figure(fig, group_dir, filename, as_image=False)
 
-                        if png_path and html_path:
-                            # Store relative paths for linking
+                        if html_path:
+                            # Store relative paths for linking (PNG optional)
+                            png_rel_path = (
+                                f"{report_dir_name}/{group_name}/{Path(png_path).name}"
+                                if png_path
+                                else None
+                            )
                             group_plots.append(
                                 (
                                     plot_name,
-                                    f"{report_dir_name}/{group_name}/{Path(png_path).name}",  # PNG path
+                                    png_rel_path,  # PNG path (can be None)
                                     f"{report_dir_name}/{group_name}/{Path(html_path).name}",  # HTML path
                                 )
                             )
                             logger.info(f"   ✅ {plot_name} saved for comparison group")
+                            if not png_path:
+                                logger.warning(
+                                    f"   ⚠️  PNG version of {plot_name} could not be generated (HTML available)"
+                                )
                     else:
                         logger.info(
                             f"   ⚠️  {plot_name} could not be created for comparison group (no figure returned)"
@@ -1011,6 +1197,7 @@ def generate_deployment_profile_report(
     <meta charset='UTF-8'>
     <meta name='viewport' content='width=device-width, initial-scale=1.0'>
     <title>{display_title}</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <style>
         body {{ font-family: Arial, sans-serif; margin: 40px; }}
         .header {{ text-align: center; margin-bottom: 30px; }}
@@ -1077,10 +1264,52 @@ def generate_deployment_profile_report(
             display: none;
             border-bottom-left-radius: 8px;
             border-bottom-right-radius: 8px;
+            width: 100%;
+            min-height: 600px;
         }}
 
         .tab-content.active {{
             display: block;
+            height: auto !important;
+            min-height: auto !important;
+            width: 100%;
+        }}
+
+        .tab-content > div {{
+            width: 100% !important;
+            height: auto !important;
+        }}
+
+        .tab-content .plotly-graph-div {{
+            width: 100% !important;
+            height: 600px !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+        }}
+
+        .tab-content .plotly-graph-div .svg-container {{
+            width: 100% !important;
+            height: 100% !important;
+        }}
+
+        .tab-content .js-plotly-plot {{
+            width: 100% !important;
+            height: 600px !important;
+        }}
+
+        details {{
+            height: auto !important;
+            min-height: auto !important;
+        }}
+
+        details[open] {{
+            height: auto !important;
+            min-height: auto !important;
+        }}
+
+        details > div {{
+            height: auto !important;
+            min-height: auto !important;
         }}
 
         .performance-insights {{
@@ -1124,6 +1353,36 @@ def generate_deployment_profile_report(
         // Show selected tab content and mark header as active
         document.getElementById(tabId).classList.add('active');
         buttonElement.classList.add('active');
+
+        // Resize any Plotly plots in the newly visible tab
+        setTimeout(function() {{
+            var activeTab = document.getElementById(tabId);
+            if (activeTab && typeof Plotly !== 'undefined') {{
+                var plotlyDivs = activeTab.querySelectorAll('.plotly-graph-div');
+                for (var i = 0; i < plotlyDivs.length; i++) {{
+                    var plotDiv = plotlyDivs[i];
+
+                    // Force the plot div to use full container width
+                    plotDiv.style.width = '100%';
+                    plotDiv.style.height = '600px';
+
+                    // Get the actual container width
+                    var containerWidth = plotDiv.parentNode.clientWidth;
+
+                    // Force relayout with explicit dimensions
+                    if (plotDiv._fullLayout) {{
+                        Plotly.relayout(plotDiv, {{
+                            width: containerWidth,
+                            height: 600,
+                            autosize: true
+                        }});
+                    }} else {{
+                        // Fallback to resize if relayout not available
+                        Plotly.Plots.resize(plotDiv);
+                    }}
+                }}
+            }}
+        }}, 150);
     }}
     </script>
 </head>
@@ -1190,28 +1449,33 @@ def generate_deployment_profile_report(
 
         """
 
-            # Find only the throughput plot
-            throughput_plot = None
-            for plot_name, png_path, html_path in plots:
-                if plot_name == "Token Throughput vs Concurrency":
-                    throughput_plot = (plot_name, png_path, html_path)
-                    break
+            # Embed all plots for this comparison group
+            if plots:
+                # Define plot descriptions
+                descriptions = {
+                    "Token Throughput vs Concurrency": "Token generation throughput scaling analysis across different concurrency levels.",
+                    "TTFT Analysis": "Time To First Token analysis - measuring responsiveness and initial latency.",
+                    "Token Throughput Percentiles": "Complete token throughput percentile distribution analysis.",
+                    "Throughput Scaling": "Throughput scaling behavior and efficiency analysis.",
+                    "Latency vs Throughput": "Trade-off analysis between latency and throughput performance.",
+                }
 
-            if throughput_plot:
-                plot_name, png_path, html_path = throughput_plot
-                # Convert PNG to base64 data URI
-                png_base64 = _image_to_base64(Path(output_dir) / png_path)
-                html_content += f"""
-        <div style='padding:20px;'>
-            <h4>🚀 {plot_name}</h4>
-            <p>Token generation throughput scaling analysis across different concurrency levels.</p>
-            <img src='{png_base64}' style='width: 100%; max-width: 1700px; height: auto; border: 1px solid #ddd; border-radius: 4px;' alt='{plot_name}' title='{plot_name}'/>
-        </div>
-    </div>"""
+                for plot_name, png_path, html_path in plots:
+                    description = descriptions.get(plot_name, f"{plot_name} performance analysis.")
+                    # Use centralized embedding function
+                    plot_content = embed_plot_for_report(png_path, html_path, plot_name, output_dir)
+                    html_content += f"""
+        <div style='padding:20px; margin-bottom:30px; height: auto; min-height: auto;'>
+            <h4>📊 {plot_name}</h4>
+            <p>{description}</p>
+            {plot_content}
+        </div>"""
+
+                html_content += "</div>"
             else:
                 html_content += """
         <div style='padding:20px;'>
-            <p>⚠️ No throughput plot available for this group.</p>
+            <p>⚠️ No plots available for this group.</p>
         </div>
     </div>"""
 
@@ -1365,18 +1629,32 @@ def generate_comprehensive_performance_report(
                         # Save HTML version
                         html_path = save_figure(fig, loadshape_dir, filename, as_image=False)
 
-                        if png_path and html_path:
-                            # Store relative paths for linking
+                        if html_path:
+                            # Store relative paths for linking (PNG optional)
+                            png_rel_path = (
+                                f"{report_dir_name}/{loadshape}/{Path(png_path).name}"
+                                if png_path
+                                else None
+                            )
+                            html_rel_path = f"{report_dir_name}/{loadshape}/{Path(html_path).name}"
                             loadshape_plots.append(
                                 (
                                     plot_name,
-                                    f"{report_dir_name}/{loadshape}/{Path(png_path).name}",  # PNG path
-                                    f"{report_dir_name}/{loadshape}/{Path(html_path).name}",  # HTML path
+                                    png_rel_path,  # PNG path (can be None)
+                                    html_rel_path,  # HTML path
                                 )
                             )
-                            logger.info(f"   ✅ {plot_name} saved for {loadshape}")
+                            logger.info(
+                                f"   ✅ {plot_name} saved - PNG: {png_rel_path}, HTML: {html_rel_path}"
+                            )
+                            if not png_path:
+                                logger.warning(
+                                    f"   ⚠️  PNG version of {plot_name} could not be generated (HTML available)"
+                                )
+                        else:
+                            logger.warning(f"   ⚠️  HTML version of {plot_name} could not be saved")
                     else:
-                        logger.info(
+                        logger.warning(
                             f"   ⚠️  {plot_name} could not be created for {loadshape} (no figure returned)"
                         )
 
@@ -1404,6 +1682,7 @@ def generate_comprehensive_performance_report(
     <meta charset='UTF-8'>
     <meta name='viewport' content='width=device-width, initial-scale=1.0'>
     <title>{display_title}</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <style>
         body {{font-family: Arial, sans-serif; margin: 40px; }}
         .header {{text-align: center; margin-bottom: 30px; }}
@@ -1470,10 +1749,52 @@ def generate_comprehensive_performance_report(
             display: none;
             border-bottom-left-radius: 8px;
             border-bottom-right-radius: 8px;
+            width: 100%;
+            min-height: 600px;
         }}
 
         .tab-content.active {{
             display: block;
+            height: auto !important;
+            min-height: auto !important;
+            width: 100%;
+        }}
+
+        .tab-content > div {{
+            width: 100% !important;
+            height: auto !important;
+        }}
+
+        .tab-content .plotly-graph-div {{
+            width: 100% !important;
+            height: 600px !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+        }}
+
+        .tab-content .plotly-graph-div .svg-container {{
+            width: 100% !important;
+            height: 100% !important;
+        }}
+
+        .tab-content .js-plotly-plot {{
+            width: 100% !important;
+            height: 600px !important;
+        }}
+
+        details {{
+            height: auto !important;
+            min-height: auto !important;
+        }}
+
+        details[open] {{
+            height: auto !important;
+            min-height: auto !important;
+        }}
+
+        details > div {{
+            height: auto !important;
+            min-height: auto !important;
         }}
 
         .performance-insights {{
@@ -1517,6 +1838,36 @@ def generate_comprehensive_performance_report(
         // Show selected tab content and mark header as active
         document.getElementById(tabId).classList.add('active');
         buttonElement.classList.add('active');
+
+        // Resize any Plotly plots in the newly visible tab
+        setTimeout(function() {{
+            var activeTab = document.getElementById(tabId);
+            if (activeTab && typeof Plotly !== 'undefined') {{
+                var plotlyDivs = activeTab.querySelectorAll('.plotly-graph-div');
+                for (var i = 0; i < plotlyDivs.length; i++) {{
+                    var plotDiv = plotlyDivs[i];
+
+                    // Force the plot div to use full container width
+                    plotDiv.style.width = '100%';
+                    plotDiv.style.height = '600px';
+
+                    // Get the actual container width
+                    var containerWidth = plotDiv.parentNode.clientWidth;
+
+                    // Force relayout with explicit dimensions
+                    if (plotDiv._fullLayout) {{
+                        Plotly.relayout(plotDiv, {{
+                            width: containerWidth,
+                            height: 600,
+                            autosize: true
+                        }});
+                    }} else {{
+                        // Fallback to resize if relayout not available
+                        Plotly.Plots.resize(plotDiv);
+                    }}
+                }}
+            }}
+        }}, 150);
     }}
     </script>
 </head>
@@ -1597,18 +1948,18 @@ def generate_comprehensive_performance_report(
                 "Latency vs Throughput": "Trade-off analysis between latency and throughput performance.",
             }
 
-            for tab_idx, (plot_name, png_path, _html_path) in enumerate(plots):
+            for tab_idx, (plot_name, png_path, html_path) in enumerate(plots):
                 active_class = " active" if tab_idx == 0 else ""
                 description = descriptions.get(plot_name, f"{plot_name} performance analysis.")
-                # Convert PNG to base64 data URI
-                png_base64 = _image_to_base64(Path(output_dir) / png_path)
+                # Use centralized embedding function
+                plot_content = embed_plot_for_report(png_path, html_path, plot_name, output_dir)
 
                 html_content += f"""
-            <div id='tab-{container_id}-{tab_idx}' class='tab-content{active_class}'>
-                <div style='padding:20px;'>
+            <div id='tab-{container_id}-{tab_idx}' class='tab-content{active_class}' style='height: auto; min-height: auto;'>
+                <div style='padding:20px; height: auto; min-height: auto;'>
                     <h4>{plot_name}</h4>
                     <p>{description}</p>
-                    <img src='{png_base64}' style='width: 100%; max-width: 1700px; height: auto; border: 1px solid #ddd; border-radius: 4px;' alt='{plot_name}' title='{plot_name}'/>
+                    {plot_content}
                 </div>
             </div>"""
 
@@ -1802,13 +2153,13 @@ def _create_comprehensive_html_report_with_images(
 
     # Analysis plots section
     if plots_data:
-        for plot_name, png_path, _html_path in plots_data:
-            # Convert PNG to base64 data URI for embedding
-            png_base64 = _image_to_base64(Path(output_dir) / png_path)
+        for plot_name, png_path, html_path in plots_data:
+            # Use centralized embedding function
+            plot_content = embed_plot_for_report(png_path, html_path, plot_name, output_dir)
             html_parts.append(f"""
     <div class="plot-section">
         <h3>📈 {plot_name}</h3>
-        <img src="{png_base64}" style="width: 100%; max-width: 1700px; height: auto; border: 1px solid #ddd; border-radius: 5px; margin: 10px 0;" alt="{plot_name}" title="{plot_name}"/>
+        {plot_content}
         <br>
         <small>💡 Performance visualization with comprehensive metrics analysis</small>
     </div>""")

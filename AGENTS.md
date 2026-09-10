@@ -82,7 +82,10 @@ def safe_oc_apply(artifact_path, manifest):
 
 # GOOD: Pass secret data by file path; the value must never appear in command text
 run_command(
-    "create", "secret", "generic", "example-secret",
+    "create",
+    "secret",
+    "generic",
+    "example-secret",
     "--from-file=SECRET_VALUE=/secure/temp/path",
 )
 ```
@@ -101,7 +104,9 @@ logger.info(f"Applying secret: {manifest}")  # LEAKS if manifest has sensitive d
 raise RuntimeError(f"Failed to auth with token {token}")  # LEAKS TOKEN
 
 # BAD: Passing secret material as a command-line literal; command text may be logged
-run_command("create", "secret", "generic", "example-secret", "--from-literal=SECRET_VALUE=" + secret)
+run_command(
+    "create", "secret", "generic", "example-secret", "--from-literal=SECRET_VALUE=" + secret
+)
 ```
 
 ## Error Handling: Never Swallow Exceptions

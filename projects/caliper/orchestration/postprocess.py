@@ -138,6 +138,7 @@ def _run_artifacts_to_kpis(
             completed_at=time.time(),
             reason="kpi disabled",
             log_file=None,
+            html_file=None,
         )
         return result
     if not postprocess_config.kpi.artifacts_to_kpis.enabled:
@@ -146,6 +147,7 @@ def _run_artifacts_to_kpis(
             completed_at=time.time(),
             reason="kpi.artifacts_to_kpis disabled",
             log_file=None,
+            html_file=None,
         )
         return result
 
@@ -184,11 +186,19 @@ def _run_artifacts_to_kpis(
             logger.info(
                 f"KPI generate: output_file={output_file}, env.ARTIFACT_DIR={env.ARTIFACT_DIR}, relative_path={relative_path}"
             )
+
+            # Handle HTML file path if available
+            html_file = None
+            if status_data.get("html_file"):
+                html_file_path = Path(status_data["html_file"])
+                html_file = _make_path_relative_to_base(html_file_path, env.ARTIFACT_DIR)
+
             result = KpiGenerateStepResult(
                 status=StepStatus.SUCCESS,
                 completed_at=time.time(),
                 output_file=relative_path,
                 log_file=log_file,
+                html_file=html_file,
             )
             return result
         else:
@@ -197,6 +207,7 @@ def _run_artifacts_to_kpis(
                 completed_at=time.time(),
                 error=status_data.get("error", "Unknown error"),
                 log_file=log_file,
+                html_file=None,
             )
             return result
 
@@ -212,6 +223,7 @@ def _run_artifacts_to_kpis(
             completed_at=time.time(),
             error=str(e),
             log_file=None,
+            html_file=None,
         )
         return result
 
@@ -1030,6 +1042,7 @@ class CaliperPostprocessOrchestrator:
                     status=StepStatus.DISABLED,
                     completed_at=time.time(),
                     reason="kpi.artifacts_to_kpis disabled",
+                    html_file=None,
                 ),
             )
             return
@@ -1252,6 +1265,7 @@ class CaliperPostprocessOrchestrator:
                     status=StepStatus.DISABLED,
                     completed_at=time.time(),
                     reason="analyze disabled",
+                    html_file=None,
                 ),
             )
             return
@@ -1271,6 +1285,7 @@ class CaliperPostprocessOrchestrator:
                     status=StepStatus.FAILED,
                     completed_at=time.time(),
                     error=f"Current KPI file not found: {current_kpis_path}",
+                    html_file=None,
                 ),
             )
             self.analyze_failed = True
@@ -1299,6 +1314,7 @@ class CaliperPostprocessOrchestrator:
             regression_count=status.regression_count,
             total_kpis=status.total_kpis,
             log_file=status.log_file,
+            html_file=status.html_file,
         )
 
         self._add_step("analyse_kpis", result, result.log_file)

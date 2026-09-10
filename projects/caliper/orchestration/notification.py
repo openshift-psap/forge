@@ -128,6 +128,12 @@ def _format_artifacts_to_kpis_step(step_data: dict, get_file_link: callable | No
     output_file = step_data.get("output_file")
     if output_file:
         lines.append(_create_file_link(output_file, "📄", get_file_link))
+
+    # Include HTML file if available
+    html_file = step_data.get("html_file")
+    if html_file:
+        lines.append(_create_file_link(html_file, "🌐", get_file_link))
+
     return lines
 
 
@@ -253,6 +259,11 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
         baseline_files_count = step_data.get("baseline_files_count")
         if baseline_files_count is not None:
             lines.append(f"  - 📈 Baseline files analyzed: `{baseline_files_count}`")
+
+    # Include HTML file if available
+    html_file = step_data.get("html_file")
+    if html_file:
+        lines.append(_create_file_link(html_file, "🌐", get_file_link))
 
     return lines
 
