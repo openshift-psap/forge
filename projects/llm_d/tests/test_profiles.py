@@ -150,16 +150,19 @@ def test_guidellm_benchmark_uses_original_model_name_as_processor(
         captured.update(kwargs)
         return 0
 
+    mock_config_path = Path("/mock/benchconf/config.yaml")
     monkeypatch.setattr(test_phase.run_guidellm_benchmark_command, "run", _fake_run)
-    monkeypatch.setattr(test_phase, "resolve_benchconf", lambda benchmark: "mock-config-content")
+    monkeypatch.setattr(
+        test_phase.benchconf_lib, "resolve_config_path", lambda ref: mock_config_path
+    )
+    monkeypatch.setattr(test_phase.benchconf_lib, "_is_enabled", lambda: True)
     test_phase.run_guidellm_benchmark(endpoint_url="https://example.test/llm-d")
 
     assert captured["timeout"] == 3600
-    assert captured["config_content"] == "mock-config-content"
+    assert captured["config_path"] == mock_config_path
     guidellm_args = captured["guidellm_args"]
     assert isinstance(guidellm_args, list)
     assert "--processor=openai/gpt-oss-120b" in guidellm_args
-    assert any(arg.startswith("--config=") for arg in guidellm_args)
 
 
 def test_release_preset_expands_benchmark_list_and_merges_workload_args() -> None:

@@ -1,32 +1,53 @@
 """Resolve benchmark configurations from the benchconf package.
 
 This module bridges the benchconf package (external benchmark config repository)
-with forge's benchmark runner. It reads the referenced config YAML and returns
-its content for the toolbox to embed in the GuideLLM container.
+with forge's benchmark runner. It resolves a benchconf reference to a local
+``Path`` that the toolbox can read and embed in the GuideLLM container.
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+
+from projects.core.library import config
 
 logger = logging.getLogger(__name__)
 
 
-def resolve_config_content(benchmark: dict) -> str | None:
-    """Read the benchconf config YAML content if the benchmark references one.
+def _is_enabled() -> bool:
+    """Return whether benchconf resolution is enabled in the project config."""
+    return config.project.get_config("benchconf.enabled", True, print=False)
+
+
+def set_version(repo: str, version: str) -> None:
+    """Install a specific version of the benchconf package at runtime.
+
+    Useful during development to pin a branch or commit without rebuilding
+    the container image.
 
     Args:
-        benchmark: Benchmark configuration dict from workloads.yaml.
-            If it contains a ``benchconf`` key (e.g. ``"llm-d/concurrent-1k-1k"``),
-            the corresponding config file is read from the benchconf package.
+        repo: Git repository URL (e.g. ``git+https://github.com/openshift-psap/benchconf``).
+        version: Git ref to install (branch, tag, or commit SHA).
+    """
+    import subprocess
+    import sys
+
+    spec = f"benchconf @ {repo}@{version}"
+    logger.info("Installing benchconf: %s", spec)
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", spec])
+
+
+def resolve_config_path(benchconf_ref: str) -> Path:
+    """Resolve a benchconf reference to a local config file path.
+
+    Args:
+        benchconf_ref: Reference in ``suite/name`` format
+            (e.g. ``"llm-d/concurrent-1k-1k"``).
 
     Returns:
-        The raw YAML content as a string, or None if no benchconf reference.
+        Path to the resolved YAML config file on the local filesystem.
     """
-    benchconf_ref = benchmark.get("benchconf")
-    if not benchconf_ref:
-        return None
-
     try:
         import benchconf
     except ImportError as exc:
@@ -45,4 +66,4 @@ def resolve_config_content(benchmark: dict) -> str | None:
     suite, name = parts
     config_path = benchconf.get_config(suite, name)
     logger.info("Resolved benchconf '%s' to %s", benchconf_ref, config_path)
-    return config_path.read_text()
+    return config_path

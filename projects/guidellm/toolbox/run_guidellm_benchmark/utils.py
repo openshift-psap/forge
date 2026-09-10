@@ -8,6 +8,7 @@ import logging
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -16,7 +17,7 @@ from projects.core.dsl import template
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE_PATH = "/tmp/guidellm-config.yaml"
+_CONFIG_FILE_PATH = "/tmp/guidellm-config.yaml"
 
 
 @dataclass(frozen=True)
@@ -133,7 +134,7 @@ def build_guidellm_args(benchmark: dict[str, object]) -> list[str]:
 
 def _build_config_heredoc(config_content: str) -> str:
     """Build a shell heredoc that writes a GuideLLM config YAML to a file."""
-    return f"cat > {CONFIG_FILE_PATH} <<'__CONFIG_EOF__'\n{config_content}__CONFIG_EOF__"
+    return f"cat > {_CONFIG_FILE_PATH} <<'__CONFIG_EOF__'\n{config_content}__CONFIG_EOF__"
 
 
 def _build_multi_run_script(
@@ -147,12 +148,15 @@ def _build_multi_run_script(
         lines.append(_build_config_heredoc(config_content))
     for run in runs:
         lines.append("rm -f /results/benchmarks.json")
+        run_args = list(run.args)
+        if config_content:
+            run_args.append(f"--config={_CONFIG_FILE_PATH}")
         command = [
             "/opt/app-root/bin/guidellm",
             "benchmark",
             "run",
             f"--target={endpoint_url}",
-            *run.args,
+            *run_args,
         ]
         lines.append(shlex.join(command))
         output_path = shlex.quote(f"/results/benchmarks-{run.label}.json")
@@ -211,7 +215,7 @@ def render_guidellm_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
-    config_content: str | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest from individual components.
 
@@ -226,13 +230,14 @@ def render_guidellm_job_from_parts(
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the PVC is writable by the container. Needed on clusters where the
             CSI driver provisions volumes with root-only permissions.
-        config_content: Raw YAML content of a GuideLLM config file to embed
-            in the container. When set, the job uses a shell script that writes
-            the config before invoking guidellm with --config.
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container via heredoc,
+            and GuideLLM is invoked with ``--config`` pointing to it.
 
     Returns:
         Job manifest as dict
     """
+    config_content = config_path.read_text() if config_path else None
     runs = expand_guidellm_runs(guidellm_args)
     rendered_yaml = template.render_template(
         "guidellm_job.yaml.j2",
@@ -277,7 +282,7 @@ def render_guidellm_shared_volume_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
-    config_content: str | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest with shared volume (main + sidecar containers).
 
@@ -291,12 +296,13 @@ def render_guidellm_shared_volume_job_from_parts(
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the shared volume is writable by both containers.
-        config_content: Raw YAML content of a GuideLLM config file to embed
-            in the container.
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container via heredoc.
 
     Returns:
         Job manifest as dict with main and sidecar containers
     """
+    config_content = config_path.read_text() if config_path else None
     runs = expand_guidellm_runs(guidellm_args)
     rendered_yaml = template.render_template(
         "guidellm_shared_volume_job.yaml.j2",
