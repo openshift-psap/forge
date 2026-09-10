@@ -30,11 +30,10 @@ class KPICsvExporter:
         self.schema = KPICsvSchema()
         self.include_curve_kpis = include_curve_kpis
 
-    def export_kpis_to_csv(
+    def export_dashboard_csv(
         self,
         kpi_records: list[dict[str, Any]],
         output_path: Path,
-        include_header_comments: bool = True,
     ) -> str:
         """
         Export KPI records to CSV file.
@@ -42,7 +41,6 @@ class KPICsvExporter:
         Args:
             kpi_records: List of KPI records from GuideLLMKpiHandler.compute_kpis()
             output_path: Path where to write the CSV file
-            include_header_comments: Whether to include descriptive header comments
 
         Returns:
             Path to the generated CSV file
@@ -70,11 +68,6 @@ class KPICsvExporter:
 
         # Write CSV file
         with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
-            # Write header comments if requested
-            if include_header_comments:
-                for comment_line in self.schema.to_csv_header_with_descriptions():
-                    csvfile.write(f"{comment_line}\n")
-
             # Write CSV data
             if csv_rows:
                 # Get field names from the first row (dataclass fields)
@@ -108,7 +101,6 @@ class KPICsvExporter:
         self,
         model: UnifiedRunModel,
         output_path: Path,
-        include_header_comments: bool = True,
     ) -> str:
         """
         Export KPIs from a unified model to CSV.
@@ -116,7 +108,6 @@ class KPICsvExporter:
         Args:
             model: UnifiedRunModel containing test results
             output_path: Path where to write the CSV file
-            include_header_comments: Whether to include descriptive header comments
 
         Returns:
             Path to the generated CSV file
@@ -128,7 +119,7 @@ class KPICsvExporter:
         kpi_records = kpi_handler.compute_kpis(model)
 
         # Export to CSV
-        return self.export_kpis_to_csv(kpi_records, output_path, include_header_comments)
+        return self.export_dashboard_csv(kpi_records, output_path)
 
     def get_csv_schema_info(self) -> dict[str, Any]:
         """Get information about the CSV schema."""
@@ -144,7 +135,6 @@ class KPICsvExporter:
         self,
         records: list[Any],
         output_path: Path,
-        include_header_comments: bool = True,
     ) -> str:
         """
         Export KPIs from a list of unified result records.
@@ -152,7 +142,6 @@ class KPICsvExporter:
         Args:
             records: List of UnifiedResultRecord objects
             output_path: Path where to write the CSV file
-            include_header_comments: Whether to include descriptive header comments
 
         Returns:
             Path to the generated CSV file
@@ -168,13 +157,12 @@ class KPICsvExporter:
             parse_cache_ref=None,
         )
 
-        return self.export_from_model(model, output_path, include_header_comments)
+        return self.export_from_model(model, output_path)
 
 
-def quick_export_kpis_to_csv(
+def quick_export_dashboard_csv(
     records: list[Any],
     output_path: Path | str,
-    include_header_comments: bool = True,
 ) -> str:
     """
     Quick utility function to export KPIs to CSV.
@@ -182,7 +170,6 @@ def quick_export_kpis_to_csv(
     Args:
         records: List of UnifiedResultRecord objects or KPI records
         output_path: Path where to write the CSV file
-        include_header_comments: Whether to include descriptive header comments
 
     Returns:
         Path to the generated CSV file
@@ -193,7 +180,7 @@ def quick_export_kpis_to_csv(
     # Determine if we have KPI records or UnifiedResultRecord objects
     if records and isinstance(records[0], dict) and "kpi_id" in records[0]:
         # These are KPI records
-        return exporter.export_kpis_to_csv(records, output_path, include_header_comments)
+        return exporter.export_dashboard_csv(records, output_path)
     else:
         # These are UnifiedResultRecord objects
-        return exporter.export_records_from_list(records, output_path, include_header_comments)
+        return exporter.export_records_from_list(records, output_path)

@@ -100,6 +100,7 @@ class KpiGenerateStepResult(BaseStepResult):
 
     output_file: str | None = None
     error: str | None = None
+    html_file: str | None = None
 
 
 @dataclass
@@ -114,6 +115,7 @@ class KpiAnalysisStepResult(BaseStepResult):
     total_kpis: int | None = None
     error: str | None = None
     message: str | None = None
+    html_file: str | None = None
 
 
 @dataclass

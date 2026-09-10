@@ -1,0 +1,1369 @@
+{% extends "base.html" %}
+
+{% block title %}Caliper Regression Analysis{% endblock %}
+
+{% block header_title %}Regression Analysis Report{% endblock %}
+
+{% block header_subtitle %}
+Status: {{ overall.verdict }} | {{ tested.regression }} regressions found in {{ tested.total_kpis }} KPIs
+{% endblock %}
+
+{% block content %}
+<!-- Overall Status -->
+<div class="summary-grid">
+    <div class="summary-card">
+        <h3 style="color: {% if overall.verdict == 'PASS' %}#28a745{% elif overall.verdict == 'REGRESSION_DETECTED' %}#dc3545{% else %}#ffc107{% endif %};">
+            {{ overall.verdict.replace('_', ' ').title() }}
+        </h3>
+        <p>Overall Status</p>
+    </div>
+    <div class="summary-card">
+        <h3>{{ tested.total_kpis }}</h3>
+        <p>Total KPIs</p>
+    </div>
+    <div class="summary-card">
+        <h3 style="color: #28a745;">{{ tested.pass_count }}</h3>
+        <p>Passed</p>
+    </div>
+    <div class="summary-card">
+        <h3 style="color: #dc3545;">{{ tested.regression }}</h3>
+        <p>Regressions</p>
+    </div>
+    {% if tested.skipped > 0 %}
+    <div class="summary-card">
+        <h3 style="color: #6c757d;">{{ tested.skipped }}</h3>
+        <p>Skipped</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Analysis Information -->
+<div class="card">
+    <h2>Analysis Information</h2>
+
+    {% if analysis.timestamp %}
+    <p class="timestamp">Analysis completed: {{ analysis.timestamp }}</p>
+    {% endif %}
+
+    <table style="margin-top: 1rem;">
+        <tr>
+            <th style="width: 30%;">Configuration</th>
+            <th>Value</th>
+        </tr>
+        {% if config.comparison_labels %}
+        <tr>
+            <td>Comparison Labels</td>
+            <td>{{ config.comparison_labels | join(', ') }}</td>
+        </tr>
+        {% endif %}
+        {% if config.ignored_labels %}
+        <tr>
+            <td>Ignored Labels</td>
+            <td>{{ config.ignored_labels | join(', ') }}</td>
+        </tr>
+        {% endif %}
+        {% if config.sorting_labels %}
+        <tr>
+            <td>Sorting Labels</td>
+            <td>{{ config.sorting_labels | join(', ') }}</td>
+        </tr>
+        {% endif %}
+    </table>
+</div>
+
+<!-- Regression Results -->
+{% set regression_results = results | selectattr('verdict', 'equalto', 'REGRESSION') | list %}
+{% if regression_results %}
+<div class="card">
+    <h2>Regressions Detected ({{ regression_results|length }})</h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>KPI</th>
+                <th>Current Value</th>
+                <th>Change</th>
+                <th>Algorithm</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for result in regression_results %}
+            <tr>
+                <td>
+                    <strong style="cursor: pointer; color: #007bff; text-decoration: underline;" onclick="scrollToResult('{{ result.kpi_id }}', '{{ result.run_id }}')" onmouseover="this.style.color='#0056b3'" onmouseout="this.style.color='#007bff'">{{ result.kpi_id }}</strong>
+                    {% if result.run_id %}
+                    <br><small>{{ result.run_id }}</small>
+                    {% endif %}
+                </td>
+                <td class="metric-value">
+                    {% if result.current_value %}
+                        {% if result.is_curve %}
+                            {% if result.current_value['values'] %}
+                            {{ result.current_value['values']|length }} points
+                            {% else %}
+                            No data
+                            {% endif %}
+                        {% else %}
+                            {% if result.current_value.value is not none %}
+                            {{ "%.3f"|format(result.current_value.value) if result.current_value.value is number else result.current_value.value }}
+                            {% else %}
+                            No data
+                            {% endif %}
+                        {% endif %}
+                    {% else %}
+                    No data
+                    {% endif %}
+                </td>
+                <td>
+                    {% if result.details and result.details.relative_change is defined %}
+                    <span style="color: {% if result.details.relative_change < 0 %}#dc3545{% else %}#28a745{% endif %};">
+                        {{ "%+.1f%%"|format(result.details.relative_change * 100) }}
+                    </span>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge badge-info">{{ result.details.algorithm if result.details and result.details.algorithm else 'Unknown' }}</span>
+                </td>
+                <td>
+                    {% if result.details %}
+                    <small>
+                        Baselines: {{ result.baseline_count }}<br>
+                        {% if result.details.config %}
+                        Threshold: {{ result.details.config.max_relative_regression if result.details.config.max_relative_regression is defined else 'N/A' }}
+                        {% endif %}
+                    </small>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- All Results -->
+<div class="card">
+    <h2>All Test Results</h2>
+
+    <!-- Filter Panel -->
+    <div style="background: #f8f9fa; padding: 1rem; margin-bottom: 1rem; border: 1px solid #dee2e6; border-radius: 0.25rem;">
+        <h6 style="margin: 0 0 0.75rem 0; color: #495057;">Filters</h6>
+
+        <!-- Three Column Layout -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+            <!-- Test Run Filter -->
+            <div>
+                <label style="font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; display: block;">Test Runs:</label>
+                <div style="border: 1px solid #ced4da; border-radius: 0.25rem; padding: 0.5rem; background: white;">
+                    <div id="test-run-filters">
+                        <label style="display: block; margin-bottom: 0.25rem; font-size: 0.875rem;">
+                            <input type="checkbox" id="all-test-runs" checked style="margin-right: 0.5rem;"> All Test Runs
+                        </label>
+                        <hr style="margin: 0.5rem 0; border: none; border-top: 1px solid #eee;">
+                        <!-- Individual test run checkboxes will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- KPI ID Filter -->
+            <div>
+                <label style="font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; display: block;">KPI IDs:</label>
+                <div style="border: 1px solid #ced4da; border-radius: 0.25rem; padding: 0.5rem; background: white;">
+                    <div id="kpi-id-filters">
+                        <label style="display: block; margin-bottom: 0.25rem; font-size: 0.875rem;">
+                            <input type="checkbox" id="all-kpi-ids" checked style="margin-right: 0.5rem;"> All KPI IDs
+                        </label>
+                        <hr style="margin: 0.5rem 0; border: none; border-top: 1px solid #eee;">
+                        <!-- Individual KPI ID checkboxes will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Verdict Filter -->
+            <div>
+                <label style="font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; display: block;">Verdicts:</label>
+                <div style="border: 1px solid #ced4da; border-radius: 0.25rem; padding: 0.5rem; background: white;">
+                    <div id="verdict-filters">
+                        <label style="display: block; margin-bottom: 0.25rem; font-size: 0.875rem;">
+                            <input type="checkbox" id="all-verdicts" checked style="margin-right: 0.5rem;"> All Verdicts
+                        </label>
+                        <hr style="margin: 0.5rem 0; border: none; border-top: 1px solid #eee;">
+                        <!-- Individual verdict checkboxes will be populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filter Actions -->
+        <div style="margin-top: 1rem; text-align: right;">
+            <button onclick="clearAllFilters()" style="background: #6c757d; color: white; border: none; padding: 0.375rem 0.75rem; border-radius: 0.25rem; cursor: pointer; font-size: 0.875rem;">Show All</button>
+        </div>
+    </div>
+
+    <table id="all-results-table">
+        <thead>
+            <tr>
+                <th>KPI</th>
+                <th>Verdict</th>
+                <th>Relative Change</th>
+                <th>Direction</th>
+                <th>Labels</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for result in results %}
+            <tr id="result-row-{{ loop.index0 }}" data-kpi-id="{{ result.kpi_id }}" data-run-id="{{ result.run_id }}">
+                <td>
+                    <strong>{{ result.kpi_id }}</strong>
+                    {% if result.run_id %}
+                    <br><small>{{ result.run_id }}</small>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge {% if result.verdict == 'PASS' %}badge-success{% elif result.verdict == 'REGRESSION' %}badge-danger{% elif result.verdict == 'SKIPPED' or result.verdict == 'NO_BASELINE' %}badge-warning{% else %}badge-info{% endif %}">
+                        {{ result.verdict }}
+                    </span>
+                </td>
+                <td class="metric-value">
+                    {% if result.details and result.details.relative_change is not none %}
+                    <span style="color: {% if result.higher_is_better is defined %}{% if (result.higher_is_better and result.details.relative_change > 0) or (not result.higher_is_better and result.details.relative_change < 0) %}#28a745{% else %}#dc3545{% endif %}{% else %}#6c757d{% endif %}; font-weight: bold;">
+                        {{ "%+.2f%%"|format(result.details.relative_change * 100) }}
+                    </span>
+                    {% else %}
+                    <span style="color: #6c757d;">-</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if result.higher_is_better is defined %}
+                        {% if result.higher_is_better %}
+                        <span style="color: #6c757d;">↑ Higher better</span>
+                        {% else %}
+                        <span style="color: #6c757d;">↓ Lower better</span>
+                        {% endif %}
+                    {% else %}
+                    <span style="color: #6c757d;">-</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if result.labels and result.labels.comparison_keys %}
+                    <div class="label-list">
+                        {% for key, value in result.labels.comparison_keys.items() %}
+                        <span class="label-item">{{ key }}: {{ value }}</span>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>
+                    <div style="display: flex; gap: 0.25rem; flex-wrap: wrap;">
+                        <button class="level-toggle" onclick="toggleLevel('plot-{{ loop.index0 }}')" style="background: none; border: 1px solid #667eea; padding: 0.25rem 0.5rem; border-radius: 0.25rem; cursor: pointer; font-size: 0.75rem; color: #667eea;">
+                            <span id="toggle-plot-{{ loop.index0 }}">▶</span> Plot
+                        </button>
+                        <button class="level-toggle" onclick="toggleLevel('data-{{ loop.index0 }}')" style="background: none; border: 1px solid #28a745; padding: 0.25rem 0.5rem; border-radius: 0.25rem; cursor: pointer; font-size: 0.75rem; color: #28a745;">
+                            <span id="toggle-data-{{ loop.index0 }}">▶</span> Data
+                        </button>
+                        <button class="level-toggle" onclick="toggleLevel('analysis-{{ loop.index0 }}')" style="background: none; border: 1px solid #6c757d; padding: 0.25rem 0.5rem; border-radius: 0.25rem; cursor: pointer; font-size: 0.75rem; color: #6c757d;">
+                            <span id="toggle-analysis-{{ loop.index0 }}">▶</span> Analysis
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            <!-- Level 1: Plot -->
+            <tr id="plot-{{ loop.index0 }}" class="level-row" style="display: none;">
+                <td colspan="6" style="padding: 0.5rem 1rem; background-color: #f0f4ff; border-top: 1px solid #dee2e6;">
+                    <div class="chart-container">
+                        <div id="inline-chart-{{ result.kpi_id }}-{{ loop.index0 }}" style="width: 100%; height: 350px;"></div>
+                    </div>
+                </td>
+            </tr>
+
+            <!-- Level 2: Data Comparison -->
+            <tr id="data-{{ loop.index0 }}" class="level-row" style="display: none;">
+                <td colspan="6" style="padding: 1rem; background-color: #f0fff0; border-top: 1px solid #dee2e6;">
+                    <h6 style="margin: 0 0 0.5rem 0; color: #495057;">Data Comparison</h6>
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                        <thead>
+                            <tr style="background-color: #f8f9fa;">
+                                <th style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: left; font-weight: 600;">Type</th>
+                                <th style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: left; font-weight: 600;">Comparison Keys</th>
+                                <th style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: left; font-weight: 600;">Value{{ 's' if result.is_curve else '' }}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Current Data Row -->
+                            <tr style="background-color: {% if result.verdict == 'REGRESSION' %}#ffebee{% elif result.verdict == 'PASS' %}#e8f5e8{% else %}#fff3e0{% endif %};">
+                                <td style="padding: 0.5rem; border: 1px solid #dee2e6; font-weight: 600;">
+                                    <span style="color: {% if result.verdict == 'REGRESSION' %}#dc3545{% elif result.verdict == 'PASS' %}#28a745{% else %}#ffc107{% endif %};">
+                                        Current
+                                    </span>
+                                </td>
+                                <td style="padding: 0.5rem; border: 1px solid #dee2e6;">
+                                    {% if result.labels and result.labels.comparison_keys %}
+                                        {% for key, value in result.labels.comparison_keys.items() %}
+                                        <span class="label-item">{{ key }}: {{ value }}</span>
+                                        {% endfor %}
+                                    {% else %}
+                                    -
+                                    {% endif %}
+                                </td>
+                                <td style="padding: 0.5rem; border: 1px solid #dee2e6; font-family: monospace;">
+                                    {% if result.current_value %}
+                                        {% if result.is_curve %}
+                                            {% if result.current_value['values'] %}
+                                            <div style="max-height: 100px; overflow-y: auto;">
+                                                {% for point in result.current_value['values'] %}
+                                                [{{ point[0] }}, {{ "%.3f"|format(point[1]) if point[1] is number else point[1] }}]{{ "," if not loop.last else "" }}<br>
+                                                {% endfor %}
+                                            </div>
+                                            {% else %}
+                                            No data
+                                            {% endif %}
+                                        {% else %}
+                                            {{ "%.3f"|format(result.current_value['value']) if result.current_value['value'] is number else result.current_value['value'] }}
+                                        {% endif %}
+                                    {% else %}
+                                    No data
+                                    {% endif %}
+                                </td>
+                            </tr>
+
+                            <!-- Historical Data Rows -->
+                            {% if result.baseline_values %}
+                            {% for baseline in result.baseline_values %}
+                            <tr>
+                                <td style="padding: 0.5rem; border: 1px solid #dee2e6; color: #6c757d; font-weight: 500;">
+                                    Historical {{ loop.index }}
+                                </td>
+                                <td style="padding: 0.5rem; border: 1px solid #dee2e6;">
+                                    {% if baseline.comparison_keys %}
+                                        {% for key, value in baseline.comparison_keys.items() %}
+                                        <span class="label-item">{{ key }}: {{ value }}</span>
+                                        {% endfor %}
+                                    {% else %}
+                                    Version {{ loop.index }}
+                                    {% endif %}
+                                </td>
+                                <td style="padding: 0.5rem; border: 1px solid #dee2e6; font-family: monospace; color: #495057;">
+                                    {% if result.is_curve %}
+                                        {% if baseline.value and baseline.value is iterable %}
+                                        {% if baseline.value|length <= 3 %}
+                                            <div>
+                                                {% for point in baseline.value %}
+                                                [{{ point[0] if point is iterable else point }}, {{ point[1] if point is iterable and point|length > 1 else point }}]{{ "," if not loop.last else "" }}<br>
+                                                {% endfor %}
+                                            </div>
+                                        {% else %}
+                                            {{ baseline.value|length }} points
+                                        {% endif %}
+                                        {% else %}
+                                        {{ baseline.value }}
+                                        {% endif %}
+                                    {% else %}
+                                        {{ "%.3f"|format(baseline.value) if baseline.value is number else baseline.value }}
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </td>
+            </tr>
+
+            <!-- Level 3: Analysis Details -->
+            <tr id="analysis-{{ loop.index0 }}" class="level-row" style="display: none;">
+                <td colspan="6" style="padding: 1rem; background-color: #f8f8f8; border-top: 1px solid #dee2e6;">
+                    <h6 style="margin: 0 0 0.5rem 0; color: #495057;">Analysis Details</h6>
+
+                    <!-- General Algorithm Information -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+                        <div>
+                            <strong>Algorithm:</strong>
+                            <span>{{ result.details.algorithm if result.details and result.details.algorithm else 'N/A' }}</span>
+                        </div>
+                        <div>
+                            <strong>Baseline Count:</strong>
+                            <span>{{ result.baseline_count }}</span>
+                        </div>
+                        {% if result.details and result.details.relative_change %}
+                        <div>
+                            <strong>Relative Change:</strong>
+                            <span style="color: {% if result.details.relative_change > 0 %}#dc3545{% else %}#28a745{% endif %};">{{ "%+.2f%%"|format(result.details.relative_change * 100) }}</span>
+                        </div>
+                        {% endif %}
+                        {% if result.details and result.details.baseline_mean %}
+                        <div>
+                            <strong>Baseline Mean:</strong>
+                            <span>{{ "%.3f"|format(result.details.baseline_mean) if result.details.baseline_mean is number else result.details.baseline_mean }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Algorithm-Specific Configuration -->
+                    {% if result.details and result.details.config %}
+                    <div style="margin-bottom: 1rem;">
+                      <strong>Configuration:</strong><br>
+                      <div style="margin: 0.25rem 0; font-family: monospace; font-size: 0.875rem; background: white; padding: 0.5rem; border: 1px solid #ddd; border-radius: 0.25rem;">
+                        {% for key, value in result.details.config.items() %}
+                          {{ key }}: {{ value }}<br>
+                        {% endfor %}
+                      </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Algorithm-Specific Details -->
+                    {% if result.details and result.details.algorithm %}
+                    <div style="margin-top: 1rem;">
+                        {% if result.details.algorithm == 'CURVE_AUC_CHANGE' %}
+                        <!-- CURVE_AUC_CHANGE Algorithm Details -->
+                        <h6 style="margin: 0 0 0.75rem 0; color: #495057; font-size: 0.875rem;">Curve AUC Analysis</h6>
+                        <div style="background: white; padding: 0.75rem; border: 1px solid #ddd; border-radius: 0.25rem;">
+
+                            <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                                <thead>
+                                    <tr style="background-color: #f8f9fa;">
+                                        <th style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: left; font-weight: 600;">Version</th>
+                                        <th style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: right; font-weight: 600;">AUC Value</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- Current AUC row -->
+                                    <tr style="background-color: #e7f3ff; font-weight: 600;">
+                                        <td style="padding: 0.5rem; border: 1px solid #dee2e6;">
+                                            Current
+                                            {% if result.current_value.comparison_keys %}
+                                            <br><small style="color: #6c757d; font-weight: normal;">
+                                                {% for key, value in result.current_value.comparison_keys.items() %}
+                                                {{ key }}={{ value }}{% if not loop.last %}, {% endif %}
+                                                {% endfor %}
+                                            </small>
+                                            {% endif %}
+                                        </td>
+                                        <td style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: right; font-family: monospace;">
+                                            {{ "%.3f"|format(result.details.current_auc) }}
+                                        </td>
+                                    </tr>
+
+                                    <!-- Historical AUC rows -->
+                                    {% if result.details.baseline_aucs %}
+                                    {% for baseline in result.details.baseline_aucs %}
+                                    <tr>
+                                        <td style="padding: 0.5rem; border: 1px solid #dee2e6;">
+                                            {% if baseline.comparison_keys %}
+                                            {% for key, value in baseline.comparison_keys.items() %}
+                                            {{ key }}={{ value }}{% if not loop.last %}, {% endif %}
+                                            {% endfor %}
+                                            {% else %}
+                                            Historical {{ loop.index }}
+                                            {% endif %}
+                                        </td>
+                                        <td style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: right; font-family: monospace;">
+                                            {{ "%.3f"|format(baseline.value) }}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+
+                                    <!-- Baseline mean row -->
+                                    <tr style="background-color: #f8f9fa; font-weight: 600;">
+                                        <td style="padding: 0.5rem; border: 1px solid #dee2e6;">
+                                            <em>Baseline Mean</em>
+                                        </td>
+                                        <td style="padding: 0.5rem; border: 1px solid #dee2e6; text-align: right; font-family: monospace;">
+                                            {{ "%.3f"|format(result.details.baseline_mean_auc) }}
+                                        </td>
+                                    </tr>
+                                    {% endif %}
+                                </tbody>
+                            </table>
+
+                            <!-- Summary Information -->
+                            <div style="margin-top: 1rem; padding: 0.5rem; background: #f8f9fa; border-radius: 0.25rem;">
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                    <div>
+                                        <strong style="color: #495057;">Relative Change:</strong>
+                                        <span style="font-family: monospace; color: {% if result.details.relative_change > 0 %}#dc3545{% else %}#28a745{% endif %};">
+                                            {{ "%+.1f%%"|format(result.details.relative_change * 100) }}
+                                        </span>
+                                    </div>
+                                    {% if result.details.config and result.details.config.max_relative_regression %}
+                                    <div>
+                                        <strong style="color: #495057;">Regression Threshold:</strong>
+                                        <span style="font-family: monospace;">{{ "%+.1f%%"|format(result.details.config.max_relative_regression * 100) }}</span>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+
+                        {% elif result.details.algorithm == 'SCALAR_RELATIVE_CHANGE' %}
+                        <!-- SCALAR_RELATIVE_CHANGE Algorithm Details -->
+                        <h6 style="margin: 0 0 0.75rem 0; color: #495057; font-size: 0.875rem;">Scalar Value Analysis</h6>
+                        <div style="background: white; padding: 0.75rem; border: 1px solid #ddd; border-radius: 0.25rem;">
+                            <p style="margin: 0; color: #6c757d; font-size: 0.875rem;">Additional scalar analysis details can be added here.</p>
+                        </div>
+
+                        {% else %}
+                        <!-- Default/Unknown Algorithm -->
+                        <div style="background: white; padding: 0.75rem; border: 1px solid #ddd; border-radius: 0.25rem;">
+                            <h6 style="margin: 0 0 0.75rem 0; color: #495057; font-size: 0.875rem;">{{ result.details.algorithm }} Analysis</h6>
+                            <p style="margin: 0; color: #6c757d; font-size: 0.875rem;">Analysis details for this algorithm are not yet implemented.</p>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+
+
+{% if not results %}
+<div class="card">
+    <h2>No Results Available</h2>
+    <p>No regression analysis results were found in the provided file.</p>
+</div>
+{% endif %}
+
+<!-- Input Data Sources -->
+<div class="card">
+    <h2>Input Data Sources</h2>
+
+    {% if input_data %}
+    <!-- Current Source -->
+    {% if input_data.current_source %}
+    <h3 style="margin-bottom: 0.75rem; color: #495057;">Current Data</h3>
+    <table style="margin-bottom: 2rem;">
+        <tbody>
+            {% for key, value in input_data.current_source.items() %}
+            <tr>
+                <td style="font-weight: 600; width: 30%; color: #495057;">{{ key|title|replace('_', ' ') }}</td>
+                <td>
+                    {% if key in ['file_path', 'path', 'source'] %}
+                    <code style="font-size: 0.875rem; background: #f8f9fa; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">{{ value }}</code>
+
+                    {% elif key == 'comparison_keys' and value %}
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                        {% for item in value %}
+                        <span style="background: #007bff; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">{{ item }}</span>
+                        {% endfor %}
+                    </div>
+
+                    {% elif key == 'ignored_keys' and value %}
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                        {% for item in value %}
+                        <span style="background: #6c757d; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">{{ item }}</span>
+                        {% endfor %}
+                    </div>
+
+                    {% elif key == 'relevant_common_keys' and value %}
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                        {% for item in value %}
+                        <span style="background: #28a745; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">{{ item }}</span>
+                        {% endfor %}
+                    </div>
+
+                    {% elif key == 'relevant_distinct_keys' and value %}
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                        {% for item in value %}
+                        {% if item %}
+                        <span style="background: #17a2b8; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">{{ item }}</span>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+
+                    {% elif key == 'relevant_distinct_labels' and value %}
+                    <div style="display: flex; flex-wrap: wrap; gap: 0.25rem;">
+                        {% for item in value %}
+                        {% if item %}
+                        <span style="background: #fd7e14; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">{{ item }}</span>
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+
+                    {% elif key in ['relevant_count', 'irrelevant_count'] %}
+                    <span style="font-family: monospace; background: #e9ecef; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-weight: 600;">{{ value }}</span>
+
+                    {% elif key in ['timestamp', 'modified', 'created'] %}
+                    <span class="timestamp">{{ value }}</span>
+                    {% elif key in ['size', 'file_size'] %}
+                    <span style="font-family: monospace;">{{ value }}</span>
+                    {% elif key in ['type', 'format'] %}
+                    <span class="badge badge-info">{{ value }}</span>
+                    {% else %}
+                    {{ value }}
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <!-- Baseline Sources -->
+    {% if input_data.baseline_sources %}
+    <h3 style="margin-bottom: 0.75rem; color: #495057;">Baseline Data Sources</h3>
+
+    <!-- Relevant Sources -->
+    {% if input_data.baseline_sources.relevant_sources %}
+    <h4 style="margin-bottom: 0.5rem; color: #28a745; font-size: 1rem; cursor: pointer; user-select: none;" onclick="toggleSourceSection('relevant-sources')" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+        <span id="relevant-sources-icon">▶</span> ✓ Relevant Sources ({{ input_data.baseline_sources.relevant_sources|length }})
+    </h4>
+    <div id="relevant-sources-content" style="margin-bottom: 1.5rem; display: none;">
+        {% for source in input_data.baseline_sources.relevant_sources %}
+        <div style="margin-bottom: 1rem; border: 1px solid #c3e6cb; border-radius: 0.5rem; overflow: hidden;">
+            <!-- File Path Header -->
+            <div style="background: #d4edda; padding: 0.75rem; border-bottom: 1px solid #c3e6cb;">
+                <code style="font-size: 0.875rem; font-weight: 600; color: #155724;">{{ source.path }}</code>
+            </div>
+
+            <!-- Details Panel -->
+            <div style="padding: 0.75rem; background: white;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; align-items: start;">
+
+                    <!-- Version & Count -->
+                    <div>
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong style="color: #495057; font-size: 0.875rem;">Version:</strong>
+                            {% if source.comparison_keys %}
+                            <div style="margin-top: 0.25rem;">
+                                {% for key in source.comparison_keys %}
+                                <span style="background: #007bff; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500;">{{ key }}</span>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <span style="color: #6c757d;">-</span>
+                            {% endif %}
+                        </div>
+
+                        <div>
+                            <strong style="color: #495057; font-size: 0.875rem;">Relevant Count:</strong>
+                            <span style="font-family: monospace; background: #e9ecef; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-weight: 600; margin-left: 0.5rem;">{{ source.relevant_count }}</span>
+                        </div>
+
+
+                        {% if source.total_count is defined %}
+                        <div>
+                            <strong style="color: #495057; font-size: 0.875rem;">Total Count:</strong>
+                            <span style="font-family: monospace; background: #d1ecf1; color: #0c5460; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-weight: 600; margin-left: 0.5rem;">{{ source.total_count }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Ignored Keys -->
+                    <div>
+                        <strong style="color: #495057; font-size: 0.875rem;">Ignored Keys:</strong>
+                        {% if source.ignored_keys %}
+                        <div style="margin-top: 0.25rem;">
+                            {% for key in source.ignored_keys %}
+                            <div style="display: block; margin-bottom: 0.25rem;">
+                                <span style="background: #6c757d; color: white; padding: 0.2rem 0.4rem; border-radius: 10px; font-size: 0.7rem; font-weight: 500; display: inline-block;">{{ key }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div style="margin-top: 0.25rem;">
+                            <span style="color: #6c757d; font-style: italic;">None</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Common Keys -->
+                    <div>
+                        <strong style="color: #495057; font-size: 0.875rem;">Common Keys ({{ source.relevant_common_keys|length if source.relevant_common_keys else 0 }}):</strong>
+                        {% if source.relevant_common_keys %}
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem;">
+                            {% for key in source.relevant_common_keys %}
+                            <span style="background: #28a745; color: white; padding: 0.2rem 0.4rem; border-radius: 10px; font-size: 0.7rem; font-weight: 500;">{{ key }}</span>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div style="margin-top: 0.25rem;">
+                            <span style="color: #6c757d; font-style: italic;">None</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Irrelevant Sources -->
+    {% if input_data.baseline_sources.irrelevant_sources %}
+    <h4 style="margin-bottom: 0.5rem; color: #6c757d; font-size: 1rem; cursor: pointer; user-select: none;" onclick="toggleSourceSection('irrelevant-sources')" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+        <span id="irrelevant-sources-icon">▶</span> ✗ Irrelevant Sources ({{ input_data.baseline_sources.irrelevant_sources|length }})
+    </h4>
+    <div id="irrelevant-sources-content" style="display: none;">
+        {% for source in input_data.baseline_sources.irrelevant_sources %}
+        <div style="margin-bottom: 1rem; border: 1px solid #dee2e6; border-radius: 0.5rem; overflow: hidden;">
+            <!-- File Path Header -->
+            <div style="background: #e9ecef; padding: 0.75rem; border-bottom: 1px solid #dee2e6;">
+                <code style="font-size: 0.875rem; font-weight: 600; color: #495057;">{{ source.path }}</code>
+            </div>
+
+            <!-- Details Panel -->
+            <div style="padding: 0.75rem; background: white;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; align-items: start;">
+
+                    <!-- Version & Count -->
+                    <div>
+                        <div style="margin-bottom: 0.5rem;">
+                            <strong style="color: #495057; font-size: 0.875rem;">Version:</strong>
+                            {% if source.comparison_keys %}
+                            <div style="margin-top: 0.25rem;">
+                                {% for key in source.comparison_keys %}
+                                <span style="background: #007bff; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500;">{{ key }}</span>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <span style="color: #6c757d;">-</span>
+                            {% endif %}
+                        </div>
+
+                        <div>
+                            <strong style="color: #495057; font-size: 0.875rem;">Irrelevant Count:</strong>
+                            <span style="font-family: monospace; background: #e9ecef; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-weight: 600; margin-left: 0.5rem;">{{ source.irrelevant_count }}</span>
+                        </div>
+
+
+                        {% if source.total_count is defined %}
+                        <div>
+                            <strong style="color: #495057; font-size: 0.875rem;">Total Count:</strong>
+                            <span style="font-family: monospace; background: #d1ecf1; color: #0c5460; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-weight: 600; margin-left: 0.5rem;">{{ source.total_count }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Common Keys -->
+                    {% if source.relevant_common_keys %}
+                    <div>
+                        <strong style="color: #495057; font-size: 0.875rem;">Common Keys ({{ source.relevant_common_keys|length }}):</strong>
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.25rem;">
+                            {% for key in source.relevant_common_keys %}
+                            <span style="background: #28a745; color: white; padding: 0.2rem 0.4rem; border-radius: 10px; font-size: 0.7rem; font-weight: 500;">{{ key }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Ignored Keys -->
+                    <div>
+                        <strong style="color: #495057; font-size: 0.875rem;">Ignored Keys:</strong>
+                        {% if source.ignored_keys %}
+                        <div style="margin-top: 0.25rem;">
+                            {% for key in source.ignored_keys %}
+                            <div style="display: block; margin-bottom: 0.25rem;">
+                                <span style="background: #6c757d; color: white; padding: 0.2rem 0.4rem; border-radius: 10px; font-size: 0.7rem; font-weight: 500; display: inline-block;">{{ key }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div style="margin-top: 0.25rem;">
+                            <span style="color: #6c757d; font-style: italic;">None</span>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Irrelevant Keys -->
+                    <div>
+                        <strong style="color: #495057; font-size: 0.875rem;">Irrelevant Keys:</strong>
+                        {% if source.irrelevant_keys %}
+                        <div style="margin-top: 0.25rem;">
+                            {% for key in source.irrelevant_keys %}
+                            <div style="display: block; margin-bottom: 0.25rem;">
+                                <span style="background: #f8d7da; color: #721c24; padding: 0.2rem 0.4rem; border-radius: 10px; font-size: 0.7rem; font-weight: 500; display: inline-block;">{{ key }}</span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <div style="margin-top: 0.25rem;">
+                            <span style="color: #6c757d; font-style: italic;">None</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endif %}
+
+    {% else %}
+    <div style="text-align: center; color: #6c757d; padding: 2rem;">
+        <p>Input data source information not available</p>
+        <small style="font-size: 0.875rem;">This information is populated by the regression analysis engine</small>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+
+<!-- KPI Data Visualization Scripts -->
+{% set curve_kpis = results | selectattr('is_curve', 'equalto', true) | list %}
+{% set scalar_kpis = results | selectattr('is_curve', 'equalto', false) | list %}
+
+
+
+<script>
+// Toggle level panel functionality
+function toggleLevel(levelId) {
+    const levelRow = document.getElementById(levelId);
+    const levelType = levelId.split('-')[0]; // plot, data, analysis
+    const resultIndex = levelId.split('-')[1];
+    const icon = document.getElementById('toggle-' + levelType + '-' + resultIndex);
+
+    if (levelRow.style.display === 'none' || levelRow.style.display === '') {
+        levelRow.style.display = 'table-row';
+        icon.textContent = '▼';
+
+        // If this is a plot level, render the chart
+        if (levelType === 'plot') {
+            renderInlineChart(levelId, resultIndex);
+        }
+    } else {
+        levelRow.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+// Chart rendering for inline plots
+function renderInlineChart(levelId, resultIndex) {
+    const resultData = window.regressionResultsData[resultIndex];
+    if (!resultData) {
+        console.warn('No data found for result index:', resultIndex);
+        return;
+    }
+
+    const chartId = 'inline-chart-' + resultData.kpi_id + '-' + resultIndex;
+    const chartDiv = document.getElementById(chartId);
+    if (!chartDiv) {
+        console.warn('Chart div not found:', chartId);
+        return;
+    }
+
+    // Clear existing chart
+    chartDiv.innerHTML = '';
+
+    try {
+        if (resultData.is_curve && resultData.current_value && resultData.current_value.values) {
+            renderCurveChart(chartId, resultData);
+        } else if (!resultData.is_curve) {
+            renderScalarChart(chartId, resultData);
+        } else {
+            chartDiv.innerHTML = '<p style="text-align: center; color: #6c757d; padding: 2rem;">No chart data available</p>';
+        }
+    } catch (error) {
+        console.error('Error rendering chart:', error);
+        chartDiv.innerHTML = '<p style="text-align: center; color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 1rem; border-radius: 0.25rem; margin: 1rem;">Error loading chart</p>';
+    }
+}
+
+function renderCurveChart(chartId, resultData) {
+    const traces = [];
+    const colors = ['#667eea', '#6c757d', '#868e96', '#adb5bd', '#ced4da'];
+
+    // Current value trace
+    const currentData = resultData.current_value.values;
+    const x_values = currentData.map(point => point[0]);
+    const y_values = currentData.map(point => point[1]);
+
+    traces.push({
+        x: x_values,
+        y: y_values,
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: resultData.labels && resultData.labels.comparison_keys ?
+            Object.entries(resultData.labels.comparison_keys).map(([k,v]) => k + '=' + v).join(', ') :
+            'Current',
+        line: {
+            color: resultData.verdict === 'REGRESSION' ? '#dc3545' : resultData.verdict === 'PASS' ? '#28a745' : '#ffc107',
+            width: 3
+        },
+        marker: {
+            size: 8,
+            color: resultData.verdict === 'REGRESSION' ? '#dc3545' : resultData.verdict === 'PASS' ? '#28a745' : '#ffc107'
+        }
+    });
+
+    // Historical traces
+    if (resultData.baseline_values) {
+        resultData.baseline_values.forEach((baseline, idx) => {
+            if (baseline.value && Array.isArray(baseline.value)) {
+                const hist_x = baseline.value.map(point => point[0]);
+                const hist_y = baseline.value.map(point => point[1]);
+
+                traces.push({
+                    x: hist_x,
+                    y: hist_y,
+                    type: 'scatter',
+                    mode: 'lines+markers',
+                    name: baseline.comparison_keys ?
+                        Object.entries(baseline.comparison_keys).map(([k,v]) => k + '=' + v).join(', ') :
+                        'Historical ' + (idx + 1),
+                    line: {
+                        color: colors[idx + 1] || '#6c757d',
+                        width: 2,
+                        dash: 'dot'
+                    },
+                    marker: {
+                        size: 6,
+                        color: colors[idx + 1] || '#6c757d',
+                        opacity: 0.7
+                    }
+                });
+            }
+        });
+    }
+
+    const layout = {
+        title: {
+            text: resultData.kpi_id + (resultData.details && resultData.details.relative_change ?
+                ' (' + (resultData.details.relative_change * 100 > 0 ? '+' : '') +
+                (resultData.details.relative_change * 100).toFixed(1) + '% change)' : ''),
+            font: { size: 16 }
+        },
+        xaxis: {
+            title: (resultData.x_help || 'Input') + (resultData.x_unit ? ` (${resultData.x_unit})` : ''),
+            showgrid: true,
+            gridcolor: '#e0e0e0'
+        },
+        yaxis: {
+            title: (resultData.y_help || resultData.kpi_id) + (resultData.y_unit ? ` (${resultData.y_unit})` : ''),
+            showgrid: true,
+            gridcolor: '#e0e0e0'
+        },
+        plot_bgcolor: 'white',
+        paper_bgcolor: 'white',
+        margin: { t: 60, r: 20, b: 60, l: 80 },
+        hoverlabel: {
+            namelength: -1,
+            bgcolor: 'white',
+            bordercolor: '#333',
+            font: { size: 12 }
+        },
+        legend: {
+            x: 1.05,
+            y: 1,
+            bgcolor: 'rgba(255,255,255,0.8)',
+            bordercolor: '#ddd',
+            borderwidth: 1
+        }
+    };
+
+    const config = {
+        responsive: true,
+        displayModeBar: true,
+        displaylogo: false,
+        modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d']
+    };
+
+    Plotly.newPlot(chartId, traces, layout, config);
+}
+
+function renderScalarChart(chartId, resultData) {
+    const chartDiv = document.getElementById(chartId);
+    if (!chartDiv) return;
+
+    // Clear existing content
+    chartDiv.innerHTML = '';
+
+    try {
+        const traces = [];
+        const labels = [];
+        const values = [];
+        const colors = [];
+
+        // Current value
+        if (resultData.current_value && resultData.current_value.value !== null) {
+            let currentLabel = 'Current';
+            if (resultData.labels && resultData.labels.comparison_keys) {
+                const keys = Object.entries(resultData.labels.comparison_keys)
+                    .map(([key, value]) => `${key}=${value}`)
+                    .join(', ');
+                if (keys) currentLabel = keys;
+            }
+
+            labels.push(currentLabel);
+            values.push(resultData.current_value.value);
+            colors.push(resultData.verdict === 'REGRESSION' ? '#dc3545' :
+                       resultData.verdict === 'PASS' ? '#28a745' : '#ffc107');
+        }
+
+        // Historical baseline values
+        if (resultData.baseline_values) {
+            resultData.baseline_values.forEach((baseline, index) => {
+                if (baseline && baseline.value !== null) {
+                    let histLabel = `Historical ${index + 1}`;
+                    if (baseline.comparison_keys) {
+                        const keys = Object.entries(baseline.comparison_keys)
+                            .map(([key, value]) => `${key}=${value}`)
+                            .join(', ');
+                        if (keys) histLabel = keys;
+                    }
+
+                    labels.push(histLabel);
+                    values.push(baseline.value);
+                    colors.push('#6c757d'); // Gray for historical values
+                }
+            });
+        }
+
+        if (values.length === 0) {
+            chartDiv.innerHTML = '<p style="text-align: center; color: #6c757d; padding: 2rem;">No data available for chart</p>';
+            return;
+        }
+
+        const trace = {
+            x: labels,
+            y: values,
+            type: 'bar',
+            marker: {
+                color: colors,
+                line: {
+                    color: '#333',
+                    width: 1
+                }
+            },
+            hovertemplate: '<b>%{x}</b><br>Value: %{y:.3f}<extra></extra>'
+        };
+
+        const layout = {
+            title: {
+                text: resultData.kpi_id + (resultData.details && resultData.details.relative_change ?
+                    ' (' + (resultData.details.relative_change * 100 > 0 ? '+' : '') +
+                    (resultData.details.relative_change * 100).toFixed(1) + '% change)' : ''),
+                font: { size: 16 }
+            },
+            xaxis: {
+                title: 'Comparison Key',
+                tickangle: -45,
+                showgrid: false
+            },
+            yaxis: {
+                title: (resultData.help || resultData.kpi_id) + (resultData.unit ? ` (${resultData.unit})` : ''),
+                showgrid: true,
+                gridcolor: '#e0e0e0'
+            },
+            plot_bgcolor: 'white',
+            paper_bgcolor: 'white',
+            margin: { t: 60, r: 20, b: 100, l: 80 },
+            hoverlabel: {
+                bgcolor: 'white',
+                bordercolor: '#ddd'
+            }
+        };
+
+        const config = {
+            responsive: true,
+            displayModeBar: true,
+            displaylogo: false,
+            modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d']
+        };
+
+        Plotly.newPlot(chartId, [trace], layout, config);
+    } catch (error) {
+        console.error('Error rendering scalar chart:', error);
+        chartDiv.innerHTML = '<p style="text-align: center; color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 1rem; border-radius: 0.25rem; margin: 1rem;">Error loading chart</p>';
+    }
+}
+
+// Store regression results data for chart rendering
+window.regressionResultsData = [
+    {% for result in results %}
+    {
+        kpi_id: '{{ result.kpi_id }}',
+        verdict: '{{ result.verdict }}',
+        run_id: '{{ result.run_id }}',
+        is_curve: {{ result.is_curve | tojson }},
+        current_value: {{ result.current_value | tojson | safe }},
+        baseline_values: {{ result.baseline_values | tojson | safe }},
+        labels: {{ result.labels | tojson | safe }},
+        details: {{ result.details | tojson | safe }},
+        baseline_count: {{ result.baseline_count }},
+        unit: '{{ result.unit if result.unit else "" }}',
+        help: '{{ result.help if result.help else "" }}',
+        x_unit: '{{ result.x_unit if result.x_unit else "" }}',
+        x_help: '{{ result.x_help if result.x_help else "" }}',
+        y_unit: '{{ result.y_unit if result.y_unit else "" }}',
+        y_help: '{{ result.y_help if result.y_help else "" }}'
+    }{{ "," if not loop.last else "" }}
+    {% endfor %}
+];
+
+
+// Filter functionality
+function populateFilterOptions() {
+    if (!window.regressionResultsData) return;
+
+    const testRuns = new Set();
+    const kpiIds = new Set();
+    const verdicts = new Set();
+
+    // Extract unique values from data
+    window.regressionResultsData.forEach(result => {
+        if (result.run_id) testRuns.add(result.run_id);
+        if (result.kpi_id) kpiIds.add(result.kpi_id);
+        if (result.verdict) verdicts.add(result.verdict);
+    });
+
+    // Populate test run filters
+    const testRunContainer = document.getElementById('test-run-filters');
+    testRuns.forEach(testRun => {
+        const label = document.createElement('label');
+        label.style.cssText = 'display: block; margin-bottom: 0.25rem; font-size: 0.875rem;';
+        label.innerHTML = `<input type="checkbox" class="test-run-filter" value="${testRun}" checked style="margin-right: 0.5rem;"> ${testRun}`;
+        testRunContainer.appendChild(label);
+    });
+
+    // Populate KPI ID filters
+    const kpiIdContainer = document.getElementById('kpi-id-filters');
+    Array.from(kpiIds).sort().forEach(kpiId => {
+        const label = document.createElement('label');
+        label.style.cssText = 'display: block; margin-bottom: 0.25rem; font-size: 0.875rem;';
+        label.innerHTML = `<input type="checkbox" class="kpi-id-filter" value="${kpiId}" checked style="margin-right: 0.5rem;"> ${kpiId}`;
+        kpiIdContainer.appendChild(label);
+    });
+
+    // Populate verdict filters
+    const verdictContainer = document.getElementById('verdict-filters');
+    Array.from(verdicts).sort().forEach(verdict => {
+        const badgeClass = verdict === 'PASS' ? 'badge-success' : verdict === 'REGRESSION' ? 'badge-danger' : (verdict === 'SKIPPED' || verdict === 'NO_BASELINE') ? 'badge-warning' : 'badge-info';
+        const label = document.createElement('label');
+        label.style.cssText = 'display: block; margin-bottom: 0.25rem; font-size: 0.875rem;';
+        label.innerHTML = `<input type="checkbox" class="verdict-filter" value="${verdict}" checked style="margin-right: 0.5rem;"> <span class="badge ${badgeClass}" style="font-size: 0.75rem;">${verdict}</span>`;
+        verdictContainer.appendChild(label);
+    });
+
+    // Setup "All" checkbox handlers
+    setupAllCheckboxHandlers();
+}
+
+function setupAllCheckboxHandlers() {
+    // Test Run "All" handler
+    document.getElementById('all-test-runs').addEventListener('change', function() {
+        const checkboxes = document.querySelectorAll('.test-run-filter');
+        checkboxes.forEach(cb => cb.checked = this.checked);
+    });
+
+    // KPI ID "All" handler
+    document.getElementById('all-kpi-ids').addEventListener('change', function() {
+        const checkboxes = document.querySelectorAll('.kpi-id-filter');
+        checkboxes.forEach(cb => cb.checked = this.checked);
+    });
+
+    // Verdict "All" handler
+    document.getElementById('all-verdicts').addEventListener('change', function() {
+        const checkboxes = document.querySelectorAll('.verdict-filter');
+        checkboxes.forEach(cb => cb.checked = this.checked);
+    });
+
+    // Individual checkbox handlers to update "All" checkbox state and auto-apply filters
+    document.addEventListener('change', function(e) {
+        if (e.target.classList.contains('test-run-filter')) {
+            updateAllCheckbox('all-test-runs', '.test-run-filter');
+            applyFilters();
+        } else if (e.target.classList.contains('kpi-id-filter')) {
+            updateAllCheckbox('all-kpi-ids', '.kpi-id-filter');
+            applyFilters();
+        } else if (e.target.classList.contains('verdict-filter')) {
+            updateAllCheckbox('all-verdicts', '.verdict-filter');
+            applyFilters();
+        } else if (e.target.id === 'all-test-runs' || e.target.id === 'all-kpi-ids' || e.target.id === 'all-verdicts') {
+            applyFilters();
+        }
+    });
+}
+
+function updateAllCheckbox(allCheckboxId, filterSelector) {
+    const allCheckbox = document.getElementById(allCheckboxId);
+    const filterCheckboxes = document.querySelectorAll(filterSelector);
+    const checkedCount = Array.from(filterCheckboxes).filter(cb => cb.checked).length;
+
+    allCheckbox.checked = checkedCount === filterCheckboxes.length;
+    allCheckbox.indeterminate = checkedCount > 0 && checkedCount < filterCheckboxes.length;
+}
+
+function applyFilters() {
+    const selectedTestRuns = Array.from(document.querySelectorAll('.test-run-filter:checked')).map(cb => cb.value);
+    const selectedKpiIds = Array.from(document.querySelectorAll('.kpi-id-filter:checked')).map(cb => cb.value);
+    const selectedVerdicts = Array.from(document.querySelectorAll('.verdict-filter:checked')).map(cb => cb.value);
+
+    // Get all table rows (both data rows and level rows)
+    const table = document.querySelector('#all-results-table tbody');
+    if (!table) return;
+
+    let visibleCount = 0;
+
+    // Process each result group (every 4 rows: main row + 3 detail rows)
+    window.regressionResultsData.forEach((result, index) => {
+        const shouldShow = (
+            (selectedTestRuns.length === 0 || !result.run_id || selectedTestRuns.includes(result.run_id)) &&
+            (selectedKpiIds.length === 0 || selectedKpiIds.includes(result.kpi_id)) &&
+            (selectedVerdicts.length === 0 || selectedVerdicts.includes(result.verdict))
+        );
+
+        // Find the rows for this result (main + 3 detail rows)
+        const mainRowIndex = index * 4;
+        const mainRow = table.children[mainRowIndex];
+        const plotRow = table.children[mainRowIndex + 1];
+        const dataRow = table.children[mainRowIndex + 2];
+        const analysisRow = table.children[mainRowIndex + 3];
+
+        if (shouldShow) {
+            // Show main row
+            if (mainRow) {
+                mainRow.style.display = 'table-row';
+            }
+
+            // For detail rows, check if they were previously open before showing
+            // Detail rows start hidden, only show if they were toggled open
+            if (plotRow) {
+                // Check if this panel was previously open (has table-row display or the icon shows ▼)
+                const plotIcon = document.getElementById(`toggle-plot-${index}`);
+                const wasOpen = plotIcon && plotIcon.textContent === '▼';
+                plotRow.style.display = wasOpen ? 'table-row' : 'none';
+
+                // If plot panel was open, ensure the chart is rendered
+                if (wasOpen) {
+                    setTimeout(() => {
+                        renderInlineChart(`plot-${index}`, index);
+                    }, 50);
+                }
+            }
+
+            if (dataRow) {
+                const dataIcon = document.getElementById(`toggle-data-${index}`);
+                const wasOpen = dataIcon && dataIcon.textContent === '▼';
+                dataRow.style.display = wasOpen ? 'table-row' : 'none';
+            }
+
+            if (analysisRow) {
+                const analysisIcon = document.getElementById(`toggle-analysis-${index}`);
+                const wasOpen = analysisIcon && analysisIcon.textContent === '▼';
+                analysisRow.style.display = wasOpen ? 'table-row' : 'none';
+            }
+
+            visibleCount++;
+        } else {
+            // Hide all rows for this result
+            [mainRow, plotRow, dataRow, analysisRow].forEach(row => {
+                if (row) {
+                    row.style.display = 'none';
+                }
+            });
+        }
+    });
+
+    // Update results count
+    const header = document.querySelector('.card h2');
+    if (header && header.textContent.includes('All Test Results')) {
+        const totalCount = window.regressionResultsData.length;
+        header.textContent = `All Test Results (${visibleCount}/${totalCount})`;
+    }
+}
+
+function clearAllFilters() {
+    // Check all checkboxes
+    document.querySelectorAll('#test-run-filters input, #kpi-id-filters input, #verdict-filters input').forEach(cb => {
+        cb.checked = true;
+    });
+
+    // Apply filters to show all
+    applyFilters();
+}
+
+// Initialize filters when the page loads
+document.addEventListener('DOMContentLoaded', function() {
+    // Small delay to ensure regression data is fully loaded
+    setTimeout(() => {
+        populateFilterOptions();
+    }, 100);
+});
+
+// Toggle function for collapsible source sections
+function toggleSourceSection(sectionId) {
+    const content = document.getElementById(`${sectionId}-content`);
+    const icon = document.getElementById(`${sectionId}-icon`);
+
+    if (content.style.display === 'none' || content.style.display === '') {
+        content.style.display = 'block';
+        icon.textContent = '▼';
+    } else {
+        content.style.display = 'none';
+        icon.textContent = '▶';
+    }
+}
+
+// Scroll to and highlight a specific result in All Test Results
+function scrollToResult(kpiId, runId) {
+    // Find the matching row
+    const rows = document.querySelectorAll('#all-results-table tbody tr[data-kpi-id]');
+    let targetRow = null;
+
+    for (let row of rows) {
+        // Match both kpi_id and run_id for precise targeting
+        if (row.dataset.kpiId === kpiId && row.dataset.runId === runId) {
+            targetRow = row;
+            break;
+        }
+    }
+
+    // If exact match not found, try matching just kpi_id
+    if (!targetRow) {
+        for (let row of rows) {
+            if (row.dataset.kpiId === kpiId) {
+                targetRow = row;
+                break;
+            }
+        }
+    }
+
+    if (targetRow) {
+        // Clear any existing filters to ensure the row is visible
+        const allCheckboxes = document.querySelectorAll('#test-run-filters input, #kpi-id-filters input, #verdict-filters input');
+        allCheckboxes.forEach(cb => cb.checked = true);
+        applyFilters();
+
+        // Small delay to ensure filtering is applied
+        setTimeout(() => {
+            // Scroll to the row smoothly
+            targetRow.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center'
+            });
+
+            // Highlight the row temporarily
+            const originalBackground = targetRow.style.background;
+            targetRow.style.background = '#fff3cd';
+            targetRow.style.transition = 'background-color 0.3s ease';
+
+            // Remove highlight after 2 seconds
+            setTimeout(() => {
+                targetRow.style.background = originalBackground;
+                setTimeout(() => {
+                    targetRow.style.transition = '';
+                }, 300);
+            }, 2000);
+        }, 100);
+    } else {
+        console.warn('Could not find result row for KPI:', kpiId, 'Run ID:', runId);
+    }
+}
+
+</script>
+
+{% endblock %}

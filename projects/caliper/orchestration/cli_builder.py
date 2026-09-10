@@ -116,6 +116,9 @@ def build_kpi_generate_command(
     # Status file for orchestration
     cmd.extend(["--status-file", str(status_file)])
 
+    # Always enable HTML generation
+    cmd.append("--html")
+
     return cmd
 
 
@@ -207,7 +210,6 @@ def build_kpi_csv_export_command(
     tree_root: Path,
     manifest_path: Path | None,
     status_file: Path,
-    input_file: Path,
     output_file: Path,
 ) -> list[str]:
     """Build CLI command for caliper kpi csv-export.
@@ -217,7 +219,6 @@ def build_kpi_csv_export_command(
         tree_root: Base directory for artifacts
         manifest_path: Optional manifest file path
         status_file: Where to write status YAML
-        input_file: Input KPI JSON file
         output_file: Output CSV file
 
     Returns:
@@ -235,11 +236,16 @@ def build_kpi_csv_export_command(
         cmd.extend(["--plugin", config.plugin_module])
 
     # CSV export specific options
-    cmd.extend(["--input", str(input_file)])
     cmd.extend(["--output", str(output_file)])
 
-    if config.kpi.kpis_to_csv.include_header_comments:
-        cmd.append("--include-header-comments")
+    # Include/exclude labels (parent-level filtering)
+    if config.filtering.include_labels:
+        for label in config.filtering.include_labels:
+            cmd.extend(["--include-label", label])
+
+    if config.filtering.exclude_labels:
+        for label in config.filtering.exclude_labels:
+            cmd.extend(["--exclude-label", label])
 
     # Status file for orchestration
     cmd.extend(["--status-file", str(status_file)])
@@ -418,6 +424,9 @@ def build_analyse_kpis_command(
 
     # Status file for orchestration
     cmd.extend(["--status-file", str(status_file)])
+
+    # Always enable HTML generation
+    cmd.append("--html")
 
     return cmd
 

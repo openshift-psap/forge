@@ -1,6 +1,6 @@
 """CSV export functionality for GuideLLM KPIs."""
 
-from .kpi_csv_exporter import KPICsvExporter, quick_export_kpis_to_csv
+from .kpi_csv_exporter import KPICsvExporter, quick_export_dashboard_csv
 from .kpi_csv_model import (
     KPICsvRow,
     KPICsvSchema,
@@ -14,5 +14,5 @@ __all__ = [
     "KPICsvSchema",
     "create_csv_row_from_kpi_record",
     "create_csv_rows_from_kpi_record",
-    "quick_export_kpis_to_csv",
+    "quick_export_dashboard_csv",
 ]

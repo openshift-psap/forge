@@ -138,6 +138,7 @@ def _run_artifacts_to_kpis(
             completed_at=time.time(),
             reason="kpi disabled",
             log_file=None,
+            html_file=None,
         )
         return result
     if not postprocess_config.kpi.artifacts_to_kpis.enabled:
@@ -146,6 +147,7 @@ def _run_artifacts_to_kpis(
             completed_at=time.time(),
             reason="kpi.artifacts_to_kpis disabled",
             log_file=None,
+            html_file=None,
         )
         return result
 
@@ -184,11 +186,19 @@ def _run_artifacts_to_kpis(
             logger.info(
                 f"KPI generate: output_file={output_file}, env.ARTIFACT_DIR={env.ARTIFACT_DIR}, relative_path={relative_path}"
             )
+
+            # Handle HTML file path if available
+            html_file = None
+            if status_data.get("html_file"):
+                html_file_path = Path(status_data["html_file"])
+                html_file = _make_path_relative_to_base(html_file_path, env.ARTIFACT_DIR)
+
             result = KpiGenerateStepResult(
                 status=StepStatus.SUCCESS,
                 completed_at=time.time(),
                 output_file=relative_path,
                 log_file=log_file,
+                html_file=html_file,
             )
             return result
         else:
@@ -197,6 +207,7 @@ def _run_artifacts_to_kpis(
                 completed_at=time.time(),
                 error=status_data.get("error", "Unknown error"),
                 log_file=log_file,
+                html_file=None,
             )
             return result
 
@@ -212,6 +223,7 @@ def _run_artifacts_to_kpis(
             completed_at=time.time(),
             error=str(e),
             log_file=None,
+            html_file=None,
         )
         return result
 
@@ -324,15 +336,14 @@ def _load_test_labels(test_dir: Path) -> dict[str, Any]:
     return {}
 
 
-def _run_kpis_to_csv(
+def _run_dashboard_csv(
     postprocess_config: CaliperOrchestrationPostprocessConfig,
     output_dir: Path,
-    kpi_json_path: Path,
     base_dir: Path,
     manifest_path: Path | None,
     step_logs_dir: Path,
 ) -> dict[str, Any]:
-    """Export KPI data to CSV format using fork/exec subprocess execution."""
+    """Export dashboard CSV independently from model data using fork/exec subprocess execution."""
 
     if not postprocess_config.kpi.enabled:
         result = CsvExportStepResult(
@@ -342,20 +353,20 @@ def _run_kpis_to_csv(
             log_file=None,
         )
         return result
-    if not postprocess_config.kpi.kpis_to_csv.enabled:
+    if not postprocess_config.kpi.dashboard_csv.enabled:
         result = CsvExportStepResult(
             status=StepStatus.DISABLED,
             completed_at=time.time(),
-            reason="kpi.kpis_to_csv disabled",
+            reason="kpi.dashboard_csv disabled",
             log_file=None,
         )
         return result
 
     try:
-        csv_output = postprocess_config.kpi.kpis_to_csv.output
+        csv_output = postprocess_config.kpi.dashboard_csv.output
         if Path(csv_output).is_absolute() or ".." in Path(csv_output).parts:
             raise ValueError(
-                f"kpi.kpis_to_csv.output must be a relative path without '..': {csv_output}"
+                f"kpi.dashboard_csv.output must be a relative path without '..': {csv_output}"
             )
         output_file = output_dir / csv_output
         output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -369,7 +380,6 @@ def _run_kpis_to_csv(
             tree_root=base_dir,
             manifest_path=manifest_path,
             status_file=status_file,
-            input_file=kpi_json_path,
             output_file=output_file,
         )
 
@@ -980,7 +990,7 @@ class CaliperPostprocessOrchestrator:
             # Only mark all steps as failed if basic setup fails
             for step_name in [
                 "artifacts_to_kpis",
-                "kpis_to_csv",
+                "dashboard_csv",
                 "artifacts_to_ai_data",
                 "s3_import",
                 "analyse_kpis",
@@ -1009,7 +1019,7 @@ class CaliperPostprocessOrchestrator:
         self._run_kpis_to_metrics_step()
 
         # KPI CSV export
-        self._run_kpis_to_csv_step()
+        self._run_dashboard_csv_step()
 
         # AI evaluation export
         self._run_artifacts_to_ai_data_step(mod_str)
@@ -1032,6 +1042,7 @@ class CaliperPostprocessOrchestrator:
                     status=StepStatus.DISABLED,
                     completed_at=time.time(),
                     reason="kpi.artifacts_to_kpis disabled",
+                    html_file=None,
                 ),
             )
             return
@@ -1053,12 +1064,29 @@ class CaliperPostprocessOrchestrator:
 
         Runs automatically after kpis.json generation succeeds. Uses
         ``caliper kpi kpis-to-mlflow`` via fork/exec like all other steps.
+
+        Note: This step is optional and only runs if artifacts_to_kpis step was executed successfully.
         """
+        # Check if artifacts_to_kpis step exists and was successful
         kpi_step = self._get_step("artifacts_to_kpis")
         if not kpi_step or kpi_step.get("status") != "success":
+            # artifacts_to_kpis step was not run or failed - skip MLflow metrics generation
+            return
+
+        # Check if artifacts_to_kpis is enabled in config
+        if (
+            not hasattr(self.config.kpi, "artifacts_to_kpis")
+            or not self.config.kpi.artifacts_to_kpis.enabled
+        ):
+            # artifacts_to_kpis disabled - skip MLflow metrics generation
             return
 
         kpis_json_path = self.output_dir / self.config.kpi.artifacts_to_kpis.output
+
+        # Check if the KPI JSON file actually exists
+        if not kpis_json_path.exists():
+            # No KPI JSON file available - skip MLflow metrics generation
+            return
 
         status_file = _generate_automatic_status_file_path(self.output_dir, "kpis_to_mlflow")
 
@@ -1092,30 +1120,28 @@ class CaliperPostprocessOrchestrator:
             error = status_data.get("error", f"exit code {result.returncode}")
             logger.error("kpis-to-mlflow step failed: %s", error)
 
-    def _run_kpis_to_csv_step(self) -> None:
-        """Execute the KPI CSV export step."""
-        if not self.config.kpi.kpis_to_csv.enabled:
+    def _run_dashboard_csv_step(self) -> None:
+        """Execute the dashboard CSV export step."""
+        if not self.config.kpi.dashboard_csv.enabled:
             self._add_step(
-                "kpis_to_csv",
+                "dashboard_csv",
                 CsvExportStepResult(
                     status=StepStatus.DISABLED,
                     completed_at=time.time(),
-                    reason="kpi.kpis_to_csv disabled",
+                    reason="kpi.dashboard_csv disabled",
                 ),
             )
             return
 
-        kpi_json_path = self.output_dir / self.config.kpi.artifacts_to_kpis.output
-        result = _run_kpis_to_csv(
+        result = _run_dashboard_csv(
             self.config,
             self.output_dir,
-            kpi_json_path,
             self.tree_root,
             self.manifest_path,
             self.step_logs_dir,
         )
         log_file = result.log_file
-        self._add_step("kpis_to_csv", result, log_file)
+        self._add_step("dashboard_csv", result, log_file)
         if result.status == StepStatus.FAILED:
             # CSV export failure doesn't affect overall status - it's supplementary
             logger.warning("KPI CSV export failed but continuing execution")
@@ -1239,6 +1265,7 @@ class CaliperPostprocessOrchestrator:
                     status=StepStatus.DISABLED,
                     completed_at=time.time(),
                     reason="analyze disabled",
+                    html_file=None,
                 ),
             )
             return
@@ -1258,6 +1285,7 @@ class CaliperPostprocessOrchestrator:
                     status=StepStatus.FAILED,
                     completed_at=time.time(),
                     error=f"Current KPI file not found: {current_kpis_path}",
+                    html_file=None,
                 ),
             )
             self.analyze_failed = True
@@ -1286,6 +1314,7 @@ class CaliperPostprocessOrchestrator:
             regression_count=status.regression_count,
             total_kpis=status.total_kpis,
             log_file=status.log_file,
+            html_file=status.html_file,
         )
 
         self._add_step("analyse_kpis", result, result.log_file)
@@ -1335,14 +1364,14 @@ class CaliperPostprocessOrchestrator:
             ):
                 kpis_file = self.output_dir / self.config.kpi.artifacts_to_kpis.output
 
-            # Get CSV file from kpis_to_csv step
-            kpis_to_csv_step = self._get_step("kpis_to_csv")
+            # Get CSV file from dashboard_csv step
+            dashboard_csv_step = self._get_step("dashboard_csv")
             if (
-                kpis_to_csv_step
-                and kpis_to_csv_step.get("status") == "success"
-                and kpis_to_csv_step.get("output_file")
+                dashboard_csv_step
+                and dashboard_csv_step.get("status") == "success"
+                and dashboard_csv_step.get("output_file")
             ):
-                csv_output = self.config.kpi.kpis_to_csv.output
+                csv_output = self.config.kpi.dashboard_csv.output
                 csv_file = self.output_dir / csv_output
 
             # Get AI data directory from artifacts_to_ai_data step

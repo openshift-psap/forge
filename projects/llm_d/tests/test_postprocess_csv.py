@@ -122,7 +122,7 @@ def test_llmd_plugin_exports_dashboard_compatible_csv(tmp_path):
     )
 
     output_path = tmp_path / "dashboard.csv"
-    plugin.export_kpis_to_csv(plugin.compute_kpis(model), output_path)
+    plugin.export_dashboard_csv(model, output_path)
 
     with output_path.open(newline="", encoding="utf-8") as output:
         reader = csv.DictReader(output)

@@ -295,7 +295,7 @@ def run_artifacts_to_ai_data(
         return {"status": "failed", "error": str(e), "completed_at": time.time(), "log_file": None}
 
 
-def run_kpis_to_csv(
+def run_dashboard_csv(
     postprocess_config: CaliperOrchestrationPostprocessConfig,
     plugin,
     model,
@@ -305,19 +305,19 @@ def run_kpis_to_csv(
     manifest_path: Path | None,
     step_logs_dir: Path,
 ) -> dict[str, Any]:
-    """Export KPI JSON to CSV using fork/exec subprocess execution."""
+    """Export dashboard CSV independently from model data using fork/exec subprocess execution."""
 
-    if not postprocess_config.kpi.csv.enabled:
+    if not postprocess_config.kpi.dashboard_csv.enabled:
         return {
             "status": "disabled",
-            "reason": "kpi.csv disabled",
+            "reason": "kpi.dashboard_csv disabled",
             "completed_at": time.time(),
             "log_file": None,
         }
 
     try:
         # Prepare paths
-        output_file = output_dir / postprocess_config.kpi.csv.output
+        output_file = output_dir / postprocess_config.kpi.dashboard_csv.output
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Create automatic status file path
@@ -420,6 +420,17 @@ def run_analyse_kpis(
             # Convert relative paths back to absolute for proper path handling
             if status_data.get("output_file"):
                 status_data["output_file"] = str(Path(status_data["output_file"]).resolve())
+            if status_data.get("html_file"):
+                # Make html_file relative to output_dir for MLflow compatibility
+                html_path = Path(status_data["html_file"])
+                if html_path.is_absolute():
+                    try:
+                        status_data["html_file"] = str(html_path.relative_to(output_dir))
+                    except ValueError:
+                        # If can't make relative, use resolved absolute path as fallback
+                        status_data["html_file"] = str(html_path.resolve())
+                else:
+                    status_data["html_file"] = str(html_path)
 
             # Ensure required fields are present with defaults
             status_data.setdefault("completed_at", time.time())

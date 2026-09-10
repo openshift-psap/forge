@@ -31,7 +31,15 @@ import click
     required=True,
     help="Plugin module name for analysis",
 )
-def analyze_cli(current: Path, historical_dir: Path, output: Path, plugin_module: str) -> None:
+@click.option(
+    "--html",
+    is_flag=True,
+    default=False,
+    help="Generate HTML report in addition to JSON output.",
+)
+def analyze_cli(
+    current: Path, historical_dir: Path, output: Path, plugin_module: str, html: bool
+) -> None:
     """CLI entrypoint for KPI analysis."""
     from projects.caliper.engine.kpi.analyze import analyze_kpis
 
@@ -53,6 +61,19 @@ def analyze_cli(current: Path, historical_dir: Path, output: Path, plugin_module
                 click.echo("⚠️  Regressions detected in analysis results")
             elif result.get("message"):
                 click.echo(f"ℹ️  {result.get('message')}")
+
+            # Generate HTML report if requested
+            if html:
+                try:
+                    from projects.caliper.engine.kpi.html_generator import (
+                        generate_regression_html_from_file,
+                    )
+
+                    html_output = output.with_suffix(".html")
+                    generate_regression_html_from_file(output, html_output)
+                    click.echo(f"📄 Generated HTML regression report: {html_output}")
+                except Exception as e:
+                    click.echo(f"⚠️  Failed to generate HTML report: {e}", err=True)
         else:
             error_msg = result.get("error", "Unknown error")
             click.echo(f"❌ Analysis failed: {error_msg}", err=True)

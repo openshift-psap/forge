@@ -71,6 +71,21 @@ def run_visualize(
     cache_path: Path | None,
     verbose_parsing: bool = False,
 ) -> list[str]:
+    # Validate visualization configuration BEFORE parsing to avoid wasted work
+    cfg = resolve_visualize_config(base_dir, visualize_config_path)
+    ids = resolve_report_ids(
+        reports_csv=reports_csv,
+        report_group=report_group,
+        config=cfg,
+    )
+
+    # Check if any report IDs were provided (early validation)
+    if not ids:
+        raise ValueError(
+            "No report IDs provided. Use --reports with comma-separated report IDs "
+            "or --report-group with a valid visualize config file."
+        )
+
     # Parse include and exclude filters for directory-level filtering
     include_filters = None
     exclude_filters = None
@@ -92,19 +107,6 @@ def run_visualize(
         verbose_parsing=verbose_parsing,
         show_parameter_matrix=True,
     )
-    cfg = resolve_visualize_config(base_dir, visualize_config_path)
-    ids = resolve_report_ids(
-        reports_csv=reports_csv,
-        report_group=report_group,
-        config=cfg,
-    )
-
-    # Check if any report IDs were provided
-    if not ids:
-        raise ValueError(
-            "No report IDs provided. Use --reports with comma-separated report IDs "
-            "or --report-group with a valid visualize config file."
-        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     viz = plugin.visualize

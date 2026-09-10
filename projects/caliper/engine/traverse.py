@@ -310,7 +310,7 @@ def _load_labels(path: Path, is_matrixbenchmarking: bool = False) -> dict[str, A
     if is_matrixbenchmarking:
         # Add a special label to indicate this came from MatrixBenchmarking
         result = dict(data)
-        result["__caliper_source__"] = "matrixbenchmarking"
+
         return result
 
     return data

@@ -414,7 +414,7 @@ After benchmarks complete, `run_and_postprocess()` runs the Caliper pipeline:
 1. **Parse**: `RhaiisParser` extends `GuideLLMParser` with extra metrics (p1/p999
    percentiles, mean latencies, token counts, throughput) from raw `benchmarks.json`
 2. **KPI generate**: `RhaiisKpiHandler` emits 33 KPI types per rate point per profile
-3. **CSV export**: `RhaiisPlugin.export_kpis_to_csv` maps KPIs to the dashboard CSV
+3. **CSV export**: `RhaiisPlugin.export_dashboard_csv` maps KPIs to the dashboard CSV
    schema with all metadata columns (model, version, TP, accelerator, UUID, etc.)
 4. **S3 sync**: The CSV is appended to the consolidated dashboard CSV on S3
 5. **Regression check**: Optionally compares current vs. baseline version

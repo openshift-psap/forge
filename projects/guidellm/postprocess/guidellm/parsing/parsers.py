@@ -178,7 +178,7 @@ class GuideLLMParser:
                             if product_version:
                                 normalized = normalize_product_version(product_version)
                                 result["product_version"] = normalized
-                                logger.info(
+                                logger.debug(
                                     f"Extracted product_version '{product_version}' (normalized to '{normalized}') from annotation '{annotation_key}' in {file_path}"
                                 )
                                 break  # Use the first matching version annotation found
@@ -189,13 +189,15 @@ class GuideLLMParser:
             )
             if deployment_profile:
                 result["deployment_profile"] = deployment_profile
-                logger.info(f"Extracted deployment_profile '{deployment_profile}' from {file_path}")
+                logger.debug(
+                    f"Extracted deployment_profile '{deployment_profile}' from {file_path}"
+                )
 
             # Extract model name from spec
             model_name = extract_field_by_jsonpath(yaml_data, "spec.model.name")
             if model_name:
                 result["model_name"] = model_name
-                logger.info(f"Extracted model_name '{model_name}' from {file_path}")
+                logger.debug(f"Extracted model_name '{model_name}' from {file_path}")
 
             replicas = extract_field_by_jsonpath(yaml_data, "spec.replicas")
             if replicas is not None:
@@ -332,7 +334,7 @@ class GuideLLMParser:
                     logger.warning(f"Failed to parse benchmark data: {e}")
                     continue
 
-            logger.info(f"Parsed {len(benchmarks)} GuideLLM benchmarks from {file_path}")
+            logger.debug(f"Parsed {len(benchmarks)} GuideLLM benchmarks from {file_path}")
             return benchmarks, configuration, warnings
 
         except json.JSONDecodeError as e:
@@ -638,6 +640,7 @@ class GuideLLMParser:
         warnings: list[str] = []
 
         for node in nodes:
+            logger.info(f"Parsing '{node.test_path}' ...")
             # Look for the legacy single-file artifact and the newer per-rate artifacts.
             benchmarks_files = [p for p in node.artifact_paths if self._is_benchmarks_artifact(p)]
             benchmarks_files.sort(key=lambda path: path.name)
@@ -678,10 +681,10 @@ class GuideLLMParser:
             if node_benchmarks:
                 # Create aggregated metrics with performance curves for this node
                 labels = _labels_from_node(node)
-                kpi_labels = _kpi_labels_from_node(node)
+                node_kpi_labels = _kpi_labels_from_node(node)
 
-                # Merge kpi_labels into distinguishing_labels
-                distinguishing_labels = {**labels, **kpi_labels}
+                # Start with base labels from node
+                distinguishing_labels = {**labels, **node_kpi_labels}
 
                 metrics = self._create_aggregated_metrics(node_benchmarks)
                 if node_config:
@@ -708,27 +711,27 @@ class GuideLLMParser:
                         if field_value and field_name not in metrics:
                             metrics[field_name] = field_value
 
-                # Extract kpi_labels from the extracted fields and and
-                # the test labels from the node file
+                # Merge extracted artifact fields into distinguishing_labels
+                # This creates a single unified label set for both KPI computation and visualization
+                extracted_label_fields = [
+                    "gpu_type",
+                    "product_version",
+                    "deployment_profile",
+                    "model_name",
+                    "cluster",
+                    "benchmark_key",
+                ]
 
-                kpi_labels = {}
+                for field_name in extracted_label_fields:
+                    if field_name in metrics:
+                        distinguishing_labels[field_name] = metrics[field_name]
+                        logger.debug(
+                            f"Merged {field_name}='{metrics[field_name]}' into distinguishing_labels"
+                        )
 
-                # Add gpu_type as a KPI label if it was extracted
-                if "gpu_type" in metrics:
-                    kpi_labels["gpu_type"] = metrics["gpu_type"]
-                    logger.info(f"Added gpu_type '{metrics['gpu_type']}' to KPI labels")
-
-                # Add product_version as a KPI label if it was extracted
-                if "product_version" in metrics:
-                    kpi_labels["product_version"] = metrics["product_version"]
-                    logger.info(
-                        f"Added product_version '{metrics['product_version']}' to KPI labels"
-                    )
-
-                kpi_labels.update(_kpi_labels_from_node(node))
-
-                if kpi_labels:
-                    metrics["kpi_labels"] = kpi_labels
+                # For backwards compatibility, also store the merged labels as kpi_labels in metrics
+                # This ensures existing KPI computation code continues to work
+                metrics["kpi_labels"] = dict(distinguishing_labels)
 
                 records.append(
                     UnifiedResultRecord(
@@ -740,5 +743,5 @@ class GuideLLMParser:
                     )
                 )
 
-        logger.info(f"GuideLLM parser created {len(records)} unified result records")
+        logger.debug(f"GuideLLM parser created {len(records)} unified result records")
         return ParseResult(records=records, warnings=warnings)

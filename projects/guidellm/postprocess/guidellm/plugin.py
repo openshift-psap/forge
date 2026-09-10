@@ -32,7 +32,6 @@ class _PlotRegistry:
         if self._registry is not None:
             return self._registry
 
-        from .plotting.kpi_report import generate_kpi_report
         from .plotting.performance_analysis import (
             generate_comprehensive_performance_report,
             generate_deployment_profile_report,
@@ -47,15 +46,6 @@ class _PlotRegistry:
                     "report_title": "GuideLLM Performance Analysis",
                 },
                 "description": "comprehensive performance analysis report (recommended)",
-            },
-            "report_kpi_summary": {
-                "function": generate_kpi_report,
-                "type": "report",
-                "kwargs": {
-                    "report_number": 1,
-                    "report_title": "GuideLLM KPI Summary",
-                },
-                "description": "KPI summary with test conditions and metrics",
             },
             "report_deployment_profile": {
                 "function": generate_deployment_profile_report,
@@ -238,25 +228,45 @@ class GuideLLMPlugin(PostProcessingPlugin):
         """Compute KPI values using dataclasses with status details."""
         return self.kpi_handler.compute_kpis(model)
 
-    def export_kpis_to_csv(
-        self,
-        kpi_records: list[KpiRecord],
-        output_path: Path,
-        include_header_comments: bool = True,
-    ) -> str:
-        """Export KPI records to CSV format using GuideLLM's CSV exporter.
+    def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
+        """Generate dashboard CSV using shared architecture."""
+        from projects.guidellm.postprocess.guidellm.csv_dashboard import BASIC_GUIDELLM_FIELDNAMES
+        from projects.guidellm.postprocess.guidellm.dashboard import DashboardCsvExporter
 
-        Args:
-            kpi_records: KPI records from compute_kpis()
-            output_path: Path where to write the CSV file
-            include_header_comments: Whether to include descriptive header comments
+        def metadata_row_mapper(labels: dict[str, Any]) -> dict[str, Any]:
+            """Extract GuideLLM metadata for CSV row from dashboard KPI labels."""
+            accelerator = labels.get("gpu_type") or labels.get("accelerator", "")
+            model_id = labels.get("hf_model_id") or labels.get("model_name", "")
+            run_model = model_id.replace("/", "-")
+            tp = labels.get("tensor_parallel_size", "")
 
-        Returns:
-            Path to the generated CSV file
-        """
-        from projects.llm_d.postprocess.llm_d import csv_dashboard
+            return {
+                "run": "-".join(str(value) for value in (accelerator, run_model, tp) if value),
+                "accelerator": accelerator,
+                "model": model_id,
+                "version": labels.get("version", ""),
+                "prompt toks": labels.get("prompt_toks", ""),
+                "output toks": labels.get("output_toks", ""),
+                "TP": tp,
+                "uuid": labels.get("run_uuid", ""),
+                "runtime_args": labels.get("runtime_args", ""),
+                "guidellm_start_time_ms": labels.get("guidellm_start_time_ms", ""),
+                "guidellm_end_time_ms": labels.get("guidellm_end_time_ms", ""),
+                "image_tag": labels.get("image_tag", ""),
+                "guidellm_version": labels.get("guidellm_version", ""),
+                "mlflow_run_id": labels.get("mlflow_run_id", ""),
+                "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+                "notes": labels.get("notes", ""),
+            }
 
-        return csv_dashboard.export_kpis_to_csv(kpi_records, output_path, include_header_comments)
+        exporter = DashboardCsvExporter()
+        return exporter.export_dashboard_csv(
+            model,
+            output_path,
+            prefix="guidellm",
+            fieldnames=BASIC_GUIDELLM_FIELDNAMES,
+            metadata_row_mapper=metadata_row_mapper,
+        )
 
     def kpi_catalog(self) -> list[KpiCatalogEntry]:
         """Return catalog of available KPIs for hierarchical formatting."""

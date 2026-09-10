@@ -100,16 +100,11 @@ def build_inferenceservice(
     annotations: dict[str, str] = {
         "serving.kserve.io/deploymentMode": "RawDeployment",
         "storage.kserve.io/readonly": "false",
+        "serving.kserve.io/enable-prometheus-scraping": "true",
+        "prometheus.io/scrape": "true",
+        "prometheus.io/path": "/metrics",
+        "prometheus.io/port": str(engine_port),
     }
-    if engine != "sglang":
-        annotations.update(
-            {
-                "serving.kserve.io/enable-prometheus-scraping": "true",
-                "prometheus.io/scrape": "true",
-                "prometheus.io/path": "/metrics",
-                "prometheus.io/port": str(engine_port),
-            }
-        )
 
     metadata: dict[str, Any] = {
         "annotations": annotations,
@@ -119,7 +114,9 @@ def build_inferenceservice(
 
     if labels:
         meta_labels = dict(labels)
-        if engine in ("sglang", "trtllm"):
+        # SGLang now supports Prometheus metrics via --enable-metrics flag (PR #196)
+        # Only TRT-LLM needs to be excluded from OpenDataHub monitoring
+        if engine == "trtllm":
             meta_labels["monitoring.opendatahub.io/scrape"] = "false"
         metadata["labels"] = meta_labels
 

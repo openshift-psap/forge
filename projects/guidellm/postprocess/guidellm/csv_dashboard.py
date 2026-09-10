@@ -1,8 +1,9 @@
-"""LLM_D CSV dashboard export functionality."""
+"""Basic GuideLLM CSV dashboard export functionality."""
 
 from __future__ import annotations
 
-DASHBOARD_FIELDNAMES = [
+# Basic GuideLLM fieldnames without deployment-specific fields
+BASIC_GUIDELLM_FIELDNAMES = [
     "run",
     "accelerator",
     "model",
@@ -10,12 +11,6 @@ DASHBOARD_FIELDNAMES = [
     "prompt toks",
     "output toks",
     "TP",
-    "DP",
-    "EP",
-    "replicas",
-    "prefill_pod_count",
-    "decode_pod_count",
-    "router_config",
     "measured concurrency",
     "intended concurrency",
     "measured rps",

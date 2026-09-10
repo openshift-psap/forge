@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+
+{% block title %}Caliper KPI Report{% endblock %}
+
+{% block header_title %}KPI Report{% endblock %}
+
+{% block header_subtitle %}Performance Metrics Report - {{ total_tests }} test(s), {{ total_kpis }} KPI(s){% endblock %}
+
+{% block content %}
+<!-- Summary Statistics -->
+<div class="summary-grid">
+    <div class="summary-card">
+        <h3>{{ total_tests }}</h3>
+        <p>Test Runs</p>
+    </div>
+    <div class="summary-card">
+        <h3>{{ total_kpis }}</h3>
+        <p>Total KPIs</p>
+    </div>
+    <div class="summary-card">
+        <h3>{{ curve_kpis_count }}</h3>
+        <p>Curve KPIs</p>
+    </div>
+    <div class="summary-card">
+        <h3>{{ scalar_kpis_count }}</h3>
+        <p>Scalar KPIs</p>
+    </div>
+</div>
+
+<!-- Test Runs Navigation -->
+{% if tests|length > 1 %}
+<div class="card">
+    <h2>Test Runs</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Test Run</th>
+                <th>Labels</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for test in tests %}
+            <tr>
+                <td>
+                    <a href="#test-{{ test.run_id }}" style="color: #667eea; text-decoration: none; font-weight: bold;">
+                        {{ test.run_id }}
+                    </a>
+                </td>
+                <td>
+                    {% if test.labels %}
+                    <div class="label-list">
+                        {% for key, value in test.labels.items() %}
+                        <span class="label-item">{{ key }}: {{ value }}</span>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<!-- Test Results -->
+{% for test in tests %}
+<div class="card" id="test-{{ test.run_id }}">
+    <h2>Test Run: {{ test.run_id }}</h2>
+
+    {% if test.metadata and test.metadata.timestamp %}
+    <p class="timestamp">Generated: {{ test.metadata.timestamp }}</p>
+    {% endif %}
+
+    <!-- Test Labels -->
+    {% if test.labels %}
+    <div style="margin: 1rem 0;">
+        <strong>Labels:</strong>
+        <div class="label-list">
+            {% for key, value in test.labels.items() %}
+            <span class="label-item">{{ key }}: {{ value }}</span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- KPI Table -->
+    <table>
+        <thead>
+            <tr>
+                <th>KPI</th>
+                <th>Value</th>
+                <th>Unit</th>
+                <th>Type</th>
+                <th>Trend</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for kpi in test.kpis %}
+            <tr>
+                <td><strong>{{ kpi.name or kpi.kpi_id }}</strong></td>
+                <td class="metric-value">
+                    {% if kpi.is_curve %}
+                        {% if kpi.values_count > 0 %}
+                        {{ kpi.values_count }} points
+                        {% else %}
+                        No data
+                        {% endif %}
+                    {% else %}
+                        {% if kpi.value is not none %}
+                        {{ "%.3f"|format(kpi.value) if kpi.value is number else kpi.value }}
+                        {% else %}
+                        No data
+                        {% endif %}
+                    {% endif %}
+                </td>
+                <td>{{ kpi.unit or '-' }}</td>
+                <td>
+                    {% if kpi.is_curve %}
+                    <span class="badge badge-info">Curve</span>
+                    {% else %}
+                    <span class="badge badge-success">Scalar</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if kpi.higher_is_better %}
+                    <span style="color: green;">↑ Higher Better</span>
+                    {% else %}
+                    <span style="color: orange;">↓ Lower Better</span>
+                    {% endif %}
+                </td>
+                <td>{{ kpi.help or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Charts and Data Tables for Curve KPIs -->
+    {% set curve_kpis = test.kpis | selectattr('is_curve', 'equalto', true) | list %}
+    {% if curve_kpis %}
+    {% for kpi in curve_kpis %}
+    {% if kpi.values_list and kpi.values_list|length > 0 %}
+    <div style="margin: 1rem 0;">
+        <h5>{{ kpi.name or kpi.kpi_id }}</h5>
+        <table style="margin-top: 0.5rem; border: 1px solid #ddd;">
+            <thead>
+                <tr style="background-color: #f0f0f0;">
+                    <th style="padding: 0.5rem; border: 1px solid #ddd; font-weight: 200;">{{ kpi.x_help or kpi.x_unit or 'X' }}</th>
+                    {% for point in kpi.values_list %}
+                    <th style="padding: 0.5rem; border: 1px solid #ddd; text-align: center; font-weight: 200;">{{ point[0] }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <th style="padding: 0.5rem; border: 1px solid #ddd; background-color: #f0f0f0; font-weight: 200;">{{ kpi.y_help or kpi.unit or 'Y' }}</th>
+                    {% for point in kpi.values_list %}
+                    <td style="padding: 0.5rem; border: 1px solid #ddd; text-align: center;">{{ "%.3f"|format(point[1]) if point[1] is number else point[1] }}</td>
+                    {% endfor %}
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% endif %}
+</div>
+{% endfor %}
+
+<!-- Consolidated Charts Section -->
+
+{% if curve_kpi_ids %}
+<div class="card">
+    <h2>Curve Visualizations</h2>
+    {% for kpi_id in curve_kpi_ids %}
+    {% set ns = namespace(first_kpi=none) %}
+    {% for test in tests %}
+        {% for kpi in test.kpis %}
+            {% if kpi.kpi_id == kpi_id and kpi.is_curve %}
+                {% if not ns.first_kpi %}
+                    {% set ns.first_kpi = kpi %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+    {% endfor %}
+    <div style="margin-bottom: 2rem;">
+        <h3>{{ ns.first_kpi.name or kpi_id if ns.first_kpi else kpi_id }}</h3>
+        <div class="chart-container">
+            <div id="chart-{{ kpi_id }}" style="width: 100%; height: 400px;"></div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if not tests %}
+<div class="card">
+    <h2>No Data Available</h2>
+    <p>No KPI data was found in the provided file.</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Generate consolidated charts for curve KPIs (one chart per KPI with multiple test run series)
+// Debug: curve_kpi_ids = {{ curve_kpi_ids }}
+{% if curve_kpi_ids %}
+{% for kpi_id in curve_kpi_ids %}
+(function() {
+    try {
+        const traces = [];
+        const colors = ['#667eea', '#f093fb', '#4facfe', '#43e97b', '#fa709a', '#ffecd2', '#a8edea', '#ffd89b'];
+        let colorIndex = 0;
+        let firstKpi = null;
+
+        {% for test in tests %}
+        {% for kpi in test.kpis %}
+        {% if kpi.kpi_id == kpi_id and kpi.is_curve and kpi.values_list and kpi.values_list|length > 0 %}
+        (function() { // IIFE for {{ test.run_id }}
+            const rawData = {{ kpi.values_list|tojson|safe }};
+
+            if (!firstKpi) {
+                firstKpi = {
+                    name: '{{ kpi.name or kpi_id }}',
+                    unit: '{{ kpi.unit or "" }}',
+                    x_unit: '{{ kpi.x_unit or "" }}',
+                    help: '{{ kpi.help or "" }}',
+                    x_help: '{{ kpi.x_help or "" }}',
+                    y_help: '{{ kpi.y_help or "" }}'
+                };
+            }
+
+            if (Array.isArray(rawData) && rawData.length > 0) {
+                const x_values = rawData.map(point => point[0]);
+                const y_values = rawData.map(point => point[1]);
+
+                traces.push({
+                    x: x_values,
+                    y: y_values,
+                    type: 'scatter',
+                    mode: 'lines+markers',
+                    name: '{{ test.run_id }}',
+                    line: {
+                        color: colors[colorIndex % colors.length],
+                        width: 2
+                    },
+                    marker: {
+                        size: 6,
+                        color: colors[colorIndex % colors.length]
+                    }
+                });
+                colorIndex++;
+            }
+        })();
+        {% endif %}
+        {% endfor %}
+        {% endfor %}
+
+        if (traces.length === 0) {
+            console.warn('No valid data for KPI {{ kpi_id }}');
+            return;
+        }
+
+        const layout = {
+            title: {
+                text: firstKpi.name + (firstKpi.help ? ' - ' + firstKpi.help : ''),
+                font: { size: 18 }
+            },
+            xaxis: {
+                title: firstKpi.x_help ? (firstKpi.x_help + (firstKpi.x_unit ? ' (in ' + firstKpi.x_unit + ')' : '')) : firstKpi.x_unit,
+                showgrid: true,
+                gridcolor: '#e0e0e0'
+            },
+            yaxis: {
+                title: firstKpi.y_help ? (firstKpi.y_help + (firstKpi.unit ? ' (in ' + firstKpi.unit + ')' : '')) : firstKpi.unit,
+                showgrid: true,
+                gridcolor: '#e0e0e0'
+            },
+            plot_bgcolor: 'white',
+            paper_bgcolor: 'white',
+            margin: { t: 80, r: 20, b: 60, l: 80 },
+            legend: {
+                x: 1.05,
+                y: 1,
+                bgcolor: 'rgba(255,255,255,0.8)',
+                bordercolor: '#ddd',
+                borderwidth: 1
+            }
+        };
+
+        const config = {
+            responsive: true,
+            displayModeBar: true,
+            displaylogo: false,
+            modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d']
+        };
+
+        Plotly.newPlot('chart-{{ kpi_id }}', traces, layout, config);
+    } catch (error) {
+        console.error('Error generating consolidated chart for {{ kpi_id }}:', error);
+        const chartDiv = document.getElementById('chart-{{ kpi_id }}');
+        if (chartDiv) {
+            chartDiv.innerHTML = '<p>Error loading chart</p>';
+        }
+    }
+})();
+{% endfor %}
+{% endif %}
+</script>
+{% endblock %}

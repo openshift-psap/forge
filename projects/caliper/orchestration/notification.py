@@ -90,8 +90,8 @@ def _format_step_details_with_formatters(
     """Format step-specific details using object-oriented formatters."""
     if step_name == "artifacts_to_kpis":
         return _format_artifacts_to_kpis_step(step_data, get_file_link)
-    elif step_name == "kpis_to_csv":
-        return _format_kpis_to_csv_step(step_data, get_file_link)
+    elif step_name == "dashboard_csv":
+        return _format_dashboard_csv_step(step_data, get_file_link)
     elif step_name == "artifacts_to_ai_data":
         return _format_artifacts_to_ai_data_step(step_data, get_file_link)
     elif step_name == "s3_export":
@@ -128,11 +128,17 @@ def _format_artifacts_to_kpis_step(step_data: dict, get_file_link: callable | No
     output_file = step_data.get("output_file")
     if output_file:
         lines.append(_create_file_link(output_file, "📄", get_file_link))
+
+    # Include HTML file if available
+    html_file = step_data.get("html_file")
+    if html_file:
+        lines.append(_create_file_link(html_file, "🌐", get_file_link))
+
     return lines
 
 
-def _format_kpis_to_csv_step(step_data: dict, get_file_link: callable | None) -> list[str]:
-    """Format kpis_to_csv step details."""
+def _format_dashboard_csv_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format dashboard_csv step details."""
     lines = []
     output_file = step_data.get("output_file")
     if output_file:
@@ -253,6 +259,11 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
         baseline_files_count = step_data.get("baseline_files_count")
         if baseline_files_count is not None:
             lines.append(f"  - 📈 Baseline files analyzed: `{baseline_files_count}`")
+
+    # Include HTML file if available
+    html_file = step_data.get("html_file")
+    if html_file:
+        lines.append(_create_file_link(html_file, "🌐", get_file_link))
 
     return lines
 

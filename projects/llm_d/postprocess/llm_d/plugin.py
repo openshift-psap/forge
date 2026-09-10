@@ -79,19 +79,63 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
         self._cached_model = model
         return super().compute_kpis(model)
 
-    def export_kpis_to_csv(
-        self,
-        kpi_records: list[KpiRecord],
-        output_path: Path,
-        include_header_comments: bool = True,
-    ) -> str:
-        """Export KPI records to CSV format with llm-d dashboard schema."""
-        from . import csv_dashboard
+    def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
+        """Generate dashboard CSV using shared architecture with LLM-D specific metadata mapping."""
+        from projects.guidellm.postprocess.guidellm.dashboard import (
+            DashboardCsvExporter,
+            normalize_product_version,
+        )
 
-        # Pass the cached model to the CSV export function
-        cached_model = getattr(self, "_cached_model", None)
-        return csv_dashboard.export_kpis_to_csv(
-            kpi_records, output_path, include_header_comments, model=cached_model
+        from .csv_dashboard import DASHBOARD_FIELDNAMES
+
+        def metadata_row_mapper(labels: dict[str, Any]) -> dict[str, Any]:
+            """Extract LLM-D specific metadata for CSV row from dashboard KPI labels."""
+            accelerator = labels.get("gpu_type") or labels.get("accelerator", "")
+            model_id = labels.get("hf_model_id") or labels.get("model_name", "")
+            run_model = model_id.replace("/", "-")
+            tp = labels.get("tensor_parallel_size", "")
+            replicas = labels.get("replicas", "")
+
+            # LLM-D specific version handling
+            version = normalize_product_version(
+                labels.get("product_version") or labels.get("version", "")
+            )
+            deployment_profile = labels.get("deployment_profile", "")
+            if version and deployment_profile:
+                version = f"{version}-{deployment_profile}"
+
+            return {
+                "run": "-".join(str(value) for value in (accelerator, run_model, tp) if value),
+                "accelerator": accelerator,
+                "model": model_id,
+                "version": version,
+                "prompt toks": labels.get("prompt_toks", ""),
+                "output toks": labels.get("output_toks", ""),
+                "TP": tp,
+                "DP": labels.get("DP") or labels.get("data_parallel_size") or "",
+                "EP": labels.get("EP") or labels.get("expert_parallel_size") or "",
+                "replicas": replicas,
+                "prefill_pod_count": labels.get("prefill_pod_count", ""),
+                "decode_pod_count": labels.get("decode_pod_count", ""),
+                "router_config": labels.get("router_config", ""),
+                "uuid": labels.get("run_uuid", ""),
+                "runtime_args": labels.get("runtime_args", ""),
+                "guidellm_start_time_ms": labels.get("guidellm_start_time_ms", ""),
+                "guidellm_end_time_ms": labels.get("guidellm_end_time_ms", ""),
+                "image_tag": labels.get("image_tag", ""),
+                "guidellm_version": labels.get("guidellm_version", ""),
+                "mlflow_run_id": labels.get("mlflow_run_id", ""),
+                "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+                "notes": labels.get("notes", ""),
+            }
+
+        exporter = DashboardCsvExporter()
+        return exporter.export_dashboard_csv(
+            model,
+            output_path,
+            prefix="llmd",
+            fieldnames=DASHBOARD_FIELDNAMES,
+            metadata_row_mapper=metadata_row_mapper,
         )
 
 

@@ -21,6 +21,7 @@ from projects.caliper.engine.kpi.report_dataclasses import (
     AnalysisSummary,
     CurrentValueInfo,
     InputDataSection,
+    LabelSetSummary,
     OverallSection,
     OverallStatus,
     RegressionReport,
@@ -74,7 +75,7 @@ def create_analysis_summary(
 
     passes = [r for r in results if r.verdict == Verdict.PASS]
     regressions = [r for r in results if r.verdict == Verdict.REGRESSION]
-    skipped = [r for r in results if r.verdict == Verdict.SKIPPED]
+    skipped = [r for r in results if r.verdict in (Verdict.SKIPPED, Verdict.NO_BASELINE)]
 
     test_summary = TestSummary(
         total_kpis=len(results),
@@ -345,6 +346,12 @@ def _run_regression_test(
         ),
         baseline_values=baseline_values_list,
         baseline_count=len(baseline_values_list),
+        unit=current.unit,
+        help=current.help,
+        x_unit=current.x_unit,
+        x_help=current.x_help,
+        y_unit=current.y_unit,
+        y_help=current.y_help,
     )
 
     if is_curve:
@@ -378,7 +385,7 @@ def _scalar_relative_change_regression(
         return base
 
     if len(scalar_entries) < min_baseline_points:
-        base.verdict = Verdict.SKIPPED
+        base.verdict = Verdict.NO_BASELINE
         base.reason = f"insufficient baselines ({len(scalar_entries)} < {min_baseline_points})"
         return base
 
@@ -434,7 +441,7 @@ def _curve_auc_change_regression(
     ]
 
     if len(auc_baselines) < min_baseline_points:
-        base.verdict = Verdict.SKIPPED
+        base.verdict = Verdict.NO_BASELINE
         base.reason = f"insufficient curve baselines ({len(auc_baselines)} < {min_baseline_points})"
         return base
 
@@ -505,9 +512,14 @@ def _sort_results(
     results: list[RegressionTestResult], sorting_labels: list[str]
 ) -> list[RegressionTestResult]:
     """Sort results by sorting labels extracted from labels, then by kpi_id.
-    SKIPPED entries are placed after tested entries."""
+    SKIPPED and NO_BASELINE entries are placed after tested entries."""
 
-    verdict_order = {Verdict.PASS: 0, Verdict.REGRESSION: 1, Verdict.SKIPPED: 2}
+    verdict_order = {
+        Verdict.PASS: 0,
+        Verdict.REGRESSION: 1,
+        Verdict.SKIPPED: 2,
+        Verdict.NO_BASELINE: 2,
+    }
 
     def sort_key(r: RegressionTestResult) -> tuple:
         label_key = tuple(str(r.labels.get(k, "")) for k in sorting_labels)
@@ -521,7 +533,7 @@ def _summarize_label_sets(
     config: AnalysisConfig,
     current_keys: dict[str, set[str]] | None = None,
     current_comparison_combinations: set[frozenset] | None = None,
-) -> dict[str, Any]:
+) -> LabelSetSummary:
     """Summarize label sets found in a hierarchical KPI doc.
 
     Args:
@@ -549,6 +561,9 @@ def _summarize_label_sets(
 
     seen_all = []
     seen_filtered = []
+    irrelevant_keys = []
+    total_count = len(all_labels)
+
     for labels in all_labels:
         # Use unified filtering logic
         filtered = _filter_labels_for_matching(labels, set(config.ignored_labels))
@@ -564,6 +579,11 @@ def _summarize_label_sets(
                 (k, str(labels[k])) for k in config.comparison_labels if k in labels
             )
             if baseline_comparison_keys in current_comparison_combinations:
+                # Add comparison keys to irrelevant_keys instead of counting
+                for k, v in baseline_comparison_keys:
+                    key_str = f"{k}={v}"
+                    if key_str not in irrelevant_keys:
+                        irrelevant_keys.append(key_str)
                 continue
 
         if filtered and filtered not in seen_filtered:
@@ -590,19 +610,19 @@ def _summarize_label_sets(
     else:
         common, distinct_keys, distinct_labels = [], [], []
 
-    return {
-        "comparison_keys": sorted(
+    return LabelSetSummary(
+        comparison_keys=sorted(
             f"{k}={v}" for k in config.comparison_labels for v in _unique_values(k)
         ),
-        "ignored_keys": sorted(
-            f"{k}={v}" for k in config.ignored_labels for v in _unique_values(k)
-        ),
-        "relevant_common_keys": common,
-        "relevant_distinct_keys": distinct_keys,
-        "relevant_distinct_labels": distinct_labels,
-        "relevant_count": len(seen_filtered),
-        "irrelevant_count": len(seen_all) - len(seen_filtered),
-    }
+        ignored_keys=sorted(f"{k}={v}" for k in config.ignored_labels for v in _unique_values(k)),
+        relevant_common_keys=common,
+        relevant_distinct_keys=distinct_keys,
+        relevant_distinct_labels=distinct_labels,
+        irrelevant_keys=sorted(irrelevant_keys),
+        relevant_count=len(seen_filtered),
+        irrelevant_count=len(seen_all) - len(seen_filtered),
+        total_count=total_count,
+    )
 
 
 def _build_report(
@@ -616,7 +636,7 @@ def _build_report(
     """Build the final report structure using original format."""
     regressions = [r for r in results if r.verdict == Verdict.REGRESSION]
     passes = [r for r in results if r.verdict == Verdict.PASS]
-    skipped = [r for r in results if r.verdict == Verdict.SKIPPED]
+    skipped = [r for r in results if r.verdict in (Verdict.SKIPPED, Verdict.NO_BASELINE)]
 
     if regressions:
         overall_status = OverallStatus.REGRESSION_DETECTED
@@ -695,6 +715,12 @@ def _build_report(
             baseline_values=result.baseline_values,
             baseline_count=result.baseline_count,
             details=details,
+            unit=result.unit,
+            help=result.help,
+            x_unit=result.x_unit,
+            x_help=result.x_help,
+            y_unit=result.y_unit,
+            y_help=result.y_help,
         )
         result_entries.append(entry)
 
@@ -868,7 +894,7 @@ def run_kpi_analysis(
         # Run regression tests
         results: list[RegressionTestResult] = []
 
-        baseline_skipped_totals: dict[str, int] = {"same_version": 0, "duplicate": 0}
+        baseline_skipped_totals: dict[str, int] = {"duplicate": 0}
 
         for test in current_data.tests:
             test_labels = test.labels
@@ -885,7 +911,6 @@ def run_kpi_analysis(
                     for ck, baseline_entry in baseline_dict.items()
                     if ck != current_ck
                 ]
-                baseline_skipped_totals["same_version"] += len(baseline_dict) - len(baselines)
 
                 if not baselines:
                     _log_baseline_miss(kpi.kpi_id, mk, baseline_index)
@@ -923,34 +948,35 @@ def run_kpi_analysis(
                         entry = f"{k}={sv}"
                         irrelevant_keys.add(entry)
 
+            # Merge irrelevant_keys from summary (includes comparison keys) with local irrelevant_keys
+            all_irrelevant_keys = set(summary.irrelevant_keys) | irrelevant_keys
+
             source_entry = {
                 "path": str(path),
-                **summary,
+                **summary.to_dict(),
                 "unexpected_labels": sorted(unexpected_labels),
-                "irrelevant_keys": sorted(irrelevant_keys),
+                "irrelevant_keys": sorted(all_irrelevant_keys),
             }
 
             if not unexpected_labels:
                 source_entry.pop("unexpected_labels")
-            if not irrelevant_keys:
+            if not all_irrelevant_keys:
                 source_entry.pop("irrelevant_keys")
 
             # Split sources based on relevant_count
-            if summary.get("relevant_count", 0) > 0:
+            if summary.relevant_count > 0:
                 relevant_sources.append(source_entry)
             else:
                 irrelevant_sources.append(source_entry)
 
         current_source = {
             "path": str(current_kpi_file),
-            **_summarize_label_sets(current_data, config, None, None),
+            **_summarize_label_sets(current_data, config, None, None).to_dict(),
         }
 
         if (irr_count := current_source.pop("irrelevant_count")) != 0:
             logger.error(f"Found {irr_count} irrelevant entries in the current_source. Expected 0.")
         logger.info(f"Found {len(relevant_sources)} relevant files")
-        if not baseline_skipped_totals["same_version"]:
-            baseline_skipped_totals.pop("same_version")
         if not baseline_skipped_totals["duplicate"]:
             baseline_skipped_totals.pop("duplicate")
 

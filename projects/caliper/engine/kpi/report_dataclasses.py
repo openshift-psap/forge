@@ -33,6 +33,7 @@ class Verdict(StrEnum):
     PASS = "PASS"
     REGRESSION = "REGRESSION"
     SKIPPED = "SKIPPED"
+    NO_BASELINE = "NO_BASELINE"
 
 
 @dataclass
@@ -114,6 +115,12 @@ class ResultEntry:
     baseline_values: list[dict[str, Any]] = field(default_factory=list)
     baseline_count: int = 0
     details: dict[str, Any] = field(default_factory=dict)
+    unit: str = ""
+    help: str = ""
+    x_unit: str = ""
+    x_help: str = ""
+    y_unit: str = ""
+    y_help: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -210,6 +217,34 @@ class OverallSection:
 
 
 @dataclass
+class LabelSetSummary:
+    """Summary of label sets found in a hierarchical KPI document.
+
+    Contains analysis of how many entries are relevant, irrelevant, or filtered
+    for various reasons when comparing against current test data.
+    """
+
+    comparison_keys: list[str] = field(default_factory=list)
+    ignored_keys: list[str] = field(default_factory=list)
+    relevant_common_keys: list[str] = field(default_factory=list)
+    relevant_distinct_keys: list[str] = field(default_factory=list)
+    relevant_distinct_labels: list[str] = field(default_factory=list)
+    irrelevant_keys: list[str] = field(default_factory=list)
+    relevant_count: int = 0
+    irrelevant_count: int = 0
+    total_count: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LabelSetSummary:
+        """Create LabelSetSummary from dictionary data."""
+        return cls(**data)
+
+
+@dataclass
 class InputDataSection:
     """Input data section of the regression report."""
 
@@ -296,6 +331,12 @@ class RegressionTestResult:
     baseline_count: int = 0
     reason: str | None = None
     details: dict[str, Any] = field(default_factory=dict)
+    unit: str = ""
+    help: str = ""
+    x_unit: str = ""
+    x_help: str = ""
+    y_unit: str = ""
+    y_help: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
