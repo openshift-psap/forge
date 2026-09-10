@@ -43,26 +43,34 @@ ci-quick:
 
 
 
-profile1:
+profile1-balanced:
   tests.rhaiis.workload_key: profile1
 
-profile2:
+profile2-decode-heterogeneous:
   tests.rhaiis.workload_key: profile2
 
-profile3:
+profile3-summarization:
   tests.rhaiis.workload_key: profile3
 
-profile4:
+profile4-long-context:
   tests.rhaiis.workload_key: profile4
 
-profile5:
+profile5-ultra-long-context:
   tests.rhaiis.workload_key: profile5
 
-profile6:
+profile6-multi-turn:
   tests.rhaiis.workload_key: profile6
 
-profile7:
+profile7-heavy-heterogeneous:
   tests.rhaiis.workload_key: profile7
+
+# ── Feature toggles ─────────────────────────────────────────
+
+prefix-cache-on:
+  rhaiis.engines.vllm.args.enable-prefix-caching: true
+
+prefix-cache-off:
+  rhaiis.engines.vllm.args.no-enable-prefix-caching: true
 
 # ── Models ──────────────────────────────────────────────────
 # Short aliases default to the FP8 variant where available.
