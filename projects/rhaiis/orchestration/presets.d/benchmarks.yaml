@@ -26,7 +26,7 @@ benchmark-multi-turn-prefix-off:
   - prefix-cache-off
   tests.rhaiis.workload_key: profile6
 
-benchmark-heterogeneous:
+benchmark-heavy-heterogeneous:
   extends:
   - benchmark
   tests.rhaiis.workload_key: profile7
