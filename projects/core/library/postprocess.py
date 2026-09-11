@@ -17,7 +17,12 @@ import yaml
 from pydantic import ValidationError
 
 from projects.caliper.engine.constants import METADATA_FILE
-from projects.caliper.engine.kpi.dataclasses import CaliperTestMetadata
+from projects.caliper.engine.kpi.dataclasses import (
+    CaliperTestMetadata,
+    CompletionData,
+    MlflowDestination,
+    TimingData,
+)
 from projects.caliper.orchestration.postprocess import (
     run_postprocess_from_orchestration_config,
 )
@@ -40,8 +45,9 @@ def write_test_labels(
     version: str = "1",
     dump_config: bool = True,
     kpi_labels: dict[str, str] | None = None,
-    mlflow_destination: dict[str, str] | None = None,
-    timing: dict[str, Any] | None = None,
+    mlflow_destination: MlflowDestination | None = None,
+    timing: TimingData | None = None,
+    completion: CompletionData | None = None,
 ) -> Path:
     """Write Caliper test metadata files to mark a directory as a Caliper test base.
 
@@ -54,8 +60,9 @@ def write_test_labels(
         version: Version string for the test labels format (default: "1")
         dump_config: Whether to save project configuration to config.yaml (default: True)
         kpi_labels: Optional dictionary of KPI labels for system context
-        mlflow_destination: Optional MLflow run destination (run_id, experiment_id, workspace)
-        timing: Optional dictionary of timing information for test phases
+        mlflow_destination: Optional MLflow run destination dataclass
+        timing: Optional timing data with test phases
+        completion: Optional test completion status
 
     Returns:
         Path to the created caliper metadata file file
@@ -76,11 +83,12 @@ def write_test_labels(
     """
     # Create typed metadata structure
     metadata = CaliperTestMetadata(
-        version=version,
         labels=labels,
+        version=version,
         kpi_labels=kpi_labels,
         mlflow_destination=mlflow_destination,
         timing=timing,
+        completion=completion,
     )
 
     # Convert to dictionary for YAML serialization
