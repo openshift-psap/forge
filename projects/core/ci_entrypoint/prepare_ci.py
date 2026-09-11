@@ -710,9 +710,9 @@ def save_pip_freeze():
             logger.warning("uv not found, cannot run pip freeze")
             return
 
-        # Run uv pip freeze using the run library
+        # Run uv pip freeze using the run library with cache disabled
         result = run.run(
-            "uv pip freeze",
+            "UV_NO_CACHE=1 uv pip freeze",
             capture_stdout=True,
             check=False,
         )
