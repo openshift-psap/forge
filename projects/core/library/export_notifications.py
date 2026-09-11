@@ -1120,8 +1120,17 @@ def _process_step_details(step_dir: Path, mlflow_run_url: str | None = None) -> 
     # Create file link function for this step (shared by multiple extractors)
     def get_file_link(file_path: Path) -> str:
         if mlflow_run_url:
-            # Create MLflow artifact URL
-            return _create_mlflow_file_url_for_step(mlflow_run_url, step_dir.name, str(file_path))
+            # Create MLflow artifact URL - convert absolute path to relative to step directory
+            try:
+                relative_file_path = file_path.relative_to(step_dir)
+                return _create_mlflow_file_url_for_step(
+                    mlflow_run_url, step_dir.name, str(relative_file_path)
+                )
+            except ValueError:
+                # If file_path is not under step_dir, use the file name only
+                return _create_mlflow_file_url_for_step(
+                    mlflow_run_url, step_dir.name, file_path.name
+                )
         else:
             # Fallback: just return the file path as text
             return str(file_path)
