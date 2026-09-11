@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import yaml
 
-from projects.caliper.engine.constants import METADATA_FILE
+from projects.caliper.engine.kpi.dataclasses import CompletionData, TimingData
 from projects.core.library import config, env
 from projects.core.library.postprocess import run_and_postprocess, write_test_labels
 from projects.skeleton.toolbox.cluster_info.main import run as cluster_info
@@ -32,21 +32,17 @@ def create_seed_data_with_completion(
 ) -> None:
     """Create seed data with complete timing and completion information."""
 
-    # Build timing structure
-    timing_data = {
-        "test": {"start": test_start_time, "end": test_end_time},
-        "benchmark": {"start": benchmark_start_time, "end": benchmark_end_time},
-    }
+    # Build timing structure using dataclasses
+    timing_data = TimingData()
+    timing_data.set_phase("test", test_start_time, test_end_time)
+    timing_data.set_phase("benchmark", benchmark_start_time, benchmark_end_time)
 
     # Add cluster info timing if available
     if cluster_info_start_time and cluster_info_end_time:
-        timing_data["cluster_info"] = {
-            "start": cluster_info_start_time,
-            "end": cluster_info_end_time,
-        }
+        timing_data.set_phase("cluster_info", cluster_info_start_time, cluster_info_end_time)
 
-    # Build completion data
-    completion_data = {"success": success, "message": message}
+    # Build completion data using dataclasses
+    completion_data = CompletionData(success=success, message=message)
 
     # Create the seed data with timing and completion
     with env.NextArtifactDir("skeleton_seed_data_for_caliper_postprocessing"):
@@ -54,7 +50,7 @@ def create_seed_data_with_completion(
 
 
 def seed_skeleton_caliper_artifacts_with_data(
-    timing_data: dict, completion_data: dict
+    timing_data: TimingData, completion_data: CompletionData
 ) -> pathlib.Path:
     """Create minimal Caliper inputs with timing and completion data."""
     demo_dir = env.ARTIFACT_DIR
@@ -74,26 +70,23 @@ def seed_skeleton_caliper_artifacts_with_data(
     )
 
     for scenario, throughput, latency_ms in FAKE_DATA:
-        d = demo_dir / scenario
-        d.mkdir(parents=True, exist_ok=True)
+        dest_dir = demo_dir / scenario
+        dest_dir.mkdir(parents=True, exist_ok=True)
 
         # Combine base labels with scenario-specific label
         scenario_labels = {**base_labels, "scenario": scenario}
 
-        # Create metadata with timing and completion data
-        write_test_labels(d, scenario_labels, dump_config=False, timing=timing_data)
+        # Create metadata with timing and completion data using write_test_labels
+        write_test_labels(
+            dest_dir,
+            scenario_labels,
+            timing=timing_data,
+            completion=completion_data,
+            dump_config=False,
+        )
+        logger.info(f"Created {scenario} metadata with timing and completion data")
 
-        # Add completion data to the metadata file
-        scenario_metadata_path = d / METADATA_FILE
-        if scenario_metadata_path.exists():
-            with scenario_metadata_path.open("r", encoding="utf-8") as f:
-                scenario_data = yaml.safe_load(f)
-            scenario_data["completion"] = completion_data
-            with scenario_metadata_path.open("w", encoding="utf-8") as f:
-                yaml.safe_dump(scenario_data, f, sort_keys=False)
-            logger.info(f"Created {scenario} metadata with timing and completion data")
-
-        (d / "metrics.json").write_text(
+        (dest_dir / "metrics.json").write_text(
             json.dumps({"throughput": throughput, "latency_ms": latency_ms}),
             encoding="utf-8",
         )
