@@ -8,6 +8,8 @@ from the public API with object-oriented step formatting.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from projects.caliper.public import PostprocessStatus, StepStatus
 
 
@@ -24,62 +26,63 @@ def format_postprocess_status_notification(
     Returns:
         Formatted notification text to include in GitHub notification
     """
-    if not status:
-        return ""
+
+    if not status or not status.steps:
+        return []
 
     lines = []
 
     # Check overall status (keep unchanged regardless of abort status)
     status_emoji = "✅" if status.is_success() else "❌"
-    lines.append(f"**Post-processing Status** {status_emoji}")
+    base_directory = Path(status.base_directory)
+    if base_directory.name == "status_files":
+        base_directory = base_directory.parent
 
-    # Add steps information if available, sorted by completion time
-    if status.steps:
-        # Convert steps from list[dict] format to sorted list of (step_name, step_data) tuples
-        step_tuples = []
-        for step_dict in status.steps:
-            for step_name, step_data in step_dict.items():
-                step_tuples.append((step_name, step_data))
+    lines.append(f"**Post-processing Status** {status_emoji} `{base_directory}`")
 
-        # Sort by completion timestamp, with fallback to step name for stable ordering
-        sorted_steps = sorted(
-            step_tuples,
-            key=lambda item: (
-                item[1].get("completed_at", 0) or 0,  # Use completed_at if available, else 0
-                item[0],  # fallback to step name for stable ordering
-            ),
-        )
+    # Convert steps from list[dict] format to sorted list of (step_name, step_data) tuples
+    step_tuples = []
+    for step_dict in status.steps:
+        for step_name, step_data in step_dict.items():
+            step_tuples.append((step_name, step_data))
 
-        for step_name, step_data in sorted_steps:
-            step_emoji = _get_step_emoji(step_data.get("status", "unknown"))
+    # Sort by completion timestamp, with fallback to step name for stable ordering
+    sorted_steps = sorted(
+        step_tuples,
+        key=lambda item: (
+            item[1].get("completed_at", 0) or 0,  # Use completed_at if available, else 0
+            item[0],  # fallback to step name for stable ordering
+        ),
+    )
 
-            # Create step name as link to log file if available
-            log_file = step_data.get("log_file")
-            if log_file and get_file_link:
-                try:
-                    log_url = get_file_link(log_file)
-                    step_name_display = f"[**{step_name}**]({log_url})"
-                except Exception:
-                    # Fallback to plain text if link generation fails
-                    step_name_display = f"**{step_name}**"
-            else:
+    for step_name, step_data in sorted_steps:
+        step_emoji = _get_step_emoji(step_data.get("status", "unknown"))
+
+        # Create step name as link to log file if available
+        log_file = step_data.get("log_file")
+        if log_file and get_file_link:
+            try:
+                log_url = get_file_link(log_file)
+                step_name_display = f"[**{step_name}**]({log_url})"
+            except Exception:
+                # Fallback to plain text if link generation fails
                 step_name_display = f"**{step_name}**"
+        else:
+            step_name_display = f"**{step_name}**"
 
-            # Format step with message if available
-            lines.append(
-                f"- {step_emoji} {step_name_display}: `{step_data.get('status', 'unknown')}`"
-            )
-            message = step_data.get("message")
-            if message:
-                lines.append(f"  * `{message}`")
+        # Format step with message if available
+        lines.append(f"- {step_emoji} {step_name_display}: `{step_data.get('status', 'unknown')}`")
+        message = step_data.get("message")
+        if message:
+            lines.append(f"  * `{message}`")
 
-            reason = step_data.get("reason")
-            if reason:
-                lines.append(f"  * `{reason}`")
+        reason = step_data.get("reason")
+        if reason:
+            lines.append(f"  * `{reason}`")
 
-            # Use object-oriented step formatter to handle step-specific details
-            step_details = _format_step_details_with_formatters(step_name, step_data, get_file_link)
-            lines.extend(step_details)
+        # Use object-oriented step formatter to handle step-specific details
+        step_details = _format_step_details_with_formatters(step_name, step_data, get_file_link)
+        lines.extend(step_details)
 
     return "\n".join(lines) if lines else ""
 
@@ -125,14 +128,15 @@ def _create_file_link(file_path: str, emoji: str, get_file_link: callable | None
 def _format_artifacts_to_kpis_step(step_data: dict, get_file_link: callable | None) -> list[str]:
     """Format artifacts_to_kpis step details."""
     lines = []
-    output_file = step_data.get("output_file")
-    if output_file:
-        lines.append(_create_file_link(output_file, "📄", get_file_link))
 
     # Include HTML file if available
     html_file = step_data.get("html_file")
     if html_file:
         lines.append(_create_file_link(html_file, "🌐", get_file_link))
+
+    output_file = step_data.get("output_file")
+    if output_file:
+        lines.append(_create_file_link(output_file, "📄", get_file_link))
 
     return lines
 
@@ -229,6 +233,11 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
     """Format analyse_kpis step details."""
     lines = []
 
+    # Include HTML file if available
+    html_file = step_data.get("html_file")
+    if html_file:
+        lines.append(_create_file_link(html_file, "🌐", get_file_link))
+
     # Show analysis output file
     output_file = step_data.get("output_file")
     if output_file:
@@ -259,11 +268,6 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
         baseline_files_count = step_data.get("baseline_files_count")
         if baseline_files_count is not None:
             lines.append(f"  - 📈 Baseline files analyzed: `{baseline_files_count}`")
-
-    # Include HTML file if available
-    html_file = step_data.get("html_file")
-    if html_file:
-        lines.append(_create_file_link(html_file, "🌐", get_file_link))
 
     return lines
 
@@ -339,7 +343,6 @@ def _group_files_by_type(file_paths: list[str]) -> dict[str, list[str]]:
 
 def _get_file_type(file_path: str) -> str:
     """Determine file type from path."""
-    from pathlib import Path
 
     ext = Path(file_path).suffix.lower()
 
@@ -359,7 +362,6 @@ def _get_file_type(file_path: str) -> str:
 
 def _get_display_name(file_path: str) -> str:
     """Get display name for a file path."""
-    from pathlib import Path
 
     path = Path(file_path)
 

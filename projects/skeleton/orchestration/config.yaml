@@ -73,7 +73,7 @@ caliper:
         enabled: false
         output: kpis/dashboard.csv
       artifacts_to_ai_data:
-        enabled: true
+        enabled: false
         output_dir: ai_data
 
     s3:

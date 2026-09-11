@@ -3,37 +3,95 @@ import logging
 import pathlib
 import signal
 import time
+from datetime import UTC, datetime
 
 import yaml
 
-from projects.core.library import config, env, vault
+from projects.caliper.engine.kpi.dataclasses import CompletionData, TimingData
+from projects.core.library import config, env
 from projects.core.library.postprocess import run_and_postprocess, write_test_labels
 from projects.skeleton.toolbox.cluster_info.main import run as cluster_info
 
 logger = logging.getLogger(__name__)
 
 
-def seed_skeleton_caliper_artifacts() -> pathlib.Path:
-    """
-    Create minimal Caliper inputs under the FORGE artifact root:
+def get_iso_timestamp() -> str:
+    """Get current timestamp in ISO format with Z timezone."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
-    * ``__caliper_test_metadata__.yaml`` + ``metrics.json`` per scenario (required by the skeleton plugin).
-    """
+
+def create_seed_data_with_completion(
+    test_start_time: str,
+    test_end_time: str,
+    benchmark_start_time: str,
+    benchmark_end_time: str,
+    cluster_info_start_time: str | None,
+    cluster_info_end_time: str | None,
+    success: bool,
+    message: str,
+) -> None:
+    """Create seed data with complete timing and completion information."""
+
+    # Build timing structure using dataclasses
+    timing_data = TimingData()
+    timing_data.set_phase("test", test_start_time, test_end_time)
+    timing_data.set_phase("benchmark", benchmark_start_time, benchmark_end_time)
+
+    # Add cluster info timing if available
+    if cluster_info_start_time and cluster_info_end_time:
+        timing_data.set_phase("cluster_info", cluster_info_start_time, cluster_info_end_time)
+
+    # Build completion data using dataclasses
+    completion_data = CompletionData(success=success, message=message)
+
+    # Create the seed data with timing and completion
+    with env.NextArtifactDir("skeleton_seed_data_for_caliper_postprocessing"):
+        seed_skeleton_caliper_artifacts_with_data(timing_data, completion_data)
+
+
+def seed_skeleton_caliper_artifacts_with_data(
+    timing_data: TimingData, completion_data: CompletionData
+) -> pathlib.Path:
+    """Create minimal Caliper inputs with timing and completion data."""
     demo_dir = env.ARTIFACT_DIR
+
+    skeleton_config = config.project.get_config("skeleton", print=False)
+
+    # Base labels for all scenarios
+    base_labels = {
+        "test": "skeleton",
+        "deep_testing": str(skeleton_config.get("deep_testing", False)),
+        "collect_cluster_info": str(skeleton_config.get("collect_cluster_info", True)),
+    }
+
     FAKE_DATA = (
         ("smoke", 120.5, 8.2),
         ("load", 87.0, 22.1),
     )
+
     for scenario, throughput, latency_ms in FAKE_DATA:
-        d = demo_dir / scenario
-        d.mkdir(parents=True, exist_ok=True)
-        write_test_labels(d, {"scenario": scenario}, dump_config=False)
-        (d / "metrics.json").write_text(
+        dest_dir = demo_dir / scenario
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Combine base labels with scenario-specific label
+        scenario_labels = {**base_labels, "scenario": scenario}
+
+        # Create metadata with timing and completion data using write_test_labels
+        write_test_labels(
+            dest_dir,
+            scenario_labels,
+            timing=timing_data,
+            completion=completion_data,
+            dump_config=False,
+        )
+        logger.info(f"Created {scenario} metadata with timing and completion data")
+
+        (dest_dir / "metrics.json").write_text(
             json.dumps({"throughput": throughput, "latency_ms": latency_ms}),
             encoding="utf-8",
         )
 
-    logger.info("Seeded Caliper demo tree under %s", demo_dir)
+    logger.info("Seeded Caliper demo tree under %s with complete timing data", demo_dir)
     return demo_dir
 
 
@@ -96,53 +154,124 @@ def skeleton_take_time():
 def do_test():
     logger.info("=== Skeleton Project Test Phase ===")
 
-    if config.project.get_config("skeleton.deep_testing"):
-        logger.warning("Running the (fake) deep testing ...")
-    else:
-        logger.warning("Running the (fake) light testing ...")
+    # Capture test timing
+    test_start_time = get_iso_timestamp()
 
-    client_id = vault.get_vault_content_path("psap-forge-notifications", "topsail-bot.clientid")
-    if not client_id:
-        logger.warning("`client_id` secret not available.")
-    else:
-        logger.warning(f"`client_id` secret available. Size: {client_id.stat().st_size}b")
-        del client_id
+    try:
+        if config.project.get_config("skeleton.deep_testing"):
+            logger.info("Running the (fake) deep testing ...")
+        else:
+            logger.info("Running the (fake) light testing ...")
 
-    skeleton_config = config.project.get_config("skeleton", print=False)
+        skeleton_config = config.project.get_config("skeleton", print=False)
 
-    yaml_cfg = yaml.dump(
-        {"skeleton": skeleton_config},
-        indent=4,
-        default_flow_style=False,
-        sort_keys=False,
-    )
-    logger.info("")
-    logger.info(f"Fake test configuration:\n{yaml_cfg}")
+        yaml_cfg = yaml.dump(
+            {"skeleton": skeleton_config},
+            indent=4,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+        logger.info("")
+        logger.info(f"Fake test configuration:\n{yaml_cfg}")
 
-    skeleton_take_time()
+        # Capture benchmark timing
+        benchmark_start_time = get_iso_timestamp()
+        try:
+            skeleton_take_time()
+        finally:
+            benchmark_end_time = get_iso_timestamp()
 
-    with env.NextArtifactDir("skeleton_seed_data_for_caliper_postprocessing"):
-        seed_skeleton_caliper_artifacts()
+        cluster_info_start_time = None
+        cluster_info_end_time = None
 
-    if not config.project.get_config("skeleton.collect_cluster_info"):
-        logger.warning("⚠️ Cluster information gathering not enabled. Returning early.")
+        if config.project.get_config("skeleton.collect_cluster_info"):
+            # Add timing around cluster info gathering
+            cluster_info_start_time = get_iso_timestamp()
+            try:
+                # Demonstrate calling a toolbox from orchestration
+                logger.info("Running cluster information toolbox...")
+
+                result = cluster_info(output_format="text")
+
+                if not result:
+                    logger.warning("⚠️ Cluster information gathering didn't work")
+                    test_end_time = get_iso_timestamp()
+                    create_seed_data_with_completion(
+                        test_start_time,
+                        test_end_time,
+                        benchmark_start_time,
+                        benchmark_end_time,
+                        cluster_info_start_time,
+                        get_iso_timestamp(),
+                        False,
+                        "Cluster information gathering failed",
+                    )
+                    return 1
+
+                cluster_nodes_dest = getattr(result, "cluster_nodes_dest", None)
+                if not cluster_nodes_dest:
+                    logger.warning(
+                        "⚠️ Cluster information gathering didn't generate the cluster node file"
+                    )
+                    test_end_time = get_iso_timestamp()
+                    create_seed_data_with_completion(
+                        test_start_time,
+                        test_end_time,
+                        benchmark_start_time,
+                        benchmark_end_time,
+                        cluster_info_start_time,
+                        get_iso_timestamp(),
+                        False,
+                        "Cluster information gathering incomplete - no node file generated",
+                    )
+                    return 1
+
+            finally:
+                cluster_info_end_time = get_iso_timestamp()
+
+            logger.info("✅ Cluster information gathering completed successfully")
+
+        test_end_time = get_iso_timestamp()
+
+        # Determine completion message based on cluster info setting
+        if not config.project.get_config("skeleton.collect_cluster_info"):
+            completion_message = "Test completed successfully (cluster info disabled)"
+        else:
+            completion_message = "Test completed successfully"
+
+        # Create seed data with all timing and completion information
+        create_seed_data_with_completion(
+            test_start_time,
+            test_end_time,
+            benchmark_start_time,
+            benchmark_end_time,
+            cluster_info_start_time,
+            cluster_info_end_time,
+            True,
+            completion_message,
+        )
+
         return 0
 
-    # Demonstrate calling a toolbox from orchestration
-    logger.info("Running cluster information toolbox...")
+    except Exception as e:
+        logger.exception("❌ Test failed with exception")
+        test_end_time = get_iso_timestamp()
 
-    result = cluster_info(output_format="text")
-
-    if not result:
-        logger.warning("⚠️ Cluster information gathering didn't work")
-        return 1
-
-    cluster_nodes_dest = getattr(result, "cluster_nodes_dest", None)
-    if not cluster_nodes_dest:
-        logger.warning("⚠️ Cluster information gathering didn't generate the cluster node file")
-        return 1
-
-    logger.info("✅ Cluster information gathering completed successfully")
+        # Create seed data even after failure so timing data is preserved
+        try:
+            create_seed_data_with_completion(
+                test_start_time,
+                test_end_time,
+                locals().get("benchmark_start_time"),
+                locals().get("benchmark_end_time"),
+                locals().get("cluster_info_start_time"),
+                locals().get("cluster_info_end_time"),
+                False,
+                f"Test failed: {e}",
+            )
+        except Exception as seed_error:
+            logger.warning(f"Failed to create seed data after test failure: {seed_error}")
+        raise
     logger.info(f"Check {cluster_nodes_dest.parent} directory for detailed cluster information.")
 
     return 0

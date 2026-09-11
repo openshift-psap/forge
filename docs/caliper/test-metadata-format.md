@@ -18,6 +18,17 @@ kpi_labels:
   platform: "CKS"
   gpu_type: "H100"
   test_harness: "guidellm"
+timing:
+  # Test timing information (optional)
+  test:
+    start: "2024-03-15T10:30:00.123456Z"  # ISO timestamp
+    end: "2024-03-15T10:35:30.789012Z"    # optional during execution
+  benchmark:
+    start: "2024-03-15T10:32:00.456789Z"
+    end: "2024-03-15T10:35:00.123456Z"
+  cluster_info:  # additional phases as needed
+    start: "2024-03-15T10:35:30.789012Z"
+    end: "2024-03-15T10:36:00.123456Z"
 completion:
   # Test execution status (added at completion)
   success: true|false
@@ -38,6 +49,10 @@ completion:
   - **`run_id`**: MLflow run ID (assigned by the server during pre-creation)
   - **`experiment_id`** *(optional)*: MLflow experiment ID
   - **`workspace`** *(optional)*: MLflow workspace name
+- **`timing`** *(optional)*: Test execution timing data with named phases
+  - Each phase contains **`start`** (required) and **`end`** (optional during execution) ISO timestamps
+  - Common phases: **`test`**, **`benchmark`**, **`cluster_info`**
+  - Phases are flexible - any meaningful timing section can be added
 - **`completion`**: Test execution status
   - **`success`**: `true` if succeeded, `false` if failed
   - **`message`**: Human-readable status description
@@ -99,6 +114,13 @@ mlflow_destination:
   run_id: "48e49dfc966c487cb76cf105a5314908"
   experiment_id: "264"
   workspace: "forge-rhaiis"
+timing:
+  test:
+    start: "2024-03-15T10:30:00.123456Z"
+    end: "2024-03-15T10:35:30.789012Z"
+  benchmark:
+    start: "2024-03-15T10:32:00.456789Z"
+    end: "2024-03-15T10:35:00.123456Z"
 completion:
   success: true
   message: "Test completed successfully"

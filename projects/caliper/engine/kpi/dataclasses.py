@@ -302,14 +302,106 @@ class HierarchicalKpiFormat:
 
 
 @dataclass
+class TimingEntry:
+    """Timing entry with start and optional end timestamps."""
+
+    start: str
+    end: str | None = None
+
+    def to_dict(self) -> dict[str, str | None]:
+        """Convert to dictionary for YAML serialization."""
+        result = {"start": self.start}
+        if self.end is not None:
+            result["end"] = self.end
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, str]) -> TimingEntry:
+        """Create TimingEntry from dictionary data."""
+        return cls(start=data["start"], end=data.get("end"))
+
+
+@dataclass
+class TimingData:
+    """Test timing data with flexible named phases."""
+
+    phases: dict[str, TimingEntry] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, dict[str, str]]:
+        """Convert to dictionary for YAML serialization."""
+        return {phase_name: timing.to_dict() for phase_name, timing in self.phases.items()}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, dict[str, str]]) -> TimingData:
+        """Create TimingData from dictionary data."""
+        phases = {}
+        for phase_name, timing_dict in data.items():
+            if isinstance(timing_dict, dict) and "start" in timing_dict:
+                phases[phase_name] = TimingEntry.from_dict(timing_dict)
+        return cls(phases=phases)
+
+    def get_phase(self, name: str) -> TimingEntry | None:
+        """Get timing entry for a specific phase."""
+        return self.phases.get(name)
+
+    def set_phase(self, name: str, start: str, end: str | None = None) -> None:
+        """Set timing entry for a specific phase."""
+        self.phases[name] = TimingEntry(start=start, end=end)
+
+
+@dataclass
+class CompletionData:
+    """Test completion status with success flag and message."""
+
+    success: bool
+    message: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for YAML serialization."""
+        return {"success": self.success, "message": self.message}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CompletionData:
+        """Create CompletionData from dictionary data."""
+        return cls(success=data["success"], message=data["message"])
+
+
+@dataclass
+class MlflowDestination:
+    """MLflow destination information for test runs."""
+
+    run_id: str
+    experiment_id: str
+    workspace: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        """Convert to dictionary for YAML serialization."""
+        return {
+            "run_id": self.run_id,
+            "experiment_id": self.experiment_id,
+            "workspace": self.workspace,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, str]) -> MlflowDestination:
+        """Create MlflowDestination from dictionary data."""
+        return cls(
+            run_id=data["run_id"],
+            experiment_id=data["experiment_id"],
+            workspace=data.get("workspace", ""),
+        )
+
+
+@dataclass
 class CaliperTestMetadata:
     """Caliper test metadata structure for __caliper_test_metadata__.yaml files."""
 
-    version: str
     labels: dict[str, str]
+    version: str = "1"
     kpi_labels: dict[str, str] | None = None
-    mlflow_destination: dict[str, str] | None = None
-    timing: dict[str, Any] | None = None
+    mlflow_destination: MlflowDestination | None = None
+    timing: TimingData | None = None
+    completion: CompletionData | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for YAML serialization."""
@@ -320,20 +412,38 @@ class CaliperTestMetadata:
         if self.kpi_labels is not None:
             result["kpi_labels"] = self.kpi_labels
         if self.mlflow_destination is not None:
-            result["mlflow_destination"] = self.mlflow_destination
+            result["mlflow_destination"] = self.mlflow_destination.to_dict()
         if self.timing is not None:
-            result["timing"] = self.timing
+            result["timing"] = self.timing.to_dict()
+        if self.completion is not None:
+            result["completion"] = self.completion.to_dict()
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CaliperTestMetadata:
         """Create CaliperTestMetadata from dictionary data."""
+        # Parse mlflow_destination if present
+        mlflow_dest = None
+        if data.get("mlflow_destination"):
+            mlflow_dest = MlflowDestination.from_dict(data["mlflow_destination"])
+
+        # Parse timing if present
+        timing = None
+        if data.get("timing"):
+            timing = TimingData.from_dict(data["timing"])
+
+        # Parse completion if present
+        completion = None
+        if data.get("completion"):
+            completion = CompletionData.from_dict(data["completion"])
+
         return cls(
-            version=data["version"],
             labels=data["labels"],
+            version=data.get("version", "1"),
             kpi_labels=data.get("kpi_labels"),
-            mlflow_destination=data.get("mlflow_destination"),
-            timing=data.get("timing"),
+            mlflow_destination=mlflow_dest,
+            timing=timing,
+            completion=completion,
         )
 
 
@@ -347,4 +457,8 @@ __all__ = [
     "HierarchicalTestEntry",
     "HierarchicalKpiFormat",
     "CaliperTestMetadata",
+    "TimingEntry",
+    "TimingData",
+    "CompletionData",
+    "MlflowDestination",
 ]

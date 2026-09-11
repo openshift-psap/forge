@@ -20,6 +20,9 @@ SLACK_TOKEN_FILE = "topsail-bot.slack-token"
 DEFAULT_REPO_OWNER = "openshift-psap"
 DEFAULT_REPO_NAME = "forge"
 
+#  avoid importing projects.caliper.orchestration.postprocess here
+POSTPROCESS_STATUS_FILENAME = "postprocess_status.yaml"
+
 
 def get_secrets(notification_vault=None):
     """Get secrets directory, preferring vault system over environment variables.
@@ -345,8 +348,8 @@ def get_common_message(finish_reason: str, status: str, get_link, get_italics, g
     artifact_dir = pathlib.Path(os.environ.get("ARTIFACT_DIR", ""))
     caliper_status_path = None
 
-    # Search for postprocess_status.yaml in artifact directory and subdirectories
-    for status_file in artifact_dir.glob("**/postprocess_status.yaml"):
+    # Search for POSTPROCESS_STATUS_FILENAME in artifact directory and subdirectories
+    for status_file in artifact_dir.glob(f"**/{POSTPROCESS_STATUS_FILENAME}"):
         caliper_status_path = status_file
         break
 
@@ -376,9 +379,9 @@ def get_common_message(finish_reason: str, status: str, get_link, get_italics, g
 • Caliper postprocess completed but no reports generated.
 """
         except Exception as e:
-            logger.warning("Failed to parse postprocess_status.yaml: %s", e)
+            logger.warning("Failed to parse POSTPROCESS_STATUS_FILENAME: %s", e)
             message += """
-• Failed to parse postprocess_status.yaml ...
+• Failed to parse POSTPROCESS_STATUS_FILENAME ...
 """
 
     # Include fournos_launcher generated notification content
