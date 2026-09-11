@@ -28,6 +28,37 @@ from projects.core.notifications.send import send_notification as send_github_no
 logger = logging.getLogger(__name__)
 
 
+def _calculate_duration(start_time: str, end_time: str) -> str:
+    """Calculate duration between two ISO timestamps and return formatted string."""
+    try:
+        from datetime import datetime
+
+        # Parse ISO timestamps (handle both with and without 'Z' suffix)
+        start_time_clean = (
+            start_time.replace("Z", "+00:00") if start_time.endswith("Z") else start_time
+        )
+        end_time_clean = end_time.replace("Z", "+00:00") if end_time.endswith("Z") else end_time
+
+        start_dt = datetime.fromisoformat(start_time_clean)
+        end_dt = datetime.fromisoformat(end_time_clean)
+
+        duration = end_dt - start_dt
+        total_seconds = duration.total_seconds()
+
+        if total_seconds < 60:
+            return f"{total_seconds:.1f}s"
+        elif total_seconds < 3600:
+            minutes = total_seconds / 60
+            return f"{minutes:.1f}m"
+        else:
+            hours = total_seconds / 3600
+            return f"{hours:.1f}h"
+
+    except Exception as e:
+        logger.warning(f"Failed to calculate duration between {start_time} and {end_time}: {e}")
+        return f"{start_time} → {end_time}"
+
+
 @dataclass
 class BackendResult:
     """Result from a single backend export."""
@@ -1440,80 +1471,6 @@ def _search_caliper_metadata_files(step_dir: Path) -> list[Path]:
     return metadata_files
 
 
-def _format_caliper_metadata_info(metadata_files: list[Path], get_file_link: Any) -> str:
-    """Format caliper metadata information for display."""
-    if not metadata_files:
-        return ""
-
-    metadata_lines = []
-    metadata_lines.append("**Test Directories**")
-
-    for metadata_file in metadata_files:
-        try:
-            # Load and parse metadata
-            with open(metadata_file, encoding="utf-8") as f:
-                metadata_dict = yaml.safe_load(f)
-
-            metadata = CaliperTestMetadata.from_dict(metadata_dict)
-
-            # Get parent directory path
-            parent_dir = metadata_file.parent
-
-            # Extract information
-            labels = metadata.labels or {}
-            kpi_labels = metadata.kpi_labels or {}
-            timing = metadata.timing or {}
-
-            # Format path with link to metadata file
-            if get_file_link:
-                try:
-                    metadata_file_link = get_file_link(metadata_file)
-                    path_info = f"Path: [`{parent_dir}`]({metadata_file_link})"
-                except Exception as e:
-                    logger.warning(f"Failed to create link for metadata file {metadata_file}: {e}")
-                    path_info = f"Path: `{parent_dir}`"
-            else:
-                path_info = f"Path: `{parent_dir}`"
-            metadata_lines.append(f"* {path_info}")
-
-            # Format labels
-            if labels:
-                label_items = [f"`{k}={v}`" for k, v in labels.items()]
-                metadata_lines.append(f"* Labels: {', '.join(label_items)}")
-
-            # Format KPI labels
-            if kpi_labels:
-                kpi_label_items = [f"`{k}={v}`" for k, v in kpi_labels.items()]
-                metadata_lines.append(f"* KPI Labels: {', '.join(kpi_label_items)}")
-
-            # Look for completion information in timing
-            completion_success = timing.get("completion", {}).get("success")
-            completion_message = timing.get("completion", {}).get("message", "")
-
-            if completion_success is not None:
-                status_emoji = "✅" if completion_success else "❌"
-                message_part = f": `{completion_message}`" if completion_message else ""
-                metadata_lines.append(f"* Completion: {status_emoji}{message_part}")
-
-            # Format test and benchmark duration
-            test_duration = timing.get("test_duration")
-            benchmark_duration = timing.get("benchmark_duration")
-
-            if test_duration or benchmark_duration:
-                duration_parts = []
-                if test_duration:
-                    duration_parts.append(f"test: `{test_duration}`")
-                if benchmark_duration:
-                    duration_parts.append(f"benchmark: `{benchmark_duration}`")
-                metadata_lines.append(f"* Duration: {', '.join(duration_parts)}")
-
-        except Exception as e:
-            logger.warning(f"Failed to process caliper metadata file {metadata_file}: {e}")
-            metadata_lines.append(f"* `{metadata_file.parent}`: Error reading metadata - {e}")
-
-    return "\n".join(metadata_lines)
-
-
 def _format_censoring_report_info_for_step(step_dir: Path, get_file_link: Any) -> list[str]:
     """Format censoring report information for integration within step details."""
     censoring_report_path = step_dir / "censoring_report.yaml"
@@ -1606,7 +1563,7 @@ def _format_caliper_metadata_info_for_step(
             # Extract information
             labels = metadata.labels or {}
             kpi_labels = metadata.kpi_labels or {}
-            timing = metadata.timing or {}
+            timing = metadata.timing
 
             # Format path with link to metadata file
             if get_file_link:
@@ -1615,6 +1572,14 @@ def _format_caliper_metadata_info_for_step(
             else:
                 path_info = f"* 📊 Test directory: `{display_path}`"
             metadata_lines.append(path_info)
+
+            # Look for completion information
+            if metadata.completion:
+                status_emoji = "✅" if metadata.completion.success else "❌"
+                message_part = (
+                    f" `{metadata.completion.message}`" if metadata.completion.message else ""
+                )
+                metadata_lines.append(f"    * {status_emoji}{message_part}")
 
             # Format labels
             if labels:
@@ -1626,26 +1591,17 @@ def _format_caliper_metadata_info_for_step(
                 kpi_label_items = [f"`{k}={v}`" for k, v in kpi_labels.items()]
                 metadata_lines.append(f"  * KPI extra labels: {', '.join(kpi_label_items)}")
 
-            # Look for completion information in timing
-            completion_success = timing.get("completion", {}).get("success")
-            completion_message = timing.get("completion", {}).get("message", "")
+            # Format timing information - show durations instead of timestamps
+            duration_parts = []
 
-            if completion_success is not None:
-                status_emoji = "✅" if completion_success else "❌"
-                message_part = f": `{completion_message}`" if completion_message else ""
-                metadata_lines.append(f"    * Completion: {status_emoji}{message_part}")
+            if timing:
+                for phase_name, timing_entry in timing.phases.items():
+                    if timing_entry.end:  # Only show duration if we have both start and end
+                        duration = _calculate_duration(timing_entry.start, timing_entry.end)
+                        duration_parts.append(f"`{phase_name}: {duration}`")
 
-            # Format test and benchmark duration
-            test_duration = timing.get("test_duration")
-            benchmark_duration = timing.get("benchmark_duration")
-
-            if test_duration or benchmark_duration:
-                duration_parts = []
-                if test_duration:
-                    duration_parts.append(f"test: `{test_duration}`")
-                if benchmark_duration:
-                    duration_parts.append(f"benchmark: `{benchmark_duration}`")
-                metadata_lines.append(f"    * Duration: {', '.join(duration_parts)}")
+            if duration_parts:
+                metadata_lines.append(f"  * Duration {', '.join(duration_parts)}")
 
         except Exception as e:
             logger.warning(f"Failed to process caliper metadata file {metadata_file}: {e}")
