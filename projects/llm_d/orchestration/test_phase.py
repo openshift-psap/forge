@@ -10,6 +10,12 @@ from typing import Any
 import yaml
 
 from projects.caliper.engine.constants import METADATA_FILE
+from projects.caliper.engine.kpi.dataclasses import (
+    CaliperTestMetadata,
+    CompletionData,
+    MlflowDestination,
+    TimingData,
+)
 from projects.cluster.toolbox.capture_prometheus.main import run as capture_prometheus
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.dsl import shell
@@ -190,14 +196,17 @@ def create_test_labels(
     kpi_labels = extract_kpi_labels_from_config()
 
     # Create initial timing structure with test start
-    timing = {"test": {"start": get_iso_timestamp()}}
+    timing_data = TimingData()
+    timing_data.set_phase("test", get_iso_timestamp())  # Start time only
 
     write_test_labels(
         env.ARTIFACT_DIR,
         labels,
         kpi_labels=kpi_labels if kpi_labels else None,
-        mlflow_destination=mlflow_destination,
-        timing=timing,
+        mlflow_destination=MlflowDestination.from_dict(mlflow_destination)
+        if mlflow_destination
+        else None,
+        timing=timing_data,
     )
     logger.info("Created test labels with start time: %s", labels)
 
@@ -239,23 +248,34 @@ def update_test_labels_with_timing(timing_section: str, timing_event: str) -> da
         logging.error("Caliper metadata file not found ...")
         return datetime.now(UTC)
 
-    # Read existing labels
+    # Read existing labels and parse with dataclass
     with test_labels_path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
-    # Ensure timing section exists
-    if "timing" not in data:
-        data["timing"] = {}
+    metadata = CaliperTestMetadata.from_dict(data)
 
-    if timing_section not in data["timing"]:
-        data["timing"][timing_section] = {}
+    # Ensure timing exists
+    if not metadata.timing:
+        metadata.timing = TimingData()
 
-    # Add the timing event
-    data["timing"][timing_section][timing_event] = timestamp
+    # Get or create the phase
+    phase = metadata.timing.get_phase(timing_section)
+    if not phase:
+        if timing_event == "start":
+            metadata.timing.set_phase(timing_section, timestamp)
+        else:
+            # If we're setting end but no start exists, create with empty start
+            metadata.timing.set_phase(timing_section, "", timestamp)
+    else:
+        # Update existing phase
+        if timing_event == "start":
+            phase.start = timestamp
+        elif timing_event == "end":
+            phase.end = timestamp
 
     # Write updated labels
     with test_labels_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
+        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
 
     logger.info(
         "Updated test labels with timing: %s.%s = %s", timing_section, timing_event, timestamp
@@ -281,24 +301,27 @@ def update_test_labels_with_status(success: bool, message: str) -> None:
     with test_labels_path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
-    # Add completion information as separate top-level field
-    data["completion"] = {
-        "success": success,
-        "message": message,
-    }
+    metadata = CaliperTestMetadata.from_dict(data)
+
+    # Add completion information using dataclass
+    metadata.completion = CompletionData(success=success, message=message)
 
     # Add test end timing
     test_end_time = get_iso_timestamp()
-    if "timing" not in data:
-        data["timing"] = {}
-    if "test" not in data["timing"]:
-        data["timing"]["test"] = {}
+    if not metadata.timing:
+        metadata.timing = TimingData()
 
-    data["timing"]["test"]["end"] = test_end_time
+    # Get or update the test phase end time
+    test_phase = metadata.timing.get_phase("test")
+    if test_phase:
+        test_phase.end = test_end_time
+    else:
+        # If test phase doesn't exist, create it with empty start and the end time
+        metadata.timing.set_phase("test", "", test_end_time)
 
     # Write updated labels
     with test_labels_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
+        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
 
     logger.info(
         "Updated test labels with completion status and end time: success=%s, message=%s",
