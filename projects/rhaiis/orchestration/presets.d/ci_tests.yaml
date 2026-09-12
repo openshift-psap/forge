@@ -1,0 +1,34 @@
+__multiple: true
+
+ci-test:
+  tests.rhaiis.workload_key: ci-quick
+  tests.rhaiis.model_key: qwen3-0_6b
+  tests.rhaiis.warmup: false
+  tests.rhaiis.version: "vLLM-0.24.0-ci-test"
+  rhaiis.profiler.enabled: false
+  caliper.postprocess.csv_dashboard.enabled: false
+  tests.rhaiis.slack_notify_always: true
+  rhaiis.agent_analysis.enabled: false
+  tests.rhaiis.run_benchmark: true
+
+ci-quick:
+  tests.rhaiis.workload_key: ci-quick
+  tests.rhaiis.warmup: false
+  tests.rhaiis.version: "vLLM-ci-quick"
+  rhaiis.profiler.enabled: false
+  caliper.postprocess.csv_dashboard.enabled: false
+  tests.rhaiis.slack_notify_always: true
+  rhaiis.agent_analysis.enabled: false
+
+sglang-ci-quick:
+  extends:
+    - sglang
+  tests.rhaiis.model_key: qwen3-0_6b
+  tests.rhaiis.workload_keys: ["ci-quick"]
+  tests.rhaiis.warmup: false
+  rhaiis.profiler.enabled: false
+  caliper.postprocess.csv_dashboard.enabled: false
+  rhaiis.agent_analysis.enabled: false
+  rhaiis.cluster_tag: "hera2"
+  rhaiis.deploy.image_pull_secrets: ["npalaska-image-pull"]
+  benchmarks.guidellm.fs_group: 0
