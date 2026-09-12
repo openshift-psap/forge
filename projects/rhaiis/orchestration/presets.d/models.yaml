@@ -1,91 +1,5 @@
 __multiple: true
 
-# ── Accelerator ──────────────────────────────────────────────
-
-nvidia:
-  rhaiis.accelerator: nvidia
-
-amd:
-  rhaiis.accelerator: amd
-
-# ── Engine ───────────────────────────────────────────────────
-
-vllm:
-  rhaiis.engine: vllm
-
-sglang:
-  rhaiis.engine: sglang
-
-trtllm:
-  rhaiis.engine: trtllm
-
-# ── Workload profiles ───────────────────────────────────────
-
-ci-test:
-  tests.rhaiis.workload_key: ci-quick
-  tests.rhaiis.model_key: qwen3-0_6b
-  tests.rhaiis.warmup: false
-  tests.rhaiis.version: "vLLM-0.24.0-ci-test"
-  rhaiis.profiler.enabled: false
-  caliper.postprocess.csv_dashboard.enabled: false
-  tests.rhaiis.slack_notify_always: true
-  rhaiis.agent_analysis.enabled: false
-  tests.rhaiis.run_benchmark: true
-
-ci-quick:
-  tests.rhaiis.workload_key: ci-quick
-  tests.rhaiis.warmup: false
-  tests.rhaiis.version: "vLLM-ci-quick"
-  rhaiis.profiler.enabled: false
-  caliper.postprocess.csv_dashboard.enabled: false
-  tests.rhaiis.slack_notify_always: true
-  rhaiis.agent_analysis.enabled: false
-
-sglang-ci-quick:
-  extends:
-    - sglang
-  tests.rhaiis.model_key: qwen3-0_6b
-  tests.rhaiis.workload_keys: ["ci-quick"]
-  tests.rhaiis.warmup: false
-  rhaiis.profiler.enabled: false
-  caliper.postprocess.csv_dashboard.enabled: false
-  rhaiis.agent_analysis.enabled: false
-  rhaiis.cluster_tag: "hera2"
-  rhaiis.deploy.image_pull_secrets: ["npalaska-image-pull"]
-  benchmarks.guidellm.fs_group: 0
-
-
-
-profile1-balanced:
-  tests.rhaiis.workload_key: profile1
-
-profile2-decode-heterogeneous:
-  tests.rhaiis.workload_key: profile2
-
-profile3-summarization:
-  tests.rhaiis.workload_key: profile3
-
-profile4-long-context:
-  tests.rhaiis.workload_key: profile4
-
-profile5-ultra-long-context:
-  tests.rhaiis.workload_key: profile5
-
-profile6-multi-turn:
-  tests.rhaiis.workload_key: profile6
-
-profile7-heavy-heterogeneous:
-  tests.rhaiis.workload_key: profile7
-
-# ── Feature toggles ─────────────────────────────────────────
-
-prefix-cache-on:
-  rhaiis.engines.vllm.args.enable-prefix-caching: true
-
-prefix-cache-off:
-  rhaiis.engines.vllm.args.no-enable-prefix-caching: true
-
-# ── Models ──────────────────────────────────────────────────
 # Short aliases default to the FP8 variant where available.
 # Use the full name (e.g. llama-70b-w4a16) for other quants.
 
@@ -276,7 +190,7 @@ deepseek-v3:
 deepseek-v4-pro:
   tests.rhaiis.model_key: deepseek-v4-pro
 
-# Phi-4 quants (phi-4 alias already exists → phi-4-fp8, now defined above)
+# Phi-4 quants
 phi-4-w4a16:
   tests.rhaiis.model_key: phi-4-w4a16
 
@@ -293,7 +207,7 @@ llama-8b-w8a8:
 llama-8b-w4a16:
   tests.rhaiis.model_key: llama-3-1-8b-w4a16
 
-# Llama 3.1 405B (llama-405b alias already exists → llama-3-1-405b-fp8, now defined above)
+# Llama 3.1 405B quants
 llama-405b-bf16:
   tests.rhaiis.model_key: llama-3-1-405b
 
