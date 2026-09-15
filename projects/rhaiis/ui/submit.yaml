@@ -1,0 +1,232 @@
+schema_version: 1
+project: rhaiis
+title: RHAIIS
+description: >
+  RHAIIS inference-server performance testing (vLLM / SGLang / TRT-LLM).
+  Field-for-field port of fournos-ui's former
+  app/projects/rhaiis.py + templates/projects/rhaiis_submit.html.
+  Accelerator, engine, model, and workload are all named presets mixed
+  together in presets.d, self-tagged by which key each entry sets — hence
+  the shared `presets_ref` pool instead of per-field `options_ref` files
+  for those four (see docs/ui-schema-spec.md in psap-control-center).
+
+modes:
+  - id: single
+    label: Single Job
+    default: true
+    presets_ref:
+      dir: presets.d
+    sections:
+      - id: infra
+        label: Infrastructure
+        fields:
+          - key: accelerator
+            label: Accelerator
+            type: radio
+            required: true
+            maps_to: rhaiis.accelerator
+            # trtllm only ships an Nvidia image (see
+            # orchestration/config.d/rhaiis.yaml, engines.trtllm.images) —
+            # restrict_if drops amd from this field's own options whenever
+            # engine == trtllm. If accelerator was already set to amd, the
+            # Control Center clears it so a stale, invalid combination is
+            # never submitted.
+            restrict_if:
+              - when: {field: engine, equals: trtllm}
+                exclude_values: [amd]
+          - key: engine
+            label: Engine
+            type: radio
+            required: true
+            maps_to: rhaiis.engine
+            # Bidirectional with accelerator's own restrict_if above: amd
+            # has no trtllm image either way, so picking amd here should
+            # just as much drop trtllm from Engine's options as picking
+            # trtllm drops amd from Accelerator's.
+            restrict_if:
+              - when: {field: accelerator, equals: amd}
+                exclude_values: [trtllm]
+          - key: engine_version
+            label: Engine Version
+            type: text
+            placeholder: e.g. v0.24.0 or a full image ref
+            help: >
+              Overrides the selected engine's container image for the
+              selected accelerator (rhaiis.engines.<engine>.images.<accelerator>).
+              Leave blank to use the engine's default image.
+            visible_if: {field: engine, one_of: [vllm, sglang, trtllm]}
+            maps_to: "rhaiis.engines.{engine}.images.{accelerator}"
+          # NOTE: presets.d also has a `cluster_tag` preset (hera/zeus)
+          # used only to label dashboard/CSV rows and pick
+          # image_pull_secrets/fs_group — it has no effect on which
+          # Kubernetes cluster the job actually runs on (that's the real
+          # "Cluster" field, from the Control Center's own registered
+          # clusters, always rendered by the surrounding form). Excluded
+          # here on purpose to avoid a confusing double "cluster" prompt.
+
+      - id: model
+        label: Model & Workload
+        fields:
+          - key: model
+            label: Model
+            type: select
+            required: true
+            maps_to: tests.rhaiis.model_key
+            options_ref:
+              path: config.d/models.yaml
+              label_field: name
+              join_key: tests.rhaiis.model_key
+          - key: workload
+            label: Workload Profiles
+            type: multiselect
+            maps_to: tests.rhaiis.workload_key
+            options_ref:
+              path: config.d/workloads.yaml
+              join_key: tests.rhaiis.workload_key
+
+      - id: run_settings
+        label: Run Settings
+        fields:
+          - key: benchmark
+            label: Benchmark
+            type: boolean
+            default: true
+            maps_to: tests.rhaiis.run_benchmark
+            help: Run the benchmark workload.
+          - key: warmup
+            label: Warmup
+            type: boolean
+            default: false
+            maps_to: tests.rhaiis.warmup
+            help: Run warmup requests before the benchmark.
+          - key: profiler
+            label: Profiler
+            type: boolean
+            default: false
+            maps_to: rhaiis.profiler.enabled
+            help: Collect PyTorch profiler traces.
+          - key: slack
+            label: Slack Notifications
+            type: boolean
+            default: true
+            maps_to: tests.rhaiis.slack_notify_always
+            help: Send Slack notifications on completion.
+          - key: agent_analysis
+            label: Agent Analysis
+            type: boolean
+            default: false
+            maps_to: rhaiis.agent_analysis.enabled
+            help: >
+              Run AI agent analysis on results — uses tokens. Requires a
+              Compare Version below, and pytorch profiles for that version
+              on the staging dashboard.
+          - key: compare_versions
+            label: Compare Versions
+            type: boolean
+            default: false
+            maps_to: rhaiis.compare_versions.enabled
+            help: Compare results against a previous version.
+          - key: csv_dashboard
+            label: Push to Staging Dashboard
+            type: boolean
+            default: false
+            maps_to: caliper.postprocess.csv_dashboard.enabled
+            help: Push results to the staging dashboard.
+          - key: slack_member_id
+            label: Slack Member ID
+            type: text
+            placeholder: e.g. U0123456789
+            help: >
+              In Slack: click your profile photo → Profile → the ⋮ menu →
+              Copy member ID.
+            visible_if: {field: slack, equals: true}
+            maps_to: tests.rhaiis.slack_member_id
+          - key: compare_version
+            label: Compare Version
+            type: text
+            placeholder: e.g. vLLM-0.23.0-benchmark
+            help: >
+              Version label to compare results against. Required when
+              Agent Analysis is enabled.
+            visible_if: {field: compare_versions, equals: true}
+            maps_to: tests.rhaiis.compare_version
+          - key: version
+            label: Version Label
+            type: text
+            placeholder: e.g. vLLM-0.24.0-benchmark
+            help: A label for this run.
+            maps_to: tests.rhaiis.version
+
+  - id: cpt
+    label: CPT Pipeline
+    kind: matrix
+    presets_ref:
+      dir: presets.d
+    matrix:
+      marker_key: __cpt
+      models_key: __models
+      workloads_key: __workloads
+      label_key: __description
+      tp_key: __tp
+    dimensions: [model, workload]
+    sections:
+      - id: infra
+        label: Infrastructure
+        fields:
+          - key: accelerator
+            label: Accelerator
+            type: radio
+            required: true
+            maps_to: rhaiis.accelerator
+            restrict_if:
+              - when: {field: engine, equals: trtllm}
+                exclude_values: [amd]
+          - key: engine
+            label: Engine
+            type: radio
+            required: true
+            maps_to: rhaiis.engine
+            restrict_if:
+              - when: {field: accelerator, equals: amd}
+                exclude_values: [trtllm]
+          - key: engine_version
+            label: Engine Version
+            type: text
+            placeholder: e.g. v0.24.0 or a full image ref
+            help: >
+              Overrides the selected engine's container image for the
+              selected accelerator, across every job in this pipeline.
+              Leave blank to use the engine's default image.
+            visible_if: {field: engine, one_of: [vllm, sglang, trtllm]}
+            maps_to: "rhaiis.engines.{engine}.images.{accelerator}"
+
+      - id: version
+        label: Version & Notifications
+        fields:
+          - key: version
+            label: Version Label
+            type: text
+            placeholder: e.g. vLLM-0.24.0-CPT
+            help: Label applied to every job in this pipeline.
+            maps_to: tests.rhaiis.version
+          - key: compare_version
+            label: Compare Version
+            type: text
+            placeholder: e.g. vLLM-0.23.0-benchmark
+            help: Version label to compare results against (optional).
+            maps_to: tests.rhaiis.compare_version
+          - key: slack_member_id
+            label: Slack Notification Target
+            type: text
+            placeholder: e.g. U0123456789 or S0123456789
+            help: >
+              Slack Member ID or User Group ID (optional). For a member:
+              profile photo → Profile → ⋮ → Copy member ID. For a group,
+              use the group's own ID (starts with S).
+            maps_to: tests.rhaiis.slack_member_id
+    # NOTE: no presets.d entries are currently tagged `__cpt: true` in this
+    # repo, so this mode resolves to zero pipelines today. Once RHAIIS
+    # publishes real `__cpt` pipeline presets (the old fournos-ui
+    # convention: __cpt / __models / __workloads / __description / __tp —
+    # see git history of app/projects/rhaiis.py::fetch_config), they show
+    # up here automatically. No Control Center change required.

@@ -1,0 +1,93 @@
+schema_version: 1
+project: llm_d
+title: llm-d
+description: >
+  llm-d inference-serving performance testing (vLLM-based distributed
+  serving: prefix-caching, disaggregated prefill/decode, intelligent
+  routing). Each dimension below is its own presets.d file — unlike
+  RHAIIS, llm_d's presets aren't self-tagged/mixed, so every field sources
+  its options straight from its own file (options_ref + preset_pool, see
+  docs/ui-schema-spec.md in psap-control-center) instead of a shared
+  presets_ref pool.
+
+modes:
+  - id: single
+    label: Submit Job
+    default: true
+    sections:
+      - id: core
+        label: Core
+        fields:
+          - key: preset
+            label: Preset
+            type: select
+            required: true
+            help: >
+              Deployment/smoke shape to run — see
+              orchestration/presets.d/presets.yaml.
+            options_ref:
+              path: presets.d/presets.yaml
+              preset_pool: true
+          - key: model
+            label: Model
+            type: select
+            help: "See orchestration/presets.d/models.yaml."
+            options_ref:
+              path: presets.d/models.yaml
+              preset_pool: true
+          - key: benchmark
+            label: Benchmark
+            type: select
+            help: "See orchestration/presets.d/benchmarks.yaml."
+            options_ref:
+              path: presets.d/benchmarks.yaml
+              preset_pool: true
+
+      - id: cluster
+        label: Cluster & Environment
+        fields:
+          - key: cluster_config
+            label: Cluster Profile
+            type: select
+            help: >
+              Cluster-specific infra config (Kueue queue/limits, PVC
+              storage class, node selectors, IB/RoCE) — pick the profile
+              matching the Cluster selected above, not a different one.
+              See orchestration/presets.d/cluster_config.yaml.
+            options_ref:
+              path: presets.d/cluster_config.yaml
+              preset_pool: true
+          - key: rhoai_channel
+            label: RHOAI Release Channel
+            type: select
+            help: >
+              Optional: install a specific RHOAI operator
+              channel/catalog build before testing. See
+              orchestration/presets.d/rhoai-rc.yaml.
+            options_ref:
+              path: presets.d/rhoai-rc.yaml
+              preset_pool: true
+
+      - id: advanced
+        label: CPT / Release / External-K8s (advanced)
+        fields:
+          - key: cpt
+            label: CPT / Release Recipe
+            type: select
+            help: >
+              Pre-composed CPT/release-testing recipe (bundles deployment
+              profile + benchmark + model + reporting labels). Leave unset
+              for an ad-hoc run using the Core fields above instead. See
+              orchestration/presets.d/cpt.yaml.
+            options_ref:
+              path: presets.d/cpt.yaml
+              preset_pool: true
+          - key: xks
+            label: External-K8s Recipe
+            type: select
+            help: >
+              Pre-composed recipe for external/non-OCP Kubernetes clusters
+              (EKS, etc). See orchestration/presets.d/xks.yaml.
+            options_ref:
+              path: presets.d/xks.yaml
+              preset_pool: true
