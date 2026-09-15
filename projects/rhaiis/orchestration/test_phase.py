@@ -9,9 +9,10 @@ from pathlib import Path
 import yaml
 
 from projects.caliper.engine.kpi.dataclasses import MlflowDestination
+from projects.core.dsl.utils import write_json
 from projects.core.library import env
 from projects.core.library.postprocess import run_and_postprocess, write_test_labels
-from projects.rhaiis.orchestration import runtime_config
+from projects.rhaiis.orchestration import configiq_adaptive, runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +400,7 @@ def _run_workload_benchmark(
     cluster_tag: str,
     trtllm_config: dict | None = None,
     mlflow_destination: dict[str, str] | None = None,
-) -> None:
+) -> configiq_adaptive.ConfigIQSaturationAnalysis | None:
     """Run benchmark and post-processing for a single workload.
 
     Each workload gets its own NextArtifactDir with per-workload test labels so
@@ -412,6 +413,17 @@ def _run_workload_benchmark(
     rates = workload.get("rates", [1])
     max_seconds = workload.get("max_seconds", 180)
     rampup = workload.get("rampup")
+    over_saturation = runtime_config.build_guidellm_saturation_monitor(
+        workload.get("saturation_monitor")
+    )
+    adaptive_enabled = workload_key == "configiq" and configiq_adaptive.adaptive_pass_enabled(
+        workload
+    )
+    reuse_config = (
+        configiq_adaptive.tier1_reuse_config(workload) if workload_key == "configiq" else None
+    )
+    if reuse_config is not None and reuse_config.enabled and not adaptive_enabled:
+        raise ValueError("ConfigIQ Tier 1 reuse requires adaptive_pass.enabled=true")
 
     from projects.core.library import config
     from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
@@ -420,23 +432,34 @@ def _run_workload_benchmark(
 
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
 
+    analysis = None
     with env.NextArtifactDir(f"benchmark_{workload_key}"):
-        _create_test_labels(
-            model_key,
-            workload_key,
-            accelerator,
-            engine_args,
-            hf_model_id=model_cfg["hf_model_id"],
-            version=version,
-            serving_image=serving_image,
-            cluster_tag=cluster_tag,
-            accelerator_chip=gpu_type.upper(),
-            run_uuid=run_uuid,
-            trtllm_config=trtllm_config,
-            mlflow_destination=mlflow_destination,
-        )
+        benchmark_artifact_dir = Path(env.ARTIFACT_DIR)
+
+        def create_test_labels(
+            *,
+            configiq_pass: str | None = None,
+            configiq_data_source: str | None = None,
+        ) -> None:
+            _create_test_labels(
+                model_key,
+                workload_key,
+                accelerator,
+                engine_args,
+                hf_model_id=model_cfg["hf_model_id"],
+                version=version,
+                serving_image=serving_image,
+                cluster_tag=cluster_tag,
+                accelerator_chip=gpu_type.upper(),
+                run_uuid=run_uuid,
+                trtllm_config=trtllm_config,
+                mlflow_destination=mlflow_destination,
+                configiq_pass=configiq_pass,
+                configiq_data_source=configiq_data_source,
+            )
 
         if not run_benchmark:
+            create_test_labels()
             logger.info("run_benchmark=false, skipping main benchmark")
             try:
                 from projects.rhaiis.orchestration.analysis import run_standalone_analysis
@@ -456,26 +479,158 @@ def _run_workload_benchmark(
 
             benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.6.0")
 
-            guidellm_args = runtime_config.build_guidellm_args(
-                benchmark_cfg=benchmark_cfg,
-                model_id=model_cfg["hf_model_id"],
-                data=workload["data"],
-                rates=rates,
-                max_seconds=max_seconds,
-                rampup=rampup,
-            )
+            def run_guidellm_pass(*, pass_rates: list[int], job_prefix: str) -> None:
+                guidellm_args = runtime_config.build_guidellm_args(
+                    benchmark_cfg=benchmark_cfg,
+                    model_id=model_cfg["hf_model_id"],
+                    data=workload["data"],
+                    rates=pass_rates,
+                    max_seconds=max_seconds,
+                    rampup=rampup,
+                    over_saturation=over_saturation,
+                )
+                run_guidellm_benchmark(
+                    endpoint_url=f"{endpoint_url}/v1",
+                    name=_guidellm_job_name(job_prefix, workload_key, deployment_name),
+                    namespace=namespace,
+                    image=benchmark_image,
+                    timeout=benchmark_timeout,
+                    pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
+                    guidellm_args=guidellm_args,
+                    hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
+                    fs_group=benchmark_cfg.get("fs_group"),
+                )
 
-            run_guidellm_benchmark(
-                endpoint_url=f"{endpoint_url}/v1",
-                name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
-                namespace=namespace,
-                image=benchmark_image,
-                timeout=benchmark_timeout,
-                pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
-                guidellm_args=guidellm_args,
-                hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
-                fs_group=benchmark_cfg.get("fs_group"),
-            )
+            if adaptive_enabled:
+                if reuse_config is None:
+                    raise RuntimeError("ConfigIQ adaptive pass is missing its reuse configuration")
+                reuse_provenance = None
+                if reuse_config.enabled:
+                    from projects.rhaiis.orchestration.configiq_reuse import (
+                        download_tier1_report_by_uuid,
+                    )
+
+                    with env.NextArtifactDir("tier1-reused"):
+                        tier1_artifact_dir = Path(env.ARTIFACT_DIR)
+                        create_test_labels(
+                            configiq_pass="tier1",
+                            configiq_data_source="reused",
+                        )
+                        reuse_output_dir = tier1_artifact_dir / "artifacts" / "reused-report"
+                        if reuse_config.run_uuid is None:
+                            raise RuntimeError("ConfigIQ Tier 1 reuse is missing its run UUID")
+                        resolved_mlflow_run_id = download_tier1_report_by_uuid(
+                            run_uuid=reuse_config.run_uuid,
+                            output_dir=reuse_output_dir,
+                        )
+                        reuse_provenance = configiq_adaptive.Tier1ReuseProvenance(
+                            run_uuid=reuse_config.run_uuid,
+                            mlflow_run_id=resolved_mlflow_run_id,
+                        )
+
+                    report_path = configiq_adaptive.locate_reused_guidellm_report(
+                        tier1_artifact_dir
+                    )
+                    analysis = configiq_adaptive.validate_and_analyze_reused_tier1_report(
+                        report_path,
+                        model_id=model_cfg["hf_model_id"],
+                        data=workload["data"],
+                        tier1_rates=rates,
+                    )
+                    logger.info("Reused ConfigIQ Tier 1 report: %s", report_path)
+                else:
+                    with env.NextArtifactDir("tier1"):
+                        tier1_artifact_dir = Path(env.ARTIFACT_DIR)
+                        create_test_labels(
+                            configiq_pass="tier1",
+                            configiq_data_source="measured",
+                        )
+                        run_guidellm_pass(pass_rates=rates, job_prefix="guidellm-bench")
+
+                    report_path = configiq_adaptive.locate_guidellm_report(tier1_artifact_dir)
+                    analysis = configiq_adaptive.analyze_guidellm_report_file(report_path)
+                points_each_side, max_step = configiq_adaptive.adaptive_rate_options(workload)
+                adaptive_rate_plan = configiq_adaptive.generate_adaptive_rate_plan(
+                    analysis,
+                    rates,
+                    points_each_side=points_each_side,
+                    max_step=max_step,
+                )
+                analysis_path = (
+                    benchmark_artifact_dir / "artifacts" / "configiq-saturation-analysis.json"
+                )
+                write_json(
+                    analysis_path,
+                    configiq_adaptive.build_saturation_analysis_artifact(
+                        analysis,
+                        tier1_report=str(report_path.relative_to(benchmark_artifact_dir)),
+                        adaptive_rate_plan=adaptive_rate_plan,
+                        tier1_reuse=reuse_provenance,
+                    ),
+                )
+                logger.info(
+                    "ConfigIQ Tier 1 analysis: throughput_status=%s knee=%s "
+                    "guidellm_status=%s last_safe=%s first_saturated=%s assessment=%s",
+                    analysis.throughput.status,
+                    analysis.throughput.knee,
+                    analysis.guidellm.status,
+                    analysis.guidellm.previous_safe_concurrency,
+                    analysis.guidellm.first_oversaturated_concurrency,
+                    analysis.assessment.status,
+                )
+                logger.info(
+                    "ConfigIQ adaptive rate plan: status=%s center=%s step=%s rates=%s",
+                    adaptive_rate_plan.status,
+                    adaptive_rate_plan.selection_center,
+                    adaptive_rate_plan.step,
+                    adaptive_rate_plan.rates,
+                )
+                logger.info("Saved ConfigIQ Tier 1 analysis to %s", analysis_path)
+
+                if adaptive_rate_plan.status == "ready":
+                    logger.info(
+                        "Running ConfigIQ adaptive benchmark at rates=%s",
+                        adaptive_rate_plan.rates,
+                    )
+                    with env.NextArtifactDir("adaptive"):
+                        adaptive_artifact_dir = Path(env.ARTIFACT_DIR)
+                        create_test_labels(
+                            configiq_pass="adaptive",
+                            configiq_data_source="measured",
+                        )
+                        run_guidellm_pass(
+                            pass_rates=list(adaptive_rate_plan.rates),
+                            job_prefix="guidellm-adaptive",
+                        )
+                    adaptive_report_path = configiq_adaptive.locate_guidellm_report(
+                        adaptive_artifact_dir
+                    )
+                    write_json(
+                        analysis_path,
+                        configiq_adaptive.build_saturation_analysis_artifact(
+                            analysis,
+                            tier1_report=str(report_path.relative_to(benchmark_artifact_dir)),
+                            adaptive_rate_plan=adaptive_rate_plan,
+                            adaptive_report=str(
+                                adaptive_report_path.relative_to(benchmark_artifact_dir)
+                            ),
+                            tier1_reuse=reuse_provenance,
+                        ),
+                    )
+                    logger.info(
+                        "ConfigIQ adaptive benchmark completed; report=%s",
+                        adaptive_report_path,
+                    )
+                else:
+                    logger.info(
+                        "Skipping ConfigIQ adaptive benchmark: %s",
+                        adaptive_rate_plan.reason,
+                    )
+            else:
+                create_test_labels()
+                run_guidellm_pass(pass_rates=rates, job_prefix="guidellm-bench")
+
+    return analysis
 
 
 def _create_test_labels(
@@ -492,6 +647,8 @@ def _create_test_labels(
     run_uuid: str = "",
     trtllm_config: dict | None = None,
     mlflow_destination: dict[str, str] | None = None,
+    configiq_pass: str | None = None,
+    configiq_data_source: str | None = None,
 ) -> None:
     _, image_tag = runtime_config.split_image_tag(serving_image) if serving_image else ("", "")
     parts = [f"{k}: {v}" for k, v in engine_args.items()]
@@ -519,6 +676,10 @@ def _create_test_labels(
         "runtime_args": runtime_args,
         "run_uuid": run_uuid,
     }
+    if configiq_pass is not None:
+        labels["configiq_pass"] = configiq_pass
+    if configiq_data_source is not None:
+        labels["configiq_data_source"] = configiq_data_source
 
     write_test_labels(
         env.ARTIFACT_DIR,

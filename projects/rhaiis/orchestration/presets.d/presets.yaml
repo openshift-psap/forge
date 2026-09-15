@@ -64,6 +64,9 @@ profile6-multi-turn:
 profile7-heavy-heterogeneous:
   tests.rhaiis.workload_key: profile7
 
+configiq:
+  tests.rhaiis.workload_key: configiq
+
 # ── Feature toggles ─────────────────────────────────────────
 
 prefix-cache-on:

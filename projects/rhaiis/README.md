@@ -510,6 +510,44 @@ Full list: `grep "^[a-z]" orchestration/config.d/models.yaml`
 | `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 450 |
 | `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 450 |
 | `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 450 |
+| `configiq` | 1000 | 1000 | 1, 2, 5, 10, 25, 50, 75, 100, 200, 300 | 450 |
+
+The `configiq` profile retains the standard one-time deployment warmup before the sweep.
+It also runs GuideLLM's over-saturation detector in non-enforcing monitor mode. The
+monitor records its final concurrency and TTFT slope evidence without shortening the
+450-second measurements.
+
+Set `workloads.configiq.adaptive_pass.enabled: true` to analyze the completed ConfigIQ
+sweep and run a second GuideLLM benchmark at the generated rates. Both benchmarks run
+sequentially against the same deployment and are stored under the same `benchmark_configiq`
+workload directory, in separate `tier1` and `adaptive` test nodes. Their Caliper labels retain
+`workload_key: configiq` and add `configiq_pass: tier1` or `configiq_pass: adaptive`. The
+complete result is saved as
+`benchmark_configiq/artifacts/configiq-saturation-analysis.json`, with relative paths to
+the Tier 1 and adaptive `benchmarks.json` reports included for provenance. The result also
+contains an `adaptive_rate_plan`: up to five unmeasured concurrency points on either side
+of the selected saturation region. The generator uses a maximum step of five, reduces the
+step near low concurrency, and excludes rates already measured by Tier 1. Its defaults can
+be changed with `workloads.configiq.adaptive_pass.points_each_side` and
+`workloads.configiq.adaptive_pass.max_step`. If the analysis cannot safely generate a
+plan, it records the reason and skips the adaptive benchmark.
+
+To skip the Tier 1 benchmark and reuse a completed Tier 1 report, provide the FORGE run
+UUID shown in the original job logs and ConfigIQ test labels:
+
+```yaml
+workloads.configiq.adaptive_pass.enabled: true
+workloads.configiq.adaptive_pass.reuse.enabled: true
+workloads.configiq.adaptive_pass.reuse.run_uuid: "<prior ConfigIQ run UUID>"
+```
+
+FORGE searches the configured `forge-rhaiis` MLflow experiment for the unique child run
+having that `run_uuid` and `configiq_pass: tier1`, downloads its artifacts with the existing
+MLflow vault configuration, stores the report under a `tier1-reused` test node, and labels
+it with `configiq_data_source: reused`. Before using it, FORGE requires the model ID,
+ConfigIQ data shape, and complete Tier 1 concurrency grid to match the current job. The
+model is still deployed and warmed up because the new adaptive benchmark runs against the
+current deployment.
 
 ## Presets
 
@@ -524,7 +562,7 @@ python3 -m projects.rhaiis.orchestration.cli test \
 # Available model presets: llama-8b, llama-70b, llama-405b, llama-4-scout,
 #   llama-4-maverick, granite-8b, mistral-24b, qwen25-7b, qwen3-235b,
 #   deepseek-r1, deepseek-v3, gpt-oss
-# Workload presets: profile1, profile2, profile3, profile4
+# Workload presets: profile1, profile2, profile3, profile4, configiq
 # Accelerator presets: nvidia, amd
 ```
 

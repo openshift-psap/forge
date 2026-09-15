@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import pathlib
 
@@ -183,6 +184,20 @@ def _format_arg_value(value: object) -> str:
     return str(value)
 
 
+def build_guidellm_saturation_monitor(monitor_cfg: dict | None) -> dict | None:
+    """Translate FORGE monitor settings to GuideLLM v0.6 configuration.
+
+    In GuideLLM v0.6, ``enabled`` controls enforcement rather than whether the
+    detector runs. Setting it to false retains detector metadata without
+    stopping the benchmark.
+    """
+    if not monitor_cfg or not monitor_cfg.get("enabled", False):
+        return None
+
+    detector_cfg = {key: value for key, value in monitor_cfg.items() if key != "enabled"}
+    return {"enabled": False, **detector_cfg}
+
+
 def build_guidellm_args(
     *,
     benchmark_cfg: dict,
@@ -191,6 +206,7 @@ def build_guidellm_args(
     rates: list[int],
     max_seconds: int,
     rampup: int | None = None,
+    over_saturation: dict | None = None,
 ) -> list[str]:
     guidellm_args = []
     for key, value in benchmark_cfg.get("args", {}).items():
@@ -203,6 +219,9 @@ def build_guidellm_args(
     guidellm_args.append(f"--max-seconds={max_seconds}")
     if rampup is not None:
         guidellm_args.append(f"--rampup={rampup}")
+    if over_saturation is not None:
+        serialized = json.dumps(over_saturation, separators=(",", ":"), sort_keys=True)
+        guidellm_args.extend(["--over-saturation", serialized])
     return guidellm_args
 
 

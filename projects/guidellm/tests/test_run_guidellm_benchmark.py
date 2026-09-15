@@ -6,6 +6,7 @@ from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
     expand_guidellm_runs,
     render_guidellm_job_from_parts,
+    render_guidellm_shared_volume_job_from_parts,
 )
 
 
@@ -166,6 +167,27 @@ def test_render_guidellm_job_from_parts_keeps_plain_rates_as_single_guidellm_run
         "--data=prompt_tokens=1000,output_tokens=1000",
         "--max-seconds=600",
     ]
+
+
+def test_shared_volume_job_shell_quotes_structured_arguments() -> None:
+    saturation_config = '{"enabled":false,"min_seconds":15}'
+    manifest = render_guidellm_shared_volume_job_from_parts(
+        namespace="forge-llm-d",
+        name="guidellm-benchmark",
+        image="ghcr.io/vllm-project/guidellm:v0.6.0",
+        endpoint_url="https://example.test/rhaiis",
+        timeout_seconds=3600,
+        guidellm_args=[
+            "--rate=1,2,5,10",
+            "--over-saturation",
+            saturation_config,
+        ],
+    )
+
+    container = manifest["spec"]["template"]["spec"]["containers"][0]
+    assert container["command"] == ["/bin/sh", "-c"]
+    script = container["args"][0]
+    assert f"--over-saturation '{saturation_config}'" in script
 
 
 def test_build_guidellm_args_renders_list_values() -> None:
