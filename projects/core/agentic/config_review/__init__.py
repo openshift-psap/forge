@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 import yaml
-
 from projects.core.agentic.analysis_utils import extract_structured_analysis
 from projects.core.agentic.config_review.queries import (
     ConfigReviewQueries,
@@ -40,6 +39,7 @@ from projects.core.agentic.config_review.queries import (
 )
 from projects.core.agentic.config_review.report import generate_config_html_report
 from projects.core.agentic.models import create_llm_client, load_model_config
+
 from projects.core.library import ci as ci_lib
 from projects.core.library import vault
 

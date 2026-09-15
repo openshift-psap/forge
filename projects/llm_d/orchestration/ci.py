@@ -11,8 +11,8 @@ from pathlib import Path
 import click
 
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
-from projects.core.agentic.config_review import trigger_config_review_for_ci
-from projects.core.agentic.on_failure import agent_review_on_failure
+from projects.core.agentic_review.config_review import trigger_config_review_for_ci
+from projects.core.agentic_review.failure_review import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault

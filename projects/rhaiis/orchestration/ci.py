@@ -9,8 +9,8 @@ import click
 import prepare_rhaiis
 import test_rhaiis
 
-from projects.core.agentic.config_review import trigger_config_review_for_ci
-from projects.core.agentic.on_failure import agent_review_on_failure
+from projects.core.agentic_review.config_review import trigger_config_review_for_ci
+from projects.core.agentic_review.failure_review import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import env, vault

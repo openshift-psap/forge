@@ -43,7 +43,6 @@ from pathlib import Path
 
 import click
 import yaml
-
 from projects.core.agentic.analysis_utils import extract_structured_analysis
 from projects.core.agentic.artifact_processing import (
     find_execution_logs,
@@ -58,6 +57,7 @@ from projects.core.agentic.artifact_processing import (
 from projects.core.agentic.models import create_llm_client, load_model_config
 from projects.core.agentic.on_failure.cli import cli
 from projects.core.agentic.on_failure.report import generate_html_report, text_to_code_block
+
 from projects.core.library import ci as ci_lib
 from projects.core.library import config
 
