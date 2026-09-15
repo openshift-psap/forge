@@ -194,13 +194,14 @@ def _run_test(
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
     wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
 
-    try:
-        from projects.caliper.orchestration.export import precreate_mlflow_run_if_configured
+    from projects.caliper.orchestration.export import (
+        precreate_mlflow_run_if_configured,
+        write_mlflow_destination_marker,
+    )
 
-        mlflow_destination = precreate_mlflow_run_if_configured()
-    except Exception:
-        logger.warning("MLflow run pre-creation failed; continuing", exc_info=True)
-        mlflow_destination = None
+    mlflow_destination = precreate_mlflow_run_if_configured()
+    if mlflow_destination:
+        write_mlflow_destination_marker(mlflow_destination)
 
     try:
         isvc_labels = {
@@ -497,7 +498,7 @@ def _create_test_labels(
     parts = [f"{k}: {v}" for k, v in engine_args.items()]
     for key, value in (trtllm_config or {}).items():
         formatted_value = (
-            json.dumps(value, separators=(",", ":")) if isinstance(value, (dict, list)) else value
+            json.dumps(value, separators=(",", ":")) if isinstance(value, dict | list) else value
         )
         parts.append(f"trtllm.{key}: {formatted_value}")
     runtime_args = "; ".join(parts)

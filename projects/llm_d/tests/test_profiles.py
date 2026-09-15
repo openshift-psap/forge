@@ -271,7 +271,7 @@ def test_test_matrix_continues_after_a_failed_entry(monkeypatch: pytest.MonkeyPa
         lambda _run_spec: nullcontext(),
     )
 
-    def _test_entry() -> int:
+    def _test_entry(**_kwargs) -> int:
         calls.append("run")
         if len(calls) == 1:
             raise RuntimeError("expected test failure")
