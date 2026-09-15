@@ -5,9 +5,12 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import shutil
 import subprocess
 import time
 from pathlib import Path
+
+import yaml
 
 from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils import write_json, write_text
@@ -52,11 +55,12 @@ def run(
     endpoint_url: str,
     name: str = "guidellm-benchmark",
     namespace: str = "",
-    image: str = "ghcr.io/vllm-project/guidellm:v0.6.0",
+    image: str = "ghcr.io/vllm-project/guidellm:v0.7.3",
     timeout: int = 900,
     pvc_size: str = "1Gi",
     pvc_storage_class: str | None = None,
     guidellm_args: list[str] | None = None,
+    config_path: Path | None = None,
     hf_token_secret: str = "",
     fs_group: int | None = None,
     keep_full_benchmark_file: bool = False,
@@ -73,6 +77,9 @@ def run(
         timeout: Active deadline for the Job and timeout in seconds to wait for completion
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
         guidellm_args: List of additional guidellm arguments (e.g., ["--rate=10", "--max-seconds=30"])
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container, and GuideLLM
+            is invoked with ``--config`` pointing to it.
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds securityContext.fsGroup to the GuideLLM job pod.
         keep_full_benchmark_file: Whether to keep the full untrimmed benchmark JSON files alongside trimmed ones (default: False)
@@ -160,13 +167,23 @@ def create_guidellm_resources_task(args, ctx):
     """Create the GuideLLM benchmark job and optionally PVC with job as owner"""
 
     # Ensure src directory exists
-    (args.artifact_dir / "src").mkdir(parents=True, exist_ok=True)
+    src_dir = args.artifact_dir / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy and validate the config file into the artifact src/ directory
+    ctx.config_path = args.config_path
+    if ctx.config_path is not None:
+        dest = src_dir / "guidellm-config.yaml"
+        shutil.copy2(ctx.config_path, dest)
+        # Validate the YAML is well-formed
+        yaml.safe_load(dest.read_text())
+        ctx.config_path = dest
 
     # Create the job based on mode
     if args.use_pvc:
         # PVC mode - traditional single container job + PVC
         oc_apply(
-            args.artifact_dir / "src" / "guidellm-job.yaml",
+            src_dir / "guidellm-job.yaml",
             render_guidellm_job_from_parts(
                 namespace=ctx.target_namespace,
                 name=ctx.benchmark_name,
@@ -176,6 +193,7 @@ def create_guidellm_resources_task(args, ctx):
                 timeout_seconds=args.timeout,
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
+                config_path=ctx.config_path,
             ),
         )
 
@@ -194,7 +212,7 @@ def create_guidellm_resources_task(args, ctx):
 
         # Create the PVC with job as owner
         oc_apply(
-            args.artifact_dir / "src" / "guidellm-pvc.yaml",
+            src_dir / "guidellm-pvc.yaml",
             render_guidellm_pvc_from_parts(
                 namespace=ctx.target_namespace,
                 name=ctx.benchmark_name,
@@ -209,7 +227,7 @@ def create_guidellm_resources_task(args, ctx):
     else:
         # Shared volume mode - job with main + sidecar containers
         oc_apply(
-            args.artifact_dir / "src" / "guidellm-job.yaml",
+            src_dir / "guidellm-job.yaml",
             render_guidellm_shared_volume_job_from_parts(
                 namespace=ctx.target_namespace,
                 name=ctx.benchmark_name,
@@ -219,6 +237,7 @@ def create_guidellm_resources_task(args, ctx):
                 timeout_seconds=args.timeout,
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
+                config_path=ctx.config_path,
             ),
         )
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS
