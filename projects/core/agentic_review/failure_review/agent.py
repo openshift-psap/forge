@@ -7,6 +7,7 @@ are expressed through typed Python classes.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,10 @@ class FailureAnalysis:
     timeline: str | None = None
     configuration_issues: str | None = None
     recommended_actions: list[str] | None = None
+    # Directory of the failure this analysis belongs to (set by the caller)
+    failure_dir: str | None = None
+    # Set when the analysis of this failure itself failed (error message)
+    error: str | None = None
 
 
 @dataclass
@@ -280,7 +285,7 @@ class FailureReviewAgent(Agent if _NOOA_AVAILABLE else object):
             ".yml",
             "endpoint.url",
             ".log",
-            "AGENT.md",
+            "agent.md",
         ]
 
         relevant_files = []
@@ -393,68 +398,68 @@ Root cause: {full_analysis.root_cause}
 Failed step: {full_analysis.failed_step}"""
 
     # Direct LLM implementations (no NOOA framework required)
+    @staticmethod
+    def _bounded_excerpt(text: str, limit: int) -> str:
+        """Return a bounded excerpt of ``text`` keeping both its beginning and its end.
+
+        Trailing diagnostics (the final error, the tail of a stack trace) are often the
+        most decisive evidence, so when the text exceeds ``limit`` both ends are kept
+        and only the middle is truncated.
+        """
+        if not text or len(text) <= limit:
+            return text
+
+        head_len = limit // 2
+        tail_len = limit - head_len
+        omitted = len(text) - limit
+        return (
+            f"{text[:head_len]}\n\n[... {omitted} characters truncated ...]\n\n{text[-tail_len:]}"
+        )
+
     def _direct_llm_categorize_failure(self, context: FailureContext) -> str:
         """Direct LLM call to categorize failure"""
         prompt = f"""
 Categorize this test failure:
 
-Failure: {context.failure_content[:500]}
-Log: {context.log_content[:1000]}
+Failure: {self._bounded_excerpt(context.failure_content, 500)}
+Log: {self._bounded_excerpt(context.log_content, 1000)}
 
 Answer in 1-2 words: infrastructure, configuration, timeout, resource, or other specific category.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return "unknown"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _direct_llm_identify_root_cause(self, context: FailureContext, category: str) -> str:
         """Direct LLM call to identify root cause"""
         prompt = f"""
 Find the root cause of this {category} failure:
 
-Failure: {context.failure_content[:500]}
-Log: {context.log_content[:1000]}
+Failure: {self._bounded_excerpt(context.failure_content, 500)}
+Log: {self._bounded_excerpt(context.log_content, 1000)}
 
 Answer in one sentence: What specifically caused this failure?
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return f"Root cause analysis for {category} failure"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _direct_llm_identify_failed_step(self, context: FailureContext) -> str:
         """Direct LLM call to identify failed step"""
         prompt = f"""
 What step failed in this test?
 
-Failure: {context.failure_content[:500]}
-Log: {context.log_content[:1000]}
+Failure: {self._bounded_excerpt(context.failure_content, 500)}
+Log: {self._bounded_excerpt(context.log_content, 1000)}
 
 Answer in one sentence: Which specific step or operation failed?
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return "Failed step not clearly identified in logs"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _direct_llm_investigate_files(
         self, context: FailureContext, requested_files: list[str]
@@ -471,27 +476,40 @@ filename: what this reveals (1 short sentence)
 
 Keep response under 200 words total.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return {file: f"File analysis for {file}" for file in requested_files}
+        from langchain_core.messages import HumanMessage
 
-        # Parse response into dictionary
-        response_text = response if isinstance(response, str) else str(response)
-        results = {}
-        for line in response_text.split("\n"):
-            if ":" in line:
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    filename = parts[0].strip()
-                    analysis = parts[1].strip()
-                    results[filename] = analysis
+        response = self.llm.invoke([HumanMessage(content=prompt)])
 
-        # Ensure we have results for all requested files
+        # Parse the response, matching each line to one of the requested files.
+        # Lines are normalized (bullets, numbering) and matched against the requested
+        # filenames, so filenames containing colons and bulleted responses resolve
+        # to the requested filename. Preamble and other unmatched text is ignored.
+        response_text = response.content
+        results: dict[str, str] = {}
+        # Longest filenames first, so a filename that prefixes another one matches correctly
+        requested_sorted = sorted(requested_files, key=len, reverse=True)
+
+        for raw_line in response_text.split("\n"):
+            # Normalize leading list markers: "- ", "* ", "1. ", "1) ", ...
+            line = re.sub(r"^(?:[*\-•]|\d+[.)])\s*", "", raw_line.strip())
+            if not line:
+                continue
+
+            for requested_file in requested_sorted:
+                if not line.lower().startswith(requested_file.lower()):
+                    continue
+
+                # The filename must be followed by a separator (":", "-", whitespace)
+                remainder = line[len(requested_file) :]
+                if remainder and remainder[0] not in ":-–— \t":
+                    continue
+
+                analysis = remainder.strip().lstrip(":-–—").strip()
+                if analysis:
+                    results[requested_file] = analysis
+                break
+
+        # Retain a placeholder only for requested files with no matched analysis
         for file in requested_files:
             if file not in results:
                 results[file] = f"Analysis for {file} (no specific insights found)"
@@ -519,16 +537,10 @@ Provide brief technical summary in 3-4 sentences:
 
 Keep under 100 words.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return f"Technical analysis for failure: {root_cause}"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _direct_llm_create_executive_summary(self, full_analysis: FailureAnalysis) -> str:
         """Direct LLM call to create executive summary"""
@@ -539,13 +551,7 @@ Root Cause: {full_analysis.root_cause}
 
 Write 1-2 sentences for management: what failed and business impact.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return f"Executive summary: {full_analysis.category} failure with {full_analysis.severity} severity"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()

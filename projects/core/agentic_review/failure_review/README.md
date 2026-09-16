@@ -42,8 +42,8 @@ pip install nooa
 Update your FORGE configuration to enable the new agent:
 
 ```yaml
-# config/agentic.yaml
-agentic:
+# config/agentic_review.yaml
+agentic_review:
   enabled: true
   failure_review:
     enabled: true
@@ -72,7 +72,7 @@ forge failure-review --base-artifact-dir /path/to/artifacts --model-key gpt-4
 
 ```python
 from pathlib import Path
-from projects.core.agentic_review.failure_review import FailureReviewAgent, FailureContext
+from projects.core.agentic_review.failure_review.agent import FailureReviewAgent, FailureContext
 from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 from projects.core.agentic_review.artifact_processing import (
     find_failure_files,
@@ -267,7 +267,7 @@ pip install nooa
 Ensure your configuration includes the new settings:
 
 ```yaml
-agentic:
+agentic_review:
   failure_review:
     enabled: true
 ```
@@ -301,44 +301,3 @@ To extend the agent with new analysis methods:
 3. Extend `FailureAnalysis` dataclass if needed
 4. Update tests and documentation
 
-## Migration Guide
-
-### For Users
-
-- **Breaking**: CLI interface completely changed - direct NOOA agent usage
-- **Breaking**: No wrapper functions - must instantiate agents directly
-- **Breaking**: Update configuration keys from `on_failure` to `failure_review`
-- **Enhanced**: Structured, typed results instead of dictionaries
-
-### For Developers
-
-- **Complete Rewrite Required**: No compatibility layer exists
-- **New Pattern**: Direct agent instantiation instead of function calls:
-
-```python
-# OLD (removed)
-from projects.core.agentic_review.on_failure import run_on_failure_agent
-
-result = run_on_failure_agent(artifact_dir)
-
-# NEW (required)
-from projects.core.agentic_review.failure_review import FailureReviewAgent, FailureContext
-from projects.core.agentic_review.review.models import create_llm_client, load_model_config
-
-llm = create_llm_client(model_config)
-agent = FailureReviewAgent(llm=llm)
-analysis = agent.analyze_failure(context)
-```
-
-- **Structured Results**: Use `FailureAnalysis` dataclass instead of dictionaries
-- **Type Safety**: All results are strongly typed
-- **NOOA Patterns**: Leverage object-oriented agent design
-
-### Complete Migration Required
-
-The old `on_failure` module has been completely removed:
-
-1. **No gradual migration** - complete rewrite required
-2. **Install NOOA**: `pip install nooa`
-3. **Update all integrations** to use NOOA agents directly
-4. **Test thoroughly** - different architecture and results format

@@ -342,18 +342,10 @@ Focus on:
 
 Response should be clear and specific, not generic.
 """
-        # Call LLM directly - let it fail if it doesn't work
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            logger.warning(f"Unknown LLM client interface. Available methods: {dir(self.llm)}")
-            return f"LLM available but interface unknown - analyzing {context.project_name}"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _direct_llm_analyze_configuration_changes(self, context: ConfigContext) -> str:
         """Direct LLM call to analyze configuration changes"""
@@ -368,16 +360,10 @@ Summarize in 1-2 sentences what configuration parameters have been modified and 
 
 If no overrides are present, indicate what the base configuration suggests about the test approach.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return f"Configuration changes analysis for {context.project_name}"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _direct_llm_determine_testing_focus(self, context: ConfigContext) -> str:
         """Direct LLM call to determine testing focus"""
@@ -392,16 +378,10 @@ Identify in 1-2 sentences the primary areas this test is focusing on (e.g., perf
 
 Base your analysis on configuration parameters, overrides, and any patterns you see.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return f"Testing focus analysis for {context.project_name}"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()
 
     def _direct_llm_assess_test_scope(self, context: ConfigContext) -> str:
         """Direct LLM call to assess test scope"""
@@ -420,19 +400,12 @@ Based on the complexity, number of overrides, and configuration scope, classify 
 
 Respond with just the single word: small, medium, or large
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return "medium"  # Safe default
+        from langchain_core.messages import HumanMessage
+
+        response = self.llm.invoke([HumanMessage(content=prompt)])
 
         # Parse response to extract just the scope word
-        response_text = (
-            response.strip().lower() if isinstance(response, str) else str(response).lower()
-        )
+        response_text = response.content.strip().lower()
 
         if "small" in response_text:
             return "small"
@@ -456,18 +429,12 @@ Identify the 3-5 most important configuration parameters or settings that are ce
 
 Return only the parameter names, one per line, no explanations.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return ["unknown-parameter"]
+        from langchain_core.messages import HumanMessage
+
+        response = self.llm.invoke([HumanMessage(content=prompt)])
 
         # Parse response into list
-        response_text = response if isinstance(response, str) else str(response)
-        lines = [line.strip() for line in response_text.split("\n") if line.strip()]
+        lines = [line.strip() for line in response.content.split("\n") if line.strip()]
 
         # If no meaningful lines, return context-based parameters
         if not lines or all("mock" in line.lower() for line in lines):
@@ -493,13 +460,7 @@ Analyze the broader testing context and environment in 1-2 sentences. Consider:
 
 Provide contextual insight beyond just the immediate configuration.
 """
-        if hasattr(self.llm, "generate"):
-            response = self.llm.generate(prompt)
-        elif hasattr(self.llm, "complete"):
-            response = self.llm.complete(prompt)
-        elif callable(self.llm):
-            response = self.llm(prompt)
-        else:
-            return f"Context analysis for {context.project_name}"
+        from langchain_core.messages import HumanMessage
 
-        return response.strip() if isinstance(response, str) else str(response).strip()
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+        return response.content.strip()

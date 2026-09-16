@@ -13,7 +13,7 @@ from pathlib import Path
 
 if __name__ == "__main__":
     # Add the project root (5 levels up from this file) to Python path
-    # projects/core/agentic/config_review/cli.py -> /home/kpouget/openshift/forge-censoring
+    # projects.core.agentic_review.config_review/cli.py -> /home/kpouget/openshift/forge-censoring
     project_root = Path(__file__).parent.parent.parent.parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -24,19 +24,21 @@ from typing import Any
 
 import click
 import yaml
-from projects.core.agentic.models import create_llm_client, load_model_config
 
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 from projects.core.library import vault
 
 # Handle both relative and direct imports
 try:
     from .agent import ConfigContext, ConfigReviewAgent
 except ImportError:
-    from projects.core.agentic.config_review.agent import ConfigContext, ConfigReviewAgent
+    from projects.core.agentic_review.config_review.agent import ConfigContext, ConfigReviewAgent
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_KEY = "qwen-3-6-35b"
+DEFAULT_VAULT_NAME = "psap-models-corp-rh"
+DEFAULT_VAULT_CONTENT = "agent-models.yaml"
 
 
 def parse_artifact_directory(artifact_dir: Path) -> dict[str, Any]:
@@ -220,7 +222,20 @@ def _format_json_output(analysis, artifact_dir: str) -> str:
 )
 @click.option("--verbose", is_flag=True, help="Show verbose output during analysis")
 @click.option("--model-key", default=DEFAULT_MODEL_KEY, help="Model key to use for analysis")
-def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: str):
+@click.option("--vault-name", default=DEFAULT_VAULT_NAME, help="Vault name for model configuration")
+@click.option(
+    "--vault-content",
+    default=DEFAULT_VAULT_CONTENT,
+    help="Vault content file for model configuration",
+)
+def cli(
+    base_artifact_dir: Path,
+    output_format: str,
+    verbose: bool,
+    model_key: str,
+    vault_name: str,
+    vault_content: str,
+):
     """
     FORGE Config Review CLI - Direct NOOA agent analysis
 
@@ -251,41 +266,25 @@ def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: s
     try:
         logger.info(f"🤖 Starting NOOA config analysis for: {base_artifact_dir}")
 
-        # Initialize vault manager with fallback for development
-        try:
-            if verbose:
-                click.echo("Initializing vault manager...")
-            vault.init(vaults=["psap-models-corp-rh"])
+        if verbose:
+            click.echo("Initializing vault manager...")
+        vault.init(vaults=[vault_name])
 
-            # Load model configuration
-            if verbose:
-                click.echo(f"Loading model configuration for: {model_key}")
+        # Load model configuration
+        if verbose:
+            click.echo(f"Loading model configuration for: {model_key}")
 
-            models_config = load_model_config("psap-models-corp-rh", "agent-models.yaml")
-            model_config = models_config.get(model_key)
+        models_config = load_model_config(vault_name, vault_content)
+        model_config = models_config.get(model_key)
 
-            if not model_config:
-                raise ValueError(f"Model key '{model_key}' not found in vault configuration")
+        if not model_config:
+            raise ValueError(f"Model key '{model_key}' not found in vault configuration")
 
-            # Create NOOA LLM client
-            if verbose:
-                click.echo(f"Creating NOOA client for model: {model_config.get('model_id')}")
+        # Create LLM client
+        if verbose:
+            click.echo(f"Creating LLM client for model: {model_config.get('model_id')}")
 
-            llm = create_llm_client(model_config)
-
-        except Exception as vault_error:
-            # Vault failed - try to create LLM with forge defaults
-            if verbose:
-                click.echo(f"⚠️ Vault initialization failed: {vault_error}")
-                click.echo("Creating LLM with default forge config...")
-
-            # Create default forge model config with correct field names
-            model_config = {
-                "model_id": model_key,
-                "model_api": "https://forge-placeholder.api.com",
-                "user_key": "sk-forge-placeholder-key",
-            }
-            llm = create_llm_client(model_config)
+        llm = create_llm_client(model_config)
 
         # Parse artifact directory
         if verbose:
