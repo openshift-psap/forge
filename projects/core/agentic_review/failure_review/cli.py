@@ -13,7 +13,7 @@ from pathlib import Path
 
 if __name__ == "__main__":
     # Add the project root (5 levels up from this file) to Python path
-    # projects/core/agentic/failure_review/cli.py -> /home/kpouget/openshift/forge-censoring
+    # projects.core.agentic_review.failure_review/cli.py -> /home/kpouget/openshift/forge-censoring
     project_root = Path(__file__).parent.parent.parent.parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -22,20 +22,20 @@ import json
 import logging
 
 import click
-from projects.core.agentic.artifact_processing import (
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
+
+from projects.core.agentic_review.artifact_processing import (
     find_failure_files,
     list_all_files_in_artifact_dir,
     read_failure_and_log,
 )
-from projects.core.agentic.models import create_llm_client, load_model_config
-
 from projects.core.library import vault
 
 # Handle both relative and direct imports
 try:
     from .agent import FailureContext, FailureReviewAgent
 except ImportError:
-    from projects.core.agentic.failure_review.agent import FailureContext, FailureReviewAgent
+    from projects.core.agentic_review.failure_review.agent import FailureContext, FailureReviewAgent
 
 logger = logging.getLogger(__name__)
 

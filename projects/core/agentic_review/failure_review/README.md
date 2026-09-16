@@ -15,8 +15,8 @@ The new failure review agent represents a significant architectural improvement 
 - **Simplified Architecture**: Cleaner separation between orchestration and analysis logic
 
 ```python
-from projects.core.agentic_review.failure_review import FailureReviewAgent, FailureContext
-from projects.core.agentic_review.models import create_llm_client, load_model_config
+from projects.core.agentic_review.review.failure_review import FailureReviewAgent, FailureContext
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 
 # Direct agent usage - no compatibility wrappers
 models_config = load_model_config("psap-models-corp-rh", "agent-models.yaml")
@@ -72,9 +72,9 @@ forge failure-review --base-artifact-dir /path/to/artifacts --model-key gpt-4
 
 ```python
 from pathlib import Path
-from projects.core.agentic.failure_review import FailureReviewAgent, FailureContext
-from projects.core.agentic.models import create_llm_client, load_model_config
-from projects.core.agentic.artifact_processing import find_failure_files, read_failure_and_log
+from projects.core.agentic_review.failure_review import FailureReviewAgent, FailureContext
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
+from projects.core.agentic_review.artifact_processing import find_failure_files, read_failure_and_log
 
 # Load model configuration
 models_config = load_model_config("psap-models-corp-rh", "agent-models.yaml")
@@ -314,13 +314,13 @@ To extend the agent with new analysis methods:
 
 ```python
 # OLD (removed)
-from projects.core.agentic.on_failure import run_on_failure_agent
+from projects.core.agentic_review.on_failure import run_on_failure_agent
 
 result = run_on_failure_agent(artifact_dir)
 
 # NEW (required)
-from projects.core.agentic.failure_review import FailureReviewAgent, FailureContext
-from projects.core.agentic.models import create_llm_client, load_model_config
+from projects.core.agentic_review.failure_review import FailureReviewAgent, FailureContext
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 
 llm = create_llm_client(model_config)
 agent = FailureReviewAgent(llm=llm)

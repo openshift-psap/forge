@@ -13,7 +13,7 @@ from pathlib import Path
 
 if __name__ == "__main__":
     # Add the project root (5 levels up from this file) to Python path
-    # projects/core/agentic/config_review/cli.py -> /home/kpouget/openshift/forge-censoring
+    # projects.core.agentic_review.config_review/cli.py -> /home/kpouget/openshift/forge-censoring
     project_root = Path(__file__).parent.parent.parent.parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -24,7 +24,7 @@ from typing import Any
 
 import click
 import yaml
-from projects.core.agentic.models import create_llm_client, load_model_config
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 
 from projects.core.library import vault
 
@@ -32,7 +32,7 @@ from projects.core.library import vault
 try:
     from .agent import ConfigContext, ConfigReviewAgent
 except ImportError:
-    from projects.core.agentic.config_review.agent import ConfigContext, ConfigReviewAgent
+    from projects.core.agentic_review.config_review.agent import ConfigContext, ConfigReviewAgent
 
 logger = logging.getLogger(__name__)
 
