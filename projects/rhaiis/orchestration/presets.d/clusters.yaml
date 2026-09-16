@@ -14,3 +14,16 @@ old-zeus:
   rhaiis.cluster_tag: "zeus1"
   rhaiis.deploy.image_pull_secrets: ["npalaska-image-pull"]
   benchmarks.guidellm.fs_group: 0
+
+# ── Cluster + accelerator combos ────────────────────────────
+# Usage: /test fournos rhaiis
+#   /cluster hera
+
+cluster_hera:
+  extends: [nvidia, hera]
+
+cluster_zeus:
+  extends: [nvidia, zeus]
+
+cluster_old_zeus:
+  extends: [nvidia, old-zeus]
