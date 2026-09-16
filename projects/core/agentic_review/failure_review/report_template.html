@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FORGE Failure Analysis Report</title>
+    <style>
+        body {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            border-bottom: 3px solid #e74c3c;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .header h1 {
+            color: #2c3e50;
+            margin: 0;
+        }
+        .metadata {
+            background: #ecf0f1;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .interaction {
+            margin-bottom: 40px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .query {
+            background: #3498db;
+            color: white;
+            padding: 15px;
+            margin: 0;
+        }
+        .query h3 {
+            margin: 0 0 10px 0;
+        }
+        .response {
+            background: #2ecc71;
+            color: white;
+            padding: 15px;
+            margin: 0;
+        }
+        .response h3 {
+            margin: 0 0 10px 0;
+        }
+        .content {
+            background: white;
+            color: #2c3e50;
+            padding: 20px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .content pre {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .content pre code {
+            /* Remove styles for code inside pre to avoid double styling */
+            background: none;
+            border: none;
+            border-radius: 0;
+            padding: 0;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        }
+        .content code {
+            /* Inline code styling only (not inside pre) */
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 3px;
+            padding: 2px 6px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        }
+        .content ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .content li {
+            margin: 5px 0;
+        }
+        .content strong {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .content h1 {
+            color: #2c3e50;
+            border-bottom: 2px solid #e74c3c;
+            padding-bottom: 8px;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            font-size: 24px;
+        }
+        .content h2 {
+            color: #34495e;
+            border-bottom: 1px solid #3498db;
+            padding-bottom: 5px;
+            margin-top: 20px;
+            margin-bottom: 12px;
+            font-size: 20px;
+        }
+        .content h3 {
+            color: #2c3e50;
+            margin-top: 15px;
+            margin-bottom: 10px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .timestamp {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        .query-metadata {
+            font-size: 11px;
+            color: #7f8c8d;
+            margin-top: 5px;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .metadata-item {
+            display: inline-block;
+        }
+        .metadata-label {
+            font-weight: bold;
+        }
+
+        /* Collapsible functionality */
+        .collapsible-header {
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.3s ease;
+            position: relative;
+        }
+        .collapsible-header:hover {
+            filter: brightness(1.1);
+        }
+        .collapsible-header::after {
+            content: "▼";
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            transition: transform 0.3s ease;
+            font-size: 12px;
+        }
+        .collapsible-header.collapsed::after {
+            transform: translateY(-50%) rotate(-90deg);
+        }
+        .collapsible-content {
+            overflow: hidden;
+            transition: max-height 0.3s ease, opacity 0.3s ease;
+            opacity: 1;
+        }
+        .collapsible-content.default-collapsed {
+            max-height: 0;
+            opacity: 0;
+        }
+        .collapsible-content.collapsed {
+            max-height: 0;
+            opacity: 0;
+        }
+        .query.collapsible-header {
+            border-bottom: 2px solid rgba(255,255,255,0.2);
+        }
+        .response.collapsible-header {
+            border-bottom: 2px solid rgba(255,255,255,0.2);
+        }
+
+        /* File metadata styling */
+        .file-metadata {
+            font-size: 11px;
+            color: #7f8c8d;
+            margin-top: 5px;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        /* File summary styling */
+        .file-summary {
+            margin-top: 40px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .file-summary h2 {
+            color: #2c3e50;
+            margin-top: 0;
+            border-bottom: 2px solid #e74c3c;
+            padding-bottom: 8px;
+        }
+        .file-summary h3 {
+            color: #34495e;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .file-category {
+            margin-bottom: 25px;
+        }
+        .file-list {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .file-item {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            color: #2c3e50;
+            padding: 2px 0;
+            word-break: break-all;
+        }
+    </style>
+    <script>
+        function toggleCollapse(element) {
+            const content = element.nextElementSibling;
+            const isCollapsed = content.classList.contains('collapsed');
+
+            if (isCollapsed) {
+                // Expand
+                content.classList.remove('collapsed');
+                element.classList.remove('collapsed');
+            } else {
+                // Collapse
+                content.classList.add('collapsed');
+                element.classList.add('collapsed');
+            }
+        }
+
+        // Add click listeners when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            const headers = document.querySelectorAll('.collapsible-header');
+            headers.forEach(header => {
+                header.addEventListener('click', function() {
+                    toggleCollapse(this);
+                });
+            });
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 FORGE Failure Analysis Report</h1>
+        </div>
+
+        <div class="metadata">
+            <strong>📁 Failure Directory:</strong> {failure_dir}<br>
+            <strong>🕐 Generated:</strong> {generation_time}<br>
+            <strong>🔍 Total Interactions:</strong> {interaction_count}
+        </div>
+
+        {interactions_content}
+
+        {file_summary}
+
+    </div>
+</body>
+</html>

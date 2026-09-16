@@ -13,7 +13,7 @@ from pathlib import Path
 
 if __name__ == "__main__":
     # Add the project root (5 levels up from this file) to Python path
-    # projects/core/agentic/failure_review/cli.py -> /home/kpouget/openshift/forge-censoring
+    # projects.core.agentic_review.failure_review/cli.py -> /home/kpouget/openshift/forge-censoring
     project_root = Path(__file__).parent.parent.parent.parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -22,24 +22,30 @@ import json
 import logging
 
 import click
-from projects.core.agentic.artifact_processing import (
+
+from projects.core.agentic_review.artifact_processing import (
     find_failure_files,
     list_all_files_in_artifact_dir,
     read_failure_and_log,
 )
-from projects.core.agentic.models import create_llm_client, load_model_config
-
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 from projects.core.library import vault
 
 # Handle both relative and direct imports
 try:
-    from .agent import FailureContext, FailureReviewAgent
+    from .agent import FailureAnalysis, FailureContext, FailureReviewAgent
 except ImportError:
-    from projects.core.agentic.failure_review.agent import FailureContext, FailureReviewAgent
+    from projects.core.agentic_review.failure_review.agent import (
+        FailureAnalysis,
+        FailureContext,
+        FailureReviewAgent,
+    )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_KEY = "qwen-3-6-35b"
+DEFAULT_VAULT_NAME = "psap-models-corp-rh"
+DEFAULT_VAULT_CONTENT = "agent-models.yaml"
 
 
 def format_analysis_output(analyses: list, base_artifact_dir: str, output_format: str) -> str:
@@ -62,19 +68,21 @@ def format_analysis_output(analyses: list, base_artifact_dir: str, output_format
 
 def _format_text_output(analyses: list, base_artifact_dir: str) -> str:
     """Format analysis results for text output"""
+    error_count = sum(1 for analysis in analyses if analysis.error)
     output_lines = [
         f"🤖 NOOA Failure Analysis Results for: {base_artifact_dir}",
         "=" * 60,
         "",
-        f"📊 Analyzed {len(analyses)} failures",
+        f"📊 Analyzed {len(analyses)} failures - "
+        f"{len(analyses) - error_count} successful, {error_count} analysis errors",
         "",
     ]
 
     for i, analysis in enumerate(analyses, 1):
         output_lines.append(f"🔍 Failure #{i}: {analysis.category}")
-        output_lines.append(
-            f"  📁 Directory: {Path(analysis.timeline or '').name}"
-        )  # Using timeline field as temp storage
+        output_lines.append(f"  📁 Directory: {analysis.failure_dir or 'unknown'}")
+        if analysis.error:
+            output_lines.append(f"  ❌ Analysis Error: {analysis.error}")
         output_lines.append(f"  ⚠️  Severity: {analysis.severity.upper()}")
         output_lines.append(f"  🔍 Root Cause: {analysis.root_cause}")
         output_lines.append(f"  ❌ Failed Step: {analysis.failed_step}")
@@ -99,17 +107,22 @@ def _format_text_output(analyses: list, base_artifact_dir: str) -> str:
 
 def _format_json_output(analyses: list, base_artifact_dir: str) -> str:
     """Format analysis results for JSON output"""
+    error_count = sum(1 for analysis in analyses if analysis.error)
     result = {
-        "status": "success",
+        "status": "success" if not error_count else "partial-error",
         "agent_type": "nooa",
         "artifact_dir": base_artifact_dir,
         "failures_analyzed": len(analyses),
+        "successful_analyses": len(analyses) - error_count,
+        "failed_analyses": error_count,
         "analyses": [],
     }
 
     for analysis in analyses:
         # Convert FailureAnalysis dataclass to dict
         analysis_dict = {
+            "status": "error" if analysis.error else "success",
+            "failure_dir": analysis.failure_dir,
             "root_cause": analysis.root_cause,
             "failed_step": analysis.failed_step,
             "category": analysis.category,
@@ -119,6 +132,7 @@ def _format_json_output(analyses: list, base_artifact_dir: str) -> str:
             "timeline": analysis.timeline,
             "configuration_issues": analysis.configuration_issues,
             "recommended_actions": analysis.recommended_actions,
+            "error": analysis.error,
         }
         result["analyses"].append(analysis_dict)
 
@@ -140,7 +154,20 @@ def _format_json_output(analyses: list, base_artifact_dir: str) -> str:
 )
 @click.option("--verbose", is_flag=True, help="Show verbose output during analysis")
 @click.option("--model-key", default=DEFAULT_MODEL_KEY, help="Model key to use for analysis")
-def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: str):
+@click.option("--vault-name", default=DEFAULT_VAULT_NAME, help="Vault name for model configuration")
+@click.option(
+    "--vault-content",
+    default=DEFAULT_VAULT_CONTENT,
+    help="Vault content file for model configuration",
+)
+def cli(
+    base_artifact_dir: Path,
+    output_format: str,
+    verbose: bool,
+    model_key: str,
+    vault_name: str,
+    vault_content: str,
+):
     """
     FORGE Failure Review CLI - Direct NOOA agent analysis
 
@@ -174,41 +201,25 @@ def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: s
     try:
         logger.info(f"🤖 Starting NOOA failure analysis for: {base_artifact_dir}")
 
-        # Initialize vault manager with fallback for development
-        try:
-            if verbose:
-                click.echo("Initializing vault manager...")
-            vault.init(vaults=["psap-models-corp-rh"])
+        if verbose:
+            click.echo("Initializing vault manager...")
+        vault.init(vaults=[vault_name])
 
-            # Load model configuration
-            if verbose:
-                click.echo(f"Loading model configuration for: {model_key}")
+        # Load model configuration
+        if verbose:
+            click.echo(f"Loading model configuration for: {model_key}")
 
-            models_config = load_model_config("psap-models-corp-rh", "agent-models.yaml")
-            model_config = models_config.get(model_key)
+        models_config = load_model_config(vault_name, vault_content)
+        model_config = models_config.get(model_key)
 
-            if not model_config:
-                raise ValueError(f"Model key '{model_key}' not found in vault configuration")
+        if not model_config:
+            raise ValueError(f"Model key '{model_key}' not found in vault configuration")
 
-            # Create NOOA LLM client
-            if verbose:
-                click.echo(f"Creating NOOA client for model: {model_config.get('model_id')}")
+        # Create LLM client
+        if verbose:
+            click.echo(f"Creating LLM client for model: {model_config.get('model_id')}")
 
-            llm = create_llm_client(model_config)
-
-        except Exception as vault_error:
-            # Vault failed - try to create LLM with forge defaults
-            if verbose:
-                click.echo(f"⚠️ Vault initialization failed: {vault_error}")
-                click.echo("Creating LLM with default forge config...")
-
-            # Create default forge model config with correct field names
-            model_config = {
-                "model_id": model_key,
-                "model_api": "https://forge-placeholder.api.com",
-                "user_key": "sk-forge-placeholder-key",
-            }
-            llm = create_llm_client(model_config)
+        llm = create_llm_client(model_config)
 
         # Find failure files
         failure_files = find_failure_files(base_artifact_dir)
@@ -223,7 +234,9 @@ def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: s
         agent = FailureReviewAgent(llm=llm)
         analyses = []
 
-        # Analyze each failure using NOOA agent
+        # Analyze each failure using NOOA agent.
+        # A failure of one analysis is recorded and does not stop the remaining
+        # failures, nor prevent the earlier analyses from being output.
         for i, failure_file in enumerate(failure_files, 1):
             if verbose:
                 click.echo(
@@ -232,30 +245,51 @@ def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: s
 
             logger.debug(f"🔍 Starting analysis of failure file: {failure_file}")
 
-            # Read failure data
-            logger.debug("📖 Reading failure data and logs...")
-            failure_data = read_failure_and_log(failure_file)
-            logger.debug(
-                f"📖 Read {len(failure_data['failure_content'])} chars of failure content, {len(failure_data.get('log_content', ''))} chars of log content"
-            )
+            try:
+                # Read failure data
+                logger.debug("📖 Reading failure data and logs...")
+                failure_data = read_failure_and_log(failure_file)
+                logger.debug(
+                    f"📖 Read {len(failure_data['failure_content'])} chars of failure content, {len(failure_data.get('log_content', ''))} chars of log content"
+                )
 
-            # Create context for the agent
-            context = FailureContext(
-                failure_file=failure_file,
-                base_artifact_dir=base_artifact_dir,
-                failure_content=failure_data["failure_content"],
-                log_content=failure_data["log_content"],
-                agent_md_content=failure_data.get("agent_md_content", ""),
-                available_files=list_all_files_in_artifact_dir(failure_file.parent),
-            )
+                # Create context for the agent
+                context = FailureContext(
+                    failure_file=failure_file,
+                    base_artifact_dir=base_artifact_dir,
+                    failure_content=failure_data["failure_content"],
+                    log_content=failure_data["log_content"],
+                    agent_md_content=failure_data.get("agent_md_content", ""),
+                    available_files=list_all_files_in_artifact_dir(failure_file.parent),
+                )
 
-            # Use NOOA agent to analyze the failure
-            logger.debug("🤖 Starting LLM agent analysis...")
-            analysis = agent.analyze_failure(context, verbose=verbose)
-            logger.debug("✅ LLM agent analysis completed")
+                # Use NOOA agent to analyze the failure
+                logger.debug("🤖 Starting LLM agent analysis...")
+                analysis = agent.analyze_failure(context, verbose=verbose)
+                logger.debug("✅ LLM agent analysis completed")
 
-            # Store failure directory in timeline field temporarily for output formatting
-            analysis.timeline = str(failure_file.parent)
+            except Exception as e:
+                import traceback
+
+                logger.error(
+                    f"❌ Analysis of failure {i}/{len(failure_files)} failed: {failure_file.parent}"
+                )
+                logger.error(traceback.format_exc())
+
+                # Record the error so it appears in the output alongside the
+                # successful analyses
+                analysis = FailureAnalysis(
+                    root_cause="unknown",
+                    failed_step="unknown",
+                    category="analysis-error",
+                    severity="unknown",
+                    summary=f"Failure analysis could not be completed: {e}",
+                    technical_details=traceback.format_exc(),
+                    error=str(e),
+                )
+
+            # Store the failure directory on the analysis for output formatting
+            analysis.failure_dir = str(failure_file.parent)
 
             analyses.append(analysis)
             logger.debug(f"📊 Completed analysis {i}/{len(failure_files)}")
@@ -264,7 +298,14 @@ def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: s
         output = format_analysis_output(analyses, str(base_artifact_dir), output_format)
         click.echo(output)
 
-        logger.info(f"✅ Successfully analyzed {len(analyses)} failures")
+        error_count = sum(1 for analysis in analyses if analysis.error)
+        if error_count:
+            logger.info(
+                f"⚠️ Analyzed {len(analyses)} failures - "
+                f"{len(analyses) - error_count} successful, {error_count} analysis errors"
+            )
+        else:
+            logger.info(f"✅ Successfully analyzed {len(analyses)} failures")
         exit(0)
 
     except ImportError as e:

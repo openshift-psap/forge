@@ -23,14 +23,39 @@ logger = logging.getLogger(__name__)
 
 
 def load_model_config(vault_name: str, content_name: str) -> dict:
-    """Load model configuration from vault"""
+    """Load model configuration from vault.
+
+    Raises:
+        RuntimeError: If the vault manager is not initialized (propagated from
+            :func:`vault.get_vault_content_path`).
+        FileNotFoundError: If the vault or content is not found, or the file
+            does not exist on disk.
+        ValueError: If the YAML content is empty or not a mapping.
+    """
+    # A RuntimeError for an uninitialized vault manager propagates untouched
     config_path = vault.get_vault_content_path(vault_name, content_name)
 
     if not config_path or not config_path.exists():
-        raise FileNotFoundError(f"Model config not found at {config_path}")
+        raise FileNotFoundError(
+            f"Model config not found in vault '{vault_name}' "
+            f"for content '{content_name}' (expected at: {config_path})"
+        )
 
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        model_config = yaml.safe_load(f)
+
+    if model_config is None:
+        raise ValueError(
+            f"Model config is empty: vault '{vault_name}' content '{content_name}' ({config_path})"
+        )
+
+    if not isinstance(model_config, dict):
+        raise ValueError(
+            f"Model config must be a mapping, got {type(model_config).__name__}: "
+            f"vault '{vault_name}' content '{content_name}' ({config_path})"
+        )
+
+    return model_config
 
 
 def create_llm_client(model_config: dict[str, Any]) -> Any:
@@ -50,8 +75,9 @@ def create_llm_client(model_config: dict[str, Any]) -> Any:
     if not model_id:
         raise ValueError("Missing required model configuration: model_id")
 
-    # Extract real forge configuration
     model_api = model_config.get("model_api")
+    if not model_api:
+        raise ValueError("Missing required model configuration: model_api")
     user_key = model_config.get("user_key")
 
     logger.info(f"Creating forge LLM client for: {model_id} at {model_api}")
@@ -204,5 +230,8 @@ def validate_model_config(model_config: dict[str, Any]) -> bool:
 
     if not model_config.get("model_id"):
         raise ValueError("model_id is required in model configuration")
+
+    if not model_config.get("model_api"):
+        raise ValueError("model_api is required in model configuration")
 
     return True
