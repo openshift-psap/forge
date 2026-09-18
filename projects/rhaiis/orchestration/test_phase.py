@@ -40,6 +40,10 @@ def run(
     namespace: str,
     deployment_name: str | None = None,
 ) -> int:
+    from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
+
+    ensure_mlflow_destination_marker()
+
     ret = run_and_postprocess(
         do_test,
         model_key=model_key,
@@ -196,9 +200,9 @@ def _run_test(
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
     wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
 
-    from projects.caliper.orchestration.export import precreate_mlflow_run_if_configured
+    from projects.caliper.orchestration.export import read_mlflow_destination_marker
 
-    mlflow_destination = precreate_mlflow_run_if_configured()
+    mlflow_destination = read_mlflow_destination_marker()
 
     try:
         isvc_labels = {
