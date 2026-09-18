@@ -9,6 +9,7 @@ import csv
 import json
 import logging
 import re
+from collections import defaultdict
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ FIELDNAMES = [
     "dataset",
     "spec_decoding",
     "prefix_caching",
+    "turn",
     "turns",
     "prefix_tokens",
     "prefix_count",
@@ -146,6 +148,9 @@ def generate_dashboard_csv(
     tokens = dict(re.findall(r"(\w+)=([\d.]+)", data_str))
     prompt_toks = int(float(tokens["prompt_tokens"])) if "prompt_tokens" in tokens else ""
     output_toks = int(float(tokens["output_tokens"])) if "output_tokens" in tokens else ""
+    turns_count = int(float(tokens["turns"])) if "turns" in tokens else ""
+    prefix_tokens_val = int(float(tokens["prefix_tokens"])) if "prefix_tokens" in tokens else ""
+    prefix_count_val = int(float(tokens["prefix_count"])) if "prefix_count" in tokens else ""
 
     start_times = []
     end_times = []
@@ -168,9 +173,7 @@ def generate_dashboard_csv(
         strategy = bench.get("config", {}).get("strategy", {})
         model_name = f"{acc}-{cluster_tag}-{model}-{tp}" if cluster_tag else f"{acc}-{model}-{tp}"
 
-        row = _extract_row(
-            metrics=metrics,
-            strategy=strategy,
+        common_kwargs = dict(
             model_name=model_name,
             model=model,
             accelerator=acc,
@@ -184,8 +187,16 @@ def generate_dashboard_csv(
             guidellm_end_ms=guidellm_end_ms,
             guidellm_version=guidellm_version,
             run_uuid=run_uuid,
+            turns_count=turns_count,
+            prefix_tokens_val=prefix_tokens_val,
+            prefix_count_val=prefix_count_val,
         )
+
+        row = _extract_row(metrics=metrics, strategy=strategy, **common_kwargs)
         rows.append(row)
+
+        successful_reqs = bench.get("requests", {}).get("successful", [])
+        rows.extend(_per_turn_rows(successful_reqs, strategy=strategy, **common_kwargs))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -214,6 +225,9 @@ def _extract_row(
     guidellm_end_ms,
     guidellm_version: str,
     run_uuid: str = "",
+    turns_count="",
+    prefix_tokens_val="",
+    prefix_count_val="",
 ) -> dict:
     def _pct(metric_name: str, pct: str):
         return metrics.get(metric_name, {}).get("successful", {}).get("percentiles", {}).get(pct)
@@ -277,10 +291,148 @@ def _extract_row(
         "dataset": "",
         "spec_decoding": "",
         "prefix_caching": "",
-        "turns": "",
-        "prefix_tokens": "",
-        "prefix_count": "",
+        "turn": "",
+        "turns": turns_count,
+        "prefix_tokens": prefix_tokens_val,
+        "prefix_count": prefix_count_val,
         "request_type": "",
         "mlflow_run_id": "",
         "mlflow_experiment_id": "",
     }
+
+
+def _percentile(sorted_vals: list[float], p: float) -> float | None:
+    """Linear-interpolation percentile over a pre-sorted list."""
+    if not sorted_vals:
+        return None
+    k = (len(sorted_vals) - 1) * p / 100.0
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    return sorted_vals[f] + (k - f) * (sorted_vals[c] - sorted_vals[f])
+
+
+def _req_stats(reqs: list[dict], field: str) -> dict:
+    """Compute mean/median/min/max/percentiles for a numeric field across requests."""
+    vals = sorted(r[field] for r in reqs if r.get(field) is not None)
+    if not vals:
+        return {}
+    n = len(vals)
+    return {
+        "mean": sum(vals) / n,
+        "median": vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2,
+        "min": vals[0],
+        "max": vals[-1],
+        "p01": _percentile(vals, 1),
+        "p95": _percentile(vals, 95),
+        "p99": _percentile(vals, 99),
+        "p999": _percentile(vals, 99.9),
+    }
+
+
+def _per_turn_rows(
+    successful_reqs: list[dict],
+    *,
+    strategy: dict,
+    model_name: str,
+    model: str,
+    accelerator: str,
+    version: str,
+    tp,
+    prompt_toks,
+    output_toks,
+    image_tag: str,
+    runtime_args: str,
+    guidellm_start_ms,
+    guidellm_end_ms,
+    guidellm_version: str,
+    run_uuid: str = "",
+    turns_count="",
+    prefix_tokens_val="",
+    prefix_count_val="",
+) -> list[dict]:
+    """Emit one row per turn from individual request records."""
+    if not successful_reqs:
+        return []
+
+    by_turn: dict[int, list[dict]] = defaultdict(list)
+    for req in successful_reqs:
+        turn = req.get("info", {}).get("turn_index", 0)
+        by_turn[turn].append(req)
+
+    if len(by_turn) <= 1:
+        return []
+
+    rows = []
+    for turn_idx in sorted(by_turn):
+        reqs = by_turn[turn_idx]
+
+        ttft = _req_stats(reqs, "time_to_first_token_ms")
+        itl = _req_stats(reqs, "inter_token_latency_ms")
+        tpot = _req_stats(reqs, "time_per_output_token_ms")
+        latency = _req_stats(reqs, "request_latency")
+        p_toks = _req_stats(reqs, "prompt_tokens")
+        o_toks = _req_stats(reqs, "output_tokens")
+        otps = _req_stats(reqs, "output_tokens_per_second")
+        tps = _req_stats(reqs, "tokens_per_second")
+
+        rows.append(
+            {
+                "run": model_name,
+                "accelerator": accelerator,
+                "model": model,
+                "version": version,
+                "prompt toks": prompt_toks,
+                "output toks": output_toks,
+                "TP": tp,
+                "measured concurrency": "",
+                "intended concurrency": strategy.get("streams"),
+                "measured rps": "",
+                "output_tok/sec": otps.get("mean", ""),
+                "total_tok/sec": tps.get("mean", ""),
+                "prompt_token_count_mean": p_toks.get("mean", ""),
+                "prompt_token_count_p99": p_toks.get("p99", ""),
+                "output_token_count_mean": o_toks.get("mean", ""),
+                "output_token_count_p99": o_toks.get("p99", ""),
+                "ttft_median": ttft.get("median", ""),
+                "ttft_p95": ttft.get("p95", ""),
+                "ttft_p1": ttft.get("p01", ""),
+                "ttft_p999": ttft.get("p999", ""),
+                "tpot_median": tpot.get("median", ""),
+                "tpot_p95": tpot.get("p95", ""),
+                "tpot_p99": tpot.get("p99", ""),
+                "tpot_p999": tpot.get("p999", ""),
+                "tpot_p1": tpot.get("p01", ""),
+                "itl_median": itl.get("median", ""),
+                "itl_p95": itl.get("p95", ""),
+                "itl_p999": itl.get("p999", ""),
+                "itl_p1": itl.get("p01", ""),
+                "request_latency_median": latency.get("median", ""),
+                "request_latency_min": latency.get("min", ""),
+                "request_latency_max": latency.get("max", ""),
+                "successful_requests": len(reqs),
+                "errored_requests": "",
+                "uuid": run_uuid,
+                "ttft_mean": ttft.get("mean", ""),
+                "ttft_p99": ttft.get("p99", ""),
+                "itl_mean": itl.get("mean", ""),
+                "itl_p99": itl.get("p99", ""),
+                "runtime_args": runtime_args,
+                "guidellm_start_time_ms": guidellm_start_ms or "",
+                "guidellm_end_time_ms": guidellm_end_ms or "",
+                "image_tag": image_tag,
+                "guidellm_version": guidellm_version,
+                "DP": "",
+                "dataset": "",
+                "spec_decoding": "",
+                "prefix_caching": "",
+                "turn": turn_idx,
+                "turns": turns_count,
+                "prefix_tokens": prefix_tokens_val,
+                "prefix_count": prefix_count_val,
+                "request_type": "",
+                "mlflow_run_id": "",
+                "mlflow_experiment_id": "",
+            }
+        )
+
+    return rows
