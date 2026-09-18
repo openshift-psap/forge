@@ -45,7 +45,12 @@ def run(
     decode_stdout=True,
     decode_stderr=True,
     timeout=None,
+    env=None,
+    handled_securely=False,
 ):
+    if handled_securely:
+        log_command = False
+
     if log_command:
         logger.info(f"run: {command}")
 
@@ -53,6 +58,9 @@ def run(
 
     args["cwd"] = cwd
     args["shell"] = True
+
+    if env is not None:
+        args["env"] = env
 
     if capture_stdout:
         args["stdout"] = subprocess.PIPE
@@ -71,7 +79,20 @@ def run(
     if protect_shell:
         command = f"set -o errexit;set -o pipefail;set -o nounset;set -o errtrace;{command}"
 
-    proc = subprocess.run(command, **args)
+    try:
+        proc = subprocess.run(command, **args)
+    except subprocess.CalledProcessError as e:
+        if handled_securely:
+            raise subprocess.CalledProcessError(
+                e.returncode,
+                "<command hidden for security>",
+                stderr=e.stderr,
+            ) from None
+        raise
+    except subprocess.TimeoutExpired as e:
+        if handled_securely:
+            raise subprocess.TimeoutExpired("<command hidden for security>", e.timeout) from None
+        raise
 
     if capture_stdout and decode_stdout:
         proc.stdout = proc.stdout.decode("utf8")

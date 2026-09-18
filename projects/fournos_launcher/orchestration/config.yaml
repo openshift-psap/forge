@@ -1,6 +1,7 @@
 vaults:
 - psap-forge-ci
 - psap-forge-notifications
+- psap-fournos-intlab-ci
 
 cluster:
   name: null
@@ -17,11 +18,18 @@ notifications:
   vault:
     name: psap-forge-notifications
 fournos:
+  instance: psap-mgmt # psap-mgmt or intlab
   namespace: psap-automation
-  kubeconfig:
+  psap_mgmt:
     vault:
       name: psap-forge-ci
       key: kubeconfig
+  intlab:
+    vault:
+      name: psap-fournos-intlab-ci
+    tunnel:
+      local_port: 6443
+      ssh_flags: [-o, StrictHostKeyChecking=no, -o, UserKnownHostsFile=/dev/null]
   job:
     ttl: 12h # Valid format: ^(?:(?:\d+d)?(?:\d+h)?(?:\d+m)?)+$ (e.g., "12h", "1d6h", "30m")
     owner: "FORGE/fournos-launcher" # updated to the PR owner if available

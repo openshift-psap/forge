@@ -18,7 +18,7 @@ from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
 from projects.core.library.run_parallel import Parallel
 from projects.core.notifications.send import send_notification
-from projects.fournos_launcher.orchestration import job_management, pr_args
+from projects.fournos_launcher.orchestration import job_management, pr_args, tunnelling
 from projects.fournos_launcher.toolbox.cleanup_fjob.main import (
     run as cleanup_fjob,
 )
@@ -276,12 +276,22 @@ def init():
 
 
 def prepare_env():
-    kubeconfig_path = vault.get_vault_content_path(
-        config.project.get_config("fournos.kubeconfig.vault.name"),
-        config.project.get_config("fournos.kubeconfig.vault.key"),
-    )
+    instance = config.project.get_config("fournos.instance")
 
-    os.environ["KUBECONFIG"] = str(kubeconfig_path)
+    if instance == "intlab":
+        logger.info("Using intlab Fournos instance (via SSH tunnel)")
+        tunnelling.open_tunnel()
+    elif instance == "psap-mgmt":
+        logger.info("Using psap-mgmt Fournos instance (direct)")
+        kubeconfig_path = vault.get_vault_content_path(
+            config.project.get_config("fournos.psap_mgmt.vault.name"),
+            config.project.get_config("fournos.psap_mgmt.vault.key"),
+        )
+        os.environ["KUBECONFIG"] = str(kubeconfig_path)
+    else:
+        raise ValueError(
+            f"Unknown fournos.instance: {instance!r} (expected 'psap-mgmt' or 'intlab')"
+        )
 
 
 def submit_job():

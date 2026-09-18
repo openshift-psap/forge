@@ -1,0 +1,28 @@
+env_key: PSAP_FOURNOS_INTLAB_CI_SECRET_PATH
+description: |
+  Vault to access the intlab FOURNOS instance via SSH tunnel
+
+content:
+  bastion_ssh_private_key:
+    description: |
+      SSH private key to connect to the bastion/jump host
+
+  bastion_ssh_host:
+    description: |
+      user@hostname of the bastion/jump host for the SSH tunnel
+
+  bastion_hostname:
+    description: |
+      Hostname of the SSH bastion. Not used, only for censoring
+
+  cluster_login_user:
+    description: |
+      Username for 'oc login' to the intlab cluster
+
+  cluster_login_password:
+    description: |
+      Password for 'oc login' to the intlab cluster
+
+  cluster_api_endpoint:
+    description: |
+      Host:port of the K8s API server behind the VPN (tunnel target)
