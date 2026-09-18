@@ -1,0 +1,28 @@
+__multiple: true
+
+# ── Accelerator ──────────────────────────────────────────────
+
+nvidia:
+  rhaiis.accelerator: nvidia
+
+amd:
+  rhaiis.accelerator: amd
+
+# ── Engine ───────────────────────────────────────────────────
+
+vllm:
+  rhaiis.engine: vllm
+
+sglang:
+  rhaiis.engine: sglang
+
+trtllm:
+  rhaiis.engine: trtllm
+
+# ── Feature toggles ─────────────────────────────────────────
+
+prefix-cache-on:
+  rhaiis.engines.vllm.args.enable-prefix-caching: true
+
+prefix-cache-off:
+  rhaiis.engines.vllm.args.no-enable-prefix-caching: true

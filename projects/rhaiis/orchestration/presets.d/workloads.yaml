@@ -1,0 +1,22 @@
+__multiple: true
+
+profile1-balanced:
+  tests.rhaiis.workload_key: profile1
+
+profile2-decode-heterogeneous:
+  tests.rhaiis.workload_key: profile2
+
+profile3-summarization:
+  tests.rhaiis.workload_key: profile3
+
+profile4-long-context:
+  tests.rhaiis.workload_key: profile4
+
+profile5-ultra-long-context:
+  tests.rhaiis.workload_key: profile5
+
+profile6-multi-turn:
+  tests.rhaiis.workload_key: profile6
+
+profile7-heavy-heterogeneous:
+  tests.rhaiis.workload_key: profile7
