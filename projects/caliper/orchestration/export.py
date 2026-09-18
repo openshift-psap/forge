@@ -12,7 +12,6 @@ import copy
 import logging
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -423,9 +422,8 @@ def write_mlflow_destination_marker(
 ) -> Path | None:
     """Persist the pre-created MLflow destination at the job artifact root.
 
-    The marker is written only for Fournos CI jobs. Reusing an identical marker is
-    safe, but a conflicting marker is an error so a failed job cannot link to the
-    wrong MLflow run.
+    The marker is written only for Fournos CI jobs. It is created exclusively so a
+    later phase cannot replace the destination selected for the job.
     """
     if not env.running_inside_fournos():
         logger.info("Not running inside FOURNOS CI, skipping MLflow destination marker")
@@ -435,37 +433,30 @@ def write_mlflow_destination_marker(
     marker_path = _mlflow_destination_path(artifact_root)
     marker_path.parent.mkdir(parents=True, exist_ok=True)
 
-    temporary_path: Path | None = None
-    try:
-        temporary_fd, temporary_name = tempfile.mkstemp(
-            prefix=f".{marker_path.name}.", dir=marker_path.parent
-        )
-        temporary_path = Path(temporary_name)
-        with os.fdopen(temporary_fd, "w", encoding="utf-8") as marker_file:
-            yaml.safe_dump(normalized, marker_file, sort_keys=False)
-            marker_file.flush()
-            os.fsync(marker_file.fileno())
-
-        # Hard-linking the completed temporary file publishes it atomically and
-        # fails without overwriting a marker created by another writer.
-        try:
-            os.link(temporary_path, marker_path)
-        except FileExistsError:
-            existing = yaml.safe_load(marker_path.read_text(encoding="utf-8"))
-            existing_destination = _normalize_mlflow_destination(existing, source=marker_path)
-            if existing_destination != normalized:
-                raise RuntimeError(
-                    "Conflicting MLflow destination marker already exists at "
-                    f"{marker_path}: existing={existing_destination!r}, new={normalized!r}"
-                ) from None
-            logger.info("Reusing existing MLflow destination marker: %s", marker_path)
-        else:
-            logger.info("Created MLflow destination marker: %s", marker_path)
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+    with marker_path.open("x", encoding="utf-8") as marker_file:
+        yaml.safe_dump(normalized, marker_file, sort_keys=False)
+    logger.info("Created MLflow destination marker: %s", marker_path)
 
     return marker_path
+
+
+def ensure_mlflow_destination_marker() -> Path | None:
+    """Create the job-level MLflow marker once, before a CI phase starts."""
+    if not env.running_inside_fournos():
+        logger.info("Not running inside FOURNOS CI, skipping MLflow destination marker")
+        return None
+
+    marker_path = _mlflow_destination_path()
+    if marker_path.exists():
+        if not marker_path.is_file():
+            raise ValueError(f"Invalid MLflow destination marker: {marker_path}")
+        logger.info("Using existing MLflow destination marker: %s", marker_path)
+        return marker_path
+
+    destination = precreate_mlflow_run_if_configured()
+    if destination is None:
+        return None
+    return write_mlflow_destination_marker(destination, artifact_root=marker_path.parent)
 
 
 def precreate_mlflow_run(

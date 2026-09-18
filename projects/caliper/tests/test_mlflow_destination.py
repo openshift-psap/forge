@@ -14,6 +14,7 @@ from projects.caliper.orchestration.export import (
     _discover_precreated_mlflow_run_id,
     _read_mlflow_destinations,
     _read_mlflow_ids_from_test_labels,
+    ensure_mlflow_destination_marker,
     write_mlflow_destination_marker,
 )
 
@@ -124,22 +125,54 @@ def test_run_id_only_metadata_still_resumes_the_precreated_run(
     assert _read_mlflow_ids_from_test_labels() == ("legacy-run", "")
 
 
-def test_same_job_marker_is_idempotent_but_conflicts_fail(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Identical writes reuse the marker while conflicting writes fail."""
+def test_existing_job_marker_cannot_be_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A job marker can only be created once and is never overwritten."""
     _configure_fournos(monkeypatch)
     destination = {"run_id": "run-123", "experiment_id": "264"}
 
     first = write_mlflow_destination_marker(destination, artifact_root=tmp_path)
-    second = write_mlflow_destination_marker(destination, artifact_root=tmp_path)
 
-    assert second == first
-    assert not list(tmp_path.glob(f".{MLFLOW_DESTINATION_FILE}.*"))
-    with pytest.raises(RuntimeError, match="Conflicting MLflow destination marker"):
+    assert first == tmp_path / MLFLOW_DESTINATION_FILE
+    with pytest.raises(FileExistsError):
+        write_mlflow_destination_marker(destination, artifact_root=tmp_path)
+    with pytest.raises(FileExistsError):
         write_mlflow_destination_marker(
             {"run_id": "different", "experiment_id": "264"}, artifact_root=tmp_path
         )
+    assert yaml.safe_load(first.read_text(encoding="utf-8")) == destination
+
+
+def test_ensure_marker_does_not_recreate_existing_job_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Phase entrypoints reuse an existing job marker without creating another run."""
+    _configure_fournos(monkeypatch)
+    monkeypatch.setenv("ARTIFACT_BASE_DIR", str(tmp_path))
+    destination = {"run_id": "run-123", "experiment_id": "264"}
+    marker = write_mlflow_destination_marker(destination, artifact_root=tmp_path)
+
+    monkeypatch.setattr(
+        "projects.caliper.orchestration.export.precreate_mlflow_run_if_configured",
+        lambda: pytest.fail("existing job marker must not pre-create another run"),
+    )
+
+    assert ensure_mlflow_destination_marker() == marker
+
+
+def test_ensure_marker_persists_a_new_job_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The first phase creates the job marker from the pre-created destination."""
+    _configure_fournos(monkeypatch)
+    monkeypatch.setenv("ARTIFACT_BASE_DIR", str(tmp_path))
+    destination = {"run_id": "run-123", "experiment_id": "264"}
+    monkeypatch.setattr(
+        "projects.caliper.orchestration.export.precreate_mlflow_run_if_configured",
+        lambda: destination,
+    )
+
+    marker = ensure_mlflow_destination_marker()
+
+    assert marker == tmp_path / MLFLOW_DESTINATION_FILE
+    assert yaml.safe_load(marker.read_text(encoding="utf-8")) == destination
 
 
 def test_marker_is_not_written_outside_fournos_ci(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

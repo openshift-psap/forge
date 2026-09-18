@@ -89,6 +89,11 @@ def main(ctx, preset):
 
     init_vaults_for_phase(ctx.invoked_subcommand)
 
+    if ctx.invoked_subcommand in {"prepare", "preflight", "test"}:
+        from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
+
+        ensure_mlflow_destination_marker()
+
 
 @main.command()
 @click.pass_context

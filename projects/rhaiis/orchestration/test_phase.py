@@ -196,14 +196,9 @@ def _run_test(
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
     wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
 
-    from projects.caliper.orchestration.export import (
-        precreate_mlflow_run_if_configured,
-        write_mlflow_destination_marker,
-    )
+    from projects.caliper.orchestration.export import precreate_mlflow_run_if_configured
 
     mlflow_destination = precreate_mlflow_run_if_configured()
-    if mlflow_destination:
-        write_mlflow_destination_marker(mlflow_destination)
 
     try:
         isvc_labels = {

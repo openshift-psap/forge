@@ -129,6 +129,11 @@ def main(ctx):
     if ctx.invoked_subcommand != "resolve-fournos-config":
         vault.init(runtime_config.get_vaults())
 
+        if ctx.invoked_subcommand in {"prepare", "preflight", "test"}:
+            from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
+
+            ensure_mlflow_destination_marker()
+
 
 @main.command()
 @click.pass_context
