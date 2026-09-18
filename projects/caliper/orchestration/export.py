@@ -450,6 +450,8 @@ def ensure_mlflow_destination_marker() -> Path | None:
     if marker_path.exists():
         if not marker_path.is_file():
             raise ValueError(f"Invalid MLflow destination marker: {marker_path}")
+        marker_data = yaml.safe_load(marker_path.read_text(encoding="utf-8"))
+        _normalize_mlflow_destination(marker_data, source=marker_path)
         logger.info("Using existing MLflow destination marker: %s", marker_path)
         return marker_path
 

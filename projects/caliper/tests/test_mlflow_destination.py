@@ -175,6 +175,23 @@ def test_ensure_marker_persists_a_new_job_run(tmp_path: Path, monkeypatch: pytes
     assert yaml.safe_load(marker.read_text(encoding="utf-8")) == destination
 
 
+def test_existing_job_marker_is_validated_before_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Malformed or incomplete existing markers fail during phase setup."""
+    _configure_fournos(monkeypatch)
+    monkeypatch.setenv("ARTIFACT_BASE_DIR", str(tmp_path))
+    marker = tmp_path / MLFLOW_DESTINATION_FILE
+
+    marker.write_text("not: [valid", encoding="utf-8")
+    with pytest.raises(yaml.YAMLError):
+        ensure_mlflow_destination_marker()
+
+    marker.write_text(yaml.safe_dump({"run_id": "run-123"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Incomplete MLflow destination"):
+        ensure_mlflow_destination_marker()
+
+
 def test_marker_is_not_written_outside_fournos_ci(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Marker creation is disabled outside Fournos CI."""
     monkeypatch.setenv("FOURNOS_CI", "false")
