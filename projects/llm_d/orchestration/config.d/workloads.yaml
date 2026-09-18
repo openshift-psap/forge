@@ -1,5 +1,5 @@
 job_name: guidellm-benchmark
-image: ghcr.io/vllm-project/guidellm:v0.5.4
+image: ghcr.io/vllm-project/guidellm:v0.7.3
 use_pvc: false
 pvc_size: 1Gi
 pvc_storage_class: null
@@ -20,34 +20,25 @@ benchmarks:
 
   short:
     timeout_seconds: 3600
-    outputs: json
     args:
-      backend_type: openai_http
-      rate: [1, 4, 8]
-      rate_type: concurrent
-      max_seconds: 120
-      sample_requests: 20
-      data: prompt_tokens=256,output_tokens=128
+      profile: "kind=concurrent,streams={rate}"
+      data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
+      constraint: kind=max_duration,seconds=120
+    rate: [1, 4, 8]
+
+  smoke:
+    timeout_seconds: 300
+    benchconf: llm-d/smoke
 
   concurrent-1k-1k:
     timeout_seconds: 3600
-    args:
-      backend_type: openai_http
-      rate_type: concurrent
-      rate: [1, 50, 100, 200, 300]
-      data: prompt_tokens=1000,output_tokens=1000
-      max_seconds: 600
+    benchconf: llm-d/concurrent-1k-1k
 
   heavy-heterogeneous:
     timeout_seconds: 3600
     vllm_args:
       max_model_len: 40960
-    args:
-      backend_type: openai_http
-      rate_type: concurrent
-      rate: [1, 50, 100, 200, 300]
-      data: prompt_tokens=8000,prompt_tokens_stdev=8500,prompt_tokens_min=50,prompt_tokens_max=30000,output_tokens=800,output_tokens_stdev=1500,output_tokens_min=20,output_tokens_max=8000
-      max_seconds: 600
+    benchconf: llm-d/concurrent-heavy-heterogeneous
 
   multi-turn:
     vllm_args:
@@ -55,9 +46,10 @@ benchmarks:
     # One Job runs all five rates sequentially; the high-rate cases need more
     # than the default one-hour wall-clock budget.
     timeout_seconds: 7200
+    # Uses inline args instead of benchconf because prefix_count and
+    # max_requests scale with the rate via forge's {rate} expressions.
     args:
-      backend_type: openai_http
-      rate_type: concurrent
-      rate: [32, 64, 128, 256, 512]
-      data: prompt_tokens=128,output_tokens=128,turns=5,prefix_tokens=10000,prefix_count={2*rate}
-      max_requests: "{10*rate}"
+      profile: "kind=concurrent,streams={rate}"
+      data: "kind=synthetic_text,prompt_tokens=128,output_tokens=128,turns=5,prefix_tokens=10000,prefix_count={2*rate}"
+      constraint: "kind=max_requests,value={10*rate}"
+    rate: [32, 64, 128, 256, 512]

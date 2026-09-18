@@ -4,14 +4,20 @@ Utilities for the GuideLL-M benchmark toolbox module.
 
 from __future__ import annotations
 
+import logging
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from projects.core.dsl import template
+
+logger = logging.getLogger(__name__)
+
+_CONFIG_FILE_PATH = "/tmp/guidellm-config.yaml"
 
 
 @dataclass(frozen=True)
@@ -90,7 +96,6 @@ def expand_guidellm_runs(guidellm_args: list[str]) -> list[GuideLLMRun]:
         run_args: list[str] = []
         for arg in guidellm_args:
             if arg.startswith("--rate="):
-                run_args.append(f"--rate={rate}")
                 continue
             run_args.append(_substitute_rate_expressions(arg, rate))
 
@@ -120,28 +125,79 @@ def build_guidellm_args(benchmark: dict[str, object]) -> list[str]:
     if "rate" in benchmark and "rate" not in benchmark_args:
         guidellm_args.append(f"--rate={benchmark['rate']}")
 
-    if not any(arg.startswith("--outputs=") for arg in guidellm_args):
-        guidellm_args.append(f"--outputs={benchmark.get('outputs', 'json')}")
-
     return guidellm_args
 
 
-def _build_multi_run_script(*, endpoint_url: str, runs: list[GuideLLMRun]) -> str:
+def _consolidate_backend_args(
+    guidellm_args: list[str],
+    endpoint_url: str,
+) -> list[str]:
+    """Merge separate ``--backend=key=val`` args into a single ``--backend`` flag.
+
+    GuideLLM v0.7.3 expects all backend properties in one comma-separated value
+    with a mandatory ``kind`` key (e.g. ``--backend=kind=openai_http,target=URL``).
+    """
+    backend_parts: list[str] = [f"target={endpoint_url}"]
+    other_args: list[str] = []
+    has_kind = False
+
+    for arg in guidellm_args:
+        if arg.startswith("--backend="):
+            part = arg[len("--backend=") :]
+            if "kind=" in part:
+                has_kind = True
+            backend_parts.append(part)
+        else:
+            other_args.append(arg)
+
+    if not has_kind:
+        backend_parts.insert(0, "kind=openai_http")
+
+    return [f"--backend={','.join(backend_parts)}"] + other_args
+
+
+def _format_shell_command(parts: list[str]) -> str:
+    """Format a shell command with backslash line continuations for readability."""
+    quoted = [shlex.quote(p) for p in parts]
+    if len(quoted) <= 2:
+        return " ".join(quoted)
+    # Keep binary + subcommand on the first line, then one flag per line.
+    return " ".join(quoted[:2]) + " \\\n    " + " \\\n    ".join(quoted[2:])
+
+
+def _build_config_heredoc(config_content: str) -> str:
+    """Build a shell heredoc that writes a GuideLLM config YAML to a file."""
+    return f"cat > {_CONFIG_FILE_PATH} <<'__CONFIG_EOF__'\n{config_content}__CONFIG_EOF__"
+
+
+def _build_multi_run_script(
+    *,
+    endpoint_url: str,
+    runs: list[GuideLLMRun],
+    config_content: str | None = None,
+) -> str:
     lines = ["set -euo pipefail", "mkdir -p /results"]
+    if config_content:
+        lines.append(_build_config_heredoc(config_content))
+    multi_run = len(runs) > 1 or any(r.rate is not None for r in runs)
     for run in runs:
-        lines.append("rm -f /results/benchmarks.json")
+        if multi_run:
+            lines.append("rm -f /results/benchmarks.json")
+        run_args = list(run.args)
+        if config_content:
+            run_args.append(f"--config={_CONFIG_FILE_PATH}")
+        consolidated = _consolidate_backend_args(run_args, endpoint_url)
         command = [
             "/opt/app-root/bin/guidellm",
-            "benchmark",
             "run",
-            f"--target={endpoint_url}",
-            *run.args,
+            *consolidated,
         ]
-        lines.append(shlex.join(command))
-        output_path = shlex.quote(f"/results/benchmarks-{run.label}.json")
-        lines.append(
-            f"test -f /results/benchmarks.json && mv /results/benchmarks.json {output_path}"
-        )
+        lines.append(_format_shell_command(command))
+        if multi_run:
+            output_path = shlex.quote(f"/results/benchmarks-{run.label}.json")
+            lines.append(
+                f"test -f /results/benchmarks.json && mv /results/benchmarks.json {output_path}"
+            )
 
     return "\n".join(lines)
 
@@ -194,6 +250,7 @@ def render_guidellm_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest from individual components.
 
@@ -208,10 +265,14 @@ def render_guidellm_job_from_parts(
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the PVC is writable by the container. Needed on clusters where the
             CSI driver provisions volumes with root-only permissions.
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container via heredoc,
+            and GuideLLM is invoked with ``--config`` pointing to it.
 
     Returns:
         Job manifest as dict
     """
+    config_content = config_path.read_text() if config_path else None
     runs = expand_guidellm_runs(guidellm_args)
     rendered_yaml = template.render_template(
         "guidellm_job.yaml.j2",
@@ -226,18 +287,22 @@ def render_guidellm_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
     container = manifest["spec"]["template"]["spec"]["containers"][0]
-    if len(runs) == 1 and runs[0].rate is None:
+
+    # Config file mode requires a shell script to write the file first.
+    # Plain single runs can invoke guidellm directly.
+    if not config_content and len(runs) == 1 and runs[0].rate is None:
+        consolidated = _consolidate_backend_args(runs[0].args, endpoint_url)
         container["command"] = ["/opt/app-root/bin/guidellm"]
         container["args"] = [
-            "benchmark",
             "run",
-            f"--target={endpoint_url}",
-            *runs[0].args,
+            *consolidated,
         ]
         return manifest
 
     container["command"] = ["/bin/sh", "-lc"]
-    container["args"] = [_build_multi_run_script(endpoint_url=endpoint_url, runs=runs)]
+    container["args"] = [
+        _build_multi_run_script(endpoint_url=endpoint_url, runs=runs, config_content=config_content)
+    ]
     return manifest
 
 
@@ -251,6 +316,7 @@ def render_guidellm_shared_volume_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest with shared volume (main + sidecar containers).
 
@@ -264,10 +330,13 @@ def render_guidellm_shared_volume_job_from_parts(
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the shared volume is writable by both containers.
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container via heredoc.
 
     Returns:
         Job manifest as dict with main and sidecar containers
     """
+    config_content = config_path.read_text() if config_path else None
     runs = expand_guidellm_runs(guidellm_args)
     rendered_yaml = template.render_template(
         "guidellm_shared_volume_job.yaml.j2",
@@ -282,20 +351,27 @@ def render_guidellm_shared_volume_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
 
-    # Build the main container script
-    if len(runs) == 1 and runs[0].rate is None:
+    # Build the main container script.
+    # Config file mode always uses a shell script to write the file first.
+    if not config_content and len(runs) == 1 and runs[0].rate is None:
+        consolidated = _consolidate_backend_args(runs[0].args, endpoint_url)
+        command_parts = [
+            "/opt/app-root/bin/guidellm",
+            "run",
+            *consolidated,
+        ]
         main_script_lines = [
             "set -euo pipefail",
             "mkdir -p /results",
-            f"/opt/app-root/bin/guidellm benchmark run --target={endpoint_url} {' '.join(runs[0].args)}",
+            _format_shell_command(command_parts),
         ]
         main_script = "\n".join(main_script_lines)
-        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
-        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
     else:
-        main_script = _build_multi_run_script(endpoint_url=endpoint_url, runs=runs)
-        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
-        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
+        main_script = _build_multi_run_script(
+            endpoint_url=endpoint_url, runs=runs, config_content=config_content
+        )
+    manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
+    manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
 
     return manifest
 
