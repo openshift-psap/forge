@@ -18,7 +18,11 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
+from projects.caliper.engine.constants import (
+    LEGACY_METADATA_FILE,
+    METADATA_FILE,
+    MLFLOW_DESTINATION_FILE,
+)
 from projects.caliper.engine.file_export.artifacts_export_run import (
     discover_run_dirs,
     run_artifacts_export,
@@ -231,7 +235,7 @@ def run_from_orchestration_config(
 
     run_dirs = discover_run_dirs(from_path)
 
-    # Resume a pre-created MLflow run if the test step left mlflow_destination in test labels
+    # Resume a pre-created MLflow run if the test step persisted a job marker or test label.
     discovered_run_id = _discover_precreated_mlflow_run_id(from_path)
     if (
         export_cfg.mlflow_run_id
@@ -341,7 +345,8 @@ def precreate_mlflow_run_if_configured(_cfg, force=False) -> dict[str, str] | No
     """Pre-create an MLflow run and return the ``mlflow_destination`` dict.
 
     Uses ``@requires`` to read vault and MLflow config from the project config.
-    Returns ``None`` if MLflow is not configured or pre-creation fails.
+    Returns ``None`` if MLflow is not configured. Errors from a configured
+    MLflow setup are propagated to the caller.
     The returned dict contains ``run_id``, ``experiment_id``, and ``workspace``.
 
     Args:
@@ -359,25 +364,112 @@ def precreate_mlflow_run_if_configured(_cfg, force=False) -> dict[str, str] | No
         return None
 
     secrets_path = vault_lib.get_vault_content_path(vault_name, vault_key)
-    if not secrets_path or not secrets_path.exists():
-        logger.info("MLflow secrets file not found, skipping run pre-creation")
-        return None
+    if not secrets_path:
+        raise FileNotFoundError("Configured MLflow secrets could not be resolved")
+    if not secrets_path.exists():
+        raise FileNotFoundError(f"Configured MLflow secrets file not found: {secrets_path}")
 
-    try:
-        meta = precreate_mlflow_run(
-            secrets_path=secrets_path,
-            experiment=_cfg.experiment or None,
-            workspace=_cfg.workspace or None,
-        )
-    except Exception:
-        logger.warning("MLflow run pre-creation failed; continuing", exc_info=True)
-        return None
+    meta = precreate_mlflow_run(
+        secrets_path=secrets_path,
+        experiment=_cfg.experiment or None,
+        workspace=_cfg.workspace or None,
+    )
 
     return {
         "run_id": meta["run_id"],
         "experiment_id": meta.get("experiment_id", ""),
         "workspace": _cfg.workspace or "",
     }
+
+
+def _mlflow_destination_path(artifact_root: Path | None = None) -> Path:
+    """Return the single job-level MLflow destination marker path."""
+    if artifact_root is None:
+        configured_root = os.environ.get("ARTIFACT_BASE_DIR")
+        if configured_root:
+            artifact_root = Path(configured_root)
+        elif env.BASE_ARTIFACT_DIR is not None:
+            # In Fournos, ARTIFACT_DIR points to the current step directory
+            # (for example /workspace/artifacts/03__test). The job marker must
+            # live one level above it, alongside all step directories.
+            artifact_root = env.BASE_ARTIFACT_DIR.parent
+        else:
+            raise RuntimeError(
+                "Cannot write MLflow destination marker: base artifact directory is not set"
+            )
+    return artifact_root / MLFLOW_DESTINATION_FILE
+
+
+def _normalize_mlflow_destination(
+    destination: dict[str, str], *, source: Path | str, require_experiment_id: bool = True
+) -> dict[str, str]:
+    """Validate and normalize an MLflow destination loaded from a marker."""
+    if not isinstance(destination, dict):
+        raise ValueError(f"Invalid MLflow destination in marker: {source}")
+
+    run_id = destination.get("run_id")
+    experiment_id = destination.get("experiment_id")
+    if not run_id:
+        raise ValueError(f"Incomplete MLflow destination in marker: {source}")
+    if require_experiment_id and not experiment_id:
+        raise ValueError(f"Incomplete MLflow destination in marker: {source}")
+
+    return {key: str(value) for key, value in destination.items() if value is not None}
+
+
+def write_mlflow_destination_marker(
+    destination: dict[str, str], *, artifact_root: Path | None = None
+) -> Path | None:
+    """Persist the pre-created MLflow destination at the job artifact root.
+
+    The marker is written only for Fournos CI jobs. It is created exclusively so a
+    later phase cannot replace the destination selected for the job.
+    """
+    if not env.running_inside_fournos():
+        logger.info("Not running inside FOURNOS CI, skipping MLflow destination marker")
+        return None
+
+    normalized = _normalize_mlflow_destination(destination, source="pre-created MLflow run")
+    marker_path = _mlflow_destination_path(artifact_root)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with marker_path.open("x", encoding="utf-8") as marker_file:
+        yaml.safe_dump(normalized, marker_file, sort_keys=False)
+    logger.info("Created MLflow destination marker: %s", marker_path)
+
+    return marker_path
+
+
+def read_mlflow_destination_marker(
+    artifact_root: Path | None = None,
+) -> dict[str, str] | None:
+    """Read and validate the job-level MLflow destination marker."""
+    marker_path = _mlflow_destination_path(artifact_root)
+    if not marker_path.exists():
+        return None
+    if not marker_path.is_file():
+        raise ValueError(f"Invalid MLflow destination marker: {marker_path}")
+
+    marker_data = yaml.safe_load(marker_path.read_text(encoding="utf-8"))
+    return _normalize_mlflow_destination(marker_data, source=marker_path)
+
+
+def ensure_mlflow_destination_marker() -> Path | None:
+    """Create the job-level MLflow marker once, before a CI phase starts."""
+    if not env.running_inside_fournos():
+        logger.info("Not running inside FOURNOS CI, skipping MLflow destination marker")
+        return None
+
+    marker_path = _mlflow_destination_path()
+    if marker_path.exists():
+        read_mlflow_destination_marker(artifact_root=marker_path.parent)
+        logger.info("Using existing MLflow destination marker: %s", marker_path)
+        return marker_path
+
+    destination = precreate_mlflow_run_if_configured()
+    if destination is None:
+        return None
+    return write_mlflow_destination_marker(destination, artifact_root=marker_path.parent)
 
 
 def precreate_mlflow_run(
@@ -391,8 +483,8 @@ def precreate_mlflow_run(
     The run is created and immediately ended (status FINISHED).  The export step
     will resume it via ``mlflow.start_run(run_id=...)`` to upload artifacts.
 
-    The caller is responsible for persisting the returned IDs (e.g. via the
-    ``mlflow_destination`` section of test metadata files).
+    The caller is responsible for persisting the returned IDs using
+    :func:`write_mlflow_destination_marker` and, where needed, in test metadata.
 
     Returns a dict with ``run_id`` and ``experiment_id``.
     """
@@ -436,30 +528,61 @@ def precreate_mlflow_run(
     return meta
 
 
-def _read_mlflow_ids_from_test_labels() -> tuple[str, str]:
-    """Read run_id and experiment_id from ``mlflow_destination`` in test labels."""
-    artifact_dir = Path(env.ARTIFACT_DIR) if env.ARTIFACT_DIR else None
-    if not artifact_dir:
-        logger.warning("ARTIFACT_DIR not set, cannot read MLflow destination from test labels")
-        return "", ""
-    # Search for both new and legacy metadata files
-    metadata_files = []
-    metadata_files.extend(artifact_dir.rglob(METADATA_FILE))
-    metadata_files.extend(artifact_dir.rglob(LEGACY_METADATA_FILE))
+def _read_mlflow_destinations(
+    artifact_dir: Path, *, primary_only: bool = False
+) -> list[dict[str, str]]:
+    """Read job and benchmark MLflow destinations, with optional job-only lookup."""
+    job_marker = artifact_dir / MLFLOW_DESTINATION_FILE
+    destinations: list[dict[str, str]] = []
+    if job_marker.exists():
+        if not job_marker.is_file():
+            raise ValueError(f"Invalid MLflow destination marker: {job_marker}")
+        marker_data = yaml.safe_load(job_marker.read_text(encoding="utf-8"))
+        job_destination = _normalize_mlflow_destination(marker_data, source=job_marker)
+        destinations.append(job_destination)
+        if primary_only:
+            return destinations
 
-    for labels_file in sorted(metadata_files):
-        try:
-            data = yaml.safe_load(labels_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                continue
-            dest = data.get("mlflow_destination")
-            if not isinstance(dest, dict):
-                continue
-            run_id = dest.get("run_id", "")
-            if run_id:
-                return run_id, dest.get("experiment_id", "")
-        except (OSError, yaml.YAMLError) as e:
-            logger.warning("Failed to read test labels %s: %s", labels_file, e)
+    marker_files = [
+        *sorted(artifact_dir.rglob(METADATA_FILE)),
+        *sorted(artifact_dir.rglob(LEGACY_METADATA_FILE)),
+    ]
+    benchmark_destinations: list[dict[str, str]] = []
+
+    for marker_file in dict.fromkeys(marker_files):
+        data = yaml.safe_load(marker_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid Caliper metadata file: {marker_file}")
+
+        destination = data.get("mlflow_destination")
+        if destination is None:
+            continue
+        if not isinstance(destination, dict):
+            raise ValueError(f"Invalid MLflow destination in metadata: {marker_file}")
+
+        benchmark_destinations.append(
+            _normalize_mlflow_destination(
+                destination,
+                source=marker_file,
+                require_experiment_id=not primary_only,
+            )
+        )
+
+    return destinations + benchmark_destinations
+
+
+def _read_mlflow_ids_from_test_labels() -> tuple[str, str]:
+    """Read MLflow IDs from the job marker or benchmark test metadata."""
+    try:
+        artifact_dir = _mlflow_destination_path().parent
+    except RuntimeError as error:
+        logger.warning("Cannot read MLflow destination: %s", error)
+        return "", ""
+
+    destinations = _read_mlflow_destinations(artifact_dir, primary_only=True)
+    if destinations:
+        destination = destinations[0]
+        return destination["run_id"], destination.get("experiment_id", "")
     return "", ""
 
 
@@ -507,7 +630,9 @@ def build_mlflow_run_url(
 
     run_id, experiment_id = _read_mlflow_ids_from_test_labels()
     if not run_id or not experiment_id:
-        logger.warning("Cannot build MLflow URL: run_id or experiment_id missing from test labels")
+        logger.warning(
+            "Cannot build MLflow URL: run_id or experiment_id missing from artifact metadata"
+        )
         return ""
 
     if not secrets_path.exists():
@@ -526,26 +651,12 @@ def build_mlflow_run_url(
 
 
 def _discover_precreated_mlflow_run_id(from_path: Path) -> str | None:
-    """Find a pre-created MLflow run_id from ``mlflow_destination`` in test labels."""
-    # Search for both new and legacy metadata files
-    metadata_files = []
-    metadata_files.extend(from_path.rglob(METADATA_FILE))
-    metadata_files.extend(from_path.rglob(LEGACY_METADATA_FILE))
-
-    for labels_file in sorted(metadata_files):
-        try:
-            data = yaml.safe_load(labels_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                continue
-            dest = data.get("mlflow_destination")
-            if not isinstance(dest, dict):
-                continue
-            run_id = dest.get("run_id")
-            if run_id:
-                logger.info("Found pre-created MLflow run_id: %s (from %s)", run_id, labels_file)
-                return run_id
-        except (OSError, yaml.YAMLError) as e:
-            logger.warning("Failed to read test labels %s: %s", labels_file, e)
+    """Find a pre-created MLflow run ID from job or benchmark metadata."""
+    destinations = _read_mlflow_destinations(from_path, primary_only=True)
+    if destinations:
+        run_id = destinations[0]["run_id"]
+        logger.info("Found pre-created MLflow run_id: %s", run_id)
+        return run_id
 
     return None
 

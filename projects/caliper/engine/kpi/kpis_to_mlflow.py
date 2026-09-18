@@ -135,7 +135,7 @@ def generate_metrics_from_kpis(
                     # Validate that x values are integers (MLflow step values must be integers)
                     curve_points = []
                     for i, (x, y) in enumerate(kpi.values):
-                        if not isinstance(x, (int, float)) or x != int(x):
+                        if not isinstance(x, int | float) or x != int(x):
                             raise ValueError(
                                 f"Curve KPI '{kpi.kpi_id}' in test '{test.run_id}': "
                                 f"data point {i} has non-integer step x={x!r} "

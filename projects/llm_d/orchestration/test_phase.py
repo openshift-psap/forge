@@ -356,14 +356,22 @@ def run_all_tests(stop_on_error: bool = False) -> int:
     Returns:
         Maximum exit code from all tests
     """
+    from projects.caliper.orchestration.export import (
+        ensure_mlflow_destination_marker,
+        read_mlflow_destination_marker,
+    )
     from projects.llm_d.orchestration import runtime_config
 
+    ensure_mlflow_destination_marker()
+    mlflow_destination = read_mlflow_destination_marker()
+    run_specs = runtime_config.get_run_specs()
+
     max_exit_code = 0
-    for run_spec in runtime_config.get_run_specs():
+    for run_spec in run_specs:
         with runtime_config.activate_run_spec(run_spec):
             with env.NextArtifactDir(run_spec.artifact_dirname):
                 try:
-                    exit_code = do_test()
+                    exit_code = do_test(mlflow_destination=mlflow_destination)
                     max_exit_code = max(max_exit_code, exit_code)
 
                     if exit_code != 0 and stop_on_error:
@@ -385,13 +393,20 @@ def run_all_tests(stop_on_error: bool = False) -> int:
 def run() -> int:
     """Main test function that wraps do_test() with outcome postprocessing."""
 
+    from projects.caliper.orchestration.export import (
+        ensure_mlflow_destination_marker,
+        read_mlflow_destination_marker,
+    )
+
+    ensure_mlflow_destination_marker()
+    mlflow_destination = read_mlflow_destination_marker()
     dry_run = config.project.get_config("runtime.kserve.dry_run", False)
     if dry_run:
-        ret = do_test()
+        ret = do_test(mlflow_destination=mlflow_destination)
         logger.info("Kserve dry-run mode enabled - Skipping caliper post-processing")
         return ret
 
-    return run_and_postprocess(do_test)
+    return run_and_postprocess(do_test, mlflow_destination=mlflow_destination)
 
 
 def run_finalizers(
@@ -452,7 +467,8 @@ def run_finalizers(
     return primary_exc, finalizer_exc
 
 
-def do_test() -> int:
+def do_test(*, mlflow_destination: dict[str, str] | None = None) -> int:
+    """Run one active LLM-D specification using the job MLflow destination."""
     # Load minimal config needed for orchestration flow
 
     namespace = runtime_config.get_namespace()
@@ -469,14 +485,6 @@ def do_test() -> int:
 
         # Delete all existing resources if configured
         cleanup_existing_resources(namespace)
-
-    try:
-        from projects.caliper.orchestration.export import precreate_mlflow_run_if_configured
-
-        mlflow_destination = precreate_mlflow_run_if_configured()
-    except Exception:
-        logger.error("MLflow run pre-creation failed; continuing", exc_info=True)
-        mlflow_destination = None
 
     endpoint_url: str | None = None
     primary_exc: tuple[type[BaseException], BaseException, Any] | None = None
