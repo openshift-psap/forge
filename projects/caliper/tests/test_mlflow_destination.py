@@ -15,6 +15,7 @@ from projects.caliper.orchestration.export import (
     _read_mlflow_destinations,
     _read_mlflow_ids_from_test_labels,
     ensure_mlflow_destination_marker,
+    read_mlflow_destination_marker,
     write_mlflow_destination_marker,
 )
 
@@ -157,6 +158,7 @@ def test_ensure_marker_does_not_recreate_existing_job_run(
     )
 
     assert ensure_mlflow_destination_marker() == marker
+    assert read_mlflow_destination_marker() == destination
 
 
 def test_ensure_marker_persists_a_new_job_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
