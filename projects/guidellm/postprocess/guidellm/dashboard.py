@@ -203,6 +203,7 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
     benchmarks: list[dict[str, Any]] = []
     metadata: dict[str, Any] = {}
     args: dict[str, Any] = {}
+    spec: dict[str, Any] = {}
     for path in files:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -211,6 +212,7 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         benchmarks.extend(payload.get("benchmarks", []))
         metadata = metadata or payload.get("metadata", {})
         args = args or payload.get("args", {})
+        spec = spec or payload.get("config", {}).get("spec", {})
     if not benchmarks:
         return {}, {}
 
@@ -224,6 +226,10 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         )
     )
     data_values = args.get("data", []) if isinstance(args, dict) else []
+    if not data_values:
+        spec_data = spec.get("data", [])
+        if isinstance(spec_data, list) and spec_data:
+            data_values = spec_data
     if not data_values:
         fallback_data = (
             benchmarks[0]
@@ -251,6 +257,11 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
     ends = [b.get("scheduler_metrics", {}).get("end_time", b.get("end_time")) for b in benchmarks]
     starts = [value for value in starts if value is not None]
     ends = [value for value in ends if value is not None]
+    request_type = ""
+    if isinstance(args, dict) and args.get("request_type"):
+        request_type = args["request_type"]
+    elif spec.get("backend", {}).get("request_format"):
+        request_type = spec["backend"]["request_format"]
     extra = {
         "guidellm_version": metadata.get("guidellm_version", ""),
         "prompt_toks": int(float(tokens["prompt_tokens"])) if "prompt_tokens" in tokens else "",
@@ -258,7 +269,7 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         "turns": int(float(tokens["turns"])) if "turns" in tokens else "",
         "prefix_tokens": int(float(tokens["prefix_tokens"])) if "prefix_tokens" in tokens else "",
         "prefix_count": int(float(tokens["prefix_count"])) if "prefix_count" in tokens else "",
-        "request_type": args.get("request_type", "") if isinstance(args, dict) else "",
+        "request_type": request_type,
         "guidellm_start_time_ms": int(min(starts) * 1000) if starts else "",
         "guidellm_end_time_ms": int(max(ends) * 1000) if ends else "",
     }

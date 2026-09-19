@@ -4,6 +4,7 @@ Utilities for the GuideLL-M benchmark toolbox module.
 
 from __future__ import annotations
 
+import json as _json
 import re
 import shlex
 from dataclasses import dataclass
@@ -126,23 +127,155 @@ def build_guidellm_args(benchmark: dict[str, object]) -> list[str]:
     return guidellm_args
 
 
+_RATE_KEY_BY_PROFILE = {
+    "concurrent": "streams",
+    "sweep": "sweep_size",
+    "throughput": "max_concurrency",
+}
+
+
+_FILE_KIND_BY_EXT = {
+    ".json": "json_file",
+    ".jsonl": "json_file",
+    ".csv": "csv_file",
+    ".parquet": "parquet_file",
+    ".arrow": "arrow_file",
+    ".txt": "text_file",
+    ".hdf5": "hdf5_file",
+    ".h5": "hdf5_file",
+    ".db": "db_file",
+    ".tar": "tar_file",
+}
+
+
+def _convert_data_spec(data_spec: str) -> str:
+    """Convert a ``--data`` value to GuideLLM ``kind=…`` format if needed."""
+    if data_spec.startswith("kind="):
+        return data_spec
+
+    for ext, kind in _FILE_KIND_BY_EXT.items():
+        if data_spec.endswith(ext):
+            return f"kind={kind},path={data_spec}"
+
+    if "prompt_tokens" in data_spec or "output_tokens" in data_spec:
+        return f"kind=synthetic_text,{data_spec}"
+
+    if "/" in data_spec and "=" not in data_spec:
+        return f"kind=huggingface,source={data_spec}"
+
+    return f"kind=synthetic_text,{data_spec}"
+
+
+def _build_run_args(endpoint_url: str, old_args: list[str]) -> list[str]:
+    """Transform config-derived CLI args into ``guidellm run`` arguments."""
+    backend_type = "openai_http"
+    model = None
+    data_spec = None
+    rate_type = "concurrent"
+    rates_str = None
+    max_seconds = None
+    max_requests = None
+    rampup = None
+    warmup = None
+    processor = None
+    passthrough: list[str] = []
+
+    for arg in old_args:
+        key, _, val = arg.partition("=")
+        if key == "--backend-type":
+            backend_type = val
+        elif key == "--rate-type":
+            rate_type = val
+        elif key == "--model":
+            model = val
+        elif key == "--data":
+            data_spec = val
+        elif key == "--rate":
+            rates_str = val
+        elif key == "--max-seconds":
+            max_seconds = val
+        elif key == "--max-requests":
+            max_requests = val
+        elif key == "--rampup":
+            rampup = val
+        elif key == "--warmup":
+            warmup = val
+        elif key in ("--processor", "--processor-args"):
+            if key == "--processor":
+                processor = val
+        elif key in ("--outputs", "--output-dir"):
+            pass
+        else:
+            passthrough.append(arg)
+
+    new_args: list[str] = []
+
+    backend_spec = f"kind={backend_type},target={endpoint_url}"
+    if model:
+        backend_spec += f",model={model}"
+    new_args.append(f"--backend={backend_spec}")
+
+    if data_spec:
+        new_args.append(f"--data={_convert_data_spec(data_spec)}")
+
+    rate_key = _RATE_KEY_BY_PROFILE.get(rate_type, "rate")
+    if rates_str:
+        rate_values = [v.strip() for v in rates_str.split(",") if v.strip()]
+        if len(rate_values) == 1:
+            profile_spec = f"kind={rate_type},{rate_key}={rate_values[0]}"
+            if warmup:
+                profile_spec += f",warmup={warmup}"
+            if rampup:
+                profile_spec += f",rampup_duration={rampup}"
+            new_args.append(f"--profile={profile_spec}")
+        else:
+            parsed_rates: list[int | float] = []
+            for r in rate_values:
+                f = float(r)
+                parsed_rates.append(int(f) if f == int(f) else f)
+            profile_dict: dict = {
+                "kind": rate_type,
+                rate_key: parsed_rates,
+            }
+            if warmup:
+                f = float(warmup)
+                profile_dict["warmup"] = int(f) if f == int(f) else f
+            if rampup:
+                f = float(rampup)
+                profile_dict["rampup_duration"] = int(f) if f == int(f) else f
+            new_args.append(f"--profile={_json.dumps(profile_dict)}")
+    else:
+        profile_spec = f"kind={rate_type}"
+        if warmup:
+            profile_spec += f",warmup={warmup}"
+        if rampup:
+            profile_spec += f",rampup_duration={rampup}"
+        new_args.append(f"--profile={profile_spec}")
+
+    if max_seconds:
+        new_args.append(f"--constraint=kind=max_duration,seconds={max_seconds}")
+    if max_requests:
+        new_args.append(f"--constraint=kind=max_requests,count={max_requests}")
+
+    new_args.append("--output=kind=json,path=/results/benchmarks.json")
+
+    if processor:
+        new_args.append(f"--tokenizer=kind=huggingface_auto,model={processor}")
+
+    new_args.extend(passthrough)
+    return new_args
+
+
 def _build_multi_run_script(*, endpoint_url: str, runs: list[GuideLLMRun]) -> str:
+    """Shell script for multiple GuideLLM runs (rate-expression expansion)."""
     lines = ["set -euo pipefail", "mkdir -p /results"]
     for run in runs:
-        lines.append("rm -f /results/benchmarks.json")
-        command = [
-            "/opt/app-root/bin/guidellm",
-            "benchmark",
-            "run",
-            f"--target={endpoint_url}",
-            *run.args,
-        ]
+        run_args = _build_run_args(endpoint_url, run.args)
+        output_path = f"/results/benchmarks-{run.label}.json"
+        filtered = [a for a in run_args if not a.startswith("--output=")]
+        filtered.append(f"--output=kind=json,path={output_path}")
+        command = ["/opt/app-root/bin/guidellm", "run", *filtered]
         lines.append(shlex.join(command))
-        output_path = shlex.quote(f"/results/benchmarks-{run.label}.json")
-        lines.append(
-            f"test -f /results/benchmarks.json && mv /results/benchmarks.json {output_path}"
-        )
-
     return "\n".join(lines)
 
 
@@ -226,13 +359,12 @@ def render_guidellm_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
     container = manifest["spec"]["template"]["spec"]["containers"][0]
+
     if len(runs) == 1 and runs[0].rate is None:
         container["command"] = ["/opt/app-root/bin/guidellm"]
         container["args"] = [
-            "benchmark",
             "run",
-            f"--target={endpoint_url}",
-            *runs[0].args,
+            *_build_run_args(endpoint_url, runs[0].args),
         ]
         return manifest
 
@@ -282,21 +414,21 @@ def render_guidellm_shared_volume_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
 
-    # Build the main container script
     if len(runs) == 1 and runs[0].rate is None:
-        main_script_lines = [
-            "set -euo pipefail",
-            "mkdir -p /results",
-            f"/opt/app-root/bin/guidellm benchmark run --target={endpoint_url} {' '.join(runs[0].args)}",
-        ]
-        main_script = "\n".join(main_script_lines)
-        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
-        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
+        run_args = _build_run_args(endpoint_url, runs[0].args)
+        cmd = shlex.join(["/opt/app-root/bin/guidellm", "run", *run_args])
+        main_script = "\n".join(
+            [
+                "set -euo pipefail",
+                "mkdir -p /results",
+                cmd,
+            ]
+        )
     else:
         main_script = _build_multi_run_script(endpoint_url=endpoint_url, runs=runs)
-        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
-        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
 
+    manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
+    manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
     return manifest
 
 
