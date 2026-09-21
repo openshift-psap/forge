@@ -284,10 +284,17 @@ def render_guidellm_shared_volume_job_from_parts(
 
     # Build the main container script
     if len(runs) == 1 and runs[0].rate is None:
+        command = [
+            "/opt/app-root/bin/guidellm",
+            "benchmark",
+            "run",
+            f"--target={endpoint_url}",
+            *runs[0].args,
+        ]
         main_script_lines = [
             "set -euo pipefail",
             "mkdir -p /results",
-            f"/opt/app-root/bin/guidellm benchmark run --target={endpoint_url} {' '.join(runs[0].args)}",
+            shlex.join(command),
         ]
         main_script = "\n".join(main_script_lines)
         manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
