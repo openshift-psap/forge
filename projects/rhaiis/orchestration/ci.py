@@ -9,6 +9,7 @@ import click
 import prepare_rhaiis
 import test_rhaiis
 
+from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
 from projects.core.agentic.config_review import trigger_config_review_for_ci
 from projects.core.agentic.on_failure import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
@@ -126,13 +127,13 @@ def main(ctx):
     ctx.ensure_object(types.SimpleNamespace)
     test_rhaiis.init()
 
-    if ctx.invoked_subcommand != "resolve-fournos-config":
-        vault.init(runtime_config.get_vaults())
+    if ctx.invoked_subcommand == "resolve-fournos-config":
+        return
 
-        if ctx.invoked_subcommand in {"prepare", "preflight", "test"}:
-            from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
+    vault.init(runtime_config.get_vaults())
 
-            ensure_mlflow_destination_marker()
+    if ctx.invoked_subcommand in {"prepare", "preflight", "test"}:
+        ensure_mlflow_destination_marker()
 
 
 @main.command()

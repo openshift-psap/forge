@@ -189,10 +189,14 @@ def get_iso_timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def create_test_labels(
-    mlflow_destination: dict[str, str] | None = None,
-) -> None:
+def create_test_labels() -> None:
     """Create caliper metadata file with model name, guidellm configuration, and test start time."""
+
+    mlflow_destination = None
+    if env.running_inside_fournos():
+        from projects.caliper.orchestration.export import read_mlflow_destination_marker
+
+        mlflow_destination = read_mlflow_destination_marker()
 
     model_name = runtime_config.get_model_name()
     deployment_profile = runtime_config.get_deployment_profile_name()
@@ -356,14 +360,8 @@ def run_all_tests(stop_on_error: bool = False) -> int:
     Returns:
         Maximum exit code from all tests
     """
-    from projects.caliper.orchestration.export import (
-        ensure_mlflow_destination_marker,
-        read_mlflow_destination_marker,
-    )
     from projects.llm_d.orchestration import runtime_config
 
-    ensure_mlflow_destination_marker()
-    mlflow_destination = read_mlflow_destination_marker()
     run_specs = runtime_config.get_run_specs()
 
     max_exit_code = 0
@@ -371,7 +369,7 @@ def run_all_tests(stop_on_error: bool = False) -> int:
         with runtime_config.activate_run_spec(run_spec):
             with env.NextArtifactDir(run_spec.artifact_dirname):
                 try:
-                    exit_code = do_test(mlflow_destination=mlflow_destination)
+                    exit_code = do_test()
                     max_exit_code = max(max_exit_code, exit_code)
 
                     if exit_code != 0 and stop_on_error:
@@ -393,20 +391,13 @@ def run_all_tests(stop_on_error: bool = False) -> int:
 def run() -> int:
     """Main test function that wraps do_test() with outcome postprocessing."""
 
-    from projects.caliper.orchestration.export import (
-        ensure_mlflow_destination_marker,
-        read_mlflow_destination_marker,
-    )
-
-    ensure_mlflow_destination_marker()
-    mlflow_destination = read_mlflow_destination_marker()
     dry_run = config.project.get_config("runtime.kserve.dry_run", False)
     if dry_run:
-        ret = do_test(mlflow_destination=mlflow_destination)
+        ret = do_test()
         logger.info("Kserve dry-run mode enabled - Skipping caliper post-processing")
         return ret
 
-    return run_and_postprocess(do_test, mlflow_destination=mlflow_destination)
+    return run_and_postprocess(do_test)
 
 
 def run_finalizers(
@@ -467,8 +458,8 @@ def run_finalizers(
     return primary_exc, finalizer_exc
 
 
-def do_test(*, mlflow_destination: dict[str, str] | None = None) -> int:
-    """Run one active LLM-D specification using the job MLflow destination."""
+def do_test() -> int:
+    """Run one active LLM-D specification."""
     # Load minimal config needed for orchestration flow
 
     namespace = runtime_config.get_namespace()
@@ -493,7 +484,7 @@ def do_test(*, mlflow_destination: dict[str, str] | None = None) -> int:
     actual_llmisvc_name = "llmisvc-na-not-computed"
     try:
         # Create test labels with actual model and profile information
-        create_test_labels(mlflow_destination=mlflow_destination)
+        create_test_labels()
 
         # Generate the LLMInferenceService name before deployment
         # so we have it available even if deployment fails

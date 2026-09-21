@@ -11,9 +11,6 @@ from projects.caliper.engine.constants import METADATA_FILE, MLFLOW_DESTINATION_
 from projects.caliper.engine.file_export.artifacts_export_run import discover_run_dirs
 from projects.caliper.engine.traverse import discover_test_bases
 from projects.caliper.orchestration.export import (
-    _discover_precreated_mlflow_run_id,
-    _read_mlflow_destinations,
-    _read_mlflow_ids_from_test_labels,
     ensure_mlflow_destination_marker,
     read_mlflow_destination_marker,
     write_mlflow_destination_marker,
@@ -62,17 +59,14 @@ def test_job_marker_is_discoverable_without_becoming_a_benchmark_run(
 
     assert marker == tmp_path / MLFLOW_DESTINATION_FILE
     assert yaml.safe_load(marker.read_text(encoding="utf-8")) == destination
-    assert _read_mlflow_destinations(tmp_path) == [destination]
-    assert _discover_precreated_mlflow_run_id(tmp_path) == "run-123"
+    assert read_mlflow_destination_marker(tmp_path) == destination
     assert discover_run_dirs(tmp_path) == []
     nodes, _excluded = discover_test_bases(tmp_path)
     assert nodes == []
 
 
-def test_job_marker_takes_precedence_over_benchmark_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """The root job marker takes precedence over benchmark metadata destinations."""
+def test_job_marker_is_the_only_export_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The root job marker remains authoritative when test metadata also has a value."""
     _configure_fournos(monkeypatch)
     job_destination = {
         "run_id": "job-run",
@@ -87,18 +81,16 @@ def test_job_marker_takes_precedence_over_benchmark_metadata(
         {"run_id": "child-run", "experiment_id": "264"},
     )
 
-    assert _discover_precreated_mlflow_run_id(tmp_path) == "job-run"
-    assert _read_mlflow_destinations(tmp_path) == [
-        job_destination,
-        {"run_id": "child-run", "experiment_id": "264"},
-    ]
+    assert read_mlflow_destination_marker(tmp_path) == job_destination
     assert discover_run_dirs(tmp_path) == [benchmark_dir]
     nodes, _excluded = discover_test_bases(tmp_path)
     assert [node.directory for node in nodes] == [benchmark_dir]
 
 
-def test_url_reader_uses_the_shared_artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Failure notification lookup reads the marker from the shared artifact root."""
+def test_marker_reader_uses_the_shared_artifact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Failure notification lookup reads only the shared job marker."""
     _configure_fournos(monkeypatch)
     monkeypatch.setenv("ARTIFACT_BASE_DIR", str(tmp_path))
     write_mlflow_destination_marker(
@@ -108,22 +100,7 @@ def test_url_reader_uses_the_shared_artifact_root(tmp_path: Path, monkeypatch: p
     broken_child_metadata.parent.mkdir()
     broken_child_metadata.write_text("not: [valid", encoding="utf-8")
 
-    assert _read_mlflow_ids_from_test_labels() == ("job-run", "264")
-    with pytest.raises(yaml.YAMLError):
-        _read_mlflow_destinations(tmp_path)
-
-
-def test_run_id_only_metadata_still_resumes_the_precreated_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Legacy metadata containing only run_id remains usable for export resumption."""
-    _configure_fournos(monkeypatch)
-    monkeypatch.setenv("ARTIFACT_BASE_DIR", str(tmp_path))
-    benchmark_dir = tmp_path / "001__benchmark"
-    _write_metadata(benchmark_dir, {"run_id": "legacy-run"})
-
-    assert _discover_precreated_mlflow_run_id(tmp_path) == "legacy-run"
-    assert _read_mlflow_ids_from_test_labels() == ("legacy-run", "")
+    assert read_mlflow_destination_marker() == {"run_id": "job-run", "experiment_id": "264"}
 
 
 def test_existing_job_marker_cannot_be_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -213,4 +190,4 @@ def test_invalid_job_marker_is_not_silently_ignored(tmp_path: Path):
     marker.write_text("not: [valid", encoding="utf-8")
 
     with pytest.raises(yaml.YAMLError):
-        _read_mlflow_destinations(tmp_path)
+        read_mlflow_destination_marker(tmp_path)
