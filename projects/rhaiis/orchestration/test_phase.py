@@ -8,7 +8,6 @@ from pathlib import Path
 
 import yaml
 
-from projects.caliper.engine.kpi.dataclasses import MlflowDestination
 from projects.core.library import env
 from projects.core.library.postprocess import run_and_postprocess, write_test_labels
 from projects.rhaiis.orchestration import runtime_config
@@ -519,9 +518,7 @@ def _create_test_labels(
     write_test_labels(
         env.ARTIFACT_DIR,
         labels,
-        mlflow_destination=MlflowDestination.from_dict(mlflow_destination)
-        if mlflow_destination
-        else None,
+        mlflow_destination=mlflow_destination,
     )
     logger.info("Created test labels: %s", labels)
 

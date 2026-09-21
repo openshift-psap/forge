@@ -31,6 +31,7 @@ from projects.caliper.engine.file_export.mlflow_config import (
     load_mlflow_config_yaml,
     project_metadata_fields,
 )
+from projects.caliper.engine.kpi.dataclasses import MlflowDestination
 from projects.caliper.orchestration.censoring import (
     orchestration_apply_censoring,
 )
@@ -237,7 +238,7 @@ def run_from_orchestration_config(
 
     # Resume the single pre-created MLflow run persisted at the artifact root.
     job_destination = read_mlflow_destination_marker(artifact_root=from_path)
-    discovered_run_id = job_destination.get("run_id") if job_destination else None
+    discovered_run_id = job_destination.run_id if job_destination else None
     if discovered_run_id:
         logger.info("Found pre-created MLflow run_id: %s", discovered_run_id)
     if (
@@ -276,6 +277,7 @@ def run_from_orchestration_config(
                 mlflow_secrets_path=mlflow_secrets_path,
                 mlflow_config_data=mlflow_config_data,
                 run_dirs=run_dirs,
+                mlflow_run_id=mlflow_run_id,
                 resolved_parent_name=naming.get("parent_run_name"),
                 child_run_names=naming.get("child_run_names") or {},
                 disable_censoring=disable_censoring,
@@ -344,13 +346,13 @@ def run_from_orchestration_config(
     experiment="caliper.export.backend.mlflow.config.experiment",
     workspace="caliper.export.backend.mlflow.config.workspace",
 )
-def precreate_mlflow_run_if_configured(_cfg, force=False) -> dict[str, str] | None:
-    """Pre-create an MLflow run and return the ``mlflow_destination`` dict.
+def precreate_mlflow_run_if_configured(_cfg, force=False) -> MlflowDestination | None:
+    """Pre-create an MLflow run and return its destination.
 
     Uses ``@requires`` to read vault and MLflow config from the project config.
     Returns ``None`` if MLflow is not configured. Errors from a configured
     MLflow setup are propagated to the caller.
-    The returned dict contains ``run_id``, ``experiment_id``, and ``workspace``.
+    The returned destination contains ``run_id``, ``experiment_id``, and ``workspace``.
 
     Args:
       force: if not forced, precreate only on FournosCI
@@ -378,11 +380,11 @@ def precreate_mlflow_run_if_configured(_cfg, force=False) -> dict[str, str] | No
         workspace=_cfg.workspace or None,
     )
 
-    return {
-        "run_id": meta["run_id"],
-        "experiment_id": meta.get("experiment_id", ""),
-        "workspace": _cfg.workspace or "",
-    }
+    return MlflowDestination(
+        run_id=meta.run_id,
+        experiment_id=meta.experiment_id,
+        workspace=_cfg.workspace or meta.workspace,
+    )
 
 
 def _mlflow_destination_path(artifact_root: Path | None = None) -> Path:
@@ -404,24 +406,32 @@ def _mlflow_destination_path(artifact_root: Path | None = None) -> Path:
 
 
 def _normalize_mlflow_destination(
-    destination: dict[str, str], *, source: Path | str
-) -> dict[str, str]:
+    destination: MlflowDestination | dict[str, str], *, source: Path | str
+) -> MlflowDestination:
     """Validate and normalize an MLflow destination loaded from a marker."""
-    if not isinstance(destination, dict):
+    if isinstance(destination, MlflowDestination):
+        normalized = destination
+    elif isinstance(destination, dict):
+        run_id = destination.get("run_id")
+        experiment_id = destination.get("experiment_id")
+        if not run_id or not experiment_id:
+            raise ValueError(f"Incomplete MLflow destination in marker: {source}")
+        normalized = MlflowDestination(
+            run_id=str(run_id),
+            experiment_id=str(experiment_id),
+            workspace=str(destination.get("workspace") or ""),
+        )
+    else:
         raise ValueError(f"Invalid MLflow destination in marker: {source}")
 
-    run_id = destination.get("run_id")
-    experiment_id = destination.get("experiment_id")
-    if not run_id:
-        raise ValueError(f"Incomplete MLflow destination in marker: {source}")
-    if not experiment_id:
+    if not normalized.run_id or not normalized.experiment_id:
         raise ValueError(f"Incomplete MLflow destination in marker: {source}")
 
-    return {key: str(value) for key, value in destination.items() if value is not None}
+    return normalized
 
 
 def write_mlflow_destination_marker(
-    destination: dict[str, str], *, artifact_root: Path | None = None
+    destination: MlflowDestination | dict[str, str], *, artifact_root: Path | None = None
 ) -> Path | None:
     """Persist the pre-created MLflow destination at the job artifact root.
 
@@ -437,7 +447,7 @@ def write_mlflow_destination_marker(
     marker_path.parent.mkdir(parents=True, exist_ok=True)
 
     with marker_path.open("x", encoding="utf-8") as marker_file:
-        yaml.safe_dump(normalized, marker_file, sort_keys=False)
+        yaml.safe_dump(normalized.to_dict(), marker_file, sort_keys=False)
     logger.info("Created MLflow destination marker: %s", marker_path)
 
     return marker_path
@@ -445,7 +455,7 @@ def write_mlflow_destination_marker(
 
 def read_mlflow_destination_marker(
     artifact_root: Path | None = None,
-) -> dict[str, str] | None:
+) -> MlflowDestination | None:
     """Read and validate the job-level MLflow destination marker."""
     marker_path = _mlflow_destination_path(artifact_root)
     if not marker_path.exists():
@@ -480,7 +490,7 @@ def precreate_mlflow_run(
     secrets_path: Path,
     experiment: str | None = None,
     workspace: str | None = None,
-) -> dict[str, str]:
+) -> MlflowDestination:
     """Pre-create an MLflow run so the export step can resume it.
 
     The run is created and immediately ended (status FINISHED).  The export step
@@ -489,7 +499,7 @@ def precreate_mlflow_run(
     The caller is responsible for persisting the returned IDs using
     :func:`write_mlflow_destination_marker` and, where needed, in test metadata.
 
-    Returns a dict with ``run_id`` and ``experiment_id``.
+    Returns an :class:`MlflowDestination` with ``run_id`` and ``experiment_id``.
     """
     import mlflow
 
@@ -524,7 +534,11 @@ def precreate_mlflow_run(
             os.environ.pop("MLFLOW_WORKSPACE", None)
         mlflow.set_tracking_uri(prev_tracking_uri)
 
-    meta = {"run_id": run_id, "experiment_id": experiment_id}
+    meta = MlflowDestination(
+        run_id=run_id,
+        experiment_id=experiment_id,
+        workspace=workspace or "",
+    )
 
     logger.info("Pre-created MLflow run %s (experiment=%s)", run_id, experiment_id)
 
@@ -583,8 +597,8 @@ def build_mlflow_run_url(
         logger.warning("Cannot build MLflow URL: MLflow destination marker not found")
         return ""
 
-    run_id = destination["run_id"]
-    experiment_id = destination.get("experiment_id", "")
+    run_id = destination.run_id
+    experiment_id = destination.experiment_id
     if not experiment_id:
         logger.warning(
             "Cannot build MLflow URL: experiment_id missing from MLflow destination marker"
@@ -636,6 +650,7 @@ def _run_multi_run_export(
     mlflow_secrets_path: Path,
     mlflow_config_data: dict[str, Any] | None,
     run_dirs: list[Path],
+    mlflow_run_id: str | None = None,
     resolved_parent_name: str | None = None,
     child_run_names: dict[Path, str] | None = None,
     disable_censoring: bool = False,
@@ -738,6 +753,7 @@ def _run_multi_run_export(
                 parameters_file=PARAMETERS_FILE,
                 tracking_uri=tracking_uri,
                 experiment=experiment,
+                run_id=mlflow_run_id,
                 parent_run_name=run_name,
                 insecure_tls=insecure_tls,
                 connection=mlflow_connection,

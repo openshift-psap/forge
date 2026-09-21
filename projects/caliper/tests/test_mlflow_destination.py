@@ -10,6 +10,7 @@ import yaml
 from projects.caliper.engine.constants import METADATA_FILE, MLFLOW_DESTINATION_FILE
 from projects.caliper.engine.file_export.artifacts_export_run import discover_run_dirs
 from projects.caliper.engine.traverse import discover_test_bases
+from projects.caliper.orchestration import export
 from projects.caliper.orchestration.export import (
     ensure_mlflow_destination_marker,
     read_mlflow_destination_marker,
@@ -59,7 +60,7 @@ def test_job_marker_is_discoverable_without_becoming_a_benchmark_run(
 
     assert marker == tmp_path / MLFLOW_DESTINATION_FILE
     assert yaml.safe_load(marker.read_text(encoding="utf-8")) == destination
-    assert read_mlflow_destination_marker(tmp_path) == destination
+    assert read_mlflow_destination_marker(tmp_path).to_dict() == destination
     assert discover_run_dirs(tmp_path) == []
     nodes, _excluded = discover_test_bases(tmp_path)
     assert nodes == []
@@ -81,7 +82,7 @@ def test_job_marker_is_the_only_export_destination(tmp_path: Path, monkeypatch: 
         {"run_id": "child-run", "experiment_id": "264"},
     )
 
-    assert read_mlflow_destination_marker(tmp_path) == job_destination
+    assert read_mlflow_destination_marker(tmp_path).to_dict() == job_destination
     assert discover_run_dirs(tmp_path) == [benchmark_dir]
     nodes, _excluded = discover_test_bases(tmp_path)
     assert [node.directory for node in nodes] == [benchmark_dir]
@@ -100,7 +101,11 @@ def test_marker_reader_uses_the_shared_artifact_root(
     broken_child_metadata.parent.mkdir()
     broken_child_metadata.write_text("not: [valid", encoding="utf-8")
 
-    assert read_mlflow_destination_marker() == {"run_id": "job-run", "experiment_id": "264"}
+    assert read_mlflow_destination_marker().to_dict() == {
+        "run_id": "job-run",
+        "experiment_id": "264",
+        "workspace": "",
+    }
 
 
 def test_existing_job_marker_cannot_be_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -117,7 +122,10 @@ def test_existing_job_marker_cannot_be_replaced(tmp_path: Path, monkeypatch: pyt
         write_mlflow_destination_marker(
             {"run_id": "different", "experiment_id": "264"}, artifact_root=tmp_path
         )
-    assert yaml.safe_load(first.read_text(encoding="utf-8")) == destination
+    assert yaml.safe_load(first.read_text(encoding="utf-8")) == {
+        **destination,
+        "workspace": "",
+    }
 
 
 def test_ensure_marker_does_not_recreate_existing_job_run(
@@ -135,7 +143,10 @@ def test_ensure_marker_does_not_recreate_existing_job_run(
     )
 
     assert ensure_mlflow_destination_marker() == marker
-    assert read_mlflow_destination_marker() == destination
+    assert read_mlflow_destination_marker().to_dict() == {
+        **destination,
+        "workspace": "",
+    }
 
 
 def test_ensure_marker_persists_a_new_job_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -151,7 +162,10 @@ def test_ensure_marker_persists_a_new_job_run(tmp_path: Path, monkeypatch: pytes
     marker = ensure_mlflow_destination_marker()
 
     assert marker == tmp_path / MLFLOW_DESTINATION_FILE
-    assert yaml.safe_load(marker.read_text(encoding="utf-8")) == destination
+    assert yaml.safe_load(marker.read_text(encoding="utf-8")) == {
+        **destination,
+        "workspace": "",
+    }
 
 
 def test_existing_job_marker_is_validated_before_reuse(
@@ -191,3 +205,50 @@ def test_invalid_job_marker_is_not_silently_ignored(tmp_path: Path):
 
     with pytest.raises(yaml.YAMLError):
         read_mlflow_destination_marker(tmp_path)
+
+
+def test_multi_run_export_reuses_job_marker_run_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The multi-run orchestration path passes the job run ID to the backend."""
+    _configure_fournos(monkeypatch)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    write_mlflow_destination_marker(
+        {"run_id": "job-run", "experiment_id": "264"}, artifact_root=artifact_root
+    )
+
+    secrets_path = tmp_path / "mlflow-secret.yaml"
+    secrets_path.write_text("tracking_uri: https://mlflow.example\n", encoding="utf-8")
+    monkeypatch.setattr(export.vault_lib, "get_vault_content_path", lambda *_args: secrets_path)
+    monkeypatch.setattr(export.env, "ARTIFACT_DIR", tmp_path / "export-step", raising=False)
+    monkeypatch.setattr(
+        export,
+        "discover_run_dirs",
+        lambda _from_path: [artifact_root / "run-a", artifact_root / "run-b"],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_multi_run_export(**kwargs):
+        captured.update(kwargs)
+        status_yaml = kwargs["status_yaml"]
+        status_yaml.parent.mkdir(parents=True, exist_ok=True)
+        status_yaml.write_text("success: true\nfinal_status: success\n", encoding="utf-8")
+
+    monkeypatch.setattr(export, "_run_multi_run_export", fake_multi_run_export)
+
+    export.run_from_orchestration_config(
+        {
+            "export": {
+                "from": str(artifact_root),
+                "backend": {
+                    "mlflow": {
+                        "enabled": True,
+                        "secrets": {"vault": {"name": "mlflow", "mlflow_secret": "secret"}},
+                        "config": {"workspace": "forge", "experiment": "forge"},
+                    }
+                },
+            }
+        }
+    )
+
+    assert captured["mlflow_run_id"] == "job-run"

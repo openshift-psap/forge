@@ -10,12 +10,7 @@ from typing import Any
 import yaml
 
 from projects.caliper.engine.constants import METADATA_FILE
-from projects.caliper.engine.kpi.dataclasses import (
-    CaliperTestMetadata,
-    CompletionData,
-    MlflowDestination,
-    TimingData,
-)
+from projects.caliper.engine.kpi.dataclasses import CaliperTestMetadata, CompletionData, TimingData
 from projects.cluster.toolbox.capture_prometheus.main import run as capture_prometheus
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.dsl import shell
@@ -221,9 +216,7 @@ def create_test_labels() -> None:
         env.ARTIFACT_DIR,
         labels,
         kpi_labels=kpi_labels if kpi_labels else None,
-        mlflow_destination=MlflowDestination.from_dict(mlflow_destination)
-        if mlflow_destination
-        else None,
+        mlflow_destination=mlflow_destination,
         timing=timing_data,
     )
     logger.info("Created test labels with start time: %s", labels)
