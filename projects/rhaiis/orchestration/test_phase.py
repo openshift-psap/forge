@@ -509,16 +509,9 @@ def _create_test_labels(
         "run_uuid": run_uuid,
     }
 
-    mlflow_destination = None
-    if env.running_inside_fournos():
-        from projects.caliper.orchestration.export import read_mlflow_destination_marker
-
-        mlflow_destination = read_mlflow_destination_marker()
-
     write_test_labels(
         env.ARTIFACT_DIR,
         labels,
-        mlflow_destination=mlflow_destination,
     )
     logger.info("Created test labels: %s", labels)
 

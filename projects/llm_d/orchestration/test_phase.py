@@ -187,12 +187,6 @@ def get_iso_timestamp() -> str:
 def create_test_labels() -> None:
     """Create caliper metadata file with model name, guidellm configuration, and test start time."""
 
-    mlflow_destination = None
-    if env.running_inside_fournos():
-        from projects.caliper.orchestration.export import read_mlflow_destination_marker
-
-        mlflow_destination = read_mlflow_destination_marker()
-
     model_name = runtime_config.get_model_name()
     deployment_profile = runtime_config.get_deployment_profile_name()
     benchmark_keys = runtime_config.get_benchmark_keys()
@@ -216,7 +210,6 @@ def create_test_labels() -> None:
         env.ARTIFACT_DIR,
         labels,
         kpi_labels=kpi_labels if kpi_labels else None,
-        mlflow_destination=mlflow_destination,
         timing=timing_data,
     )
     logger.info("Created test labels with start time: %s", labels)
@@ -355,10 +348,8 @@ def run_all_tests(stop_on_error: bool = False) -> int:
     """
     from projects.llm_d.orchestration import runtime_config
 
-    run_specs = runtime_config.get_run_specs()
-
     max_exit_code = 0
-    for run_spec in run_specs:
+    for run_spec in runtime_config.get_run_specs():
         with runtime_config.activate_run_spec(run_spec):
             with env.NextArtifactDir(run_spec.artifact_dirname):
                 try:
@@ -452,7 +443,6 @@ def run_finalizers(
 
 
 def do_test() -> int:
-    """Run one active LLM-D specification."""
     # Load minimal config needed for orchestration flow
 
     namespace = runtime_config.get_namespace()

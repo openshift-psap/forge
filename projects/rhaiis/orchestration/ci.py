@@ -131,9 +131,7 @@ def main(ctx):
         return
 
     vault.init(runtime_config.get_vaults())
-
-    if ctx.invoked_subcommand in {"prepare", "preflight", "test"}:
-        ensure_mlflow_destination_marker()
+    ensure_mlflow_destination_marker()
 
 
 @main.command()

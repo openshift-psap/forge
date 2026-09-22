@@ -237,7 +237,7 @@ def run_from_orchestration_config(
     run_dirs = discover_run_dirs(from_path)
 
     # Resume the single pre-created MLflow run persisted at the artifact root.
-    job_destination = read_mlflow_destination_marker(artifact_root=from_path)
+    job_destination = read_mlflow_destination_marker()
     discovered_run_id = job_destination.run_id if job_destination else None
     if discovered_run_id:
         logger.info("Found pre-created MLflow run_id: %s", discovered_run_id)
@@ -247,7 +247,7 @@ def run_from_orchestration_config(
         and export_cfg.mlflow_run_id != discovered_run_id
     ):
         logger.error(
-            "Conflicting MLflow run_ids: export config has %s, test labels have %s. Using export config.",
+            "Conflicting MLflow run_ids: export config has %s, destination marker has %s. Using export config.",
             export_cfg.mlflow_run_id,
             discovered_run_id,
         )
@@ -374,64 +374,32 @@ def precreate_mlflow_run_if_configured(_cfg, force=False) -> MlflowDestination |
     if not secrets_path.exists():
         raise FileNotFoundError(f"Configured MLflow secrets file not found: {secrets_path}")
 
-    meta = precreate_mlflow_run(
+    return precreate_mlflow_run(
         secrets_path=secrets_path,
         experiment=_cfg.experiment or None,
         workspace=_cfg.workspace or None,
     )
 
-    return MlflowDestination(
-        run_id=meta.run_id,
-        experiment_id=meta.experiment_id,
-        workspace=_cfg.workspace or meta.workspace,
-    )
 
-
-def _mlflow_destination_path(artifact_root: Path | None = None) -> Path:
+def _mlflow_destination_path() -> Path:
     """Return the single job-level MLflow destination marker path."""
-    if artifact_root is None:
-        configured_root = os.environ.get("ARTIFACT_BASE_DIR")
-        if configured_root:
-            artifact_root = Path(configured_root)
-        elif env.BASE_ARTIFACT_DIR is not None:
-            # In Fournos, ARTIFACT_DIR points to the current step directory
-            # (for example /workspace/artifacts/03__test). The job marker must
-            # live one level above it, alongside all step directories.
-            artifact_root = env.BASE_ARTIFACT_DIR.parent
-        else:
-            raise RuntimeError(
-                "Cannot write MLflow destination marker: base artifact directory is not set"
-            )
+    configured_root = os.environ.get("ARTIFACT_BASE_DIR")
+    if configured_root:
+        artifact_root = Path(configured_root)
+    elif env.BASE_ARTIFACT_DIR is not None:
+        # In Fournos, ARTIFACT_DIR points to the current step directory
+        # (for example /workspace/artifacts/03__test). The job marker must
+        # live one level above it, alongside all step directories.
+        artifact_root = env.BASE_ARTIFACT_DIR.parent
+    else:
+        raise RuntimeError(
+            "Cannot write MLflow destination marker: base artifact directory is not set"
+        )
     return artifact_root / MLFLOW_DESTINATION_FILE
 
 
-def _normalize_mlflow_destination(
-    destination: MlflowDestination | dict[str, str], *, source: Path | str
-) -> MlflowDestination:
-    """Validate and normalize an MLflow destination loaded from a marker."""
-    if isinstance(destination, MlflowDestination):
-        normalized = destination
-    elif isinstance(destination, dict):
-        run_id = destination.get("run_id")
-        experiment_id = destination.get("experiment_id")
-        if not run_id or not experiment_id:
-            raise ValueError(f"Incomplete MLflow destination in marker: {source}")
-        normalized = MlflowDestination(
-            run_id=str(run_id),
-            experiment_id=str(experiment_id),
-            workspace=str(destination.get("workspace") or ""),
-        )
-    else:
-        raise ValueError(f"Invalid MLflow destination in marker: {source}")
-
-    if not normalized.run_id or not normalized.experiment_id:
-        raise ValueError(f"Incomplete MLflow destination in marker: {source}")
-
-    return normalized
-
-
 def write_mlflow_destination_marker(
-    destination: MlflowDestination | dict[str, str], *, artifact_root: Path | None = None
+    destination: MlflowDestination,
 ) -> Path | None:
     """Persist the pre-created MLflow destination at the job artifact root.
 
@@ -442,29 +410,34 @@ def write_mlflow_destination_marker(
         logger.info("Not running inside FOURNOS CI, skipping MLflow destination marker")
         return None
 
-    normalized = _normalize_mlflow_destination(destination, source="pre-created MLflow run")
-    marker_path = _mlflow_destination_path(artifact_root)
+    marker_path = _mlflow_destination_path()
     marker_path.parent.mkdir(parents=True, exist_ok=True)
 
     with marker_path.open("x", encoding="utf-8") as marker_file:
-        yaml.safe_dump(normalized.to_dict(), marker_file, sort_keys=False)
+        yaml.safe_dump(destination.to_dict(), marker_file, sort_keys=False)
     logger.info("Created MLflow destination marker: %s", marker_path)
 
     return marker_path
 
 
-def read_mlflow_destination_marker(
-    artifact_root: Path | None = None,
-) -> MlflowDestination | None:
+def read_mlflow_destination_marker() -> MlflowDestination | None:
     """Read and validate the job-level MLflow destination marker."""
-    marker_path = _mlflow_destination_path(artifact_root)
+    marker_path = _mlflow_destination_path()
     if not marker_path.exists():
         return None
     if not marker_path.is_file():
         raise ValueError(f"Invalid MLflow destination marker: {marker_path}")
 
     marker_data = yaml.safe_load(marker_path.read_text(encoding="utf-8"))
-    return _normalize_mlflow_destination(marker_data, source=marker_path)
+    if not isinstance(marker_data, dict):
+        raise ValueError(f"Invalid MLflow destination marker: {marker_path}")
+    try:
+        destination = MlflowDestination.from_dict(marker_data)
+    except KeyError as error:
+        raise ValueError(f"Incomplete MLflow destination in marker: {marker_path}") from error
+    if not destination.run_id or not destination.experiment_id:
+        raise ValueError(f"Incomplete MLflow destination in marker: {marker_path}")
+    return destination
 
 
 def ensure_mlflow_destination_marker() -> Path | None:
@@ -475,14 +448,14 @@ def ensure_mlflow_destination_marker() -> Path | None:
 
     marker_path = _mlflow_destination_path()
     if marker_path.exists():
-        read_mlflow_destination_marker(artifact_root=marker_path.parent)
+        read_mlflow_destination_marker()
         logger.info("Using existing MLflow destination marker: %s", marker_path)
         return marker_path
 
     destination = precreate_mlflow_run_if_configured()
     if destination is None:
         return None
-    return write_mlflow_destination_marker(destination, artifact_root=marker_path.parent)
+    return write_mlflow_destination_marker(destination)
 
 
 def precreate_mlflow_run(
@@ -496,8 +469,8 @@ def precreate_mlflow_run(
     The run is created and immediately ended (status FINISHED).  The export step
     will resume it via ``mlflow.start_run(run_id=...)`` to upload artifacts.
 
-    The caller is responsible for persisting the returned IDs using
-    :func:`write_mlflow_destination_marker` and, where needed, in test metadata.
+    The caller is responsible for persisting the returned destination using
+    :func:`write_mlflow_destination_marker`.
 
     Returns an :class:`MlflowDestination` with ``run_id`` and ``experiment_id``.
     """
