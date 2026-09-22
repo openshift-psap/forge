@@ -249,6 +249,14 @@ def submit_job():
         project_name = config.project.get_config("ci_job.project")
         job_args = config.project.get_config("ci_job.args")
 
+        foreign_testing_project = os.environ.get("FORGE_FOREIGN_TESTING_PROJECT")
+        if foreign_testing_project:
+            if project_name != "project_not_set":
+                job_args = [project_name, *job_args]
+            project_name = foreign_testing_project
+            config.project.set_config("ci_job.project", project_name)
+            config.project.set_config("ci_job.args", job_args)
+
         # job_args is always a list, format accordingly
         args_str = " ".join(job_args)
 
