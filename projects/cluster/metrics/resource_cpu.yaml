@@ -1,0 +1,20 @@
+params:
+  namespace:
+    description: Target namespace
+  pod_name:
+    description: Pod name for the resource capture
+
+cpu_usage_percent_by_pod:
+  category: cpu
+  tags: [per-pod]
+  description: Cpu usage percent by pod
+  unit: ratio
+  promql: >-
+    rate(container_cpu_usage_seconds_total{namespace="{namespace}", pod=~"{pod_name}"}[5m]) * 100
+
+avg_cpu_usage_percent:
+  category: cpu
+  description: Avg cpu usage percent
+  unit: ratio
+  promql: >-
+    avg(rate(container_cpu_usage_seconds_total{namespace="{namespace}", pod=~"{pod_name}"}[5m])) * 100

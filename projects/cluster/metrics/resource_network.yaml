@@ -1,0 +1,19 @@
+params:
+  namespace:
+    description: Target namespace
+  pod_name:
+    description: Pod name substring for the resource capture
+
+network_receive_bytes_per_second:
+  category: network
+  description: Network receive bytes per second
+  unit: bytes/s
+  promql: >-
+    rate(container_network_receive_bytes_total{namespace="{namespace}", pod=~"{pod_name}"}[5m])
+
+network_transmit_bytes_per_second:
+  category: network
+  description: Network transmit bytes per second
+  unit: bytes/s
+  promql: >-
+    rate(container_network_transmit_bytes_total{namespace="{namespace}", pod=~"{pod_name}"}[5m])

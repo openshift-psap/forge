@@ -1,0 +1,95 @@
+params:
+  llmisvc_namespace:
+    description: Target namespace
+  llmisvc_name:
+    description: Name of the vllm llmisvc
+
+generation_token_rate_per_second:
+  category: vllm-throughput
+  tags: [rate]
+  description: Generation token rate per second
+  unit: ratio
+  promql: >-
+    rate({__name__=~"(vllm|kserve_vllm):generation_tokens_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])
+
+generation_token_rate_sum_per_second:
+  category: vllm-throughput
+  tags: [rate]
+  description: Generation token rate sum per second
+  unit: ratio
+  promql: >-
+    sum(rate({__name__=~"(vllm|kserve_vllm):generation_tokens_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m]))
+
+generation_tokens_total:
+  category: vllm-throughput
+  description: Generation tokens total
+  unit: ratio
+  promql: >-
+    {__name__=~"(vllm|kserve_vllm):generation_tokens_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}
+
+prompt_token_rate_per_second:
+  category: vllm-throughput
+  tags: [rate]
+  description: Prompt token rate per second
+  unit: ops/s
+  promql: >-
+    rate({__name__=~"(vllm|kserve_vllm):prompt_tokens_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])
+
+prompt_tokens_total:
+  category: vllm-throughput
+  description: Prompt tokens total
+  unit: count
+  promql: >-
+    {__name__=~"(vllm|kserve_vllm):prompt_tokens_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}
+
+prompt_tokens_rate_by_source:
+  category: vllm-throughput
+  tags: [rate]
+  description: Prompt tokens rate by source
+  unit: ops/s
+  promql: >-
+    sum by (pod, source) (rate({__name__=~"(vllm|kserve_vllm):prompt_tokens_by_source_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*", source=~"local_compute|local_cache_hit|external_kv_transfer"}[5m]))
+
+num_requests_running:
+  category: vllm-throughput
+  description: Num requests running
+  unit: count
+  promql: >-
+    {__name__=~"(vllm|kserve_vllm):num_requests_running", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}
+
+num_requests_waiting:
+  category: vllm-throughput
+  description: Num requests waiting
+  unit: count
+  promql: >-
+    {__name__=~"(vllm|kserve_vllm):num_requests_waiting", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}
+
+requests_running_waiting:
+  category: vllm-throughput
+  description: Requests running waiting
+  unit: count
+  promql: >-
+    max by (pod, state) (label_replace({__name__=~"(vllm|kserve_vllm):num_requests_running", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}, "state", "running", "__name__", ".*") or label_replace({__name__=~"(vllm|kserve_vllm):num_requests_waiting", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}, "state", "waiting", "__name__", ".*"))
+
+requests_waiting_by_reason:
+  category: vllm-throughput
+  description: Requests waiting by reason
+  unit: count
+  promql: >-
+    max by (pod, reason) ({__name__=~"(vllm|kserve_vllm):num_requests_waiting_by_reason", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"} or label_replace({__name__=~"(vllm|kserve_vllm):num_requests_waiting", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}, "reason", "unspecified", "__name__", ".*"))
+
+num_preemptions_rate:
+  category: vllm-throughput
+  tags: [rate]
+  description: Num preemptions rate
+  unit: ops/s
+  promql: >-
+    rate({__name__=~"(vllm|kserve_vllm):num_preemptions_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])
+
+request_success_rate_by_pod:
+  category: vllm-throughput
+  tags: [per-pod, rate]
+  description: Request success rate by pod
+  unit: ops/s
+  promql: >-
+    sum by (pod) (rate({__name__=~"(vllm|kserve_vllm):request_success_total", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m]))

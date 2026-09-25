@@ -8,7 +8,7 @@ as a compressed OpenMetrics archive. The output can later be imported into a
 local Prometheus instance for offline querying.
 
 Can be run standalone:
-    ./bin/run_toolbox cluster capture_prometheus \\
+    ./bin/run_toolbox cluster capture_prometheus_db \\
         "2026-07-26T10:00:00+00:00" \\
         "2026-07-26T10:20:00+00:00" \\
         /path/to/output

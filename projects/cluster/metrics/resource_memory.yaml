@@ -1,0 +1,20 @@
+params:
+  namespace:
+    description: Target namespace
+  pod_name:
+    description: Pod name for the resource capture
+
+memory_working_set_bytes_by_pod:
+  category: memory
+  tags: [per-pod]
+  description: Memory working set bytes by pod
+  unit: bytes
+  promql: >-
+    container_memory_working_set_bytes{namespace="{namespace}", pod=~"{pod_name}"}
+
+avg_memory_working_set_bytes:
+  category: memory
+  description: Avg memory working set bytes
+  unit: bytes
+  promql: >-
+    avg(container_memory_working_set_bytes{namespace="{namespace}", pod=~"{pod_name}"})

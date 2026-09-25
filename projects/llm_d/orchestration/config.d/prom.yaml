@@ -1,12 +1,47 @@
-capture:
-  enabled: true
-  system_metrics:
-    enabled: true
-  user_workload:
-    enabled: true
-    fail_if_not_enabled: false
-
 prepare:
   user_workload:
     during_prepare: true
     during_test: true
+
+capture:
+  enabled: true
+  db:
+    enabled: true
+    system_metrics:
+      enabled: true
+    user_workload:
+      enabled: true
+      fail_if_not_enabled: false
+  metrics:
+    enabled: true
+    include_dirs:
+      - projects/cluster/metrics
+      - projects/kserve/metrics
+    config:
+      llmisvc_namespace: "@runtime.namespace"
+      llmisvc_name: SET_AT_RUNTIME
+    groups:
+      resources:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, workload]
+
+        step_seconds: 15
+        params:
+          namespace: "{llmisvc_namespace}"
+          pod_name: "{llmisvc_name}-.*"
+      vllm:
+        enabled: true
+        files: [vllm_latency, vllm_throughput]
+
+        step_seconds: 15
+        params:
+          llmisvc_namespace: "{llmisvc_namespace}"
+          llmisvc_name: "{llmisvc_name}"
+      scheduler:
+        enabled: true
+        files: [scheduler]
+
+        step_seconds: 15
+        params:
+          llmisvc_namespace: "{llmisvc_namespace}"
+          llmisvc_name: "{llmisvc_name}"

@@ -296,6 +296,7 @@ def run_finalizers(
     llmisvc_name: str | None,
     primary_exc: tuple[type[BaseException], BaseException, Any] | None,
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None,
+    benchmark_times: tuple[datetime, datetime] | None = None,
 ) -> tuple[type[BaseException], BaseException, Any] | None:
     def _run_finalizer(
         description: str,
@@ -340,6 +341,21 @@ def run_finalizers(
         capture_namespace_events=capture_namespace_events,
     )
 
+    if benchmark_times:
+        if not llmisvc_name:
+            logging.warning("No llmisvc name received. Some metrics will be empty ...")
+
+        start_time, end_time = benchmark_times
+        runtime_variables = {"llmisvc_name": llmisvc_name or "llmisvc-name-not-available"}
+
+        def _capture_prom():
+            with env.NextArtifactDir("prometheus_metrics"):
+                capture_prometheus(start_time, end_time, runtime_variables=runtime_variables)
+
+        finalizer_exc = _run_finalizer("capturing Prometheus metrics", _capture_prom)
+    else:
+        logging.error("No benchmark times received, cannot capture the Prometheus metrics.")
+
     finalizer_exc = _run_finalizer(
         "cleaning up runtime resources",
         cleanup_test_resources,
@@ -372,6 +388,7 @@ def do_test() -> int:
         validate_user_workload_monitoring()
         prepare_user_workload_monitoring(during="test")
     endpoint_url: str | None = None
+    benchmark_times: tuple[datetime, datetime] | None = None
     primary_exc: tuple[type[BaseException], BaseException, Any] | None = None
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None = None
 
@@ -412,7 +429,7 @@ def do_test() -> int:
 
         run_smoke_request(endpoint_url=endpoint_url)
 
-        run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
+        benchmark_times = run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
     except Exception as e:
         primary_exc = sys.exc_info()
 
@@ -436,7 +453,11 @@ def do_test() -> int:
 
         if do_finalizers:
             primary_exc, finalizer_exc = run_finalizers(
-                endpoint_url, actual_llmisvc_name, primary_exc, finalizer_exc
+                endpoint_url,
+                actual_llmisvc_name,
+                primary_exc,
+                finalizer_exc,
+                benchmark_times=benchmark_times,
             )
 
     if primary_exc is not None:
@@ -720,13 +741,13 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
     )
 
 
-def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> None:
+def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, datetime] | None:
     namespace = runtime_config.get_namespace()
     benchmark = runtime_config.get_benchmark_config()
     workload = runtime_config.get_workload_config()
 
     if benchmark is None:
-        return
+        return None
 
     # Add benchmark start timing
     start_time = update_test_labels_with_timing(test_dir, "benchmark", "start")
@@ -769,14 +790,9 @@ def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> None:
                 use_pvc=benchmark.get("use_pvc"),
             )
     finally:
-        # Add benchmark end timing (even if benchmark failed)
         end_time = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
-        # Capture prometheus metrics if enabled
-        if config.project.get_config("prom.capture.enabled") or config.project.get_config(
-            "prom.capture.user_workload.enabled"
-        ):
-            capture_prometheus(start_time, end_time)
+    return start_time, end_time
 
 
 def capture_inference_service_state(llmisvc_name: str) -> None:

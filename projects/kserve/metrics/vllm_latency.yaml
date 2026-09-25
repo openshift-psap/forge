@@ -1,0 +1,173 @@
+params:
+  llmisvc_namespace:
+    description: Target namespace
+  llmisvc_name:
+    description: Name of the vllm llmisvc
+
+ttft_p50_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Ttft p50 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"(vllm|kserve_vllm):time_to_first_token_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+ttft_p90_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Ttft p90 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"(vllm|kserve_vllm):time_to_first_token_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+ttft_p99_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Ttft p99 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"(vllm|kserve_vllm):time_to_first_token_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+tpot_p50_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Tpot p50 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"(vllm|kserve_vllm):request_time_per_output_token_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+tpot_p90_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Tpot p90 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"(vllm|kserve_vllm):request_time_per_output_token_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+tpot_p99_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Tpot p99 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"(vllm|kserve_vllm):request_time_per_output_token_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+e2e_request_latency_p50_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: E2e request latency p50 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"(vllm|kserve_vllm):e2e_request_latency_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+e2e_request_latency_p90_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: E2e request latency p90 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"(vllm|kserve_vllm):e2e_request_latency_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+e2e_request_latency_p99_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: E2e request latency p99 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"(vllm|kserve_vllm):e2e_request_latency_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+prefill_time_p50_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Prefill time p50 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"(vllm|kserve_vllm):request_prefill_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+prefill_time_p90_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Prefill time p90 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"(vllm|kserve_vllm):request_prefill_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+prefill_time_p99_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Prefill time p99 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"(vllm|kserve_vllm):request_prefill_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+decode_time_p50_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Decode time p50 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"(vllm|kserve_vllm):request_decode_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+decode_time_p90_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Decode time p90 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"(vllm|kserve_vllm):request_decode_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+decode_time_p99_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Decode time p99 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"(vllm|kserve_vllm):request_decode_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+inference_time_p50_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Inference time p50 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"(vllm|kserve_vllm):request_inference_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+inference_time_p90_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Inference time p90 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"(vllm|kserve_vllm):request_inference_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+inference_time_p99_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Inference time p99 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"(vllm|kserve_vllm):request_inference_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+queue_time_p50_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Queue time p50 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"(vllm|kserve_vllm):request_queue_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+queue_time_p90_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Queue time p90 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"(vllm|kserve_vllm):request_queue_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))
+
+queue_time_p99_seconds:
+  category: vllm-latency
+  tags: [percentile]
+  description: Queue time p99 seconds
+  unit: seconds
+  promql: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"(vllm|kserve_vllm):request_queue_time_seconds_bucket", namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-.*"}[5m])) by (le))

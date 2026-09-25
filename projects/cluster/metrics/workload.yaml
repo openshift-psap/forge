@@ -1,0 +1,12 @@
+params:
+  namespace:
+    description: Target namespace
+  pod_name:
+    description: Pod name for the resource capture
+
+active_pods:
+  category: workload
+  description: Active pods
+  unit: count
+  promql: >-
+    count(kube_pod_info{namespace="{namespace}", pod=~"{pod_name}"})
