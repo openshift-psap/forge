@@ -116,6 +116,7 @@ class RhaiisPlugin(PostProcessingPlugin):
                 "DP": labels.get("DP", ""),
                 "dataset": labels.get("dataset", ""),
                 "spec_decoding": labels.get("spec_decoding", ""),
+                "over_saturated": labels.get("over_saturated", ""),
             }
 
         exporter = DashboardCsvExporter()

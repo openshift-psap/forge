@@ -68,6 +68,7 @@ FIELDNAMES = [
     "request_type",
     "mlflow_run_id",
     "mlflow_experiment_id",
+    "over_saturated",
 ]
 
 
@@ -168,6 +169,8 @@ def generate_dashboard_csv(
         strategy = bench.get("config", {}).get("strategy", {})
         model_name = f"{acc}-{cluster_tag}-{model}-{tp}" if cluster_tag else f"{acc}-{model}-{tp}"
 
+        over_saturated = _detect_over_saturated(bench)
+
         row = _extract_row(
             metrics=metrics,
             strategy=strategy,
@@ -184,6 +187,7 @@ def generate_dashboard_csv(
             guidellm_end_ms=guidellm_end_ms,
             guidellm_version=guidellm_version,
             run_uuid=run_uuid,
+            over_saturated=over_saturated,
         )
         rows.append(row)
 
@@ -195,6 +199,16 @@ def generate_dashboard_csv(
 
     logger.info("Generated dashboard CSV with %d rows: %s", len(rows), output_path)
     return output_path
+
+
+def _detect_over_saturated(bench: dict) -> str:
+    """Return 'yes', 'no', or '' based on over-saturation constraint metadata."""
+    constraints = bench.get("scheduler_state", {}).get("scheduler_constraints", {})
+    osd = constraints.get("over_saturation", {})
+    metadata = osd.get("metadata", {})
+    if "is_over_saturated" in metadata:
+        return "yes" if metadata["is_over_saturated"] else "no"
+    return ""
 
 
 def _extract_row(
@@ -214,6 +228,7 @@ def _extract_row(
     guidellm_end_ms,
     guidellm_version: str,
     run_uuid: str = "",
+    over_saturated: str = "",
 ) -> dict:
     def _pct(metric_name: str, pct: str):
         return metrics.get(metric_name, {}).get("successful", {}).get("percentiles", {}).get(pct)
@@ -283,4 +298,5 @@ def _extract_row(
         "request_type": "",
         "mlflow_run_id": "",
         "mlflow_experiment_id": "",
+        "over_saturated": over_saturated,
     }

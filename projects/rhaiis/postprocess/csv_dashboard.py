@@ -58,4 +58,5 @@ RHAIIS_FIELDNAMES = [
     "request_type",
     "mlflow_run_id",
     "mlflow_experiment_id",
+    "over_saturated",
 ]

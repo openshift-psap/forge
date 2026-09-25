@@ -453,6 +453,7 @@ def _run_workload_benchmark(
                 rates=rates,
                 max_seconds=max_seconds,
                 rampup=rampup,
+                constraint=workload.get("constraint"),
             )
 
             run_guidellm_benchmark(

@@ -14,6 +14,7 @@ benchmarks:
     pvc_size: 10Gi
     hf_token_secret: "storage-config"
     fs_group: null
+    constraint: "kind=over_saturation,mode=monitor"
     args:
       backend_type: openai_http
       rate_type: concurrent

@@ -97,6 +97,7 @@ DASHBOARD_METADATA_LABEL_KEYS = frozenset(
         "gpu_type",
         "mlflow_run_id",
         "mlflow_experiment_id",
+        "over_saturated",
     }
 )
 
@@ -393,6 +394,17 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         for key in curves:
             curves[key].append(values.get(key))
     extra["run_uuids"] = run_uuids
+
+    saturation_flags = []
+    for benchmark in benchmarks:
+        constraints = benchmark.get("scheduler_state", {}).get("scheduler_constraints", {})
+        osd = constraints.get("over_saturation", {})
+        osd_meta = osd.get("metadata", {})
+        if "is_over_saturated" in osd_meta:
+            saturation_flags.append(osd_meta["is_over_saturated"])
+    if saturation_flags:
+        extra["over_saturated"] = "yes" if any(saturation_flags) else "no"
+
     return extra, curves
 
 

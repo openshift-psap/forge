@@ -191,6 +191,7 @@ def build_guidellm_args(
     rates: list[int],
     max_seconds: int,
     rampup: int | None = None,
+    constraint: str | None = None,
 ) -> list[str]:
     guidellm_args = []
     for key, value in benchmark_cfg.get("args", {}).items():
@@ -203,6 +204,11 @@ def build_guidellm_args(
     guidellm_args.append(f"--max-seconds={max_seconds}")
     if rampup is not None:
         guidellm_args.append(f"--rampup={rampup}")
+
+    effective_constraint = constraint if constraint is not None else benchmark_cfg.get("constraint")
+    if effective_constraint:
+        guidellm_args.append(f"--constraint={effective_constraint}")
+
     return guidellm_args
 
 
