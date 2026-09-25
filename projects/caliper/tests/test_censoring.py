@@ -157,14 +157,14 @@ class TestKeywordPatterns:
 
     def test_token_pattern(self):
         # Test specific token patterns that are enabled (general token= is disabled)
-        assert self._matches_any_pattern("api_token=eyJhbGciOiJIUzI1NiJ9")
+        assert self._matches_any_pattern("api_token=eyJhbGciOiJIUzI1NiJ9")  # ggignore
 
     def test_bearer_token(self):
-        assert self._matches_any_pattern("Bearer eyJhbGciOiJIUzI1NiJ9")
+        assert self._matches_any_pattern("Bearer eyJhbGciOiJIUzI1NiJ9")  # ggignore
 
     def test_bearer_case_insensitive(self):
         # Since patterns are compiled with IGNORECASE, lowercase should match too
-        assert self._matches_any_pattern("bearer eyJhbGciOiJIUzI1NiJ9")
+        assert self._matches_any_pattern("bearer eyJhbGciOiJIUzI1NiJ9")  # ggignore
 
     def test_openai_key(self):
         assert self._matches_any_pattern("sk-abcdefghijklmnopqrstuvwxyz123456")
@@ -273,11 +273,11 @@ class TestKeywordPatterns:
 
         # These SHOULD be flagged (legitimate shell exports)
         legitimate_exports = [
-            "export API_KEY=secret123",
-            "export DATABASE_PASSWORD=prod456",
-            "export SECRET_TOKEN=mytoken789",
-            "  export WEBHOOK_SECRET=hook123",  # with leading whitespace
-            "\texport SLACK_TOKEN=slack456",  # with tab
+            "export API_KEY=secret123",  # ggignore
+            "export DATABASE_PASSWORD=prod456",  # ggignore
+            "export SECRET_TOKEN=mytoken789",  # ggignore
+            "  export WEBHOOK_SECRET=hook123",  # ggignore — with leading whitespace
+            "\texport SLACK_TOKEN=slack456",  # ggignore — with tab
         ]
 
         for text in legitimate_exports:

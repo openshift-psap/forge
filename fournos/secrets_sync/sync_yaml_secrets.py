@@ -25,10 +25,10 @@ Top-level keys are entry names (the values used in FournosJob
 ``secretRefs``).  Nested keys are the secret data::
 
     my-creds:
-      username: admin
-      password: s3cret
+      username: example-user
+      password: example-pass
     another-entry:
-      api-key: abc123
+      api-key: example-key
 
 Optional environment variables
 ------------------------------

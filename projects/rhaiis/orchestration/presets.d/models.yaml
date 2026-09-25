@@ -252,7 +252,7 @@ deepseek-v4-pro-nvfp4:
   tests.rhaiis.model_key: deepseek-v4-pro-nvfp4
 
 # Gemma 4
-gemma-4-26b:
+gemma-4-26b-nvfp4:
   tests.rhaiis.model_key: gemma-4-26b-a4b-nvfp4
 
 gemma-4-31b:

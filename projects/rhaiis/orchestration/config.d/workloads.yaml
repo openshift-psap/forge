@@ -61,3 +61,31 @@ custom:
   max_seconds: 275
   rampup: 35
   warmup: 75
+
+# ---------------------------------------------------------------------------
+# CPU Workloads (vLLM CPU benchmarking — matches format-results cpueval suite)
+# ---------------------------------------------------------------------------
+
+# Smoke test (CI-friendly, short duration)
+cpu-smoke:
+  data: "prompt_tokens=512,output_tokens=512"
+  rates: [1, 2, 4]
+  max_seconds: 120
+
+# Balanced (ISL=512, OSL=512)
+cpu-balanced:
+  data: "prompt_tokens=512,output_tokens=512"
+  rates: [1, 2, 4, 8, 16, 32]
+  max_seconds: 600
+
+# Decode-heavy (ISL=256, OSL=2048)
+cpu-decode-heavy:
+  data: "prompt_tokens=256,output_tokens=2048"
+  rates: [1, 2, 4, 8, 16, 32]
+  max_seconds: 600
+
+# Prefill-heavy (ISL=2048, OSL=256)
+cpu-prefill-heavy:
+  data: "prompt_tokens=2048,output_tokens=256"
+  rates: [1, 2, 4, 8, 16]
+  max_seconds: 600

@@ -536,6 +536,15 @@ def init(
         _filter_and_validate_vaults(_vault_manager, optional_vaults, strict=False)
 
 
+def is_initialized() -> bool:
+    """Return True if ``vault.init()`` has created the global ``VaultManager``.
+
+    This does not mean project vaults were configured or validated; ``init()``
+    with empty mandatory/optional lists still constructs the manager.
+    """
+    return _vault_manager is not None
+
+
 def get_vault_manager() -> VaultManager:
     """Get the global vault manager instance"""
 
