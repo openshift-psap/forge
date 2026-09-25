@@ -126,6 +126,8 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
                 "guidellm_version": labels.get("guidellm_version", ""),
                 "mlflow_run_id": labels.get("mlflow_run_id", ""),
                 "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+                "turns": labels.get("turns", ""),
+                "turn_index": labels.get("turn", ""),
                 "notes": labels.get("notes", ""),
             }
 

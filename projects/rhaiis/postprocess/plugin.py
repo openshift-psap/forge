@@ -112,6 +112,7 @@ class RhaiisPlugin(PostProcessingPlugin):
                 "prefix_tokens": labels.get("prefix_tokens", ""),
                 "prefix_count": labels.get("prefix_count", ""),
                 "request_type": labels.get("request_type", ""),
+                "turn_index": labels.get("turn", ""),
                 "prefix_caching": _prefix_caching_from_runtime_args(labels.get("runtime_args", "")),
                 "DP": labels.get("DP", ""),
                 "dataset": labels.get("dataset", ""),
