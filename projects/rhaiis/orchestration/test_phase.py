@@ -200,8 +200,11 @@ def _run_test(
             "opendatahub.io/dashboard": "true",
             "deployment_uuid": run_uuid,
         }
+        profiler_ranges = None
         if profiler_enabled and engine == "vllm":
             isvc_labels["vllm-profiler/enabled"] = "true"
+            profiler_ranges = profiler_cfg["ranges"]
+            logger.info("Enabling PyTorch profiler for forward-pass range %s", profiler_ranges)
         elif profiler_enabled and engine != "vllm":
             logger.warning("Profiler is only supported with vLLM engine, skipping profiler")
             profiler_enabled = False
@@ -241,6 +244,7 @@ def _run_test(
             model_id=model_cfg["hf_model_id"],
             service_account_name=deploy_cfg.get("service_account_name", ""),
             labels=isvc_labels,
+            profiler_ranges=profiler_ranges,
         )
         sr_file = env.ARTIFACT_DIR / "src" / "servingruntime.yaml"
         isvc_file = env.ARTIFACT_DIR / "src" / "inferenceservice.yaml"

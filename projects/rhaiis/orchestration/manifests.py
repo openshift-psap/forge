@@ -95,6 +95,7 @@ def build_inferenceservice(
     model_id: str,
     service_account_name: str = "",
     labels: dict | None = None,
+    profiler_ranges: str | None = None,
 ) -> dict[str, Any]:
     """Build a KServe InferenceService manifest dict."""
     annotations: dict[str, str] = {
@@ -105,6 +106,8 @@ def build_inferenceservice(
         "prometheus.io/path": "/metrics",
         "prometheus.io/port": str(engine_port),
     }
+    if profiler_ranges is not None:
+        annotations["vllm.profiler/ranges"] = profiler_ranges
 
     metadata: dict[str, Any] = {
         "annotations": annotations,

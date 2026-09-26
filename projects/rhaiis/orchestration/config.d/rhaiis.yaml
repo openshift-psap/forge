@@ -81,6 +81,7 @@ warmup:
 
 profiler:
   enabled: false
+  ranges: "500-503"
   s3_bucket: psap-dashboard-data
   s3_prefix: pytorch-profiles/rhaiis
   vault: psap-forge-dashboard-s3

@@ -283,6 +283,7 @@ Available configOverrides:
 | `rhaiis.engines.trtllm.args.*` | TRT-LLM CLI args (e.g. `tp_size`, `ep_size`, `max_batch_size`) |
 | `rhaiis.engines.trtllm.trtllm_config.*` | TRT-LLM server config (kv_cache, cuda_graph, moe) |
 | `rhaiis.profiler.enabled` | Enable PyTorch profiler |
+| `rhaiis.profiler.ranges` | vLLM forward-pass range to capture (default: `500-503`) |
 | `rhaiis.agent_analysis.enabled` | Enable AI agent regression analysis |
 | `caliper.postprocess.csv_dashboard.enabled` | Enable dashboard CSV S3 sync |
 | `benchmarks.guidellm.timeout` | Benchmark timeout in seconds |
