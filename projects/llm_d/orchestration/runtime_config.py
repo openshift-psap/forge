@@ -359,33 +359,17 @@ def get_benchmark_keys() -> list[str]:
 
 
 def _resolve_benchmark_config(benchmark_name: str) -> dict[str, Any]:
+    from projects.llm_d.orchestration.loadgenerator import get_load_generator
+
     benchmark = copy.deepcopy(
         config.project.get_config(f"workloads.benchmarks['{benchmark_name}']", print=False)
     )
     workload_defaults = copy.deepcopy(config.project.get_config("workloads", print=False))
     tool = benchmark.get("tool", workload_defaults.get("benchmark_tool"))
-    if tool != "guidellm":
-        raise ValueError(f"Unsupported benchmark tool for {benchmark_name}: {tool!r}")
+    if not isinstance(tool, str) or not tool:
+        raise ValueError(f"Invalid benchmark tool for {benchmark_name}: {tool!r}")
     benchmark["tool"] = tool
-
-    default_keys = ("job_name", "image", "pvc_size", "pvc_storage_class", "timeout_seconds")
-    if tool == "guidellm":
-        for key in default_keys:
-            if key in workload_defaults and key not in benchmark:
-                benchmark[key] = workload_defaults[key]
-
-    # Merge vllm_args from default benchmark if not present in specific benchmark
-    if tool == "guidellm" and "vllm_args" not in benchmark:
-        default_benchmark = workload_defaults.get("benchmarks", {}).get("default", {})
-        if "vllm_args" in default_benchmark:
-            benchmark["vllm_args"] = copy.deepcopy(default_benchmark["vllm_args"])
-
-    benchmark_args = benchmark.get("args", {})
-    workload_args = workload_defaults.get("args", {})
-    if tool == "guidellm" and workload_args:
-        benchmark["args"] = deep_merge(workload_args, benchmark_args)
-
-    return benchmark
+    return get_load_generator(tool).resolve_config(benchmark, workload_defaults)
 
 
 def get_benchmark_config() -> dict[str, Any] | None:

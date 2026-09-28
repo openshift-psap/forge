@@ -11,11 +11,10 @@ import yaml
 from projects.core.library import env
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
 from projects.rhaiis.orchestration import runtime_config
+from projects.rhaiis.orchestration.loadgenerator import BenchmarkContext, get_load_generator
 
 logger = logging.getLogger(__name__)
 
-_K8S_NAME_MAX = 63
-_RUNNER_TOOLS = frozenset({"guidellm"})
 _warnings: list[str] = []
 
 
@@ -31,14 +30,6 @@ def _write_manifest(manifest: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
-
-
-def _guidellm_job_name(prefix: str, workload_key: str, deployment_name: str) -> str:
-    """Build a K8s-safe job name: {prefix}-{workload_key}-{model}, trimming model to fit."""
-    base = f"{prefix}-{workload_key}-"
-    available = _K8S_NAME_MAX - len(base)
-    model = deployment_name[:available] if available > 0 else ""
-    return f"{base}{model}".rstrip("-")
 
 
 def run(
@@ -144,9 +135,6 @@ def _run_test(
 
     import subprocess
 
-    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
-        wait_guidellm_benchmark_task,
-    )
     from projects.rhaiis.orchestration.manifests import (
         build_inferenceservice,
         build_servingruntime,
@@ -203,8 +191,7 @@ def _run_test(
     if run_benchmark or profiler_enabled:
         for workload_key in workload_keys:
             tool = runtime_config.get_benchmark_tool(runtime_config.get_workload(workload_key))
-            if tool not in _RUNNER_TOOLS:
-                raise ValueError(f"Benchmark tool {tool!r} has no runner")
+            get_load_generator(tool)
 
     # Standalone analysis only — no deployment needed
     if not run_benchmark and not profiler_enabled:
@@ -225,7 +212,9 @@ def _run_test(
         return 1 if _warnings else 0
 
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
-    wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
+    for workload_key in workload_keys:
+        tool = runtime_config.get_benchmark_tool(runtime_config.get_workload(workload_key))
+        get_load_generator(tool).configure_timeout(benchmark_timeout)
 
     try:
         isvc_labels = {
@@ -316,7 +305,7 @@ def _run_test(
 
         # Phase 1: warmup or profiler for ALL workloads first
         for wl_key in workload_keys:
-            step_kwargs = dict(
+            context = BenchmarkContext(
                 deployment_name=deployment_name,
                 namespace=namespace,
                 endpoint_url=endpoint_url,
@@ -326,12 +315,14 @@ def _run_test(
                 workload_key=wl_key,
                 benchmark_timeout=benchmark_timeout,
             )
+            tool = runtime_config.get_benchmark_tool(context.workload)
+            generator = get_load_generator(tool)
             if profiler_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running profiler for workload=%s", wl_key)
-                _run_profiler_step(**step_kwargs)
+                generator.profile(context)
             elif warmup_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running warmup for workload=%s", wl_key)
-                _run_warmup_step(**step_kwargs)
+                generator.warmup(context)
 
         if profiler_enabled:
             try:
@@ -438,14 +429,7 @@ def _run_workload_benchmark(
 
     workload = runtime_config.get_workload(workload_key)
     benchmark_tool = runtime_config.get_benchmark_tool(workload)
-    rates = workload.get("rates", [1])
-    max_seconds = workload.get("max_seconds", 180)
-    rampup = workload.get("rampup")
-
     from projects.core.library import config
-    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
-        run as run_guidellm_benchmark,
-    )
 
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
 
@@ -481,31 +465,18 @@ def _run_workload_benchmark(
                 logger.warning("Standalone analysis failed", exc_info=True)
                 _warnings.append(f"Standalone analysis failed for {workload_key}")
         else:
-            if benchmark_tool != "guidellm":
-                raise ValueError(f"Benchmark tool {benchmark_tool!r} has no runner")
-            logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
-
-            benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
-
-            guidellm_args = runtime_config.build_guidellm_args(
-                benchmark_cfg=benchmark_cfg,
-                model_id=model_cfg["hf_model_id"],
-                data=workload["data"],
-                rates=rates,
-                max_seconds=max_seconds,
-                rampup=rampup,
-            )
-
-            run_guidellm_benchmark(
-                endpoint_url=f"{endpoint_url}/v1",
-                name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
-                namespace=namespace,
-                image=benchmark_image,
-                timeout=benchmark_timeout,
-                pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
-                guidellm_args=guidellm_args,
-                hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
-                fs_group=benchmark_cfg.get("fs_group"),
+            generator = get_load_generator(benchmark_tool)
+            generator.run(
+                BenchmarkContext(
+                    deployment_name=deployment_name,
+                    namespace=namespace,
+                    endpoint_url=endpoint_url,
+                    benchmark_cfg=benchmark_cfg,
+                    model_cfg=model_cfg,
+                    workload=workload,
+                    workload_key=workload_key,
+                    benchmark_timeout=benchmark_timeout,
+                )
             )
 
 
@@ -735,137 +706,6 @@ def _upload_predictor_log(run_uuid: str) -> None:
         dry_run=config.project.get_config("caliper.export.dry_run", False),
     )
     logger.info("Predictor log upload result: %s", result)
-
-
-def _run_warmup_step(
-    *,
-    deployment_name: str,
-    namespace: str,
-    endpoint_url: str,
-    benchmark_cfg: dict,
-    model_cfg: dict,
-    workload: dict,
-    workload_key: str,
-    benchmark_timeout: int,
-) -> None:
-    """Run a short warmup benchmark to prime KV cache and CUDA kernels."""
-    from projects.core.library import config
-    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
-        run as run_guidellm_benchmark,
-    )
-
-    warmup_cfg = config.project.get_config("rhaiis.warmup", {})
-    warmup_rate = warmup_cfg.get("rate", 200)
-    warmup_max_seconds = int(workload.get("warmup", warmup_cfg.get("max_seconds", 60)))
-
-    guidellm_args = runtime_config.build_guidellm_args(
-        benchmark_cfg=benchmark_cfg,
-        model_id=model_cfg["hf_model_id"],
-        data=workload["data"],
-        rates=[warmup_rate],
-        max_seconds=warmup_max_seconds,
-    )
-
-    logger.info("Running warmup (concurrency=%d, duration=%ds)", warmup_rate, warmup_max_seconds)
-    try:
-        run_guidellm_benchmark(
-            endpoint_url=f"{endpoint_url}/v1",
-            name=_guidellm_job_name("guidellm-warmup", workload_key, deployment_name),
-            namespace=namespace,
-            image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4"),
-            timeout=benchmark_timeout,
-            pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
-            guidellm_args=guidellm_args,
-            hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
-            fs_group=benchmark_cfg.get("fs_group"),
-        )
-        logger.info("Warmup completed")
-    except Exception:
-        logger.warning("Warmup failed; continuing with benchmark", exc_info=True)
-
-
-def _run_profiler_step(
-    *,
-    deployment_name: str,
-    namespace: str,
-    endpoint_url: str,
-    benchmark_cfg: dict,
-    model_cfg: dict,
-    workload: dict,
-    workload_key: str,
-    benchmark_timeout: int,
-) -> None:
-    """Run profiler-gated benchmarks: verify prereqs → enable gate → benchmark → disable gate → copy traces."""
-    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
-        run as run_guidellm_benchmark,
-    )
-    from projects.rhaiis.toolbox.copy_profiler_traces.main import run as copy_profiler_traces
-    from projects.rhaiis.toolbox.enable_profiler_gate.main import run as enable_profiler_gate
-    from projects.rhaiis.toolbox.verify_profiler_prereqs.main import run as verify_profiler_prereqs
-
-    logger.info("Verifying profiler prerequisites")
-    verify_profiler_prereqs(namespace=namespace)
-
-    profiler_cfg = runtime_config.get_profiler_config()
-    labels = profiler_cfg.get("labels", [])
-    if not labels:
-        labels = [_derive_profiler_label(workload)]
-        logger.info("Auto-generated profiler label from workload: %s", labels[0])
-
-    profiler_max_seconds = profiler_cfg.get("max_seconds", 60)
-
-    for label in labels:
-        logger.info("Profiling label=%s", label)
-
-        gate_value = label if isinstance(label, str) else str(label)
-        enable_profiler_gate(
-            name=deployment_name,
-            namespace=namespace,
-            gate_value=gate_value,
-        )
-
-        profiler_rates = profiler_cfg.get("rates", [1])
-        guidellm_args = runtime_config.build_guidellm_args(
-            benchmark_cfg=benchmark_cfg,
-            model_id=model_cfg["hf_model_id"],
-            data=workload["data"],
-            rates=profiler_rates,
-            max_seconds=profiler_max_seconds,
-        )
-
-        try:
-            run_guidellm_benchmark(
-                endpoint_url=f"{endpoint_url}/v1",
-                name=_guidellm_job_name("guidellm-profiler", workload_key, deployment_name),
-                namespace=namespace,
-                image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4"),
-                timeout=benchmark_timeout,
-                pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
-                guidellm_args=guidellm_args,
-                hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
-                fs_group=benchmark_cfg.get("fs_group"),
-            )
-        finally:
-            enable_profiler_gate(
-                name=deployment_name,
-                namespace=namespace,
-                disable=True,
-            )
-
-    logger.info("Copying profiler traces from pod")
-    try:
-        copy_profiler_traces(name=deployment_name, namespace=namespace)
-    except Exception:
-        logger.warning("Failed to copy profiler traces", exc_info=True)
-
-
-def _derive_profiler_label(workload: dict) -> str:
-    """Auto-generate a profiler label like 'isl1000_osl1000' from the workload data string."""
-    data = workload.get("data", "")
-    params = dict(item.split("=", 1) for item in data.split(",") if "=" in item)
-    isl = params.get("prompt_tokens", "0")
-    osl = params.get("output_tokens", "0")
-    return f"isl{isl}_osl{osl}"
 
 
 def _infer_profile_labels_from_traces(trace_files: list) -> list[str]:
