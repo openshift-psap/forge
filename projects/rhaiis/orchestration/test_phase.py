@@ -127,6 +127,8 @@ def _run_test(
     engine_defaults = runtime_config.get_engine_args(engine)
     engine_port = runtime_config.get_engine_port(engine)
     first_workload = runtime_config.get_workload(workload_keys[0])
+    for workload_key in workload_keys:
+        runtime_config.get_benchmark_tool(runtime_config.get_workload(workload_key))
     engine_args = runtime_config.merge_engine_args(
         engine_defaults, model_cfg, first_workload, engine
     )
@@ -441,6 +443,7 @@ def _run_workload_benchmark(
     logger.info("=== Benchmark %s (UUID: %s) ===", workload_key, run_uuid)
 
     workload = runtime_config.get_workload(workload_key)
+    benchmark_tool = runtime_config.get_benchmark_tool(workload)
     rates = workload.get("rates", [1])
     max_seconds = workload.get("max_seconds", 180)
     rampup = workload.get("rampup")
@@ -465,6 +468,7 @@ def _run_workload_benchmark(
             accelerator_chip=gpu_type.upper(),
             run_uuid=run_uuid,
             trtllm_config=trtllm_config,
+            benchmark_tool=benchmark_tool,
         )
 
         if not run_benchmark:
@@ -483,6 +487,8 @@ def _run_workload_benchmark(
                 logger.warning("Standalone analysis failed", exc_info=True)
                 _warnings.append(f"Standalone analysis failed for {workload_key}")
         else:
+            if benchmark_tool != "guidellm":
+                raise ValueError(f"Benchmark tool {benchmark_tool!r} has no runner")
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
             benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
@@ -522,6 +528,7 @@ def _create_test_labels(
     accelerator_chip: str = "",
     run_uuid: str = "",
     trtllm_config: dict | None = None,
+    benchmark_tool: str = "guidellm",
 ) -> None:
     _, image_tag = runtime_config.split_image_tag(serving_image) if serving_image else ("", "")
     parts = [f"{k}: {v}" for k, v in engine_args.items()]
@@ -540,6 +547,7 @@ def _create_test_labels(
     labels = {
         "model_key": model_key,
         "workload_key": workload_key,
+        "benchmark_tool": benchmark_tool,
         "accelerator": accelerator_chip or accelerator,
         "tensor_parallel_size": str(tp),
         "hf_model_id": hf_model_id,
