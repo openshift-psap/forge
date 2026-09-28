@@ -364,7 +364,7 @@ def _resolve_benchmark_config(benchmark_name: str) -> dict[str, Any]:
     )
     workload_defaults = copy.deepcopy(config.project.get_config("workloads", print=False))
     tool = benchmark.get("tool", workload_defaults.get("benchmark_tool"))
-    if tool not in ("guidellm", "aiperf"):
+    if tool != "guidellm":
         raise ValueError(f"Unsupported benchmark tool for {benchmark_name}: {tool!r}")
     benchmark["tool"] = tool
 
