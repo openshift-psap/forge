@@ -1,7 +1,7 @@
 import logging
 import signal
 
-from projects.core.library import config, env
+from projects.core.library import env
 from projects.core.library.postprocess import (
     create_test_metadata,
     run_and_postprocess,
@@ -9,6 +9,7 @@ from projects.core.library.postprocess import (
     update_test_labels_with_timing,
 )
 from projects.foreign_testing.library import initialize as foreign_repository
+from projects.inference_playbooks.orchestration.recipe_validation import validate_recipe_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,8 @@ def test():
 
 def create_custom_test_metadata():
     labels = {
-        "dummy": config.project.get_config("placeholder.dummy"),
+        "project": "inference-playbooks",
+        "validation": "clusterless-recipe-yaml",
     }
     test_dir = env.ARTIFACT_DIR
     create_test_metadata(
@@ -55,24 +57,13 @@ def create_custom_test_metadata():
 
 def do_test():
     logger.info("=== Inference Playbooks Project Test Phase ===")
-    repository_path = foreign_repository.initialize()
-    logger.info("Testing inference playbooks from %s", repository_path)
-    proof_file = repository_path / "README.md"
-    logger.info(
-        "Foreign checkout proof file %s:\n%s",
-        proof_file,
-        proof_file.read_text(encoding="utf-8"),
-    )
-
     with env.NextArtifactDir("inference_playbooks_test_dir"):
         test_dir = create_custom_test_metadata()
         try:
             update_test_labels_with_timing(test_dir, "test", "start")
-
-            # do the actual test here
-            logger.info("========================")
-            logger.info("Here goes the dummy test")
-            logger.info("========================")
+            repository_path = foreign_repository.initialize()
+            recipe_count = validate_recipe_catalog(repository_path)
+            logger.info("Validated %d Inference Playbooks recipe manifest(s)", recipe_count)
 
         except Exception as e:
             logger.exception("❌ Test failed with exception")
