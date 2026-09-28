@@ -44,6 +44,7 @@ from projects.llm_d.orchestration.utils import write_yaml
 from projects.llm_d.toolbox.cleanup_test_resources import main as cleanup_test_resources_command
 
 logger = logging.getLogger(__name__)
+_RUNNER_TOOLS = frozenset({"guidellm"})
 
 
 def _delete_resources_by_type(resource_type: str, namespace: str, description: str) -> None:
@@ -358,6 +359,11 @@ def do_test() -> int:
 
     namespace = runtime_config.get_namespace()
     dry_run = config.project.get_config("runtime.kserve.dry_run", False)
+
+    if not dry_run:
+        benchmark = runtime_config.get_benchmark_config()
+        if benchmark is not None and benchmark["tool"] not in _RUNNER_TOOLS:
+            raise ValueError(f"Benchmark tool {benchmark['tool']!r} has no runner")
 
     if not dry_run:
         # Ensure namespace exists before starting any deployments

@@ -15,6 +15,7 @@ from projects.rhaiis.orchestration import runtime_config
 logger = logging.getLogger(__name__)
 
 _K8S_NAME_MAX = 63
+_RUNNER_TOOLS = frozenset({"guidellm"})
 _warnings: list[str] = []
 
 
@@ -199,6 +200,11 @@ def _run_test(
             skipped_optional_phase_workloads,
         )
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
+    if run_benchmark or profiler_enabled:
+        for workload_key in workload_keys:
+            tool = runtime_config.get_benchmark_tool(runtime_config.get_workload(workload_key))
+            if tool not in _RUNNER_TOOLS:
+                raise ValueError(f"Benchmark tool {tool!r} has no runner")
 
     # Standalone analysis only — no deployment needed
     if not run_benchmark and not profiler_enabled:
