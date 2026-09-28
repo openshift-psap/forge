@@ -874,17 +874,6 @@ def test_benchmark_tool_defaults_to_guidellm_without_profile_edits() -> None:
     assert runtime_config.get_benchmark_config()["tool"] == "guidellm"
 
 
-def test_aiperf_profile_does_not_inherit_guidellm_defaults() -> None:
-    _init_project_config()
-    core_config.project.config["workloads"]["benchmarks"]["trace"] = {
-        "tool": "aiperf",
-        "image": "quay.io/example/aiperf:test",
-    }
-    core_config.project.set_config("runtime.benchmark_key", "trace")
-    benchmark = runtime_config.get_benchmark_config()
-    assert benchmark == {"tool": "aiperf", "image": "quay.io/example/aiperf:test"}
-
-
 def test_benchmark_tool_rejects_unknown_value() -> None:
     _init_project_config()
     core_config.project.config["workloads"]["benchmarks"]["unknown"] = {"tool": "other"}
@@ -895,15 +884,15 @@ def test_benchmark_tool_rejects_unknown_value() -> None:
 
 def test_unavailable_runner_fails_before_namespace_work(monkeypatch: pytest.MonkeyPatch) -> None:
     _init_project_config()
-    core_config.project.config["workloads"]["benchmarks"]["aiperf-review"] = {"tool": "aiperf"}
-    core_config.project.set_config("runtime.benchmark_key", "aiperf-review")
+    core_config.project.set_config("runtime.benchmark_key", "short")
+    monkeypatch.setattr(test_phase, "_RUNNER_TOOLS", frozenset())
     monkeypatch.setattr(
         test_phase,
         "ensure_namespace",
         lambda *_args, **_kwargs: pytest.fail("namespace work started before runner validation"),
     )
 
-    with pytest.raises(ValueError, match="Benchmark tool 'aiperf' has no runner"):
+    with pytest.raises(ValueError, match="Benchmark tool 'guidellm' has no runner"):
         test_phase.do_test()
 
 

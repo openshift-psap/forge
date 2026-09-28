@@ -59,7 +59,7 @@ def get_benchmark_config() -> dict:
 def get_benchmark_tool(workload: dict) -> str:
     """Resolve the tool owned by a workload profile."""
     tool = workload.get("tool", config.project.get_config("benchmarks.default_tool"))
-    if tool not in ("guidellm", "aiperf"):
+    if tool != "guidellm":
         raise ValueError(f"Unsupported benchmark tool: {tool!r}")
     return tool
 
