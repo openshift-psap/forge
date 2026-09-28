@@ -6,6 +6,7 @@ vaults:
 - psap-models-corp-rh
 
 benchmarks:
+  default_tool: guidellm
   guidellm:
     enabled: true
     name: guidellm-benchmark

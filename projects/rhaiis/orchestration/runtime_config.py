@@ -56,6 +56,14 @@ def get_benchmark_config() -> dict:
     return dict(config.project.get_config("benchmarks.guidellm"))
 
 
+def get_benchmark_tool(workload: dict) -> str:
+    """Resolve the tool owned by a workload profile."""
+    tool = workload.get("tool", config.project.get_config("benchmarks.default_tool"))
+    if tool not in ("guidellm", "aiperf"):
+        raise ValueError(f"Unsupported benchmark tool: {tool!r}")
+    return tool
+
+
 def get_engine() -> str:
     return config.project.get_config("rhaiis.engine", "vllm")
 

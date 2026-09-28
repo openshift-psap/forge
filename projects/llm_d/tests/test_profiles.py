@@ -869,6 +869,30 @@ def test_benchmark_job_name_from_activated_spec() -> None:
             assert runtime_config.get_benchmark_job_name() == "guidellm-benchmark"
 
 
+def test_benchmark_tool_defaults_to_guidellm_without_profile_edits() -> None:
+    _init_project_config()
+    assert runtime_config.get_benchmark_config()["tool"] == "guidellm"
+
+
+def test_aiperf_profile_does_not_inherit_guidellm_defaults() -> None:
+    _init_project_config()
+    core_config.project.config["workloads"]["benchmarks"]["trace"] = {
+        "tool": "aiperf",
+        "image": "quay.io/example/aiperf:test",
+    }
+    core_config.project.set_config("runtime.benchmark_key", "trace")
+    benchmark = runtime_config.get_benchmark_config()
+    assert benchmark == {"tool": "aiperf", "image": "quay.io/example/aiperf:test"}
+
+
+def test_benchmark_tool_rejects_unknown_value() -> None:
+    _init_project_config()
+    core_config.project.config["workloads"]["benchmarks"]["unknown"] = {"tool": "other"}
+    core_config.project.set_config("runtime.benchmark_key", "unknown")
+    with pytest.raises(ValueError, match="Unsupported benchmark tool"):
+        runtime_config.get_benchmark_config()
+
+
 def test_smoke_preset_benchmark_behavior() -> None:
     _init_project_config()
 
