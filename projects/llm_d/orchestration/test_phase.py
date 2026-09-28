@@ -206,7 +206,11 @@ def create_test_labels() -> None:
     }
 
     if benchmark_keys:
-        labels["guidellm_loadshape"] = benchmark_keys[0]
+        benchmark = runtime_config.get_benchmark_config()
+        labels["benchmark_tool"] = benchmark["tool"]
+        labels["benchmark_key"] = benchmark_keys[0]
+        if benchmark["tool"] == "guidellm":
+            labels["guidellm_loadshape"] = benchmark_keys[0]
 
     # Extract kpi_labels from config
     kpi_labels = extract_kpi_labels_from_config()
@@ -412,7 +416,7 @@ def do_test() -> int:
 
         run_smoke_request(endpoint_url=endpoint_url)
 
-        run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
+        run_benchmark(test_dir, endpoint_url=endpoint_url)
     except Exception as e:
         primary_exc = sys.exc_info()
 
@@ -718,6 +722,15 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
         max_tokens=smoke_request["max_tokens"],
         temperature=smoke_request["temperature"],
     )
+
+
+def run_benchmark(test_dir, *, endpoint_url: str) -> None:
+    benchmark = runtime_config.get_benchmark_config()
+    if benchmark is None:
+        return
+    if benchmark["tool"] == "guidellm":
+        return run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
+    raise ValueError(f"Benchmark tool {benchmark['tool']!r} has no runner")
 
 
 def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> None:
