@@ -893,6 +893,20 @@ def test_benchmark_tool_rejects_unknown_value() -> None:
         runtime_config.get_benchmark_config()
 
 
+def test_unavailable_runner_fails_before_namespace_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    _init_project_config()
+    core_config.project.config["workloads"]["benchmarks"]["aiperf-review"] = {"tool": "aiperf"}
+    core_config.project.set_config("runtime.benchmark_key", "aiperf-review")
+    monkeypatch.setattr(
+        test_phase,
+        "ensure_namespace",
+        lambda *_args, **_kwargs: pytest.fail("namespace work started before runner validation"),
+    )
+
+    with pytest.raises(ValueError, match="Benchmark tool 'aiperf' has no runner"):
+        test_phase.do_test()
+
+
 def test_smoke_preset_benchmark_behavior() -> None:
     _init_project_config()
 
