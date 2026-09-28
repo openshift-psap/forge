@@ -1,5 +1,6 @@
 """Clusterless checks for the Inference Playbooks recipe inputs."""
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -8,8 +9,8 @@ import yaml
 CATALOG = "tests/forge/recipes.yaml"
 
 
-def validate_recipe_catalog(repository_path: Path) -> int:
-    """Validate the selected LLMInferenceService manifests and their model sources."""
+def load_recipe_catalog(repository_path: Path) -> dict[str, dict[str, Any]]:
+    """Validate the LLMInferenceService manifests and return them by recipe ID."""
     root = repository_path.resolve(strict=True)
     catalog_path = _repository_file(root, CATALOG, "recipe catalog")
     catalog = _load_yaml(catalog_path)
@@ -24,17 +25,36 @@ def validate_recipe_catalog(repository_path: Path) -> int:
     if not isinstance(recipes, list) or not recipes:
         raise ValueError(f"{CATALOG} must define a non-empty recipes list")
 
+    recipes_by_id = {}
     for index, recipe in enumerate(recipes, start=1):
         label = f"{CATALOG} recipe {index}"
         if not isinstance(recipe, dict):
             raise ValueError(f"{label} must be a mapping")
+        recipe_id = recipe.get("id")
+        if not isinstance(recipe_id, str) or not re.fullmatch(
+            r"[a-z0-9]+(?:-[a-z0-9]+)*", recipe_id
+        ):
+            raise ValueError(f"{label} must define a lowercase slug id")
+        if recipe_id in recipes_by_id:
+            raise ValueError(f"{CATALOG} recipe id must be unique: {recipe_id}")
+
         manifest_ref = recipe.get("manifest")
         manifest_path = _repository_file(root, manifest_ref, f"{label} manifest")
         manifest = _load_yaml(manifest_path)
         _validate_manifest(manifest, manifest_path)
         _validate_model_source(root, recipe.get("model_source"), manifest, label)
+        recipes_by_id[recipe_id] = {
+            **recipe,
+            "manifest_path": manifest_path,
+            "manifest_data": manifest,
+        }
 
-    return len(recipes)
+    return recipes_by_id
+
+
+def validate_recipe_catalog(repository_path: Path) -> int:
+    """Validate all catalog entries and return their count."""
+    return len(load_recipe_catalog(repository_path))
 
 
 def _repository_file(root: Path, value: Any, label: str) -> Path:
