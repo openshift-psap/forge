@@ -202,35 +202,6 @@ def merge_env_vars(accelerator: str, model: dict) -> dict:
     return base
 
 
-def _format_arg_value(value: object) -> str:
-    if isinstance(value, list):
-        return ",".join(str(v) for v in value)
-    return str(value)
-
-
-def build_guidellm_args(
-    *,
-    benchmark_cfg: dict,
-    model_id: str,
-    data: str,
-    rates: list[int],
-    max_seconds: int,
-    rampup: int | None = None,
-) -> list[str]:
-    guidellm_args = []
-    for key, value in benchmark_cfg.get("args", {}).items():
-        cli_key = key.replace("_", "-")
-        guidellm_args.append(f"--{cli_key}={_format_arg_value(value)}")
-
-    guidellm_args.append(f"--model={model_id}")
-    guidellm_args.append(f"--data={data}")
-    guidellm_args.append(f"--rate={_format_arg_value(rates)}")
-    guidellm_args.append(f"--max-seconds={max_seconds}")
-    if rampup is not None:
-        guidellm_args.append(f"--rampup={rampup}")
-    return guidellm_args
-
-
 def split_image_tag(full_image: str) -> tuple[str, str]:
     if ":" in full_image:
         parts = full_image.rsplit(":", 1)

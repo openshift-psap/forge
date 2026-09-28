@@ -13,7 +13,8 @@ import yaml
 from projects.core.library import config as core_config
 from projects.core.library import env
 from projects.llm_d.orchestration import ci as llmd_ci
-from projects.llm_d.orchestration import runtime_config, test_phase
+from projects.llm_d.orchestration import loadgenerator, runtime_config, test_phase
+from projects.llm_d.orchestration.loadgenerator import guidellm as guidellm_generator
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
 )
@@ -149,20 +150,22 @@ def test_guidellm_benchmark_uses_hf_model_name(
         return 0
 
     mock_config_path = Path("/mock/benchconf/config.yaml")
-    monkeypatch.setattr(test_phase.run_guidellm_benchmark_command, "run", _fake_run)
+    monkeypatch.setattr(guidellm_generator.benchmark_command, "run", _fake_run)
     monkeypatch.setattr(
-        test_phase.benchconf_lib, "resolve_config_path", lambda ref: mock_config_path
+        guidellm_generator.benchconf_lib, "resolve_config_path", lambda ref: mock_config_path
     )
-    monkeypatch.setattr(test_phase.benchconf_lib, "_is_enabled", lambda: True)
-    monkeypatch.setattr(test_phase.benchconf_lib, "maybe_install_custom_version", lambda: None)
-    monkeypatch.setattr(test_phase.benchconf_lib, "save_version", lambda: None)
+    monkeypatch.setattr(guidellm_generator.benchconf_lib, "_is_enabled", lambda: True)
+    monkeypatch.setattr(
+        guidellm_generator.benchconf_lib, "maybe_install_custom_version", lambda: None
+    )
+    monkeypatch.setattr(guidellm_generator.benchconf_lib, "save_version", lambda: None)
 
     monkeypatch.setattr(
         test_phase,
         "update_test_labels_with_timing",
         lambda _dir, _section, _event: datetime.now(UTC),
     )
-    test_phase.run_guidellm_benchmark(None, endpoint_url="https://example.test/llm-d")
+    test_phase.run_benchmark(None, endpoint_url="https://example.test/llm-d")
 
     assert captured["timeout"] == 3600
     assert captured["config_path"] == mock_config_path
@@ -878,14 +881,14 @@ def test_benchmark_tool_rejects_unknown_value() -> None:
     _init_project_config()
     core_config.project.config["workloads"]["benchmarks"]["unknown"] = {"tool": "other"}
     core_config.project.set_config("runtime.benchmark_key", "unknown")
-    with pytest.raises(ValueError, match="Unsupported benchmark tool"):
+    with pytest.raises(ValueError, match="has no runner"):
         runtime_config.get_benchmark_config()
 
 
 def test_unavailable_runner_fails_before_namespace_work(monkeypatch: pytest.MonkeyPatch) -> None:
     _init_project_config()
     core_config.project.set_config("runtime.benchmark_key", "short")
-    monkeypatch.setattr(test_phase, "_RUNNER_TOOLS", frozenset())
+    monkeypatch.setattr(loadgenerator, "RUNNERS", {})
     monkeypatch.setattr(
         test_phase,
         "ensure_namespace",
