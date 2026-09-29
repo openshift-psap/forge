@@ -13,6 +13,7 @@ from projects.core.library.fournos_status import patch_fjob_relevant_deployments
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
 from projects.rhaiis.orchestration import runtime_config
 from projects.rhaiis.orchestration.loadgenerator import BenchmarkContext, get_load_generator
+from projects.rhaiis.orchestration.loadgenerator.base import RhaiisLoadGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -189,10 +190,11 @@ def _run_test(
             skipped_optional_phase_workloads,
         )
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
+    generators: dict[str, RhaiisLoadGenerator] = {}
     if run_benchmark or profiler_enabled:
         for workload_key in workload_keys:
             tool = runtime_config.get_benchmark_tool(runtime_config.get_workload(workload_key))
-            get_load_generator(tool)
+            generators[workload_key] = get_load_generator(tool)
 
     # Standalone analysis only — no deployment needed
     if not run_benchmark and not profiler_enabled:
@@ -213,9 +215,6 @@ def _run_test(
         return 1 if _warnings else 0
 
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
-    for workload_key in workload_keys:
-        tool = runtime_config.get_benchmark_tool(runtime_config.get_workload(workload_key))
-        get_load_generator(tool).configure_timeout(benchmark_timeout)
 
     try:
         isvc_labels = {
@@ -329,8 +328,7 @@ def _run_test(
                 workload_key=wl_key,
                 benchmark_timeout=benchmark_timeout,
             )
-            tool = runtime_config.get_benchmark_tool(context.workload)
-            generator = get_load_generator(tool)
+            generator = generators[wl_key]
             if profiler_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running profiler for workload=%s", wl_key)
                 generator.profile(context)
@@ -358,6 +356,7 @@ def _run_test(
                 namespace=namespace,
                 endpoint_url=endpoint_url,
                 benchmark_timeout=benchmark_timeout,
+                generator=generators[wl_key],
                 run_uuid=run_uuid,
                 version=version,
                 cluster_tag=cluster_tag,
@@ -426,6 +425,7 @@ def _run_workload_benchmark(
     namespace: str,
     endpoint_url: str,
     benchmark_timeout: int,
+    generator: RhaiisLoadGenerator,
     run_uuid: str,
     version: str,
     cluster_tag: str,
@@ -477,7 +477,6 @@ def _run_workload_benchmark(
                 logger.warning("Standalone analysis failed", exc_info=True)
                 _warnings.append(f"Standalone analysis failed for {workload_key}")
         else:
-            generator = get_load_generator(benchmark_tool)
             generator.run(
                 BenchmarkContext(
                     deployment_name=deployment_name,

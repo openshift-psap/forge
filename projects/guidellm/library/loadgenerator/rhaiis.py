@@ -5,52 +5,16 @@ from __future__ import annotations
 import logging
 
 from projects.core.library import config
-from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
-    run as run_guidellm_benchmark,
-)
-from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
-    wait_guidellm_benchmark_task,
+from projects.guidellm.library.runner import (
+    DEFAULT_IMAGE,
+    GuideLLMJob,
+    build_rate_benchmark_args,
+    job_name,
 )
 from projects.rhaiis.orchestration import runtime_config
-
-from .base import BenchmarkContext, RhaiisLoadGenerator
+from projects.rhaiis.orchestration.loadgenerator.base import BenchmarkContext, RhaiisLoadGenerator
 
 logger = logging.getLogger(__name__)
-_K8S_NAME_MAX = 63
-_DEFAULT_IMAGE = "ghcr.io/vllm-project/guidellm:v0.7.4"
-
-
-def _format_arg_value(value: object) -> str:
-    if isinstance(value, list):
-        return ",".join(str(item) for item in value)
-    return str(value)
-
-
-def build_guidellm_args(
-    *,
-    benchmark_cfg: dict,
-    model_id: str,
-    data: str,
-    rates: list[int],
-    max_seconds: int,
-    rampup: int | None = None,
-) -> list[str]:
-    args = [
-        f"--{key.replace('_', '-')}={_format_arg_value(value)}"
-        for key, value in benchmark_cfg.get("args", {}).items()
-    ]
-    args.extend((f"--model={model_id}", f"--data={data}", f"--rate={_format_arg_value(rates)}"))
-    args.append(f"--max-seconds={max_seconds}")
-    if rampup is not None:
-        args.append(f"--rampup={rampup}")
-    return args
-
-
-def _job_name(prefix: str, workload_key: str, deployment_name: str) -> str:
-    base = f"{prefix}-{workload_key}-"
-    available = _K8S_NAME_MAX - len(base)
-    model = deployment_name[:available] if available > 0 else ""
-    return f"{base}{model}".rstrip("-")
 
 
 def _profiler_label(workload: dict) -> str:
@@ -62,9 +26,6 @@ def _profiler_label(workload: dict) -> str:
 class GuideLLMGenerator(RhaiisLoadGenerator):
     tool = "guidellm"
 
-    def configure_timeout(self, timeout: int) -> None:
-        wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, timeout // 10)
-
     def _run_job(
         self,
         context: BenchmarkContext,
@@ -74,7 +35,7 @@ class GuideLLMGenerator(RhaiisLoadGenerator):
         max_seconds: int,
         rampup: int | None = None,
     ) -> None:
-        args = build_guidellm_args(
+        args = build_rate_benchmark_args(
             benchmark_cfg=context.benchmark_cfg,
             model_id=context.model_cfg["hf_model_id"],
             data=context.workload["data"],
@@ -82,17 +43,17 @@ class GuideLLMGenerator(RhaiisLoadGenerator):
             max_seconds=max_seconds,
             rampup=rampup,
         )
-        run_guidellm_benchmark(
+        GuideLLMJob(
             endpoint_url=f"{context.endpoint_url}/v1",
-            name=_job_name(prefix, context.workload_key, context.deployment_name),
+            name=job_name(prefix, context.workload_key, context.deployment_name),
             namespace=context.namespace,
-            image=context.benchmark_cfg.get("image", _DEFAULT_IMAGE),
+            image=context.benchmark_cfg.get("image", DEFAULT_IMAGE),
             timeout=context.benchmark_timeout,
             pvc_size=context.benchmark_cfg.get("pvc_size", "5Gi"),
             guidellm_args=args,
             hf_token_secret=context.benchmark_cfg.get("hf_token_secret", ""),
             fs_group=context.benchmark_cfg.get("fs_group"),
-        )
+        ).run()
 
     def run(self, context: BenchmarkContext) -> None:
         workload = context.workload

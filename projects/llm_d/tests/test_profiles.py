@@ -12,9 +12,10 @@ import yaml
 
 from projects.core.library import config as core_config
 from projects.core.library import env
+from projects.guidellm.library import runner as guidellm_runner
+from projects.guidellm.library.loadgenerator import llm_d as guidellm_generator
 from projects.llm_d.orchestration import ci as llmd_ci
 from projects.llm_d.orchestration import loadgenerator, runtime_config, test_phase
-from projects.llm_d.orchestration.loadgenerator import guidellm as guidellm_generator
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
 )
@@ -150,7 +151,7 @@ def test_guidellm_benchmark_uses_hf_model_name(
         return 0
 
     mock_config_path = Path("/mock/benchconf/config.yaml")
-    monkeypatch.setattr(guidellm_generator.benchmark_command, "run", _fake_run)
+    monkeypatch.setattr(guidellm_runner.benchmark_command, "run", _fake_run)
     monkeypatch.setattr(
         guidellm_generator.benchconf_lib, "resolve_config_path", lambda ref: mock_config_path
     )
