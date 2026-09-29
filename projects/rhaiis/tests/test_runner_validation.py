@@ -1,10 +1,12 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from projects.core.library import config, env
+from projects.guidellm.library import runner as guidellm_runner
+from projects.guidellm.toolbox.run_guidellm_benchmark.main import wait_guidellm_benchmark_task
 from projects.rhaiis.orchestration import loadgenerator, test_phase
-from projects.rhaiis.orchestration.loadgenerator import guidellm
 
 ORCHESTRATION_DIR = Path(__file__).resolve().parents[1] / "orchestration"
 
@@ -59,7 +61,10 @@ def test_guidellm_runner_preserves_benchmark_job_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
-    monkeypatch.setattr(guidellm, "run_guidellm_benchmark", lambda **kwargs: calls.append(kwargs))
+    retry_settings = wait_guidellm_benchmark_task._retry_config.copy()
+    monkeypatch.setattr(
+        guidellm_runner.benchmark_command, "run", lambda **kwargs: calls.append(kwargs)
+    )
     context = loadgenerator.BenchmarkContext(
         deployment_name="qwen-server",
         namespace="test-ns",
@@ -71,12 +76,18 @@ def test_guidellm_runner_preserves_benchmark_job_arguments(
         benchmark_timeout=600,
     )
 
-    loadgenerator.get_load_generator("guidellm").run(context)
+    first_generator = loadgenerator.get_load_generator("guidellm")
+    second_generator = loadgenerator.get_load_generator("guidellm")
+    assert first_generator is not second_generator
+    first_generator.run(context)
+    second_generator.run(replace(context, benchmark_timeout=1200))
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0]["endpoint_url"] == "http://qwen-server.test-ns:8080/v1"
     assert calls[0]["name"] == "guidellm-bench-profile1-qwen-server"
     assert calls[0]["image"] == "guidellm:test"
     assert calls[0]["timeout"] == 600
+    assert calls[1]["timeout"] == 1200
     assert "--rate=1,4" in calls[0]["guidellm_args"]
     assert "--max-seconds=30" in calls[0]["guidellm_args"]
+    assert wait_guidellm_benchmark_task._retry_config == retry_settings

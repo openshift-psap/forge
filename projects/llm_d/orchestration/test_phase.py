@@ -36,7 +36,7 @@ from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
 from projects.kserve.toolbox.wait_kserve_ready import main as wait_kserve_ready
 from projects.llm_d.orchestration import runtime_config
 from projects.llm_d.orchestration.loadgenerator import get_load_generator
-from projects.llm_d.orchestration.loadgenerator.base import BenchmarkContext
+from projects.llm_d.orchestration.loadgenerator.base import BenchmarkContext, LlmDLoadGenerator
 from projects.llm_d.orchestration.prepare_phase import prepare_model_cache
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
@@ -376,10 +376,8 @@ def do_test() -> int:
     namespace = runtime_config.get_namespace()
     dry_run = config.project.get_config("runtime.kserve.dry_run", False)
 
-    if not dry_run:
-        benchmark = runtime_config.get_benchmark_config()
-        if benchmark is not None:
-            get_load_generator(benchmark["tool"])
+    benchmark = runtime_config.get_benchmark_config() if not dry_run else None
+    generator = get_load_generator(benchmark["tool"]) if benchmark is not None else None
 
     if not dry_run:
         # Ensure namespace exists before starting any deployments
@@ -442,7 +440,9 @@ def do_test() -> int:
 
         benchmark_start = datetime.now(UTC)
         try:
-            benchmark_times = run_benchmark(test_dir, endpoint_url=endpoint_url)
+            benchmark_times = run_benchmark(
+                test_dir, endpoint_url=endpoint_url, benchmark=benchmark, generator=generator
+            )
         except Exception:
             benchmark_times = (benchmark_start, datetime.now(UTC))
             raise
@@ -757,11 +757,19 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
     )
 
 
-def run_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, datetime] | None:
-    benchmark = runtime_config.get_benchmark_config()
+def run_benchmark(
+    test_dir,
+    *,
+    endpoint_url: str,
+    benchmark: dict[str, Any] | None = None,
+    generator: LlmDLoadGenerator | None = None,
+) -> tuple[datetime, datetime] | None:
+    if benchmark is None:
+        benchmark = runtime_config.get_benchmark_config()
     if benchmark is None:
         return
-    generator = get_load_generator(benchmark["tool"])
+    if generator is None:
+        generator = get_load_generator(benchmark["tool"])
     start_time = update_test_labels_with_timing(test_dir, "benchmark", "start")
     try:
         generator.run(
