@@ -22,9 +22,6 @@ class BenchmarkContext:
 class RhaiisLoadGenerator(LoadGenerator[BenchmarkContext]):
     """Run a benchmark; optional preparation phases are explicit capabilities."""
 
-    def configure_timeout(self, timeout: int) -> None:
-        """Configure any tool-specific wait task before deployment."""
-
     def warmup(self, context: BenchmarkContext) -> None:
         raise ValueError(f"Benchmark tool {self.tool!r} does not support warmup")
 
