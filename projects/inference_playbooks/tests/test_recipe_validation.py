@@ -119,6 +119,7 @@ recipe_id: kimi-k3-vllm-h200-pp2-tp8
 model_id: kimi-k3
 hardware_profile: hardware-profiles/h200.yaml
 deployment:
+  model_cache: {volume_name: model, pvc_size: 30Gi, model_directory_name: model}
   components:
     modelserver: {kind: LeaderWorkerSet, source: config/lws.yaml}
   auxiliary_sources:
@@ -128,7 +129,18 @@ deployment:
     _write(
         tmp_path,
         f"{recipe_dir}/config/lws.yaml",
-        "apiVersion: leaderworkerset.x-k8s.io/v1\nkind: LeaderWorkerSet\nmetadata: {name: kimi}\nspec: {}\n",
+        """apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata: {name: kimi}
+spec:
+  leaderWorkerTemplate:
+    workerTemplate:
+      spec:
+        containers:
+          - name: vllm
+            volumeMounts: [{name: model, mountPath: /models}]
+        volumes: [{name: model, emptyDir: {}}]
+""",
     )
     _write(
         tmp_path,
@@ -141,6 +153,7 @@ deployment:
     assert recipe["manifest_data"]["kind"] == "LeaderWorkerSet"
     assert recipe["auxiliary_manifests"][0]["data"]["kind"] == "Service"
     assert recipe["model_name"] == "moonshotai/Kimi-K3"
+    assert recipe["model_cache"]["volume_name"] == "model"
 
 
 def test_validate_recipe_catalog_rejects_duplicate_ids(tmp_path: Path) -> None:
@@ -261,6 +274,22 @@ def test_lws_launch_uses_leader_service_and_janus_roce_override(
             {
                 "inference_playbooks.namespace": "target-namespace",
                 "inference_playbooks.rdma_resource": "nvidia.com/roce",
+                "model_cache": {
+                    "marker_filename": "cached.marker",
+                    "pvc": {
+                        "size": "30Gi",
+                        "access_mode": "ReadWriteMany",
+                        "storage_class_name": None,
+                        "name_prefix": "test-cache",
+                        "model_directory_name": "model",
+                    },
+                    "download": {
+                        "wait_timeout_seconds": 7200,
+                        "poll_interval_seconds": 15,
+                        "pod_image_pull_policy": "IfNotPresent",
+                    },
+                    "hf": {"downloader_image": "example/downloader:test"},
+                },
             }
         ),
     )
@@ -274,13 +303,21 @@ def test_lws_launch_uses_leader_service_and_janus_roce_override(
         "metadata": {"name": "kimi"},
         "spec": {
             "leaderWorkerTemplate": {
-                "leaderTemplate": {
-                    "metadata": {"labels": {}},
-                    "spec": {"containers": [{"name": "vllm", "resources": copy_dict(resources)}]},
-                },
                 "workerTemplate": {
                     "metadata": {"labels": {}},
-                    "spec": {"containers": [{"name": "vllm", "resources": copy_dict(resources)}]},
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "vllm",
+                                "resources": copy_dict(resources),
+                                "volumeMounts": [{"name": "weights", "mountPath": "/models"}],
+                            }
+                        ],
+                        "volumes": [
+                            {"name": "weights", "hostPath": {"path": "/models"}},
+                            {"name": "dshm", "emptyDir": {"medium": "Memory"}},
+                        ],
+                    },
                 },
             }
         },
@@ -293,12 +330,28 @@ def test_lws_launch_uses_leader_service_and_janus_roce_override(
     }
     recipe = {
         "recipe_type": "recipe-v3",
-        "model_name": "moonshotai/Kimi-K3",
+        "model_id": "example-model",
+        "model_name": "example/model",
+        "model_cache": {
+            "volume_name": "weights",
+            "pvc_size": "80Gi",
+            "model_directory_name": "checkpoint",
+            "wait_timeout_seconds": 1800,
+        },
         "manifest_data": lws,
         "auxiliary_manifests": [{"data": service}],
     }
     applied = []
     actions = []
+    cache_runs = []
+    monkeypatch.setattr(
+        test_phase.vault, "get_vault_content_path", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        test_phase.prepare_hf_model_cache,
+        "run",
+        lambda **kwargs: cache_runs.append(kwargs),
+    )
     monkeypatch.setattr(test_phase, "oc_apply", lambda path, manifest: applied.append(manifest))
     monkeypatch.setattr(
         test_phase,
@@ -322,10 +375,25 @@ def test_lws_launch_uses_leader_service_and_janus_roce_override(
     templates = deployed_lws["spec"]["leaderWorkerTemplate"]
     assert "forge.openshift.io/endpoint" in templates["leaderTemplate"]["metadata"]["labels"]
     assert "forge.openshift.io/endpoint" not in templates["workerTemplate"]["metadata"]["labels"]
+    assert len(cache_runs) == 1
+    assert cache_runs[0]["model_key"] == "example-model"
+    assert cache_runs[0]["model_uri"] == "hf://example/model"
+    assert cache_runs[0]["pvc_size"] == "80Gi"
+    assert cache_runs[0]["model_directory_name"] == "checkpoint"
+    assert cache_runs[0]["wait_timeout_seconds"] == 1800
     for template in ("leaderTemplate", "workerTemplate"):
         deployed_resources = templates[template]["spec"]["containers"][0]["resources"]
         assert deployed_resources["requests"]["nvidia.com/roce"] == "1"
         assert "rdma/ib" not in deployed_resources["requests"]
+        volume = next(
+            volume
+            for volume in templates[template]["spec"]["volumes"]
+            if volume["name"] == "weights"
+        )
+        assert volume["persistentVolumeClaim"]["claimName"].startswith(
+            "test-cache-example-model-"
+        )
+        assert "hostPath" not in volume
     assert actions[0][0].endswith(":8000")
 
 

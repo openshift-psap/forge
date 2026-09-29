@@ -140,37 +140,7 @@ def _launch_llmisvc_recipe(recipe_id: str, recipe: dict, namespace: str) -> None
 def _prepare_llmisvc_model(recipe_id: str, recipe: dict, manifest: dict, namespace: str) -> None:
     model_uri = manifest["spec"]["model"]["uri"]
     if model_uri.startswith("hf://"):
-        cache = config.project.get_config("model_cache")
-        cache_spec = build_model_cache_spec(
-            namespace=namespace,
-            model_key=recipe_id,
-            model_uri=model_uri,
-            pvc_size=cache["pvc"]["size"],
-            access_mode=cache["pvc"]["access_mode"],
-            storage_class_name=cache["pvc"]["storage_class_name"],
-            pvc_name_prefix=cache["pvc"]["name_prefix"],
-            model_directory_name=cache["pvc"]["model_directory_name"],
-            marker_filename=cache["marker_filename"],
-        )
-        hf_token_file = vault.get_vault_content_path("psap-forge-hf", "hf_token")
-        if hf_token_file is None:
-            logger.warning("HF vault is unavailable; attempting the public model download")
-        prepare_hf_model_cache.run(
-            namespace=namespace,
-            model_key=recipe_id,
-            model_uri=model_uri,
-            pvc_size=cache["pvc"]["size"],
-            access_mode=cache["pvc"]["access_mode"],
-            storage_class_name=cache["pvc"]["storage_class_name"],
-            pvc_name_prefix=cache["pvc"]["name_prefix"],
-            model_directory_name=cache["pvc"]["model_directory_name"],
-            marker_filename=cache["marker_filename"],
-            wait_timeout_seconds=cache["download"]["wait_timeout_seconds"],
-            poll_interval_seconds=cache["download"]["poll_interval_seconds"],
-            downloader_image=cache["hf"]["downloader_image"],
-            hf_token_file_path=hf_token_file,
-            pod_image_pull_policy=cache["download"]["pod_image_pull_policy"],
-        )
+        cache_spec = _prepare_hf_model_cache(recipe_id, model_uri, namespace)
         manifest["spec"]["model"]["uri"] = cache_spec["model_uri"]
         manifest["spec"]["storageInitializer"] = {"enabled": False}
         logger.info("Prepared model cache %s for %s", cache_spec["pvc_name"], model_uri)
@@ -191,6 +161,55 @@ def _prepare_llmisvc_model(recipe_id: str, recipe: dict, manifest: dict, namespa
     pvc = json.loads(result.stdout)
     if pvc.get("status", {}).get("phase") != "Bound":
         raise RuntimeError(f"Recipe PVC {pvc_name!r} in namespace {namespace!r} is not Bound")
+
+
+def _prepare_hf_model_cache(
+    model_key: str,
+    model_uri: str,
+    namespace: str,
+    *,
+    model_cache: dict | None = None,
+) -> dict:
+    cache = config.project.get_config("model_cache")
+    pvc = cache["pvc"]
+    download = cache["download"]
+    overrides = model_cache or {}
+    pvc_size = overrides.get("pvc_size", pvc["size"])
+    model_directory_name = overrides.get("model_directory_name", pvc["model_directory_name"])
+    wait_timeout_seconds = overrides.get(
+        "wait_timeout_seconds", download["wait_timeout_seconds"]
+    )
+    cache_spec = build_model_cache_spec(
+        namespace=namespace,
+        model_key=model_key,
+        model_uri=model_uri,
+        pvc_size=pvc_size,
+        access_mode=pvc["access_mode"],
+        storage_class_name=pvc["storage_class_name"],
+        pvc_name_prefix=pvc["name_prefix"],
+        model_directory_name=model_directory_name,
+        marker_filename=cache["marker_filename"],
+    )
+    hf_token_file = vault.get_vault_content_path("psap-forge-hf", "hf_token")
+    if hf_token_file is None:
+        logger.warning("HF vault is unavailable; attempting the public model download")
+    prepare_hf_model_cache.run(
+        namespace=namespace,
+        model_key=model_key,
+        model_uri=model_uri,
+        pvc_size=pvc_size,
+        access_mode=pvc["access_mode"],
+        storage_class_name=pvc["storage_class_name"],
+        pvc_name_prefix=pvc["name_prefix"],
+        model_directory_name=model_directory_name,
+        marker_filename=cache["marker_filename"],
+        wait_timeout_seconds=wait_timeout_seconds,
+        poll_interval_seconds=download["poll_interval_seconds"],
+        downloader_image=cache["hf"]["downloader_image"],
+        hf_token_file_path=hf_token_file,
+        pod_image_pull_policy=download["pod_image_pull_policy"],
+    )
+    return cache_spec
 
 
 def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
@@ -216,7 +235,11 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         "labels": {**lws["metadata"].get("labels", {}), "forge.openshift.io/run": run_label},
     }
     templates = lws["spec"]["leaderWorkerTemplate"]
-    leader_labels = templates["leaderTemplate"].setdefault("metadata", {}).setdefault("labels", {})
+    leader_template = templates.get("leaderTemplate")
+    if leader_template is None:
+        leader_template = copy.deepcopy(templates["workerTemplate"])
+        templates["leaderTemplate"] = leader_template
+    leader_labels = leader_template.setdefault("metadata", {}).setdefault("labels", {})
     leader_labels.update(
         {"forge.openshift.io/run": run_label, "forge.openshift.io/endpoint": endpoint_label}
     )
@@ -246,6 +269,7 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
     def deploy() -> str:
         src_dir = env.ARTIFACT_DIR / "src"
         src_dir.mkdir(parents=True, exist_ok=True)
+        _prepare_lws_model_cache(recipe, lws, namespace)
         oc_apply(src_dir / f"{service_name}-service.yaml", service)
         oc_apply(src_dir / f"{service_name}-lws.yaml", lws)
         oc(
@@ -269,6 +293,36 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         )
 
     _deploy_benchmark_finalize(recipe_id, recipe, namespace, service_name, deploy, capture, cleanup)
+
+
+def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
+    model_cache = recipe["model_cache"]
+    model_uri = f"hf://{recipe['model_name']}"
+    cache_spec = _prepare_hf_model_cache(
+        recipe["model_id"],
+        model_uri,
+        namespace,
+        model_cache=model_cache,
+    )
+    volume_name = model_cache["volume_name"]
+    templates = lws["spec"]["leaderWorkerTemplate"]
+    pod_templates = [templates["workerTemplate"]]
+    if templates.get("leaderTemplate") is not None:
+        pod_templates.append(templates["leaderTemplate"])
+
+    for pod_template in pod_templates:
+        volumes = pod_template["spec"].get("volumes", [])
+        matches = [volume for volume in volumes if volume.get("name") == volume_name]
+        if len(matches) != 1:
+            raise ValueError(f"LeaderWorkerSet must define exactly one {volume_name!r} model volume")
+        matches[0].clear()
+        matches[0].update(
+            {
+                "name": volume_name,
+                "persistentVolumeClaim": {"claimName": cache_spec["pvc_name"]},
+            }
+        )
+    logger.info("Prepared model cache %s for %s", cache_spec["pvc_name"], model_uri)
 
 
 def _deploy_benchmark_finalize(

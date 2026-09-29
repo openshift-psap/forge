@@ -110,6 +110,8 @@ def _load_recipe_v3(
     model_name = model.get("huggingface_id")
     if not isinstance(model_name, str) or not model_name:
         raise ValueError(f"{model_path} must define huggingface_id")
+    model_cache = deployment.get("model_cache")
+    _validate_lws_model_cache(recipe_path, manifest, model_cache)
 
     _repository_file(root, recipe.get("hardware_profile"), f"{recipe_path} hardware profile")
     recipes_by_id[recipe_id] = {
@@ -120,6 +122,7 @@ def _load_recipe_v3(
         "manifest_data": manifest,
         "auxiliary_manifests": auxiliary_manifests,
         "model_name": model_name,
+        "model_cache": model_cache,
     }
 
 
@@ -183,6 +186,76 @@ def _validate_kubernetes_manifest(manifest: Any, path: Path, expected_kind: str)
         or not metadata["name"]
     ):
         raise ValueError(f"{path} must define metadata.name")
+
+
+def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value: Any) -> None:
+    label = f"{recipe_path} deployment.model_cache"
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must define the LeaderWorkerSet model volume")
+    allowed_fields = {"volume_name", "pvc_size", "model_directory_name", "wait_timeout_seconds"}
+    required_fields = {"volume_name", "pvc_size", "model_directory_name"}
+    missing_fields = required_fields - set(value)
+    if missing_fields:
+        raise ValueError(f"{label} must define {sorted(missing_fields)}")
+    unknown_fields = set(value) - allowed_fields
+    if unknown_fields:
+        raise ValueError(f"{label} has unsupported fields: {sorted(unknown_fields)}")
+
+    volume_name = value.get("volume_name")
+    if not isinstance(volume_name, str) or not re.fullmatch(
+        r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", volume_name
+    ):
+        raise ValueError(f"{label}.volume_name must be a Kubernetes volume name")
+    if not isinstance(value["pvc_size"], str) or not value["pvc_size"]:
+        raise ValueError(f"{label}.pvc_size must be a non-empty string")
+    if (
+        not isinstance(value["model_directory_name"], str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value["model_directory_name"])
+    ):
+        raise ValueError(f"{label}.model_directory_name must be a single directory name")
+    if "wait_timeout_seconds" in value and (
+        type(value["wait_timeout_seconds"]) is not int or value["wait_timeout_seconds"] <= 0
+    ):
+        raise ValueError(f"{label}.wait_timeout_seconds must be a positive integer")
+
+    spec = manifest.get("spec")
+    leader_worker_template = (
+        spec.get("leaderWorkerTemplate") if isinstance(spec, dict) else None
+    )
+    if not isinstance(leader_worker_template, dict):
+        raise ValueError(f"{recipe_path} must define spec.leaderWorkerTemplate")
+    pod_templates = [("workerTemplate", leader_worker_template.get("workerTemplate"))]
+    leader_template = leader_worker_template.get("leaderTemplate")
+    if leader_template is not None:
+        pod_templates.append(("leaderTemplate", leader_template))
+
+    for template_name, pod_template in pod_templates:
+        pod_spec = pod_template.get("spec") if isinstance(pod_template, dict) else None
+        if not isinstance(pod_spec, dict):
+            raise ValueError(f"{recipe_path} must define {template_name}.spec")
+        volumes = pod_spec.get("volumes", [])
+        if not isinstance(volumes, list) or sum(
+            volume.get("name") == volume_name for volume in volumes if isinstance(volume, dict)
+        ) != 1:
+            raise ValueError(
+                f"{recipe_path} {template_name} must define exactly one volume named {volume_name!r}"
+            )
+        containers = pod_spec.get("containers", [])
+        has_model_mount = False
+        if isinstance(containers, list):
+            for container in containers:
+                mounts = container.get("volumeMounts", []) if isinstance(container, dict) else []
+                if isinstance(mounts, list) and any(
+                    mount.get("name") == volume_name
+                    for mount in mounts
+                    if isinstance(mount, dict)
+                ):
+                    has_model_mount = True
+                    break
+        if not has_model_mount:
+            raise ValueError(
+                f"{recipe_path} {template_name} must mount volume {volume_name!r}"
+            )
 
 
 def _validate_llmisvc_manifest(manifest: Any, path: Path) -> None:
