@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -7,7 +8,51 @@ from typing import Any
 import yaml
 
 from projects.core.dsl import template
+from projects.core.dsl.utils import slugify_identifier, truncate_k8s_name
 from projects.core.dsl.utils.k8s import oc, oc_get_json
+
+
+def build_model_cache_spec(
+    *,
+    namespace: str,
+    model_key: str,
+    model_uri: str,
+    pvc_size: str,
+    access_mode: str,
+    storage_class_name: str | None,
+    pvc_name_prefix: str,
+    model_directory_name: str,
+    marker_filename: str,
+) -> dict[str, Any]:
+    """Build the shared PVC cache contract for one Hugging Face model."""
+    if not model_uri.startswith("hf://"):
+        raise ValueError(f"Expected HF model URI, got: {model_uri}")
+
+    cache_key = hashlib.sha256(model_uri.encode("utf-8")).hexdigest()[:10]
+    pvc_name = truncate_k8s_name(
+        f"{pvc_name_prefix}-{slugify_identifier(model_key, max_length=32)}-{cache_key}"
+    )
+    model_path = model_directory_name
+    return {
+        "source_uri": model_uri,
+        "source_scheme": "hf",
+        "cache_key": cache_key,
+        "namespace": namespace,
+        "pvc_name": pvc_name,
+        "pvc_size": pvc_size,
+        "access_mode": access_mode,
+        "storage_class_name": storage_class_name,
+        "model_path": model_path,
+        "model_uri": f"pvc://{pvc_name}/{model_path}",
+        "marker_filename": marker_filename,
+        "marker_path": f"/cache/{model_path}/{marker_filename}",
+        "download_job_name": truncate_k8s_name(f"{pvc_name}-download"),
+        "hf_token_secret_name": None,
+        "hf_token_secret_key": "token",
+        "oci_image_path": None,
+        "oci_registry_auth_secret_name": None,
+        "oci_registry_auth_secret_key": None,
+    }
 
 
 def pvc_access_mode_matches(actual_modes: list[str], expected_mode: str) -> bool:
