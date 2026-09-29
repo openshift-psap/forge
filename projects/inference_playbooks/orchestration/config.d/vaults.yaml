@@ -3,4 +3,5 @@ all-optional: []
 prepare: []
 prepare-optional: []
 test: []
-test-optional: []
+test-optional:
+- psap-forge-hf
