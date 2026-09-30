@@ -8,12 +8,12 @@ status polling, and retry configuration.
 from __future__ import annotations
 
 import time
+import types
 
 import pytest
 
 from projects.core.dsl import always, execute_tasks, shell, task
 from projects.core.dsl.control_flow import EarlyReturn
-from projects.core.dsl.runtime import TaskExecutionError
 from projects.core.dsl.script_manager import reset_script_manager
 
 # ---------------------------------------------------------------------------
@@ -109,62 +109,36 @@ def test_resolve_returns_truthy_on_pending(monkeypatch):
 
 def test_resolve_raises_on_not_found(monkeypatch):
     """wait_for_job_to_resolve raises immediately when job is not found (no retries)."""
-    reset_script_manager()
-    monkeypatch.setattr(time, "sleep", lambda s: None)
-
     from projects.fournos_launcher.toolbox.submit_and_wait.main import (
         FournosJobFailureError,
         wait_for_job_to_resolve,
     )
 
-    def fake_run(cmd, check=True, **kwargs):
-        return _make_result(stdout="", stderr="not found", returncode=1)
+    monkeypatch.setattr(
+        shell, "run", lambda *a, **kw: _make_result(stdout="", stderr="not found", returncode=1)
+    )
 
-    monkeypatch.setattr(shell, "run", fake_run)
-
-    @task
-    def setup(args, ctx):
-        ctx.final_job_name = "test-job"
-
-    with pytest.raises(TaskExecutionError) as ei:
-        execute_tasks(
-            {
-                "namespace": "fournos-jobs",
-                "setup": setup,
-                "wait_for_job_to_resolve": wait_for_job_to_resolve,
-            }
+    with pytest.raises(FournosJobFailureError):
+        wait_for_job_to_resolve(
+            types.SimpleNamespace(namespace="fournos-jobs"),
+            types.SimpleNamespace(final_job_name="test-job"),
         )
-    assert isinstance(ei.value.__cause__, FournosJobFailureError)
 
 
 def test_resolve_raises_on_stopping(monkeypatch):
     """wait_for_job_to_resolve raises FournosJobFailureError when job enters Stopping."""
-    reset_script_manager()
-    monkeypatch.setattr(time, "sleep", lambda s: None)
-
     from projects.fournos_launcher.toolbox.submit_and_wait.main import (
         FournosJobFailureError,
         wait_for_job_to_resolve,
     )
 
-    def fake_run(cmd, check=True, **kwargs):
-        return _make_result(stdout="Stopping")
+    monkeypatch.setattr(shell, "run", lambda *a, **kw: _make_result(stdout="Stopping"))
 
-    monkeypatch.setattr(shell, "run", fake_run)
-
-    @task
-    def setup(args, ctx):
-        ctx.final_job_name = "test-job"
-
-    with pytest.raises(TaskExecutionError) as ei:
-        execute_tasks(
-            {
-                "namespace": "fournos-jobs",
-                "setup": setup,
-                "wait_for_job_to_resolve": wait_for_job_to_resolve,
-            }
+    with pytest.raises(FournosJobFailureError):
+        wait_for_job_to_resolve(
+            types.SimpleNamespace(namespace="fournos-jobs"),
+            types.SimpleNamespace(final_job_name="test-job"),
         )
-    assert isinstance(ei.value.__cause__, FournosJobFailureError)
 
 
 def test_resolve_succeeds_immediately_when_already_running(monkeypatch):
