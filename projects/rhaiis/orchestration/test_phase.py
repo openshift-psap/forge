@@ -41,13 +41,27 @@ def run(
     namespace: str,
     deployment_name: str | None = None,
 ) -> int:
-    ret = run_and_postprocess(
-        do_test,
-        model_key=model_key,
-        workload_keys=workload_keys,
-        namespace=namespace,
-        deployment_name=deployment_name,
+    from projects.core.library import config
+
+    aiperf_only = bool(workload_keys) and all(
+        runtime_config.get_benchmark_tool(runtime_config.get_workload(key)) == "aiperf"
+        for key in workload_keys
     )
+    dashboard_csv_key = "caliper.postprocess.kpi.dashboard_csv.enabled"
+    dashboard_csv_enabled = config.project.get_config(dashboard_csv_key)
+    if aiperf_only:
+        config.project.set_config(dashboard_csv_key, False, print=False)
+    try:
+        ret = run_and_postprocess(
+            do_test,
+            model_key=model_key,
+            workload_keys=workload_keys,
+            namespace=namespace,
+            deployment_name=deployment_name,
+        )
+    finally:
+        if aiperf_only:
+            config.project.set_config(dashboard_csv_key, dashboard_csv_enabled, print=False)
 
     try:
         _sync_postprocessed_dashboard_csv(model_key, workload_keys)
@@ -187,6 +201,10 @@ def _run_test(
         for workload_key in workload_keys:
             tool = runtime_config.get_benchmark_tool(runtime_config.get_workload(workload_key))
             generators[workload_key] = get_load_generator(tool)
+    if profiler_enabled and any(
+        not generator.supports_profiling for generator in generators.values()
+    ):
+        raise ValueError("RHAIIS profiler passes require GuideLLM workloads")
 
     # Standalone analysis only — no deployment needed
     if not run_benchmark and not profiler_enabled:
@@ -324,7 +342,11 @@ def _run_test(
             if profiler_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running profiler for workload=%s", wl_key)
                 generator.profile(context)
-            elif warmup_enabled and wl_key in optional_phase_workload_keys:
+            elif (
+                warmup_enabled
+                and wl_key in optional_phase_workload_keys
+                and generator.supports_warmup
+            ):
                 logger.info("Running warmup for workload=%s", wl_key)
                 generator.warmup(context)
 
@@ -359,6 +381,11 @@ def _run_test(
             first_workload = runtime_config.get_workload(workload_keys[0])
             first_rates = first_workload.get("rates", [1])
             first_max_seconds = first_workload.get("max_seconds", 180)
+            selected_tools = {
+                runtime_config.get_benchmark_tool(runtime_config.get_workload(key))
+                for key in workload_keys
+            }
+            benchmark_tool = selected_tools.pop() if len(selected_tools) == 1 else "mixed"
             _set_mlflow_metadata(
                 model_key,
                 ",".join(workload_keys),
@@ -371,6 +398,7 @@ def _run_test(
                 first_max_seconds,
                 namespace,
                 deployment_name,
+                benchmark_tool=benchmark_tool,
             )
         except Exception:
             logger.warning("Setting MLflow metadata failed; continuing", exc_info=True)
@@ -538,12 +566,12 @@ def _set_mlflow_metadata(
     max_seconds: int,
     namespace: str,
     deployment_name: str,
+    *,
+    benchmark_tool: str = "guidellm",
 ) -> None:
     from projects.core.library import config
 
     image_name, image_tag = runtime_config.split_image_tag(serving_image)
-    guidellm_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
-    benchmark_args = benchmark_cfg.get("args", {})
     tp = (
         engine_args.get("tensor-parallel-size")
         or engine_args.get("tp-size")
@@ -560,14 +588,22 @@ def _set_mlflow_metadata(
         "serving_image": serving_image,
         "serving_version": image_tag,
         "workload_key": workload_key,
-        "rates": ",".join(str(r) for r in rates),
-        "max_seconds": str(max_seconds),
-        "guidellm_image": guidellm_image,
+        "benchmark_tool": benchmark_tool,
         "namespace": namespace,
         "deployment_name": deployment_name,
     }
-    for key, value in benchmark_args.items():
-        tags[f"guidellm_{key}"] = str(value)
+    if benchmark_tool == "guidellm":
+        tags.update(
+            {
+                "rates": ",".join(str(r) for r in rates),
+                "max_seconds": str(max_seconds),
+                "guidellm_image": benchmark_cfg["image"],
+            }
+        )
+        for key, value in benchmark_cfg.get("args", {}).items():
+            tags[f"guidellm_{key}"] = str(value)
+    elif benchmark_tool == "aiperf":
+        tags["aiperf_image"] = runtime_config.get_aiperf_config()["image"]
 
     config.project.set_config("caliper.export.backend.mlflow.config.tags", tags)
     logger.info("Set MLflow tags: %s", list(tags.keys()))
@@ -578,6 +614,13 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
     from pathlib import Path
 
     from projects.core.library import config
+
+    if all(
+        runtime_config.get_benchmark_tool(runtime_config.get_workload(key)) == "aiperf"
+        for key in workload_keys
+    ):
+        logger.info("No GuideLLM workload selected; skipping dashboard CSV sync")
+        return
 
     csv_dashboard_cfg = config.project.get_config("caliper.postprocess.csv_dashboard", {})
     if not csv_dashboard_cfg or not csv_dashboard_cfg.get("enabled", False):

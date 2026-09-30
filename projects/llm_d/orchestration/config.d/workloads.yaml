@@ -8,6 +8,13 @@ fs_group: null
 timeout_seconds: 3600
 args: {}
 
+aiperf:
+  job_name: aiperf-benchmark
+  image: quay.io/rh-ee-thibrahi/aiperf:0.12.0
+  timeout_seconds: 3600
+  pvc_size: 1Gi
+  pvc_storage_class: null
+
 smoke_requests:
   default:
     prompt: San Francisco is a
@@ -26,6 +33,13 @@ benchmarks:
       data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
       constraint: kind=max_duration,seconds=120
     rate: [1, 4, 8]
+
+  aiperf-smoke:
+    tool: aiperf
+    concurrency: 1
+    request_count: 10
+    input_tokens: 128
+    output_tokens: 64
 
   smoke:
     timeout_seconds: 300

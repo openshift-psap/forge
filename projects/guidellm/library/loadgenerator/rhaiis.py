@@ -24,6 +24,8 @@ def _profiler_label(workload: dict) -> str:
 
 class GuideLLMGenerator(RhaiisLoadGenerator):
     tool = "guidellm"
+    supports_warmup = True
+    supports_profiling = True
 
     def _run_job(
         self,

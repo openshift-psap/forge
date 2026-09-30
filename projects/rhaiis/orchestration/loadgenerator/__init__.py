@@ -11,7 +11,16 @@ def _new_guidellm() -> RhaiisLoadGenerator:
     return GuideLLMGenerator()
 
 
-RUNNERS: dict[str, Callable[[], RhaiisLoadGenerator]] = {"guidellm": _new_guidellm}
+def _new_aiperf() -> RhaiisLoadGenerator:
+    from projects.aiperf.library.loadgenerator.rhaiis import AIPerfGenerator
+
+    return AIPerfGenerator()
+
+
+RUNNERS: dict[str, Callable[[], RhaiisLoadGenerator]] = {
+    "guidellm": _new_guidellm,
+    "aiperf": _new_aiperf,
+}
 
 
 def get_load_generator(tool: str) -> RhaiisLoadGenerator:

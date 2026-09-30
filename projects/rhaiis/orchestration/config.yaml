@@ -20,6 +20,11 @@ benchmarks:
       rate_type: concurrent
       output_dir: /results
       outputs: json
+  aiperf:
+    image: quay.io/rh-ee-thibrahi/aiperf:0.12.0
+    timeout: 3600
+    pvc_size: 1Gi
+    pvc_storage_class: null
 
 tests:
   rhaiis:

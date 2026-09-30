@@ -102,6 +102,7 @@ def test_llmd_plugin_exports_dashboard_compatible_csv(tmp_path):
         artifact_paths=[benchmark_path, llmisvc_path],
         test_labels={
             "labels": {
+                "benchmark_tool": "guidellm",
                 "load_shape": "concurrent-1k-1k",
                 "model_name": "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
             },

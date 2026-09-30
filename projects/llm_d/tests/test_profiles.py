@@ -930,12 +930,44 @@ def test_benchmark_tool_defaults_to_guidellm_without_profile_edits() -> None:
     assert runtime_config.get_benchmark_config()["tool"] == "guidellm"
 
 
+def test_aiperf_profile_does_not_inherit_guidellm_defaults() -> None:
+    _init_project_config()
+    core_config.project.config["workloads"]["benchmarks"]["trace"] = {
+        "tool": "aiperf",
+        "image": "quay.io/example/aiperf:test",
+    }
+    core_config.project.set_config("runtime.benchmark_key", "trace")
+    benchmark = runtime_config.get_benchmark_config()
+    assert benchmark["tool"] == "aiperf"
+    assert benchmark["image"] == "quay.io/example/aiperf:test"
+    assert benchmark["job_name"] == "aiperf-benchmark"
+    assert "args" not in benchmark
+
+
 def test_benchmark_tool_rejects_unknown_value() -> None:
     _init_project_config()
     core_config.project.config["workloads"]["benchmarks"]["unknown"] = {"tool": "other"}
     core_config.project.set_config("runtime.benchmark_key", "unknown")
     with pytest.raises(ValueError, match="has no runner"):
         runtime_config.get_benchmark_config()
+
+
+def test_aiperf_benchmark_dispatch_uses_selected_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    from projects.aiperf.toolbox.run_aiperf_benchmark import main as aiperf_command
+
+    _init_project_config()
+    core_config.project.set_config("runtime.benchmark_key", "aiperf-smoke")
+    captured = {}
+    monkeypatch.setattr(aiperf_command, "run", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(test_phase, "update_test_labels_with_timing", lambda *_args: "now")
+    monkeypatch.setattr(test_phase, "capture_prometheus", lambda *_args: None)
+
+    test_phase.run_benchmark(env.ARTIFACT_DIR, endpoint_url="http://model.example:8000")
+
+    assert captured["image"] == "quay.io/rh-ee-thibrahi/aiperf:0.12.0"
+    assert captured["request_count"] == 10
+    assert captured["concurrency"] == 1
+    assert captured["model_name"] == runtime_config.get_served_model_name()
 
 
 def test_unavailable_runner_fails_before_namespace_work(monkeypatch: pytest.MonkeyPatch) -> None:

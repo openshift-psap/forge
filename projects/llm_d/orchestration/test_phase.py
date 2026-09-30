@@ -294,7 +294,25 @@ def run() -> int:
         logger.info("Kserve dry-run mode enabled - Skipping caliper post-processing")
         return ret
 
-    return run_and_postprocess(do_test)
+    benchmark_keys = runtime_config.get_benchmark_keys()
+    aiperf_only = bool(benchmark_keys) and all(
+        runtime_config.get_benchmark_tool(key) == "aiperf" for key in benchmark_keys
+    )
+    if not aiperf_only:
+        return run_and_postprocess(do_test)
+
+    disabled_steps = (
+        "caliper.postprocess.kpi.dashboard_csv.enabled",
+        "caliper.postprocess.visualize.enabled",
+    )
+    previous_values = {key: config.project.get_config(key) for key in disabled_steps}
+    try:
+        for key in disabled_steps:
+            config.project.set_config(key, False, print=False)
+        return run_and_postprocess(do_test)
+    finally:
+        for key, value in previous_values.items():
+            config.project.set_config(key, value, print=False)
 
 
 def run_finalizers(

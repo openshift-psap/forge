@@ -385,6 +385,10 @@ def get_benchmark_config() -> dict[str, Any] | None:
     return _resolve_benchmark_config(benchmark_keys[0])
 
 
+def get_benchmark_tool(benchmark_name: str) -> str:
+    return _resolve_benchmark_config(benchmark_name)["tool"]
+
+
 def get_workload_config() -> dict[str, Any] | None:
     """Get workload configuration, falling back to default if no benchmark is specified."""
     benchmark_config = get_benchmark_config()

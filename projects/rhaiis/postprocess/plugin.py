@@ -3,6 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from projects.aiperf.postprocess.results import (
+    AIPerfParser,
+    benchmark_tool,
+    compute_aiperf_kpis,
+    model_for_tool,
+)
 from projects.caliper.engine.kpi import KpiComputationStatus, KpiRecord
 from projects.caliper.engine.model import (
     BaseTestNode,
@@ -40,7 +46,10 @@ class RhaiisPlugin(PostProcessingPlugin):
         self.kpi_handler = RhaiisKpiHandler()
 
     def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
-        parsed = self.parser.parse(nodes)
+        guidellm_nodes = [node for node in nodes if benchmark_tool(node) == "guidellm"]
+        aiperf_nodes = [node for node in nodes if benchmark_tool(node) == "aiperf"]
+        parsed = self.parser.parse(guidellm_nodes)
+        aiperf_parsed = AIPerfParser().parse(aiperf_nodes)
         nodes_by_path = {str(node.test_path): node for node in nodes}
         for record in parsed.records:
             node = nodes_by_path.get(record.test_base_path)
@@ -50,7 +59,10 @@ class RhaiisPlugin(PostProcessingPlugin):
                 record.metrics.setdefault(
                     "mlflow_experiment_id", mlflow_dest.get("experiment_id", "")
                 )
-        return parsed
+        return ParseResult(
+            records=parsed.records + aiperf_parsed.records,
+            warnings=parsed.warnings + aiperf_parsed.warnings,
+        )
 
     def get_available_reports(self) -> dict[str, dict[str, str]]:
         return {}
@@ -76,10 +88,24 @@ class RhaiisPlugin(PostProcessingPlugin):
 
     def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
         """Compute KPIs using dataclasses with status details."""
-        return self.kpi_handler.compute_kpis(model)
+        guide_rows, _ = self.kpi_handler.compute_kpis(model_for_tool(model, "guidellm"))
+        aiperf_rows, _ = compute_aiperf_kpis(model)
+        return guide_rows + aiperf_rows, KpiComputationStatus.success_status(
+            len(model.unified_result_records)
+        )
 
     def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
         """Generate dashboard CSV using shared architecture."""
+        model = model_for_tool(model, "guidellm")
+        if not model.unified_result_records:
+            import csv
+
+            from projects.rhaiis.postprocess.csv_dashboard import RHAIIS_FIELDNAMES
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("w", newline="", encoding="utf-8") as stream:
+                csv.DictWriter(stream, fieldnames=RHAIIS_FIELDNAMES).writeheader()
+            return str(output_path)
         from projects.guidellm.postprocess.guidellm.dashboard import DashboardCsvExporter
         from projects.rhaiis.postprocess.csv_dashboard import RHAIIS_FIELDNAMES
 

@@ -13,7 +13,16 @@ def _new_guidellm() -> LlmDLoadGenerator:
     return GuideLLMGenerator()
 
 
-RUNNERS: dict[str, Callable[[], LlmDLoadGenerator]] = {"guidellm": _new_guidellm}
+def _new_aiperf() -> LlmDLoadGenerator:
+    from projects.aiperf.library.loadgenerator.llm_d import AIPerfGenerator
+
+    return AIPerfGenerator()
+
+
+RUNNERS: dict[str, Callable[[], LlmDLoadGenerator]] = {
+    "guidellm": _new_guidellm,
+    "aiperf": _new_aiperf,
+}
 
 
 def get_load_generator(tool: str) -> LlmDLoadGenerator:
