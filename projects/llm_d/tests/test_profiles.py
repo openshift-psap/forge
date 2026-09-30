@@ -135,6 +135,17 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     assert multi_turn["timeout_seconds"] == 7200
 
 
+def test_guidellm_use_pvc_inherits_workload_default_and_allows_override() -> None:
+    _init_project_config()
+    core_config.project.set_config("runtime.benchmark_key", "concurrent-1k-1k")
+    core_config.project.set_config("workloads.use_pvc", True)
+
+    assert runtime_config.get_benchmark_config()["use_pvc"] is True
+
+    core_config.project.config["workloads"]["benchmarks"]["concurrent-1k-1k"]["use_pvc"] = False
+    assert runtime_config.get_benchmark_config()["use_pvc"] is False
+
+
 def test_guidellm_benchmark_uses_hf_model_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

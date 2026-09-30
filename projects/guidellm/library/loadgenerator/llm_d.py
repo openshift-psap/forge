@@ -20,7 +20,14 @@ class GuideLLMGenerator(LlmDLoadGenerator):
     def resolve_config(self, profile: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Inherit only the GuideLLM defaults and arguments."""
         benchmark = copy.deepcopy(profile)
-        for key in ("job_name", "image", "pvc_size", "pvc_storage_class", "timeout_seconds"):
+        for key in (
+            "job_name",
+            "image",
+            "pvc_size",
+            "pvc_storage_class",
+            "timeout_seconds",
+            "use_pvc",
+        ):
             if key in defaults and key not in benchmark:
                 benchmark[key] = copy.deepcopy(defaults[key])
 
