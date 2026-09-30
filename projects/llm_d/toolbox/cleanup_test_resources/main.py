@@ -43,8 +43,6 @@ def setup_directories(args, ctx):
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     ctx.benchmark_name = args.benchmark_job_name
-    if not ctx.benchmark_name and not args.cleanup_all_llm_d_resources:
-        ctx.benchmark_name = "guidellm-benchmark"
 
     return f"Prepared cleanup for namespace {args.namespace}"
 
@@ -94,27 +92,6 @@ def delete_benchmark_resources(args, ctx):
         args.namespace,
         "--ignore-not-found=true",
     )
-
-    # For runtime cleanup, also handle the default benchmark name
-    if args.cleanup_all_llm_d_resources and ctx.benchmark_name != "guidellm-benchmark":
-        _best_effort_delete(
-            "default benchmark helper job and pvc",
-            "delete",
-            "job,pvc",
-            "guidellm-benchmark",
-            "-n",
-            args.namespace,
-            "--ignore-not-found=true",
-        )
-        _best_effort_delete(
-            "default benchmark helper copy pod",
-            "delete",
-            "pod",
-            "guidellm-benchmark-copy",
-            "-n",
-            args.namespace,
-            "--ignore-not-found=true",
-        )
 
     return f"Deleted benchmark resources for {ctx.benchmark_name}"
 

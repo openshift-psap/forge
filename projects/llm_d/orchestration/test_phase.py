@@ -17,7 +17,6 @@ from projects.cluster.library.prom.collection import (
 )
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.dsl import shell
-from projects.core.dsl.utils import slugify_identifier
 from projects.core.dsl.utils.k8s import oc
 from projects.core.library import config, env
 from projects.core.library.postprocess import (
@@ -28,14 +27,13 @@ from projects.core.library.postprocess import (
 )
 from projects.core.library.run import SignalInterrupt
 from projects.core.orchestration.utils.k8s import ensure_namespace
-from projects.guidellm.library import benchconf as benchconf_lib  # noqa: F401
-from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
-from projects.guidellm.toolbox.run_guidellm_benchmark import main as run_guidellm_benchmark_command
 from projects.guidellm.toolbox.run_smoke_request import main as run_smoke_request_command
 from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state
 from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
 from projects.kserve.toolbox.wait_kserve_ready import main as wait_kserve_ready
 from projects.llm_d.orchestration import runtime_config
+from projects.llm_d.orchestration.loadgenerator import get_load_generator
+from projects.llm_d.orchestration.loadgenerator.base import BenchmarkContext, LlmDLoadGenerator
 from projects.llm_d.orchestration.prepare_phase import prepare_model_cache
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
@@ -206,7 +204,11 @@ def create_test_labels() -> None:
     }
 
     if benchmark_keys:
-        labels["guidellm_loadshape"] = benchmark_keys[0]
+        benchmark = runtime_config.get_benchmark_config()
+        labels["benchmark_tool"] = benchmark["tool"]
+        labels["benchmark_key"] = benchmark_keys[0]
+        if benchmark["tool"] == "guidellm":
+            labels["guidellm_loadshape"] = benchmark_keys[0]
 
     # Extract kpi_labels from config
     kpi_labels = extract_kpi_labels_from_config()
@@ -355,6 +357,9 @@ def do_test() -> int:
     namespace = runtime_config.get_namespace()
     dry_run = config.project.get_config("runtime.kserve.dry_run", False)
 
+    benchmark = runtime_config.get_benchmark_config() if not dry_run else None
+    generator = get_load_generator(benchmark["tool"]) if benchmark is not None else None
+
     if not dry_run:
         # Ensure namespace exists before starting any deployments
         ensure_namespace(
@@ -412,7 +417,7 @@ def do_test() -> int:
 
         run_smoke_request(endpoint_url=endpoint_url)
 
-        run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
+        run_benchmark(test_dir, endpoint_url=endpoint_url, benchmark=benchmark, generator=generator)
     except Exception as e:
         primary_exc = sys.exc_info()
 
@@ -720,59 +725,34 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
     )
 
 
-def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> None:
-    namespace = runtime_config.get_namespace()
-    benchmark = runtime_config.get_benchmark_config()
-    workload = runtime_config.get_workload_config()
-
+def run_benchmark(
+    test_dir,
+    *,
+    endpoint_url: str,
+    benchmark: dict[str, Any] | None = None,
+    generator: LlmDLoadGenerator | None = None,
+) -> None:
+    if benchmark is None:
+        benchmark = runtime_config.get_benchmark_config()
     if benchmark is None:
         return
-
-    # Add benchmark start timing
+    if generator is None:
+        generator = get_load_generator(benchmark["tool"])
     start_time = update_test_labels_with_timing(test_dir, "benchmark", "start")
-
     try:
-        benchmark_key = runtime_config.get_benchmark_keys()[0]
-
-        # Resolve benchconf config if enabled and the benchmark references one
-        config_path = None
-        benchconf_ref = benchmark.get("benchconf")
-        if benchconf_ref and benchconf_lib._is_enabled():
-            benchconf_lib.maybe_install_custom_version()
-            config_path = benchconf_lib.resolve_config_path(benchconf_ref)
-            benchconf_lib.save_version()
-
-        guidellm_args = build_guidellm_args(benchmark)
-        if not any(arg.startswith(("--tokenizer=", "--processor=")) for arg in guidellm_args):
-            guidellm_args.append(
-                f"--tokenizer=kind=huggingface_auto,model={runtime_config.get_model_name()}"
-            )
-
-        # Get fs_group from workload config
-        fs_group = None
-        if workload:
-            fs_group = workload.get("fs_group")
-
-        artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
-        with env.NextArtifactDir(artifact_name):
-            run_guidellm_benchmark_command.run(
+        generator.run(
+            BenchmarkContext(
+                test_dir=test_dir,
                 endpoint_url=endpoint_url,
-                name=benchmark.get("job_name"),
-                namespace=namespace,
-                image=benchmark.get("image"),
-                timeout=benchmark.get("timeout_seconds"),
-                pvc_size=benchmark.get("pvc_size"),
-                pvc_storage_class=benchmark.get("pvc_storage_class"),
-                guidellm_args=guidellm_args,
-                config_path=config_path,
-                fs_group=fs_group,
-                use_pvc=benchmark.get("use_pvc"),
+                benchmark_key=runtime_config.get_benchmark_keys()[0],
+                benchmark=benchmark,
+                workload=runtime_config.get_workload_config(),
+                model_name=runtime_config.get_model_name(),
+                namespace=runtime_config.get_namespace(),
             )
+        )
     finally:
-        # Add benchmark end timing (even if benchmark failed)
         end_time = update_test_labels_with_timing(test_dir, "benchmark", "end")
-
-        # Capture prometheus metrics if enabled
         if config.project.get_config("prom.capture.enabled") or config.project.get_config(
             "prom.capture.user_workload.enabled"
         ):
