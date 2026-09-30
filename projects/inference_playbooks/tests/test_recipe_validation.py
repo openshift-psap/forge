@@ -344,9 +344,7 @@ def test_lws_launch_uses_leader_service_and_janus_roce_override(
     applied = []
     actions = []
     cache_runs = []
-    monkeypatch.setattr(
-        test_phase.vault, "get_vault_content_path", lambda *_args: None
-    )
+    monkeypatch.setattr(test_phase.vault, "get_vault_content_path", lambda *_args: None)
     monkeypatch.setattr(
         test_phase.prepare_hf_model_cache,
         "run",
@@ -390,9 +388,7 @@ def test_lws_launch_uses_leader_service_and_janus_roce_override(
             for volume in templates[template]["spec"]["volumes"]
             if volume["name"] == "weights"
         )
-        assert volume["persistentVolumeClaim"]["claimName"].startswith(
-            "test-cache-example-model-"
-        )
+        assert volume["persistentVolumeClaim"]["claimName"].startswith("test-cache-example-model-")
         assert "hostPath" not in volume
     assert actions[0][0].endswith(":8000")
 

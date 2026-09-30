@@ -208,9 +208,8 @@ def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value
         raise ValueError(f"{label}.volume_name must be a Kubernetes volume name")
     if not isinstance(value["pvc_size"], str) or not value["pvc_size"]:
         raise ValueError(f"{label}.pvc_size must be a non-empty string")
-    if (
-        not isinstance(value["model_directory_name"], str)
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value["model_directory_name"])
+    if not isinstance(value["model_directory_name"], str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*", value["model_directory_name"]
     ):
         raise ValueError(f"{label}.model_directory_name must be a single directory name")
     if "wait_timeout_seconds" in value and (
@@ -219,9 +218,7 @@ def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value
         raise ValueError(f"{label}.wait_timeout_seconds must be a positive integer")
 
     spec = manifest.get("spec")
-    leader_worker_template = (
-        spec.get("leaderWorkerTemplate") if isinstance(spec, dict) else None
-    )
+    leader_worker_template = spec.get("leaderWorkerTemplate") if isinstance(spec, dict) else None
     if not isinstance(leader_worker_template, dict):
         raise ValueError(f"{recipe_path} must define spec.leaderWorkerTemplate")
     pod_templates = [("workerTemplate", leader_worker_template.get("workerTemplate"))]
@@ -234,9 +231,13 @@ def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value
         if not isinstance(pod_spec, dict):
             raise ValueError(f"{recipe_path} must define {template_name}.spec")
         volumes = pod_spec.get("volumes", [])
-        if not isinstance(volumes, list) or sum(
-            volume.get("name") == volume_name for volume in volumes if isinstance(volume, dict)
-        ) != 1:
+        if (
+            not isinstance(volumes, list)
+            or sum(
+                volume.get("name") == volume_name for volume in volumes if isinstance(volume, dict)
+            )
+            != 1
+        ):
             raise ValueError(
                 f"{recipe_path} {template_name} must define exactly one volume named {volume_name!r}"
             )
@@ -246,16 +247,12 @@ def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value
             for container in containers:
                 mounts = container.get("volumeMounts", []) if isinstance(container, dict) else []
                 if isinstance(mounts, list) and any(
-                    mount.get("name") == volume_name
-                    for mount in mounts
-                    if isinstance(mount, dict)
+                    mount.get("name") == volume_name for mount in mounts if isinstance(mount, dict)
                 ):
                     has_model_mount = True
                     break
         if not has_model_mount:
-            raise ValueError(
-                f"{recipe_path} {template_name} must mount volume {volume_name!r}"
-            )
+            raise ValueError(f"{recipe_path} {template_name} must mount volume {volume_name!r}")
 
 
 def _validate_llmisvc_manifest(manifest: Any, path: Path) -> None:

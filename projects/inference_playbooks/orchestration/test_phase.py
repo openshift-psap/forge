@@ -4,13 +4,14 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from pathlib import Path
 
 import yaml
 
 from projects.core.dsl.utils import slugify_identifier
-from projects.core.dsl.utils.k8s import oc, oc_apply
+from projects.core.dsl.utils.k8s import oc, oc_apply, oc_get_json
 from projects.core.library import config, env, vault
 from projects.core.library.postprocess import (
     create_test_metadata,
@@ -176,9 +177,7 @@ def _prepare_hf_model_cache(
     overrides = model_cache or {}
     pvc_size = overrides.get("pvc_size", pvc["size"])
     model_directory_name = overrides.get("model_directory_name", pvc["model_directory_name"])
-    wait_timeout_seconds = overrides.get(
-        "wait_timeout_seconds", download["wait_timeout_seconds"]
-    )
+    wait_timeout_seconds = overrides.get("wait_timeout_seconds", download["wait_timeout_seconds"])
     cache_spec = build_model_cache_spec(
         namespace=namespace,
         model_key=model_key,
@@ -272,15 +271,7 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         _prepare_lws_model_cache(recipe, lws, namespace)
         oc_apply(src_dir / f"{service_name}-service.yaml", service)
         oc_apply(src_dir / f"{service_name}-lws.yaml", lws)
-        oc(
-            "wait",
-            f"leaderworkerset/{service_name}",
-            "-n",
-            namespace,
-            "--for=condition=Available",
-            "--timeout=7200s",
-            timeout_seconds=7260,
-        )
+        _wait_for_lws(namespace, service_name, run_label)
         return f"http://{service_name}.{namespace}.svc.cluster.local:{port}"
 
     def capture() -> None:
@@ -293,6 +284,46 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         )
 
     _deploy_benchmark_finalize(recipe_id, recipe, namespace, service_name, deploy, capture, cleanup)
+
+
+def _wait_for_lws(namespace: str, name: str, run_label: str) -> None:
+    deadline = time.monotonic() + 7200
+    while time.monotonic() < deadline:
+        result = oc(
+            "wait",
+            f"leaderworkerset/{name}",
+            "-n",
+            namespace,
+            "--for=condition=Available",
+            "--timeout=30s",
+            timeout_seconds=45,
+            check=False,
+            log_stdout=False,
+            log_stderr=False,
+        )
+        if result.returncode == 0:
+            return
+
+        pods = oc_get_json(
+            "pods", namespace=namespace, selector=f"forge.openshift.io/run={run_label}"
+        )
+        for pod in pods["items"]:
+            statuses = pod.get("status", {})
+            for status in (statuses.get("initContainerStatuses") or []) + (
+                statuses.get("containerStatuses") or []
+            ):
+                reason = status.get("state", {}).get("waiting", {}).get("reason")
+                if reason in {"CrashLoopBackOff", "CreateContainerConfigError", "InvalidImageName"}:
+                    raise RuntimeError(
+                        f"LeaderWorkerSet {name} pod {pod['metadata']['name']} "
+                        f"container {status['name']} is {reason}; see captured pod logs"
+                    )
+        if "timed out" not in result.stderr.lower():
+            raise RuntimeError(
+                f"Waiting for LeaderWorkerSet {name} failed: {result.stderr.strip()}"
+            )
+
+    raise RuntimeError(f"LeaderWorkerSet {name} did not become Available within 7200s")
 
 
 def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
@@ -314,7 +345,9 @@ def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
         volumes = pod_template["spec"].get("volumes", [])
         matches = [volume for volume in volumes if volume.get("name") == volume_name]
         if len(matches) != 1:
-            raise ValueError(f"LeaderWorkerSet must define exactly one {volume_name!r} model volume")
+            raise ValueError(
+                f"LeaderWorkerSet must define exactly one {volume_name!r} model volume"
+            )
         matches[0].clear()
         matches[0].update(
             {
