@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
 
 from projects.core.dsl import always, entrypoint, execute_tasks, retry, shell, task
-from projects.core.dsl.utils import (
-    slugify_identifier,
-    truncate_k8s_name,
-    write_json,
-    write_yaml,
-)
+from projects.core.dsl.utils import write_json, write_yaml
 from projects.core.dsl.utils.k8s import (
     oc,
     oc_apply,
@@ -21,6 +15,7 @@ from projects.core.dsl.utils.k8s import (
 )
 from projects.kserve.toolbox.prepare_hf_model_cache.utils import (
     annotate_model_cache_pvc,
+    build_model_cache_spec,
     job_pod_names,
     model_cache_pvc_ready,
     pvc_access_mode_matches,
@@ -79,42 +74,21 @@ def run(
 @task
 def build_cache_spec(args, ctx):
     """Build the model cache specification"""
-
-    if not args.model_uri.startswith("hf://"):
-        raise ValueError(f"Expected HF model URI, got: {args.model_uri}")
-
-    # Build model cache spec
-    cache_key = hashlib.sha256(args.model_uri.encode("utf-8")).hexdigest()[:10]
-    pvc_name = truncate_k8s_name(
-        f"{args.pvc_name_prefix}-{slugify_identifier(args.model_key, max_length=32)}-{cache_key}"
+    ctx.cache_spec = build_model_cache_spec(
+        namespace=args.namespace,
+        model_key=args.model_key,
+        model_uri=args.model_uri,
+        pvc_size=args.pvc_size,
+        access_mode=args.access_mode,
+        storage_class_name=args.storage_class_name,
+        pvc_name_prefix=args.pvc_name_prefix,
+        model_directory_name=args.model_directory_name,
+        marker_filename=args.marker_filename,
     )
-
-    cache_spec = {
-        "source_uri": args.model_uri,
-        "source_scheme": "hf",
-        "cache_key": cache_key,
-        "namespace": args.namespace,
-        "pvc_name": pvc_name,
-        "pvc_size": args.pvc_size,
-        "access_mode": args.access_mode,
-        "storage_class_name": args.storage_class_name,
-        "model_path": args.model_directory_name,
-        "model_uri": f"pvc://{pvc_name}/{args.model_directory_name}",
-        "marker_filename": args.marker_filename,
-        "marker_path": f"/cache/{args.model_directory_name}/{args.marker_filename}",
-        "download_job_name": truncate_k8s_name(f"{pvc_name}-download"),
-        "hf_token_secret_name": None,  # Will be set dynamically from vault
-        "hf_token_secret_key": "token",
-        "oci_image_path": None,
-        "oci_registry_auth_secret_name": None,
-        "oci_registry_auth_secret_key": None,
-    }
-
-    ctx.cache_spec = cache_spec
     ctx.hf_secret_created = False
     ctx.hf_secret_name = None
     ctx.pvc_exists = False
-    return f"Cache spec built for {cache_spec['pvc_name']}"
+    return f"Cache spec built for {ctx.cache_spec['pvc_name']}"
 
 
 @task
