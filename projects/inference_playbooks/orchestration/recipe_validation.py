@@ -90,6 +90,8 @@ def _load_recipe_v3(
     auxiliary_sources = deployment.get("auxiliary_sources", [])
     if not isinstance(auxiliary_sources, list):
         raise ValueError(f"{recipe_path} deployment.auxiliary_sources must be a list")
+    if len(auxiliary_sources) != 1:
+        raise ValueError(f"{recipe_path} must define exactly one auxiliary Service")
     for index, source in enumerate(auxiliary_sources, start=1):
         if not isinstance(source, dict) or not isinstance(source.get("kind"), str):
             raise ValueError(f"{recipe_path} auxiliary source {index} must define path and kind")
@@ -100,6 +102,7 @@ def _load_recipe_v3(
         _validate_kubernetes_manifest(source_manifest, source_path, source["kind"])
         if source["kind"] != "Service":
             raise ValueError(f"{source_path} uses unsupported auxiliary kind {source['kind']!r}")
+        _validate_service_manifest(source_manifest, source_path)
         auxiliary_manifests.append({"path": source_path, "data": source_manifest})
 
     model_id = _validate_recipe_id(recipe.get("model_id"), f"{recipe_path} model_id")
@@ -188,6 +191,27 @@ def _validate_kubernetes_manifest(manifest: Any, path: Path, expected_kind: str)
         raise ValueError(f"{path} must define metadata.name")
 
 
+def _validate_service_manifest(manifest: dict[str, Any], path: Path) -> None:
+    spec = manifest.get("spec")
+    if not isinstance(spec, dict):
+        raise ValueError(f"{path} must define spec")
+    selector = spec.get("selector")
+    if not isinstance(selector, dict) or not selector or any(
+        not isinstance(key, str) or not key or not isinstance(value, str)
+        for key, value in selector.items()
+    ):
+        raise ValueError(f"{path} must define a non-empty spec.selector")
+    ports = spec.get("ports")
+    if (
+        not isinstance(ports, list)
+        or not ports
+        or not isinstance(ports[0], dict)
+        or type(ports[0].get("port")) is not int
+        or not 1 <= ports[0]["port"] <= 65535
+    ):
+        raise ValueError(f"{path} must define a valid spec.ports[0].port")
+
+
 def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value: Any) -> None:
     label = f"{recipe_path} deployment.model_cache"
     if not isinstance(value, dict):
@@ -221,10 +245,13 @@ def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value
     leader_worker_template = spec.get("leaderWorkerTemplate") if isinstance(spec, dict) else None
     if not isinstance(leader_worker_template, dict):
         raise ValueError(f"{recipe_path} must define spec.leaderWorkerTemplate")
-    pod_templates = [("workerTemplate", leader_worker_template.get("workerTemplate"))]
     leader_template = leader_worker_template.get("leaderTemplate")
-    if leader_template is not None:
-        pod_templates.append(("leaderTemplate", leader_template))
+    if not isinstance(leader_template, dict):
+        raise ValueError(f"{recipe_path} must define spec.leaderWorkerTemplate.leaderTemplate")
+    pod_templates = [
+        ("leaderTemplate", leader_template),
+        ("workerTemplate", leader_worker_template.get("workerTemplate")),
+    ]
 
     for template_name, pod_template in pod_templates:
         pod_spec = pod_template.get("spec") if isinstance(pod_template, dict) else None
