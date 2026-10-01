@@ -8,6 +8,22 @@ nvidia:
 amd:
   rhaiis.accelerator: amd
 
+cpu:
+  rhaiis.accelerator: cpu
+  rhaiis.cpu_flavor: rhaiis
+  rhaiis.deploy.cpu_request: "16"
+  rhaiis.deploy.memory_request: "64Gi"
+  rhaiis.deploy.node_selector:
+    rhaiis.io/cpu-benchmark: "true"
+
+cpu-vanilla:
+  rhaiis.accelerator: cpu
+  rhaiis.cpu_flavor: vanilla
+  rhaiis.deploy.cpu_request: "16"
+  rhaiis.deploy.memory_request: "64Gi"
+  rhaiis.deploy.node_selector:
+    rhaiis.io/cpu-benchmark: "true"
+
 # ── Engine ───────────────────────────────────────────────────
 
 vllm:
