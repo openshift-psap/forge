@@ -224,20 +224,21 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
     original_name = lws["metadata"]["name"]
     if slugify_identifier(original_name) != original_name:
         raise ValueError(f"Recipe has an invalid LeaderWorkerSet name: {original_name!r}")
-    service_name = _unique_name(original_name)
-    run_label = service_name
+    original_service_name = services[0]["metadata"]["name"]
+    lws_name = _unique_name(original_name)
+    service_name = _unique_name(original_service_name)
+    run_label = lws_name
     endpoint_label = "leader"
     lws["metadata"] = {
         **lws["metadata"],
-        "name": service_name,
+        "name": lws_name,
         "namespace": namespace,
         "labels": {**lws["metadata"].get("labels", {}), "forge.openshift.io/run": run_label},
     }
     templates = lws["spec"]["leaderWorkerTemplate"]
     leader_template = templates.get("leaderTemplate")
-    if leader_template is None:
-        leader_template = copy.deepcopy(templates["workerTemplate"])
-        templates["leaderTemplate"] = leader_template
+    if not isinstance(leader_template, dict):
+        raise ValueError(f"Recipe {recipe_id!r} must define an explicit leaderTemplate")
     leader_labels = leader_template.setdefault("metadata", {}).setdefault("labels", {})
     leader_labels.update(
         {"forge.openshift.io/run": run_label, "forge.openshift.io/endpoint": endpoint_label}
@@ -270,20 +271,20 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         src_dir.mkdir(parents=True, exist_ok=True)
         _prepare_lws_model_cache(recipe, lws, namespace)
         oc_apply(src_dir / f"{service_name}-service.yaml", service)
-        oc_apply(src_dir / f"{service_name}-lws.yaml", lws)
-        _wait_for_lws(namespace, service_name, run_label)
+        oc_apply(src_dir / f"{lws_name}-lws.yaml", lws)
+        _wait_for_lws(namespace, lws_name, run_label)
         return f"http://{service_name}.{namespace}.svc.cluster.local:{port}"
 
     def capture() -> None:
-        _capture_lws_state(namespace, service_name, run_label)
+        _capture_lws_state(namespace, lws_name, run_label)
 
     def cleanup() -> None:
         _delete_resources(
             namespace,
-            [("leaderworkerset", service_name), ("service", service_name)],
+            [("leaderworkerset", lws_name), ("service", service_name)],
         )
 
-    _deploy_benchmark_finalize(recipe_id, recipe, namespace, service_name, deploy, capture, cleanup)
+    _deploy_benchmark_finalize(recipe_id, recipe, namespace, lws_name, deploy, capture, cleanup)
 
 
 def _wait_for_lws(namespace: str, name: str, run_label: str) -> None:
