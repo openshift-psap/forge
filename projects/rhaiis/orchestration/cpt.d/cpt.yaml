@@ -133,6 +133,8 @@ cpt-rhaiis-3.6-h200:
     - hera
     - zeus
     - old-zeus
+    - athena
+    - janus
   __models:
     qwen3-vl-30b/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
