@@ -204,9 +204,9 @@ def build_guidellm_args(
     *,
     benchmark_cfg: dict,
     model_id: str,
-    data: str,
-    rates: list[int],
-    max_seconds: int,
+    data: str | None,
+    rates: list[int] | None,
+    max_seconds: int | None,
     rampup: int | None = None,
 ) -> list[str]:
     guidellm_args = []
@@ -215,9 +215,12 @@ def build_guidellm_args(
         guidellm_args.append(f"--{cli_key}={_format_arg_value(value)}")
 
     guidellm_args.append(f"--model={model_id}")
-    guidellm_args.append(f"--data={data}")
-    guidellm_args.append(f"--rate={_format_arg_value(rates)}")
-    guidellm_args.append(f"--max-seconds={max_seconds}")
+    if data is not None:
+        guidellm_args.append(f"--data={data}")
+    if rates is not None:
+        guidellm_args.append(f"--rate={_format_arg_value(rates)}")
+    if max_seconds is not None:
+        guidellm_args.append(f"--max-seconds={max_seconds}")
     if rampup is not None:
         guidellm_args.append(f"--rampup={rampup}")
     return guidellm_args
