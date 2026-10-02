@@ -41,3 +41,7 @@ cluster_zeus:
 
 cluster_old_zeus:
   extends: [nvidia, old-zeus]
+
+cluster_mi355x:
+  extends: [amd, mi355x]
+  rhaiis.profiler.ranges: "100-103"
