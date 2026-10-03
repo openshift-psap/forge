@@ -32,19 +32,35 @@ WAIT_POLL_INTERVAL_SECONDS = 10
 JOB_COMPLETION_GRACE_SECONDS = 60
 
 
+_REQUEST_BULK_FIELDS = {"request_args", "output", "reasoning_output"}
+
+
 def trim_benchmark_json(obj):
-    """Remove 'requests' field recursively from JSON data"""
+    """Trim bulky text from request entries while keeping per-turn metrics.
+
+    Strips ``request_args`` (full message history), ``output``, and
+    ``reasoning_output`` from each request entry. Small fields like
+    ``info`` (conversation_id, turn_index, timings), token counts, and
+    computed metrics (TTFT, ITL, latency, tokens/sec) are preserved so
+    that per-turn analysis is possible from the trimmed file.
+    """
     if isinstance(obj, dict):
         return {
-            k: trim_benchmark_json(v)
+            k: _trim_request_entry(v) if k == "requests" else trim_benchmark_json(v)
             for k, v in obj.items()
-            if k
-            not in [
-                "requests",
-            ]
         }
     elif isinstance(obj, list):
         return [trim_benchmark_json(item) for item in obj]
+    else:
+        return obj
+
+
+def _trim_request_entry(obj):
+    """Recursively trim bulky text fields from request entries."""
+    if isinstance(obj, dict):
+        return {k: _trim_request_entry(v) for k, v in obj.items() if k not in _REQUEST_BULK_FIELDS}
+    elif isinstance(obj, list):
+        return [_trim_request_entry(item) for item in obj]
     else:
         return obj
 

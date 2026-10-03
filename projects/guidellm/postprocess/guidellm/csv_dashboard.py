@@ -10,6 +10,8 @@ BASIC_GUIDELLM_FIELDNAMES = [
     "version",
     "prompt toks",
     "output toks",
+    "turn_index",
+    "turns",
     "TP",
     "measured concurrency",
     "intended concurrency",
