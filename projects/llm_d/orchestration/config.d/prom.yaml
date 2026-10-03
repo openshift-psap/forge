@@ -17,39 +17,31 @@ capture:
     include_dirs:
       - projects/cluster/metrics
       - projects/kserve/metrics
-    config:
+    params:
       llmisvc_namespace: "@runtime.namespace"
       llmisvc_name: SET_AT_RUNTIME
     groups:
       resources:
         enabled: true
         files: [resource_cpu, resource_memory, resource_network, workload]
-
-        step_seconds: 15
-        params:
-          namespace: "{llmisvc_namespace}"
-          pod_name: "{llmisvc_name}-.*"
+        variables:
+          NAMESPACE: "{llmisvc_namespace}"
+          POD_NAME: "{llmisvc_name}-.*"
       vllm:
         enabled: true
         files: [vllm_latency, vllm_throughput]
-
-        step_seconds: 15
-        params:
-          llmisvc_namespace: "{llmisvc_namespace}"
-          llmisvc_name: "{llmisvc_name}"
+        variables:
+          LLMISVC_NAMESPACE: "{llmisvc_namespace}"
+          LLMISVC_NAME: "{llmisvc_name}"
       scheduler:
         enabled: true
         files: [scheduler]
-
-        step_seconds: 15
-        params:
-          llmisvc_namespace: "{llmisvc_namespace}"
-          llmisvc_name: "{llmisvc_name}"
+        variables:
+          LLMISVC_NAMESPACE: "{llmisvc_namespace}"
+          LLMISVC_NAME: "{llmisvc_name}"
       gpu:
         enabled: true
         files: [gpu]
-
-        step_seconds: 15
-        params:
-          namespace: "{llmisvc_namespace}"
-          pod_name: "{llmisvc_name}-.*"
+        variables:
+          NAMESPACE: "{llmisvc_namespace}"
+          POD_NAME: "{llmisvc_name}-.*"

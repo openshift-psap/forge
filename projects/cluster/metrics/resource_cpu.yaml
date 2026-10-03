@@ -1,17 +1,15 @@
-params:
-  namespace:
-    description: Target namespace
-  pod_name:
-    description: Pod name for the resource capture
+# params:
+#   NAMESPACE: Target namespace
+#   POD_NAME: Pod name regex for the resource capture
 
-cpu_usage_percent_by_pod:
+- query: >-
+    rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[5m]) * 100
+  metricName: cpu_usage_percent_by_pod
   description: Cpu usage percent by pod
   unit: ratio
-  promql: >-
-    rate(container_cpu_usage_seconds_total{namespace="{namespace}", pod=~"{pod_name}"}[5m]) * 100
 
-avg_cpu_usage_percent:
+- query: >-
+    avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[5m])) * 100
+  metricName: avg_cpu_usage_percent
   description: Avg cpu usage percent
   unit: ratio
-  promql: >-
-    avg(rate(container_cpu_usage_seconds_total{namespace="{namespace}", pod=~"{pod_name}"}[5m])) * 100

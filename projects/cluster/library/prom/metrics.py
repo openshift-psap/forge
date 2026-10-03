@@ -11,140 +11,52 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-VALID_ON_ERROR = ("ignore", "fail")
-
-
-def _is_bare_selector(expr: str) -> bool:
-    import re
-
-    stripped = expr.strip()
-    name_part = stripped.split("{", 1)[0].strip() if "{" in stripped else stripped
-    return bool(re.match(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$", name_part))
-
-
-METRIC_FIELDS = {
-    "description",
-    "unit",
-    "on_error",
-    "params",
-    "promql",
-    "metric",
-}
-
 
 @dataclass(frozen=True)
-class MetricParam:
-    name: str
-    description: str
-    default: str | None = None
-
-    @classmethod
-    def from_dict(cls, name: str, data: dict) -> MetricParam:
-        return cls(
-            name=name,
-            description=data["description"],
-            default=data.get("default"),
-        )
-
-
-@dataclass(frozen=True)
-class MetricDefinition:
-    key: str
+class MetricMetadata:
+    metric_name: str
     description: str
     unit: str
-    promql: str | None = None
-    metric: str | None = None
-    on_error: str = "ignore"
-    params: tuple[MetricParam, ...] = ()
-
-    @property
-    def is_raw(self) -> bool:
-        return self.metric is not None
-
-    @property
-    def capture_expr(self) -> str:
-        return self.metric if self.metric is not None else self.promql
-
-    @classmethod
-    def from_dict(cls, key: str, data: dict) -> MetricDefinition:
-        unknown = set(data) - METRIC_FIELDS
-        if unknown:
-            raise ValueError(f"metric {key!r}: unknown fields {unknown}")
-
-        for required in ("description", "unit"):
-            if required not in data:
-                raise ValueError(f"metric {key!r}: missing required field {required!r}")
-
-        has_promql = "promql" in data
-        has_metric = "metric" in data
-        if has_promql == has_metric:
-            if has_promql:
-                raise ValueError(f"metric {key!r}: must have either 'promql' or 'metric', not both")
-            raise ValueError(f"metric {key!r}: must have either 'promql' or 'metric'")
-
-        if has_promql and _is_bare_selector(data["promql"]):
-            raise ValueError(
-                f"metric {key!r}: 'promql' value is a bare metric selector — "
-                "use 'metric:' instead for raw capture"
-            )
-        if has_metric and not _is_bare_selector(data["metric"]):
-            raise ValueError(
-                f"metric {key!r}: 'metric' value looks like a PromQL expression — "
-                "use 'promql:' instead"
-            )
-
-        on_error = data.get("on_error", "ignore")
-        if on_error not in VALID_ON_ERROR:
-            raise ValueError(
-                f"metric {key!r}: invalid on_error {on_error!r}, must be one of {VALID_ON_ERROR}"
-            )
-
-        raw_params = data.get("params", {})
-        params = tuple(MetricParam.from_dict(n, v) for n, v in raw_params.items())
-
-        return cls(
-            key=key,
-            description=data["description"],
-            unit=data["unit"],
-            promql=data.get("promql"),
-            metric=data.get("metric"),
-            on_error=on_error,
-            params=params,
-        )
 
 
-FILE_LEVEL_KEYS = {"params"}
-
-
-def load_definitions(*paths: str | Path) -> list[MetricDefinition]:
-    seen_keys: dict[str, Path] = {}
-    definitions: list[MetricDefinition] = []
+def load_profile_metadata(*paths: str | Path) -> list[MetricMetadata]:
+    seen_names: dict[str, Path] = {}
+    metadata: list[MetricMetadata] = []
 
     for path in paths:
         path = Path(path)
         with path.open("r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
 
-        if not isinstance(raw, dict) or not raw:
-            raise ValueError(f"{path}: expected a non-empty mapping of metric definitions")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError(f"{path}: expected a non-empty list of metric entries")
 
-        file_params = raw.get("params", {})
+        for entry in raw:
+            if not isinstance(entry, dict):
+                raise ValueError(f"{path}: each entry must be a mapping")
 
-        for key, data in raw.items():
-            if key in FILE_LEVEL_KEYS:
-                continue
-            if key in seen_keys:
+            metric_name = entry.get("metricName")
+            if not metric_name:
+                raise ValueError(f"{path}: entry missing required field 'metricName'")
+            if "query" not in entry:
+                raise ValueError(f"{path}: entry {metric_name!r} missing required field 'query'")
+
+            if metric_name in seen_names:
                 raise ValueError(
-                    f"duplicate metric key {key!r} in {path} (already defined in {seen_keys[key]})"
+                    f"duplicate metricName {metric_name!r} in {path} "
+                    f"(already defined in {seen_names[metric_name]})"
                 )
-            seen_keys[key] = path
+            seen_names[metric_name] = path
 
-            if file_params and "params" not in data:
-                data = {**data, "params": file_params}
+            metadata.append(
+                MetricMetadata(
+                    metric_name=metric_name,
+                    description=entry.get("description", ""),
+                    unit=entry.get("unit", ""),
+                )
+            )
 
-            definitions.append(MetricDefinition.from_dict(key, data))
-
-    return definitions
+    return metadata
 
 
 def resolve_files(
@@ -176,99 +88,48 @@ def resolve_files(
     return resolved
 
 
-def select(
-    definitions: list[MetricDefinition],
-    *,
-    keys: list[str] | None = None,
-) -> list[MetricDefinition]:
-    result = definitions
+def resolve_params(
+    raw_params: dict[str, str],
+    runtime_params: dict[str, str] | None = None,
+) -> dict[str, str]:
+    params = dict(raw_params)
 
-    if keys is not None:
-        key_set = set(keys)
-        result = [d for d in result if d.key in key_set]
+    if runtime_params:
+        params.update(runtime_params)
 
-    return result
-
-
-def interpolate_params(params: dict[str, str], variables: dict[str, str]) -> dict[str, str]:
-    unset = [k for k, v in variables.items() if isinstance(v, str) and v == "SET_AT_RUNTIME"]
+    unset = [k for k, v in params.items() if isinstance(v, str) and v == "set_at_runtime"]
     if unset:
-        raise ValueError(f"metrics config variables not set at runtime: {', '.join(unset)}")
+        raise ValueError(f"metrics config params not set at runtime: {', '.join(unset)}")
 
+    return params
+
+
+def interpolate_variables(
+    variables: dict[str, str],
+    params: dict[str, str],
+) -> dict[str, str]:
     result = {}
-    for key, value in params.items():
+    for key, value in variables.items():
         if isinstance(value, str):
-            for var_name, var_value in variables.items():
-                value = value.replace(f"{{{var_name}}}", str(var_value))
+            for param_name, param_value in params.items():
+                value = value.replace(f"{{{param_name}}}", str(param_value))
         result[key] = value
     return result
 
 
-@dataclass
-class ResolvedMetrics:
-    queries: dict[str, str]
-    raw_metrics: dict[str, str]
-
-
-def resolve(
-    definitions: list[MetricDefinition],
-    params: dict[str, str],
-) -> ResolvedMetrics:
-    missing: list[str] = []
-    queries: dict[str, str] = {}
-    raw_metrics: dict[str, str] = {}
-
-    for defn in definitions:
-        resolved_params: dict[str, str] = {}
-        defn_missing = False
-        for p in defn.params:
-            if p.name in params:
-                resolved_params[p.name] = params[p.name]
-            elif p.default is not None:
-                resolved_params[p.name] = p.default
-            else:
-                missing.append(f"{defn.key}.{p.name}")
-                defn_missing = True
-
-        if not defn_missing:
-            expr = defn.capture_expr
-            for pname, pvalue in resolved_params.items():
-                expr = expr.replace(f"{{{pname}}}", pvalue)
-            if defn.is_raw:
-                raw_metrics[defn.key] = expr
-            else:
-                queries[defn.key] = expr
-
-    if missing:
-        logger.error("Skipped metrics with missing mandatory params: %s", ", ".join(missing))
-
-    return ResolvedMetrics(queries=queries, raw_metrics=raw_metrics)
-
-
-def write_capture_input(
-    queries: dict[str, str],
-    path: str | Path,
-) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(queries, f, default_flow_style=False, sort_keys=False)
-    return path
-
-
-def build_index(
-    definitions: list[MetricDefinition],
-    params: dict[str, str],
+def build_metadata_index(
+    metadata: list[MetricMetadata],
     results_dir: Path,
     *,
+    variables: dict[str, str] | None = None,
     timestamp: str | None = None,
 ) -> Path:
     if timestamp is None:
         timestamp = datetime.now(UTC).isoformat()
 
     results: dict[str, dict] = {}
-    for defn in definitions:
-        result_file = results_dir / f"{defn.key}.json"
+    for meta in metadata:
+        result_file = results_dir / f"{meta.metric_name}.json"
 
         if result_file.exists():
             try:
@@ -276,46 +137,28 @@ def build_index(
             except (json.JSONDecodeError, OSError):
                 status = "error"
             else:
-                prom_status = payload.get("status") if isinstance(payload, dict) else None
-                if prom_status != "success":
-                    status = "error"
-                elif not payload.get("data", {}).get("result"):
+                if isinstance(payload, list) and len(payload) > 0:
+                    status = "ok"
+                elif isinstance(payload, list):
                     status = "no_data"
                 else:
-                    status = "ok"
+                    status = "error"
         else:
             status = "no_data"
 
-        used_params = {}
-        for p in defn.params:
-            if p.name in params:
-                used_params[p.name] = params[p.name]
-            elif p.default is not None:
-                used_params[p.name] = p.default
-
-        resolved_expr = defn.capture_expr
-        for pname, pvalue in used_params.items():
-            resolved_expr = resolved_expr.replace(f"{{{pname}}}", pvalue)
-
-        expr_key = "metric" if defn.is_raw else "promql"
-        entry: dict = {
+        results[meta.metric_name] = {
             "status": status,
-            "description": defn.description,
-            "unit": defn.unit,
-            "on_error": defn.on_error,
-            expr_key: resolved_expr,
+            "description": meta.description,
+            "unit": meta.unit,
         }
-        if used_params:
-            entry["params"] = used_params
-
-        results[defn.key] = entry
 
     index = {
         "timestamp": timestamp,
+        "variables": dict(variables) if variables else {},
         "results": results,
     }
 
-    index_path = results_dir / "index.yaml"
+    index_path = results_dir / "metrics_metadata.yaml"
     with index_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(index, f, default_flow_style=False, sort_keys=False)
 
@@ -334,10 +177,10 @@ def _get_config(key, default=None):
 @click.command("capture-metrics")
 @click.option("--group", "group_name", default=None, help="Load defaults from a named config group")
 @click.option(
-    "--param",
-    "params_cli",
+    "--var",
+    "vars_cli",
     multiple=True,
-    help="Parameter key=value, overrides group config (repeatable)",
+    help="Variable KEY=VALUE, overrides config (repeatable)",
 )
 @click.option(
     "--start-time",
@@ -350,14 +193,7 @@ def _get_config(key, default=None):
     help="End of capture window (ISO 8601, default: now)",
 )
 @click.option(
-    "--files", "file_names", multiple=True, help="Metric definition files to include (repeatable)"
-)
-@click.option("--keys", multiple=True, help="Select specific metric keys (repeatable)")
-@click.option(
-    "--step",
-    type=int,
-    default=None,
-    help="Query step in seconds (default: from group/config or 15)",
+    "--files", "file_names", multiple=True, help="Metric profile files to include (repeatable)"
 )
 @click.option(
     "--output-dir",
@@ -375,16 +211,14 @@ def _get_config(key, default=None):
 def capture_metrics_command(
     ctx,
     group_name,
-    params_cli,
+    vars_cli,
     start_time,
     end_time,
     file_names,
-    keys,
-    step,
     output_dir,
     include_dirs,
 ):
-    """Capture Prometheus metrics using PromQL definition files.
+    """Capture Prometheus metrics using kube-burner metric profiles.
 
     Without --group or --files, runs all enabled groups from config.
     Use --group to run a single configured group.
@@ -420,19 +254,32 @@ def capture_metrics_command(
     all_include_dirs = list(_get_config("include_dirs", []))
     all_include_dirs.extend(str(d) for d in include_dirs)
 
-    cli_params = {}
-    for kv in params_cli:
+    cli_vars = {}
+    for kv in vars_cli:
         if "=" not in kv:
-            raise click.ClickException(f"Invalid --param format {kv!r}, expected key=value")
+            raise click.ClickException(f"Invalid --var format {kv!r}, expected KEY=VALUE")
         k, v = kv.split("=", 1)
-        cli_params[k] = v
+        cli_vars[k] = v
+
+    try:
+        from projects.core.library import config as _config_mod
+
+        raw_params = _config_mod.project.get_config(
+            "prom.capture.metrics.params", {}, warn=False, print=False
+        )
+        params = {
+            k: _config_mod.project.resolve_reference(v) if isinstance(v, str) else v
+            for k, v in raw_params.items()
+        }
+    except Exception:
+        params = {}
+
+    params = resolve_params(params, cli_vars)
 
     if file_names:
         groups_to_run = {
             "cli": {
                 "files": list(file_names),
-                "step_seconds": step or 15,
-                "params": cli_params,
             }
         }
     elif group_name:
@@ -456,82 +303,33 @@ def capture_metrics_command(
             logger.warning("Group %s: no files specified, skipping.", grp_name)
             continue
 
-        grp_step = step or grp_cfg.get("step_seconds", 15)
-
         try:
             yaml_paths = resolve_files(grp_files, all_include_dirs)
 
-            defs = load_definitions(*yaml_paths)
-            logger.info("Group %s: %d metrics loaded", grp_name, len(defs))
+            metadata = load_profile_metadata(*yaml_paths)
+            logger.info("Group %s: %d metrics loaded", grp_name, len(metadata))
 
-            defs = select(
-                defs,
-                keys=list(keys) or None,
-            )
-            logger.info("Group %s: %d metrics after filtering", grp_name, len(defs))
+            group_variables = interpolate_variables(grp_cfg.get("variables", {}), params)
 
-            if not defs:
-                logger.warning("Group %s: no metrics after filtering, skipping.", grp_name)
-                continue
-
-            try:
-                from projects.core.library import config as _config_mod
-
-                raw_variables = _config_mod.project.get_config(
-                    "prom.capture.metrics.config", {}, warn=False, print=False
-                )
-                variables = {
-                    k: _config_mod.project.resolve_reference(v) if isinstance(v, str) else v
-                    for k, v in raw_variables.items()
-                }
-            except Exception:
-                variables = {}
-            params = interpolate_params(grp_cfg.get("params", {}), variables)
-            params.update(cli_params)
-
-            resolved = resolve(defs, params)
-            logger.info(
-                "Group %s: %d queries, %d raw metrics resolved",
-                grp_name,
-                len(resolved.queries),
-                len(resolved.raw_metrics),
-            )
-
-            if not resolved.queries and not resolved.raw_metrics:
-                logger.warning("Group %s: no metrics to capture, skipping.", grp_name)
-                continue
-
-            input_dir = Path("/tmp/prom_capture_input")
-
-            queries_file = None
-            if resolved.queries:
-                queries_file = str(
-                    write_capture_input(resolved.queries, input_dir / f"{grp_name}.yaml")
-                )
-
-            raw_metrics_file = None
-            if resolved.raw_metrics:
-                raw_metrics_file = str(
-                    write_capture_input(resolved.raw_metrics, input_dir / f"{grp_name}_raw.yaml")
-                )
-
-            grp_out = str(output_dir / grp_name) if output_dir else None
             grp_output_dir = _capture_prometheus_metrics(
-                queries_file=queries_file,
+                metric_profiles=[str(p) for p in yaml_paths],
                 start_time=start_time,
                 end_time=end_time,
-                output_dir=grp_out,
-                step_seconds=grp_step,
-                raw_metrics_file=raw_metrics_file,
+                variables=group_variables,
                 artifact_dirname_suffix=grp_name,
             )
 
             if grp_output_dir and Path(grp_output_dir).exists():
-                index_path = build_index(defs, params, Path(grp_output_dir))
-                logger.info("Group %s: index written to %s", grp_name, index_path)
+                index_path = build_metadata_index(
+                    metadata, Path(grp_output_dir), variables=group_variables
+                )
+                logger.info("Group %s: metadata index written to %s", grp_name, index_path)
         except Exception:
             logger.exception("Group %s: capture failed", grp_name)
             errors.append(grp_name)
 
     if errors:
         raise click.ClickException(f"Capture failed for groups: {', '.join(errors)}")
+
+
+capture_metrics_command.__name__ = "capture-metrics"

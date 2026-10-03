@@ -27,7 +27,7 @@ CONFIGMAP_NAME = "cluster-monitoring-config"
 def capture_prometheus_metrics(
     start_time: datetime,
     end_time: datetime,
-    runtime_variables: dict[str, str] | None = None,
+    runtime_params: dict[str, str] | None = None,
 ) -> list[str]:
     if not config.project.get_config("prom.capture.metrics.enabled", False):
         logger.info("Prometheus metrics capture not enabled, skipping.")
@@ -40,13 +40,13 @@ def capture_prometheus_metrics(
 
     include_dirs = config.project.get_config("prom.capture.metrics.include_dirs", [])
 
-    raw_variables = config.project.get_config("prom.capture.metrics.config", {})
-    variables = {
+    raw_params = config.project.get_config("prom.capture.metrics.params", {})
+    params = {
         k: config.project.resolve_reference(v) if isinstance(v, str) else v
-        for k, v in raw_variables.items()
+        for k, v in raw_params.items()
     }
-    if runtime_variables:
-        variables.update(runtime_variables)
+
+    params = prom_metrics.resolve_params(params, runtime_params)
 
     errors: list[str] = []
 
@@ -62,57 +62,28 @@ def capture_prometheus_metrics(
                 continue
 
             yaml_paths = prom_metrics.resolve_files(file_names, include_dirs)
-            defs = prom_metrics.load_definitions(*yaml_paths)
+            metadata = prom_metrics.load_profile_metadata(*yaml_paths)
 
-            step = group_cfg.get("step_seconds", 15)
-            params = prom_metrics.interpolate_params(group_cfg.get("params", {}), variables)
-
-            if not defs:
+            if not metadata:
                 logger.warning("Group %s: no metrics after loading, skipping.", group_name)
                 continue
 
-            resolved = prom_metrics.resolve(defs, params)
-            logger.info(
-                "Group %s: capturing %d queries, %d raw metrics",
-                group_name,
-                len(resolved.queries),
-                len(resolved.raw_metrics),
+            group_variables = prom_metrics.interpolate_variables(
+                group_cfg.get("variables", {}),
+                params,
             )
 
-            if not resolved.queries and not resolved.raw_metrics:
-                logger.warning("Group %s: no metrics to capture, skipping.", group_name)
-                continue
-
-            from projects.core.library import env
-
-            input_dir = env.ARTIFACT_DIR / "prom_capture_input"
-
-            queries_file = None
-            if resolved.queries:
-                queries_file = str(
-                    prom_metrics.write_capture_input(
-                        resolved.queries, input_dir / f"{group_name}.yaml"
-                    )
-                )
-
-            raw_metrics_file = None
-            if resolved.raw_metrics:
-                raw_metrics_file = str(
-                    prom_metrics.write_capture_input(
-                        resolved.raw_metrics, input_dir / f"{group_name}_raw.yaml"
-                    )
-                )
+            logger.info("Group %s: capturing %d metrics", group_name, len(metadata))
 
             output_dir = _capture_prometheus_metrics(
-                queries_file=queries_file,
+                metric_profiles=[str(p) for p in yaml_paths],
                 start_time=start_time,
                 end_time=end_time,
-                step_seconds=step,
-                raw_metrics_file=raw_metrics_file,
+                variables=group_variables,
                 artifact_dirname_suffix=group_name,
             )
 
-            prom_metrics.build_index(defs, params, output_dir)
+            prom_metrics.build_metadata_index(metadata, output_dir, variables=group_variables)
         except Exception:
             logger.exception("Group %s: metrics capture failed", group_name)
             errors.append(group_name)
@@ -165,7 +136,7 @@ def prepare_user_workload_monitoring(*, during: str) -> None:
 def capture_prometheus(
     start_time: datetime,
     end_time: datetime,
-    runtime_variables: dict[str, str] | None = None,
+    runtime_params: dict[str, str] | None = None,
 ) -> None:
     if not config.project.get_config("prom.capture.enabled"):
         logger.info("Prometheus metrics capture not enabled.")
@@ -174,7 +145,7 @@ def capture_prometheus(
     failures: list[str] = []
 
     try:
-        failed_groups = capture_prometheus_metrics(start_time, end_time, runtime_variables)
+        failed_groups = capture_prometheus_metrics(start_time, end_time, runtime_params)
         if failed_groups:
             failures.append(f"metrics groups: {', '.join(failed_groups)}")
     except Exception:

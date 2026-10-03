@@ -349,11 +349,11 @@ def run_finalizers(
             logging.warning("No llmisvc name received. Some metrics will be empty ...")
 
         start_time, end_time = benchmark_times
-        runtime_variables = {"llmisvc_name": llmisvc_name or "llmisvc-name-not-available"}
+        runtime_params = {"llmisvc_name": llmisvc_name or "llmisvc-name-not-available"}
 
         def _capture_prom():
             with env.NextArtifactDir("prometheus_metrics"):
-                capture_prometheus(start_time, end_time, runtime_variables=runtime_variables)
+                capture_prometheus(start_time, end_time, runtime_params=runtime_params)
 
         finalizer_exc = _run_finalizer("capturing Prometheus metrics", _capture_prom)
     else:
