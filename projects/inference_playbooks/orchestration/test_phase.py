@@ -36,7 +36,16 @@ RHAIIS_WORKLOADS = PROJECTS_DIR / "rhaiis/orchestration/config.d/workloads.yaml"
 
 def test():
     """Run the Inference Playbooks test with outcome postprocessing."""
-    return run_and_postprocess(do_test)
+    recipe_id = config.project.get_config("inference_playbooks.recipe")
+    postprocess_enabled = (
+        bool(config.project.get_config("caliper.postprocess.enabled"))
+        and bool(recipe_id)
+        and not _clusterless_mode()
+    )
+    with config.TempValue(
+        config.project, "caliper.postprocess.enabled", postprocess_enabled
+    ):
+        return run_and_postprocess(do_test)
 
 
 def create_custom_test_metadata(recipe_id: str | None = None):
@@ -47,6 +56,8 @@ def create_custom_test_metadata(recipe_id: str | None = None):
     if recipe_id:
         labels["recipe_id"] = recipe_id
         labels["workload_key"] = "profile1"
+        # The parent contains both warmup and measured artifacts; parse phase-level nodes only.
+        labels["skip"] = True
     test_dir = env.ARTIFACT_DIR
     create_test_metadata(test_dir, labels)
     return test_dir
@@ -84,8 +95,14 @@ def do_test():
     return 0
 
 
+def _clusterless_mode() -> bool:
+    return os.environ.get("CLUSTERLESS_MODE", "").lower() == "true" or not os.environ.get(
+        "KUBECONFIG"
+    )
+
+
 def _launch_recipe(recipe_id: str, recipe: dict) -> None:
-    if os.environ.get("CLUSTERLESS_MODE", "").lower() == "true" or not os.environ.get("KUBECONFIG"):
+    if _clusterless_mode():
         raise RuntimeError(
             "A recipe launch needs a target cluster; rerun the PR test with /cluster <registered-target>"
         )
@@ -249,6 +266,9 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
     rdma_resource = config.project.get_config("inference_playbooks.rdma_resource")
     if rdma_resource:
         _replace_resource_name(lws, "rdma/ib", rdma_resource)
+    lws_ready_timeout_seconds = config.project.get_config(
+        "inference_playbooks.lws_ready_timeout_seconds"
+    )
 
     service = services[0]
     service["metadata"] = {
@@ -272,7 +292,12 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         _prepare_lws_model_cache(recipe, lws, namespace)
         oc_apply(src_dir / f"{service_name}-service.yaml", service)
         oc_apply(src_dir / f"{lws_name}-lws.yaml", lws)
-        _wait_for_lws(namespace, lws_name, run_label)
+        _wait_for_lws(
+            namespace,
+            lws_name,
+            run_label,
+            timeout_seconds=lws_ready_timeout_seconds,
+        )
         return f"http://{service_name}.{namespace}.svc.cluster.local:{port}"
 
     def capture() -> None:
@@ -287,8 +312,11 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
     _deploy_benchmark_finalize(recipe_id, recipe, namespace, lws_name, deploy, capture, cleanup)
 
 
-def _wait_for_lws(namespace: str, name: str, run_label: str) -> None:
-    deadline = time.monotonic() + 7200
+def _wait_for_lws(namespace: str, name: str, run_label: str, *, timeout_seconds: int) -> None:
+    if type(timeout_seconds) is not int or timeout_seconds <= 0:
+        raise ValueError("LWS readiness timeout must be a positive integer")
+
+    deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         result = oc(
             "wait",
@@ -324,7 +352,7 @@ def _wait_for_lws(namespace: str, name: str, run_label: str) -> None:
                 f"Waiting for LeaderWorkerSet {name} failed: {result.stderr.strip()}"
             )
 
-    raise RuntimeError(f"LeaderWorkerSet {name} did not become Available within 7200s")
+    raise RuntimeError(f"LeaderWorkerSet {name} did not become Available within {timeout_seconds}s")
 
 
 def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
@@ -419,6 +447,10 @@ def _run_profile1(endpoint_url: str, namespace: str, run_name: str, model_name: 
         if rampup is not None:
             args["rampup"] = rampup
         with env.NextArtifactDir(f"{phase}_{workload_key}"):
+            create_test_metadata(
+                env.ARTIFACT_DIR,
+                {"phase": phase, "skip": phase == "warmup"},
+            )
             run_guidellm_benchmark.run(
                 endpoint_url=endpoint_url,
                 name=_unique_name(f"guidellm-{phase}-{run_name}"),

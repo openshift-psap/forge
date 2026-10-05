@@ -30,9 +30,9 @@ replot:
   keep: false  # Set to true to keep download directory after replotting
 
 postprocess:
-  enabled: false
+  enabled: true
   artifacts_dir: null
-  plugin_module: null # configure your caliper plugin here
+  plugin_module: projects.guidellm.postprocess.guidellm.plugin
   postprocess_config: null
   parse:
     enabled: true

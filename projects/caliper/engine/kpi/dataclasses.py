@@ -396,7 +396,7 @@ class MlflowDestination:
 class CaliperTestMetadata:
     """Caliper test metadata structure for __caliper_test_metadata__.yaml files."""
 
-    labels: dict[str, str]
+    labels: dict[str, Any]
     version: str = "1"
     kpi_labels: dict[str, str] | None = None
     mlflow_destination: MlflowDestination | None = None

@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 def create_test_metadata(
     directory: Path,
-    labels: dict[str, str],
+    labels: dict[str, Any],
     *,
     version: str = "1",
     dump_config: bool = True,

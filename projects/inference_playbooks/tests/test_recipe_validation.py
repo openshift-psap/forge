@@ -287,6 +287,7 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
             {
                 "inference_playbooks.namespace": "target-namespace",
                 "inference_playbooks.rdma_resource": "example.com/roce",
+                "inference_playbooks.lws_ready_timeout_seconds": 14400,
                 "model_cache": {
                     "marker_filename": "cached.marker",
                     "pvc": {
@@ -361,6 +362,7 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
     cache_runs = []
     captures = []
     deleted = []
+    readiness_timeouts = []
     monkeypatch.setattr(test_phase.vault, "get_vault_content_path", lambda *_args: None)
     monkeypatch.setattr(
         test_phase.prepare_hf_model_cache,
@@ -375,6 +377,11 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(test_phase, "oc", oc)
+    monkeypatch.setattr(
+        test_phase,
+        "_wait_for_lws",
+        lambda *_args, timeout_seconds: readiness_timeouts.append(timeout_seconds),
+    )
     monkeypatch.setattr(test_phase, "_capture_lws_state", lambda *args: captures.append(args))
     monkeypatch.setattr(
         test_phase,
@@ -417,8 +424,26 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
     assert actions[0][0].endswith(":8000")
     assert actions[0][2] == lws_name
     assert captures == [("target-namespace", lws_name, run_label)]
+    assert readiness_timeouts == [14400]
     assert ("delete", "leaderworkerset", lws_name) == deleted[0][:3]
     assert ("delete", "service", service_name) == deleted[1][:3]
+
+
+def test_wait_for_lws_uses_configured_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    times = iter((0, 0, 60))
+    monkeypatch.setattr(test_phase.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(
+        test_phase,
+        "oc",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stderr="timed out"),
+    )
+    monkeypatch.setattr(test_phase, "oc_get_json", lambda *_args, **_kwargs: {"items": []})
+
+    with pytest.raises(RuntimeError, match="within 60s"):
+        test_phase._wait_for_lws("namespace", "lws", "run", timeout_seconds=60)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        test_phase._wait_for_lws("namespace", "lws", "run", timeout_seconds=0)
 
 
 def test_cleanup_failure_does_not_mask_deployment_failure() -> None:
@@ -448,6 +473,12 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     )
     monkeypatch.setattr(test_phase.env, "NextArtifactDir", lambda _name: nullcontext())
     calls = []
+    metadata = []
+    monkeypatch.setattr(
+        test_phase,
+        "create_test_metadata",
+        lambda _directory, labels: metadata.append(labels),
+    )
     monkeypatch.setattr(
         test_phase.run_guidellm_benchmark,
         "run",
@@ -462,6 +493,10 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     assert "--max-seconds=275" in calls[1]["guidellm_args"]
     assert "--rampup=35" in calls[1]["guidellm_args"]
     assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[1]["guidellm_args"]
+    assert metadata == [
+        {"phase": "warmup", "skip": True},
+        {"phase": "benchmark", "skip": False},
+    ]
 
 
 def test_validate_recipe_catalog_rejects_pvc_without_source(tmp_path: Path) -> None:
