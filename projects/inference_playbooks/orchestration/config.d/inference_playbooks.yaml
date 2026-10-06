@@ -1,5 +1,5 @@
 recipe: null
-namespace: null
+namespace: kserve-e2e-perf
 workload: profile1
 rdma_resource: null
 lws_ready_timeout_seconds: 7200

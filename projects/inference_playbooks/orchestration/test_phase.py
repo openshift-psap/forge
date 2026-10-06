@@ -2,16 +2,14 @@ import copy
 import json
 import logging
 import os
-import re
 import sys
-import time
 import uuid
 from pathlib import Path
 
 import yaml
 
 from projects.core.dsl.utils import slugify_identifier
-from projects.core.dsl.utils.k8s import oc, oc_apply, oc_get_json
+from projects.core.dsl.utils.k8s import oc
 from projects.core.library import config, env, vault
 from projects.core.library.postprocess import (
     create_test_metadata,
@@ -24,7 +22,9 @@ from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark import main as run_guidellm_benchmark
 from projects.inference_playbooks.orchestration.recipe_validation import load_recipe_catalog
 from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state
+from projects.kserve.toolbox.capture_lws_state import main as capture_lws_state
 from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
+from projects.kserve.toolbox.deploy_lws import main as deploy_lws
 from projects.kserve.toolbox.prepare_hf_model_cache import main as prepare_hf_model_cache
 from projects.kserve.toolbox.prepare_hf_model_cache.utils import build_model_cache_spec
 
@@ -42,20 +42,22 @@ def test():
         and bool(recipe_id)
         and not _clusterless_mode()
     )
-    with config.TempValue(
-        config.project, "caliper.postprocess.enabled", postprocess_enabled
-    ):
-        return run_and_postprocess(do_test)
+    if not postprocess_enabled:
+        config.project.set_config("caliper.postprocess.enabled", False)
+    return run_and_postprocess(do_test)
 
 
 def create_custom_test_metadata(recipe_id: str | None = None):
+    workload_key = config.project.get_config("inference_playbooks.workload") if recipe_id else None
+    if recipe_id and (not isinstance(workload_key, str) or not workload_key):
+        raise ValueError("inference_playbooks.workload must be a configured workload key")
     labels = {
         "project": "inference-playbooks",
-        "validation": "recipe-profile1" if recipe_id else "recipe-catalog-validation",
+        "validation": f"recipe-{workload_key}" if recipe_id else "recipe-catalog-validation",
     }
     if recipe_id:
         labels["recipe_id"] = recipe_id
-        labels["workload_key"] = "profile1"
+        labels["workload_key"] = workload_key
         # The parent contains both warmup and measured artifacts; parse phase-level nodes only.
         labels["skip"] = True
     test_dir = env.ARTIFACT_DIR
@@ -265,7 +267,7 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
 
     rdma_resource = config.project.get_config("inference_playbooks.rdma_resource")
     if rdma_resource:
-        _replace_resource_name(lws, "rdma/ib", rdma_resource)
+        deploy_lws.replace_resource_name(lws, "rdma/ib", rdma_resource)
     lws_ready_timeout_seconds = config.project.get_config(
         "inference_playbooks.lws_ready_timeout_seconds"
     )
@@ -284,24 +286,26 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         "forge.openshift.io/run": run_label,
         "forge.openshift.io/endpoint": endpoint_label,
     }
-    port = service["spec"]["ports"][0]["port"]
+    pod_selector = f"forge.openshift.io/run={run_label}"
 
     def deploy() -> str:
-        src_dir = env.ARTIFACT_DIR / "src"
-        src_dir.mkdir(parents=True, exist_ok=True)
         _prepare_lws_model_cache(recipe, lws, namespace)
-        oc_apply(src_dir / f"{service_name}-service.yaml", service)
-        oc_apply(src_dir / f"{lws_name}-lws.yaml", lws)
-        _wait_for_lws(
-            namespace,
-            lws_name,
-            run_label,
+        service_manifest_path = _write_launch_manifest(f"{service_name}-service", service)
+        lws_manifest_path = _write_launch_manifest(f"{lws_name}-lws", lws)
+        return deploy_lws.run(
+            namespace=namespace,
+            service_manifest_path=str(service_manifest_path),
+            leader_worker_set_manifest_path=str(lws_manifest_path),
+            pod_selector=pod_selector,
             timeout_seconds=lws_ready_timeout_seconds,
         )
-        return f"http://{service_name}.{namespace}.svc.cluster.local:{port}"
 
     def capture() -> None:
-        _capture_lws_state(namespace, lws_name, run_label)
+        capture_lws_state.run(
+            namespace=namespace,
+            lws_name=lws_name,
+            pod_selector=pod_selector,
+        )
 
     def cleanup() -> None:
         _delete_resources(
@@ -310,49 +314,6 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         )
 
     _deploy_benchmark_finalize(recipe_id, recipe, namespace, lws_name, deploy, capture, cleanup)
-
-
-def _wait_for_lws(namespace: str, name: str, run_label: str, *, timeout_seconds: int) -> None:
-    if type(timeout_seconds) is not int or timeout_seconds <= 0:
-        raise ValueError("LWS readiness timeout must be a positive integer")
-
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        result = oc(
-            "wait",
-            f"leaderworkerset/{name}",
-            "-n",
-            namespace,
-            "--for=condition=Available",
-            "--timeout=30s",
-            timeout_seconds=45,
-            check=False,
-            log_stdout=False,
-            log_stderr=False,
-        )
-        if result.returncode == 0:
-            return
-
-        pods = oc_get_json(
-            "pods", namespace=namespace, selector=f"forge.openshift.io/run={run_label}"
-        )
-        for pod in pods["items"]:
-            statuses = pod.get("status", {})
-            for status in (statuses.get("initContainerStatuses") or []) + (
-                statuses.get("containerStatuses") or []
-            ):
-                reason = status.get("state", {}).get("waiting", {}).get("reason")
-                if reason in {"CrashLoopBackOff", "CreateContainerConfigError", "InvalidImageName"}:
-                    raise RuntimeError(
-                        f"LeaderWorkerSet {name} pod {pod['metadata']['name']} "
-                        f"container {status['name']} is {reason}; see captured pod logs"
-                    )
-        if "timed out" not in result.stderr.lower():
-            raise RuntimeError(
-                f"Waiting for LeaderWorkerSet {name} failed: {result.stderr.strip()}"
-            )
-
-    raise RuntimeError(f"LeaderWorkerSet {name} did not become Available within {timeout_seconds}s")
 
 
 def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
@@ -364,26 +325,7 @@ def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
         namespace,
         model_cache=model_cache,
     )
-    volume_name = model_cache["volume_name"]
-    templates = lws["spec"]["leaderWorkerTemplate"]
-    pod_templates = [templates["workerTemplate"]]
-    if templates.get("leaderTemplate") is not None:
-        pod_templates.append(templates["leaderTemplate"])
-
-    for pod_template in pod_templates:
-        volumes = pod_template["spec"].get("volumes", [])
-        matches = [volume for volume in volumes if volume.get("name") == volume_name]
-        if len(matches) != 1:
-            raise ValueError(
-                f"LeaderWorkerSet must define exactly one {volume_name!r} model volume"
-            )
-        matches[0].clear()
-        matches[0].update(
-            {
-                "name": volume_name,
-                "persistentVolumeClaim": {"claimName": cache_spec["pvc_name"]},
-            }
-        )
+    deploy_lws.attach_model_cache_pvc(lws, model_cache["volume_name"], cache_spec["pvc_name"])
     logger.info("Prepared model cache %s for %s", cache_spec["pvc_name"], model_uri)
 
 
@@ -396,6 +338,7 @@ def _deploy_benchmark_finalize(
     capture,
     cleanup,
 ) -> None:
+    workload_key, workload = _get_workload_config()
     primary_exc = None
     finalizer_exc = None
     endpoint_url = None
@@ -403,7 +346,9 @@ def _deploy_benchmark_finalize(
         logger.info("Launching recipe %s as %s in namespace %s", recipe_id, run_name, namespace)
         endpoint_url = deploy()
         logger.info("Recipe %s reached Ready at %s", recipe_id, endpoint_url)
-        _run_profile1(endpoint_url, namespace, run_name, recipe["model_name"])
+        _run_workload(
+            endpoint_url, namespace, run_name, recipe["model_name"], workload_key, workload
+        )
     except Exception:
         primary_exc = sys.exc_info()
     finally:
@@ -428,12 +373,32 @@ def _deploy_benchmark_finalize(
         raise finalizer_exc[1].with_traceback(finalizer_exc[2])
 
 
-def _run_profile1(endpoint_url: str, namespace: str, run_name: str, model_name: str) -> None:
+def _get_workload_config() -> tuple[str, dict]:
     workload_key = config.project.get_config("inference_playbooks.workload")
-    if workload_key != "profile1":
-        raise ValueError(f"Only Forge profile1 is supported, got {workload_key!r}")
-    workload = _read_yaml(RHAIIS_WORKLOADS)[workload_key]
-    benchmark = _read_yaml(RHAIIS_CONFIG)["benchmarks"]["guidellm"]
+    workloads = config.Config(RHAIIS_WORKLOADS).config
+    if not isinstance(workload_key, str) or workload_key not in workloads:
+        available = ", ".join(sorted(workloads))
+        raise ValueError(
+            f"Unknown inference playbooks workload {workload_key!r}; available: {available}"
+        )
+    workload = workloads[workload_key]
+    if not isinstance(workload, dict):
+        raise ValueError(f"Workload {workload_key!r} must be a mapping")
+    missing = {"data", "rates", "max_seconds"} - workload.keys()
+    if missing:
+        raise ValueError(f"Workload {workload_key!r} is missing required fields: {sorted(missing)}")
+    return workload_key, workload
+
+
+def _run_workload(
+    endpoint_url: str,
+    namespace: str,
+    run_name: str,
+    model_name: str,
+    workload_key: str,
+    workload: dict,
+) -> None:
+    benchmark = config.Config(RHAIIS_CONFIG).get_config("benchmarks.guidellm")
 
     def run_phase(phase: str, rates: list[int], max_seconds: int, rampup: int | None) -> None:
         args = {
@@ -441,7 +406,7 @@ def _run_profile1(endpoint_url: str, namespace: str, run_name: str, model_name: 
             "data": workload["data"],
             "max_seconds": max_seconds,
             # GuideLLM discovers the served model from /v1/models; processor
-            # selects the matching tokenizer for generated profile1 prompts.
+            # selects the matching tokenizer for generated workload prompts.
             "processor": model_name,
         }
         if rampup is not None:
@@ -463,51 +428,9 @@ def _run_profile1(endpoint_url: str, namespace: str, run_name: str, model_name: 
                 fs_group=benchmark.get("fs_group"),
             )
 
-    run_phase("warmup", [1], workload["warmup"], None)
-    run_phase("benchmark", workload["rates"], workload["max_seconds"], workload["rampup"])
-
-
-def _capture_lws_state(namespace: str, name: str, run_label: str) -> None:
-    artifacts = env.ARTIFACT_DIR / "artifacts"
-    artifacts.mkdir(parents=True, exist_ok=True)
-    selector = f"forge.openshift.io/run={run_label}"
-    oc(
-        "get",
-        "leaderworkerset",
-        name,
-        "-n",
-        namespace,
-        "-o",
-        "yaml",
-        check=False,
-        log_stdout=False,
-        stdout_dest=artifacts / "leaderworkerset.yaml",
-    )
-    oc(
-        "get",
-        "pods",
-        "-n",
-        namespace,
-        "-l",
-        selector,
-        "-o",
-        "yaml",
-        check=False,
-        log_stdout=False,
-        stdout_dest=artifacts / "leaderworkerset.pods.yaml",
-    )
-    oc(
-        "logs",
-        "-n",
-        namespace,
-        "-l",
-        selector,
-        "--all-containers=true",
-        "--prefix=true",
-        check=False,
-        log_stdout=False,
-        stdout_dest=artifacts / "leaderworkerset.pods.log",
-    )
+    if workload.get("warmup") is not None:
+        run_phase("warmup", [1], workload["warmup"], None)
+    run_phase("benchmark", workload["rates"], workload["max_seconds"], workload.get("rampup"))
 
 
 def _delete_resources(namespace: str, resources: list[tuple[str, str]]) -> None:
@@ -532,48 +455,11 @@ def _delete_resources(namespace: str, resources: list[tuple[str, str]]) -> None:
         raise RuntimeError("Failed to clean up: " + "; ".join(failures))
 
 
-def _replace_resource_name(manifest: dict, source: str, target: str) -> None:
-    if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?/[A-Za-z0-9][-A-Za-z0-9_.]*", target):
-        raise ValueError(f"Invalid extended resource name: {target!r}")
-    replacements = 0
-
-    def visit(value):
-        nonlocal replacements
-        if isinstance(value, dict):
-            resources = value.get("resources")
-            if isinstance(resources, dict):
-                for section in ("requests", "limits"):
-                    quantities = resources.get(section)
-                    if isinstance(quantities, dict) and source in quantities:
-                        if target in quantities and target != source:
-                            raise ValueError(f"Resource block already defines {target}")
-                        quantities[target] = quantities.pop(source)
-                        replacements += 1
-            for child in value.values():
-                visit(child)
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(manifest)
-    if not replacements:
-        raise ValueError(f"Recipe does not request resource {source!r}")
-    logger.info("Replaced %s with %s in %d resource entries", source, target, replacements)
-
-
 def _write_launch_manifest(name: str, manifest: dict) -> Path:
     path = env.ARTIFACT_DIR / "src" / f"{name}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     return path
-
-
-def _read_yaml(path: Path) -> dict:
-    with path.open(encoding="utf-8") as stream:
-        value = yaml.safe_load(stream)
-    if not isinstance(value, dict):
-        raise ValueError(f"Expected a YAML mapping in {path}")
-    return value
 
 
 def _unique_name(value: str) -> str:

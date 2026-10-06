@@ -228,7 +228,7 @@ def test_llmisvc_launch_benchmarks_captures_and_cleans_up(
     )
     monkeypatch.setattr(
         test_phase,
-        "_run_profile1",
+        "_run_workload",
         lambda *args: actions.append(("benchmark", args[0])),
     )
     monkeypatch.setattr(test_phase, "oc", oc)
@@ -358,18 +358,17 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         "auxiliary_manifests": [{"data": service}],
     }
     applied = []
+    deployment_calls = []
     actions = []
     cache_runs = []
     captures = []
     deleted = []
-    readiness_timeouts = []
     monkeypatch.setattr(test_phase.vault, "get_vault_content_path", lambda *_args: None)
     monkeypatch.setattr(
         test_phase.prepare_hf_model_cache,
         "run",
         lambda **kwargs: cache_runs.append(kwargs),
     )
-    monkeypatch.setattr(test_phase, "oc_apply", lambda path, manifest: applied.append(manifest))
 
     def oc(*args, **kwargs):
         if args[0] == "delete":
@@ -377,15 +376,26 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(test_phase, "oc", oc)
+
+    def deploy_lws(**kwargs):
+        deployment_calls.append(kwargs)
+        service_manifest = yaml.safe_load(Path(kwargs["service_manifest_path"]).read_text())
+        lws_manifest = yaml.safe_load(Path(kwargs["leader_worker_set_manifest_path"]).read_text())
+        applied.extend((service_manifest, lws_manifest))
+        return (
+            f"http://{service_manifest['metadata']['name']}.{kwargs['namespace']}"
+            f".svc.cluster.local:{service_manifest['spec']['ports'][0]['port']}"
+        )
+
+    monkeypatch.setattr(test_phase.deploy_lws, "run", deploy_lws)
     monkeypatch.setattr(
-        test_phase,
-        "_wait_for_lws",
-        lambda *_args, timeout_seconds: readiness_timeouts.append(timeout_seconds),
+        test_phase.capture_lws_state,
+        "run",
+        lambda **kwargs: captures.append(kwargs),
     )
-    monkeypatch.setattr(test_phase, "_capture_lws_state", lambda *args: captures.append(args))
     monkeypatch.setattr(
         test_phase,
-        "_run_profile1",
+        "_run_workload",
         lambda *args: actions.append(args),
     )
 
@@ -423,27 +433,17 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         assert "hostPath" not in volume
     assert actions[0][0].endswith(":8000")
     assert actions[0][2] == lws_name
-    assert captures == [("target-namespace", lws_name, run_label)]
-    assert readiness_timeouts == [14400]
+    assert captures == [
+        {
+            "namespace": "target-namespace",
+            "lws_name": lws_name,
+            "pod_selector": f"forge.openshift.io/run={run_label}",
+        }
+    ]
+    assert len(deployment_calls) == 1
+    assert deployment_calls[0]["timeout_seconds"] == 14400
     assert ("delete", "leaderworkerset", lws_name) == deleted[0][:3]
     assert ("delete", "service", service_name) == deleted[1][:3]
-
-
-def test_wait_for_lws_uses_configured_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    times = iter((0, 0, 60))
-    monkeypatch.setattr(test_phase.time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(
-        test_phase,
-        "oc",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stderr="timed out"),
-    )
-    monkeypatch.setattr(test_phase, "oc_get_json", lambda *_args, **_kwargs: {"items": []})
-
-    with pytest.raises(RuntimeError, match="within 60s"):
-        test_phase._wait_for_lws("namespace", "lws", "run", timeout_seconds=60)
-
-    with pytest.raises(ValueError, match="positive integer"):
-        test_phase._wait_for_lws("namespace", "lws", "run", timeout_seconds=0)
 
 
 def test_cleanup_failure_does_not_mask_deployment_failure() -> None:
@@ -485,7 +485,10 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
         lambda **kwargs: calls.append(kwargs),
     )
 
-    test_phase._run_profile1("http://model:8000", "namespace", "run", "moonshotai/Kimi-K3")
+    workload_key, workload = test_phase._get_workload_config()
+    test_phase._run_workload(
+        "http://model:8000", "namespace", "run", "moonshotai/Kimi-K3", workload_key, workload
+    )
 
     assert len(calls) == 2
     assert "--max-seconds=75" in calls[0]["guidellm_args"]

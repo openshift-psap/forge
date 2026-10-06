@@ -196,9 +196,13 @@ def _validate_service_manifest(manifest: dict[str, Any], path: Path) -> None:
     if not isinstance(spec, dict):
         raise ValueError(f"{path} must define spec")
     selector = spec.get("selector")
-    if not isinstance(selector, dict) or not selector or any(
-        not isinstance(key, str) or not key or not isinstance(value, str)
-        for key, value in selector.items()
+    if (
+        not isinstance(selector, dict)
+        or not selector
+        or any(
+            not isinstance(key, str) or not key or not isinstance(value, str)
+            for key, value in selector.items()
+        )
     ):
         raise ValueError(f"{path} must define a non-empty spec.selector")
     ports = spec.get("ports")

@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 def create_test_metadata(
     directory: Path,
-    labels: dict[str, Any],
+    labels: dict[str, str | int | float | bool],
     *,
     version: str = "1",
     dump_config: bool = True,
@@ -79,9 +79,22 @@ def create_test_metadata(
             }
         )
     """
+    normalized_labels: dict[str, str | bool] = {}
+    for key, value in labels.items():
+        if key == "skip" and isinstance(value, bool):
+            # Caliper uses boolean true as the reserved skip marker.
+            normalized_labels[key] = value
+        elif isinstance(value, (int, float)):
+            logger.info("Converting numeric Caliper label %s to a string", key)
+            normalized_labels[key] = str(value)
+        elif isinstance(value, str):
+            normalized_labels[key] = value
+        else:
+            raise TypeError(f"Caliper label {key!r} must be a string or number")
+
     # Create typed metadata structure
     metadata = CaliperTestMetadata(
-        labels=labels,
+        labels=normalized_labels,
         version=version,
         kpi_labels=kpi_labels,
         mlflow_destination=mlflow_destination,

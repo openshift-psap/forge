@@ -78,7 +78,7 @@ postprocess:
       include_ai_data: true
 
   analyze:
-    enabled: true
+    enabled: false # GuideLLM plugin does not provide analysis_config.
     current_kpis: kpis/kpis.json
     historical_kpis: historical_data
     output: regression_analyze/kpi_analyze.json
