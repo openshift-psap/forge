@@ -5,8 +5,6 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from projects.core.dsl.utils import slugify_identifier
-from projects.core.library import env
 from projects.guidellm.library import benchconf as benchconf_lib
 from projects.guidellm.library.runner import GuideLLMJob
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
@@ -55,18 +53,16 @@ class GuideLLMGenerator(LlmDLoadGenerator):
         if not any(arg.startswith(("--tokenizer=", "--processor=")) for arg in guidellm_args):
             guidellm_args.append(f"--tokenizer=kind=huggingface_auto,model={context.model_name}")
 
-        artifact_name = f"benchmark_{slugify_identifier(context.benchmark_key, max_length=48)}"
-        with env.NextArtifactDir(artifact_name):
-            GuideLLMJob(
-                endpoint_url=context.endpoint_url,
-                name=benchmark.get("job_name"),
-                namespace=context.namespace,
-                image=benchmark.get("image"),
-                timeout=benchmark.get("timeout_seconds"),
-                pvc_size=benchmark.get("pvc_size"),
-                pvc_storage_class=benchmark.get("pvc_storage_class"),
-                guidellm_args=guidellm_args,
-                config_path=config_path,
-                fs_group=(context.workload or {}).get("fs_group"),
-                use_pvc=benchmark.get("use_pvc"),
-            ).run()
+        GuideLLMJob(
+            endpoint_url=context.endpoint_url,
+            name=benchmark.get("job_name"),
+            namespace=context.namespace,
+            image=benchmark.get("image"),
+            timeout=benchmark.get("timeout_seconds"),
+            pvc_size=benchmark.get("pvc_size"),
+            pvc_storage_class=benchmark.get("pvc_storage_class"),
+            guidellm_args=guidellm_args,
+            config_path=config_path,
+            fs_group=(context.workload or {}).get("fs_group"),
+            use_pvc=benchmark.get("use_pvc"),
+        ).run()

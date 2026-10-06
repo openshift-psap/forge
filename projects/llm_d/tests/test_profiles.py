@@ -186,6 +186,44 @@ def test_guidellm_benchmark_uses_hf_model_name(
     assert "--tokenizer=kind=huggingface_auto,model=openai/gpt-oss-120b" in guidellm_args
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_benchmark_caller_owns_artifact_directory(
+    monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
+    _init_project_config()
+    core_config.project.set_config("runtime.benchmark_key", "short")
+    core_config.project.set_config("prom.capture.enabled", False)
+    core_config.project.set_config("prom.capture.user_workload.enabled", False)
+    original_dir = env.ARTIFACT_DIR
+    timing_events = []
+
+    def record_timing(_dir, _section, event):
+        timing_events.append((event, env.ARTIFACT_DIR))
+        return datetime.now(UTC)
+
+    class FakeGenerator:
+        def run(self, context):
+            assert context.benchmark_key == "short"
+            assert env.ARTIFACT_DIR.parent == original_dir
+            assert env.ARTIFACT_DIR.name.endswith("__benchmark_short")
+            (env.ARTIFACT_DIR / "result.txt").write_text("benchmark result")
+            if fail:
+                raise RuntimeError("Benchmark failed")
+
+    monkeypatch.setattr(test_phase, "update_test_labels_with_timing", record_timing)
+    expected_error = (
+        pytest.raises(RuntimeError, match="Benchmark failed") if fail else nullcontext()
+    )
+    with expected_error:
+        test_phase.run_benchmark(
+            None, endpoint_url="https://example.test/llm-d", generator=FakeGenerator()
+        )
+
+    assert env.ARTIFACT_DIR == original_dir
+    assert timing_events == [("start", original_dir), ("end", original_dir)]
+    assert len(list(original_dir.glob("*__benchmark_short/result.txt"))) == 1
+
+
 def test_release_preset_expands_benchmark_list_and_merges_workload_args() -> None:
     _init_project_config()
 
