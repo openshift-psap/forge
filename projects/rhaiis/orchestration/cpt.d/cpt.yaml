@@ -35,6 +35,7 @@ cpt-vllm-release:
     - profile3
     - profile4
   rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -61,6 +62,7 @@ cpt-sglang-competitive:
     - profile3
     - profile4
   rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -84,6 +86,7 @@ cpt-trtllm-competitive:
     - profile3
     - profile4
   rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -115,6 +118,7 @@ cpt-vllm-competitive:
     - profile3
     - profile4
   rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -133,6 +137,8 @@ cpt-rhaiis-3.6-h200:
     - hera
     - zeus
     - old-zeus
+    - athena-fire
+    - janus
   __models:
     qwen3-vl-30b/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
@@ -220,6 +226,7 @@ cpt-rhaiis-3.6-h200:
       rhaiis.engines.vllm.args.kv-cache-dtype: bf16
   __workloads: [profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -290,6 +297,7 @@ cpt-rhaiis-3.6-b200:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
   __workloads: [profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -302,6 +310,8 @@ cpt-rhaiis-3.6-mi355x:
   __description: "RHAIIS 3.6 release regression — MI355X model matrix"
   __engine: vllm
   rhaiis.engines.vllm.args.enable-prefix-caching: true
+  rhaiis.profiler.ranges: "100-103"
+  rhaiis.profiler.max_seconds: 400
   __accelerator: amd
   __gpu_type: mi355x
   __clusters: [mi355x]
@@ -367,6 +377,7 @@ cpt-rhaiis-3.6-mi355x:
       benchmarks.guidellm.args.tokenizer: '{"kind":"huggingface_auto","model":"moonshotai/Kimi-K3","load_kwargs":{"trust_remote_code":true}}'
   __workloads: [profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true

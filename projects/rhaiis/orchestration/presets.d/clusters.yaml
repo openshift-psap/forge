@@ -29,6 +29,17 @@ b200:
   rhaiis.env_vars:
     FLASHINFER_CUBIN_DIR: "/tmp/flashinfer"
 
+athena-fire:
+  rhaiis.cluster_tag: "athena"
+  rhaiis.deploy.image_pull_secrets: ["npalaska-image-pull"]
+  benchmarks.guidellm.fs_group: 0
+
+janus:
+  rhaiis.cluster_tag: "janus"
+  rhaiis.gpu_types.nvidia: "nvidia"
+  rhaiis.deploy.image_pull_secrets: ["npalaska-image-pull"]
+  benchmarks.guidellm.fs_group: 0
+
 # ── Cluster + accelerator combos ────────────────────────────
 # Usage: /test fournos rhaiis
 #   /cluster hera
@@ -41,3 +52,9 @@ cluster_zeus:
 
 cluster_old_zeus:
   extends: [nvidia, old-zeus]
+
+cluster_athena-fire:
+  extends: [nvidia, athena-fire]
+
+cluster_janus:
+  extends: [nvidia, janus]
