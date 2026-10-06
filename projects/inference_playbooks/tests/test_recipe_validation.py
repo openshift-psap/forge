@@ -548,7 +548,7 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[1]["guidellm_args"]
     assert metadata == [
         ({"phase": "warmup", "skip": True}, kpi_labels),
-        ({"phase": "benchmark", "skip": False}, kpi_labels),
+        ({"phase": "benchmark"}, kpi_labels),
     ]
 
 

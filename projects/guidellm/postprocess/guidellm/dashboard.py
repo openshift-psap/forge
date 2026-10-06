@@ -317,12 +317,13 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
         "guidellm_end_time_ms": int(max(ends) * 1000) if ends else "",
     }
     curves = {curve_key: [] for _, curve_key, _, _, _ in DASHBOARD_METRICS}
-    run_uuids: list[str] = []
+    run_uuids: dict[int, str] = {}
     for benchmark in benchmarks:
         metrics = benchmark.get("metrics", {})
         strategy = benchmark.get("config", {}).get("strategy", {}) or benchmark.get(
             "scheduler", {}
         ).get("strategy", {})
+        intended_concurrency = strategy.get("streams", strategy.get("max_concurrency"))
 
         totals = (
             benchmark.get("scheduler_metrics", {}).get("requests_made", {})
@@ -330,17 +331,16 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
             or benchmark.get("run_stats", {}).get("requests_made", {})
             or metrics.get("request_totals", {})
         )
-        run_uuids.append(
-            str(benchmark.get("config", {}).get("run_id") or benchmark.get("run_id") or "")
-        )
+        if intended_concurrency is not None:
+            run_uuids[int(float(intended_concurrency))] = str(
+                benchmark.get("config", {}).get("run_id") or benchmark.get("run_id") or ""
+            )
         values = {
-            "output_tok_per_sec": metrics.get("output_tokens_per_second", {})
-            .get("total", {})
-            .get("mean"),
-            "total_tok_per_sec": metrics.get("tokens_per_second", {}).get("total", {}).get("mean"),
+            "output_tok_per_sec": _successful_stat(metrics, "output_tokens_per_second", "mean"),
+            "total_tok_per_sec": _successful_stat(metrics, "tokens_per_second", "mean"),
             "request_concurrency": _successful_stat(metrics, "request_concurrency", "mean"),
             "measured_rps": _successful_stat(metrics, "requests_per_second", "mean"),
-            "intended_concurrency": strategy.get("streams", strategy.get("max_concurrency")),
+            "intended_concurrency": intended_concurrency,
             "successful_requests": totals.get("successful", 0),
             "errored_requests": totals.get("errored", 0),
             "ttft_median": _milliseconds_to_seconds(
@@ -625,7 +625,7 @@ def write_dashboard_csv(
         # Create one row per concurrency level
         for concurrency, _ in values:
             row: dict[str, Any] = dict.fromkeys(fieldnames, "")
-            row.update(metadata_row(combined_labels))
+            row.update(metadata_row({**combined_labels, "intended_concurrency": concurrency}))
 
             # Set intended concurrency from the x-value (concurrency level)
             if "intended concurrency" in fieldnames:

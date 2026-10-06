@@ -306,6 +306,7 @@ def _launch_lws_recipe(recipe_id: str, recipe: dict, namespace: str) -> None:
         capture_lws_state.run(
             namespace=namespace,
             lws_name=lws_name,
+            service_name=service_name,
             pod_selector=pod_selector,
         )
 

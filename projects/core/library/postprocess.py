@@ -81,9 +81,15 @@ def create_test_metadata(
     """
     normalized_labels: dict[str, str | bool] = {}
     for key, value in labels.items():
-        if key == "skip" and isinstance(value, bool):
+        if key == "skip" and value is True:
             # Caliper uses boolean true as the reserved skip marker.
-            normalized_labels[key] = value
+            normalized_labels[key] = True
+        elif key == "skip" and value is False:
+            continue
+        elif isinstance(value, bool):
+            raise TypeError(
+                f"Boolean Caliper label {key!r} is only valid for the reserved 'skip' key"
+            )
         elif isinstance(value, (int, float)):
             logger.info("Converting numeric Caliper label %s to a string", key)
             normalized_labels[key] = str(value)
