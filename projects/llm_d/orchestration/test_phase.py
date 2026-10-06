@@ -17,6 +17,7 @@ from projects.cluster.library.prom.collection import (
 )
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.dsl import shell
+from projects.core.dsl.utils import slugify_identifier
 from projects.core.dsl.utils.k8s import oc
 from projects.core.library import config, env
 from projects.core.library.postprocess import (
@@ -772,17 +773,20 @@ def run_benchmark(
         generator = get_load_generator(benchmark["tool"])
     start_time = update_test_labels_with_timing(test_dir, "benchmark", "start")
     try:
-        generator.run(
-            BenchmarkContext(
-                test_dir=test_dir,
-                endpoint_url=endpoint_url,
-                benchmark_key=runtime_config.get_benchmark_keys()[0],
-                benchmark=benchmark,
-                workload=runtime_config.get_workload_config(),
-                model_name=runtime_config.get_model_name(),
-                namespace=runtime_config.get_namespace(),
+        benchmark_key = runtime_config.get_benchmark_keys()[0]
+        artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
+        with env.NextArtifactDir(artifact_name):
+            generator.run(
+                BenchmarkContext(
+                    test_dir=test_dir,
+                    endpoint_url=endpoint_url,
+                    benchmark_key=benchmark_key,
+                    benchmark=benchmark,
+                    workload=runtime_config.get_workload_config(),
+                    model_name=runtime_config.get_model_name(),
+                    namespace=runtime_config.get_namespace(),
+                )
             )
-        )
     finally:
         end_time = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
