@@ -478,9 +478,12 @@ def _run_workload(
         if rampup is not None:
             args["rampup"] = rampup
         with env.NextArtifactDir(f"{phase}_{workload_key}"):
+            labels = {"phase": phase}
+            if phase == "warmup":
+                labels["skip"] = True
             create_test_metadata(
                 env.ARTIFACT_DIR,
-                {"phase": phase, "skip": phase == "warmup"},
+                labels,
                 kpi_labels=kpi_labels,
             )
             run_guidellm_benchmark.run(

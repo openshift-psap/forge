@@ -458,6 +458,7 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         {
             "namespace": "target-namespace",
             "lws_name": lws_name,
+            "service_name": service_name,
             "pod_selector": f"forge.openshift.io/run={run_label}",
         }
     ]
