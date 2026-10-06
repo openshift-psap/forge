@@ -46,9 +46,7 @@ def _kpi_recipe_metadata() -> dict:
     return {
         "platform": {"version": "v1.0.0"},
         "deployment_mode": "tp1",
-        "hardware_profile_data": {
-            "accelerators": {"vendor": "nvidia", "model": "H200"}
-        },
+        "hardware_profile_data": {"accelerators": {"vendor": "nvidia", "model": "H200"}},
     }
 
 
