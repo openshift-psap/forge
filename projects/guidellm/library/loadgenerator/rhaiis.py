@@ -6,7 +6,6 @@ import logging
 
 from projects.core.library import config
 from projects.guidellm.library.runner import (
-    DEFAULT_IMAGE,
     GuideLLMJob,
     build_rate_benchmark_args,
     job_name,
@@ -47,7 +46,7 @@ class GuideLLMGenerator(RhaiisLoadGenerator):
             endpoint_url=f"{context.endpoint_url}/v1",
             name=job_name(prefix, context.workload_key, context.deployment_name),
             namespace=context.namespace,
-            image=context.benchmark_cfg.get("image", DEFAULT_IMAGE),
+            image=context.benchmark_cfg.get("image"),
             timeout=context.benchmark_timeout,
             pvc_size=context.benchmark_cfg.get("pvc_size", "5Gi"),
             guidellm_args=args,

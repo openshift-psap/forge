@@ -7,7 +7,6 @@ from pathlib import Path
 
 from projects.guidellm.toolbox.run_guidellm_benchmark import main as benchmark_command
 
-DEFAULT_IMAGE = "ghcr.io/vllm-project/guidellm:v0.7.4"
 K8S_NAME_MAX = 63
 
 
@@ -53,9 +52,9 @@ class GuideLLMJob:
     endpoint_url: str
     name: str
     namespace: str
-    image: str = DEFAULT_IMAGE
-    timeout: int = 900
-    pvc_size: str = "1Gi"
+    image: str | None = None
+    timeout: int | None = None
+    pvc_size: str | None = None
     pvc_storage_class: str | None = None
     guidellm_args: list[str] | None = None
     config_path: Path | None = None
@@ -65,17 +64,20 @@ class GuideLLMJob:
 
     def run(self) -> int:
         """Launch GuideLLM through its standalone toolbox command."""
+        kwargs = {
+            "endpoint_url": self.endpoint_url,
+            "name": self.name,
+            "namespace": self.namespace,
+            "image": self.image,
+            "timeout": self.timeout,
+            "pvc_size": self.pvc_size,
+            "pvc_storage_class": self.pvc_storage_class,
+            "guidellm_args": self.guidellm_args,
+            "config_path": self.config_path,
+            "hf_token_secret": self.hf_token_secret,
+            "fs_group": self.fs_group,
+            "use_pvc": self.use_pvc,
+        }
         return benchmark_command.run(
-            endpoint_url=self.endpoint_url,
-            name=self.name,
-            namespace=self.namespace,
-            image=self.image,
-            timeout=self.timeout,
-            pvc_size=self.pvc_size,
-            pvc_storage_class=self.pvc_storage_class,
-            guidellm_args=self.guidellm_args,
-            config_path=self.config_path,
-            hf_token_secret=self.hf_token_secret,
-            fs_group=self.fs_group,
-            use_pvc=self.use_pvc,
+            **{key: value for key, value in kwargs.items() if value is not None}
         )
