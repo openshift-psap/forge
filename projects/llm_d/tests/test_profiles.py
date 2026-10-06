@@ -193,7 +193,6 @@ def test_benchmark_caller_owns_artifact_directory(
     _init_project_config()
     core_config.project.set_config("runtime.benchmark_key", "short")
     core_config.project.set_config("prom.capture.enabled", False)
-    core_config.project.set_config("prom.capture.user_workload.enabled", False)
     original_dir = env.ARTIFACT_DIR
     timing_events = []
 
@@ -215,9 +214,13 @@ def test_benchmark_caller_owns_artifact_directory(
         pytest.raises(RuntimeError, match="Benchmark failed") if fail else nullcontext()
     )
     with expected_error:
-        test_phase.run_benchmark(
+        benchmark_times = test_phase.run_benchmark(
             None, endpoint_url="https://example.test/llm-d", generator=FakeGenerator()
         )
+
+    if not fail:
+        assert len(benchmark_times) == 2
+        assert all(isinstance(value, datetime) for value in benchmark_times)
 
     assert env.ARTIFACT_DIR == original_dir
     assert timing_events == [("start", original_dir), ("end", original_dir)]
