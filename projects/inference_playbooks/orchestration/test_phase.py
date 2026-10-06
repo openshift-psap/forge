@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 PROJECTS_DIR = Path(__file__).resolve().parents[2]
 RHAIIS_CONFIG = PROJECTS_DIR / "rhaiis/orchestration/config.yaml"
 RHAIIS_WORKLOADS = PROJECTS_DIR / "rhaiis/orchestration/config.d/workloads.yaml"
+KPI_PLATFORM = "OCP"
+KPI_TEST_HARNESS = "forge-inference-playbooks"
 
 
 def test():
@@ -339,6 +341,7 @@ def _deploy_benchmark_finalize(
     cleanup,
 ) -> None:
     workload_key, workload = _get_workload_config()
+    kpi_labels = _benchmark_kpi_labels(recipe_id, recipe, workload_key)
     primary_exc = None
     finalizer_exc = None
     endpoint_url = None
@@ -347,7 +350,13 @@ def _deploy_benchmark_finalize(
         endpoint_url = deploy()
         logger.info("Recipe %s reached Ready at %s", recipe_id, endpoint_url)
         _run_workload(
-            endpoint_url, namespace, run_name, recipe["model_name"], workload_key, workload
+            endpoint_url,
+            namespace,
+            run_name,
+            recipe["model_name"],
+            workload_key,
+            workload,
+            kpi_labels,
         )
     except Exception:
         primary_exc = sys.exc_info()
@@ -371,6 +380,61 @@ def _deploy_benchmark_finalize(
         raise primary_exc[1].with_traceback(primary_exc[2])
     if finalizer_exc is not None:
         raise finalizer_exc[1].with_traceback(finalizer_exc[2])
+
+
+def _benchmark_kpi_labels(recipe_id: str, recipe: dict, workload_key: str) -> dict[str, str]:
+    platform = recipe.get("platform")
+    product_version = platform.get("version") if isinstance(platform, dict) else None
+    if not product_version:
+        for path_key in ("recipe_path", "manifest_path"):
+            path = recipe.get(path_key)
+            if not path:
+                continue
+            parts = Path(path).parts
+            for stack, prefix in (("rhoai", "RHOAI-"), ("vllm", "")):
+                if stack not in parts:
+                    continue
+                version_index = parts.index(stack) + 1
+                if version_index < len(parts) and parts[version_index] != "latest":
+                    product_version = f"{prefix}{parts[version_index]}"
+                    break
+            if product_version:
+                break
+    if not product_version:
+        product_version = "unknown"
+        logger.warning("Recipe %s has no product version metadata", recipe_id)
+
+    hardware_profile = recipe.get("hardware_profile_data", {})
+    if not isinstance(hardware_profile, dict):
+        hardware_profile = {}
+    accelerators = hardware_profile.get("accelerators", {})
+    if not isinstance(accelerators, dict):
+        accelerators = {}
+    gpu_type = accelerators.get("model")
+    vendor = accelerators.get("vendor")
+    if not gpu_type:
+        hardware = config.project.get_config("ci_job.hardware")
+        if isinstance(hardware, dict):
+            gpu_type = hardware.get("gpuType") or hardware.get("gpu_type")
+    if not gpu_type:
+        gpu_type = "unknown"
+        logger.warning("Recipe %s has no GPU model metadata", recipe_id)
+    gpu_type = str(gpu_type)
+    if vendor:
+        vendor = str(vendor).upper()
+        if not gpu_type.upper().startswith(f"{vendor}-"):
+            gpu_type = f"{vendor}-{gpu_type}"
+
+    return {
+        "model_name": str(recipe["model_name"]),
+        "product_version": str(product_version),
+        "deployment_profile": str(recipe.get("deployment_mode") or recipe_id),
+        "guidellm_loadshape": workload_key,
+        "gpu_type": str(gpu_type),
+        "platform": KPI_PLATFORM,
+        "test_harness": KPI_TEST_HARNESS,
+        "benchmark_key": workload_key,
+    }
 
 
 def _get_workload_config() -> tuple[str, dict]:
@@ -397,6 +461,7 @@ def _run_workload(
     model_name: str,
     workload_key: str,
     workload: dict,
+    kpi_labels: dict[str, str],
 ) -> None:
     benchmark = config.Config(RHAIIS_CONFIG).get_config("benchmarks.guidellm")
 
@@ -415,6 +480,7 @@ def _run_workload(
             create_test_metadata(
                 env.ARTIFACT_DIR,
                 {"phase": phase, "skip": phase == "warmup"},
+                kpi_labels=kpi_labels,
             )
             run_guidellm_benchmark.run(
                 endpoint_url=endpoint_url,

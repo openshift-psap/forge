@@ -116,7 +116,12 @@ def _load_recipe_v3(
     model_cache = deployment.get("model_cache")
     _validate_lws_model_cache(recipe_path, manifest, model_cache)
 
-    _repository_file(root, recipe.get("hardware_profile"), f"{recipe_path} hardware profile")
+    hardware_profile_path = _repository_file(
+        root, recipe.get("hardware_profile"), f"{recipe_path} hardware profile"
+    )
+    hardware_profile = _load_yaml(hardware_profile_path)
+    if not isinstance(hardware_profile, dict):
+        raise ValueError(f"{hardware_profile_path} must define a mapping")
     recipes_by_id[recipe_id] = {
         **recipe,
         "recipe_type": "recipe-v3",
@@ -126,6 +131,7 @@ def _load_recipe_v3(
         "auxiliary_manifests": auxiliary_manifests,
         "model_name": model_name,
         "model_cache": model_cache,
+        "hardware_profile_data": hardware_profile,
     }
 
 

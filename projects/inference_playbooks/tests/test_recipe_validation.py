@@ -42,6 +42,16 @@ def _config(values: dict):
     return SimpleNamespace(get_config=lambda key: values.get(key))
 
 
+def _kpi_recipe_metadata() -> dict:
+    return {
+        "platform": {"version": "v1.0.0"},
+        "deployment_mode": "tp1",
+        "hardware_profile_data": {
+            "accelerators": {"vendor": "nvidia", "model": "H200"}
+        },
+    }
+
+
 def test_validate_recipe_catalog_accepts_hf_and_documented_pvc(tmp_path: Path) -> None:
     _write(tmp_path, "models/hf.yaml", _manifest("hf://test/model"))
     _write(tmp_path, "models/pvc.yaml", _manifest("pvc://test-model-pvc"))
@@ -111,7 +121,11 @@ def test_load_recipe_v3_discovers_lws_and_service(tmp_path: Path) -> None:
         "models/kimi-k3/model.yaml",
         "schema_version: 1\nmodel_id: kimi-k3\nhuggingface_id: moonshotai/Kimi-K3\n",
     )
-    _write(tmp_path, "hardware-profiles/h200.yaml", "profile_id: h200\n")
+    _write(
+        tmp_path,
+        "hardware-profiles/h200.yaml",
+        "profile_id: h200\naccelerators:\n  vendor: nvidia\n  model: H200\n",
+    )
     _write(
         tmp_path,
         f"{recipe_dir}/recipe.yaml",
@@ -167,6 +181,7 @@ spec:
     assert recipe["auxiliary_manifests"][0]["data"]["kind"] == "Service"
     assert recipe["model_name"] == "moonshotai/Kimi-K3"
     assert recipe["model_cache"]["volume_name"] == "model"
+    assert recipe["hardware_profile_data"]["accelerators"]["model"] == "H200"
 
 
 def test_validate_recipe_catalog_rejects_duplicate_ids(tmp_path: Path) -> None:
@@ -198,11 +213,17 @@ def test_llmisvc_launch_benchmarks_captures_and_cleans_up(
     monkeypatch.setattr(
         test_phase.config,
         "project",
-        _config({"inference_playbooks.namespace": "target-namespace"}),
+        _config(
+            {
+                "inference_playbooks.namespace": "target-namespace",
+                "inference_playbooks.workload": "profile1",
+            }
+        ),
     )
     recipe = {
         "recipe_type": "llmisvc",
         "model_name": "test/model",
+        **_kpi_recipe_metadata(),
         "model_source": {"source_uri": "hf://test/model"},
         "manifest_data": yaml.safe_load(_manifest("pvc://test-model-pvc")),
     }
@@ -286,6 +307,7 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         _config(
             {
                 "inference_playbooks.namespace": "target-namespace",
+                "inference_playbooks.workload": "profile1",
                 "inference_playbooks.rdma_resource": "example.com/roce",
                 "inference_playbooks.lws_ready_timeout_seconds": 14400,
                 "model_cache": {
@@ -348,6 +370,7 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         "recipe_type": "recipe-v3",
         "model_id": "example-model",
         "model_name": "example/model",
+        **_kpi_recipe_metadata(),
         "model_cache": {
             "volume_name": "weights",
             "pvc_size": "80Gi",
@@ -446,7 +469,15 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
     assert ("delete", "service", service_name) == deleted[1][:3]
 
 
-def test_cleanup_failure_does_not_mask_deployment_failure() -> None:
+def test_cleanup_failure_does_not_mask_deployment_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        test_phase.config,
+        "project",
+        _config({"inference_playbooks.workload": "profile1"}),
+    )
+
     def fail_deploy():
         raise RuntimeError("deployment failed")
 
@@ -456,7 +487,7 @@ def test_cleanup_failure_does_not_mask_deployment_failure() -> None:
     with pytest.raises(RuntimeError, match="deployment failed"):
         test_phase._deploy_benchmark_finalize(
             "recipe",
-            {"model_name": "model"},
+            {"model_name": "model", **_kpi_recipe_metadata()},
             "namespace",
             "run",
             fail_deploy,
@@ -474,10 +505,25 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(test_phase.env, "NextArtifactDir", lambda _name: nullcontext())
     calls = []
     metadata = []
+    kpi_labels = test_phase._benchmark_kpi_labels(
+        "test-recipe",
+        {"model_name": "moonshotai/Kimi-K3", **_kpi_recipe_metadata()},
+        "profile1",
+    )
+    assert kpi_labels == {
+        "model_name": "moonshotai/Kimi-K3",
+        "product_version": "v1.0.0",
+        "deployment_profile": "tp1",
+        "guidellm_loadshape": "profile1",
+        "gpu_type": "NVIDIA-H200",
+        "platform": "OCP",
+        "test_harness": "forge-inference-playbooks",
+        "benchmark_key": "profile1",
+    }
     monkeypatch.setattr(
         test_phase,
         "create_test_metadata",
-        lambda _directory, labels: metadata.append(labels),
+        lambda _directory, labels, **kwargs: metadata.append((labels, kwargs["kpi_labels"])),
     )
     monkeypatch.setattr(
         test_phase.run_guidellm_benchmark,
@@ -487,7 +533,13 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
 
     workload_key, workload = test_phase._get_workload_config()
     test_phase._run_workload(
-        "http://model:8000", "namespace", "run", "moonshotai/Kimi-K3", workload_key, workload
+        "http://model:8000",
+        "namespace",
+        "run",
+        "moonshotai/Kimi-K3",
+        workload_key,
+        workload,
+        kpi_labels,
     )
 
     assert len(calls) == 2
@@ -497,8 +549,8 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     assert "--rampup=35" in calls[1]["guidellm_args"]
     assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[1]["guidellm_args"]
     assert metadata == [
-        {"phase": "warmup", "skip": True},
-        {"phase": "benchmark", "skip": False},
+        ({"phase": "warmup", "skip": True}, kpi_labels),
+        ({"phase": "benchmark", "skip": False}, kpi_labels),
     ]
 
 
