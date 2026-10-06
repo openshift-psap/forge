@@ -20,6 +20,9 @@ from .parsing import GuideLLMParser
 
 logger = logging.getLogger(__name__)
 
+# Compare matching GuideLLM workloads across product releases.
+analysis_config = {"comparison_labels": ["product_version"]}
+
 
 class _PlotRegistry:
     """Lazy-loading plot registry that avoids importing pandas at module load time."""

@@ -38,9 +38,10 @@ postprocess:
     enabled: true
     no_cache: false
   visualize:
-    enabled: false
+    enabled: true
     output_dir: reports
-    reports: []
+    reports:
+      - report_performance_analysis
     report_group: null
 
   kpi:
@@ -49,15 +50,15 @@ postprocess:
       enabled: true
       output: kpis/kpis.json
     dashboard_csv:
-      enabled: false
+      enabled: true
       output: kpis/dashboard.csv
     artifacts_to_ai_data:
-      enabled: false
+      enabled: true
       output_dir: ai_data
 
   s3:
     bucket: psap-dashboard-data
-    instance: smoke
+    instance: staging
     directory: inference-playbooks-dashboard
     vault:
       name: psap-forge-aws-s3-export
@@ -73,12 +74,12 @@ postprocess:
       enabled: true
       upload_id: null  # use timestamp if null
       dry_run: false
-      include_csv: false
+      include_csv: true
       include_kpis_json: true
       include_ai_data: true
 
   analyze:
-    enabled: false # GuideLLM plugin does not provide analysis_config.
+    enabled: true
     current_kpis: kpis/kpis.json
     historical_kpis: historical_data
     output: regression_analyze/kpi_analyze.json
