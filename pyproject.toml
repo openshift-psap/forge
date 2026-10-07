@@ -135,6 +135,7 @@ testpaths = [
     "projects/fournos_launcher/tests",
     "projects/rhaiis/tests",
     "projects/cluster/tests",
+    "projects/inference_playbooks/tests",
 ]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

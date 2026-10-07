@@ -511,10 +511,7 @@ def parse_pr_arguments(
         last_user_test_comment,
     )
 
-    # The Fournos launcher consumes this existing config value when setting
-    # spec.owner on the submitted job.
-    if test_name == "fournos":
-        config["fournos.job.owner"] = last_user_test_comment_author
+    config["fournos.job.owner"] = last_user_test_comment_author
 
     return config, found_directives
 

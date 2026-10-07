@@ -75,7 +75,7 @@ def test_parse_pr_arguments_sets_owner_from_selected_test_comment(tmp_path, monk
     assert config["fournos.job.owner"] == "reviewer"
 
 
-def test_parse_pr_arguments_does_not_set_fournos_owner_for_other_tests(monkeypatch) -> None:
+def test_parse_pr_arguments_sets_fournos_owner_for_any_test(monkeypatch) -> None:
     pull_request = {
         "comments": 1,
         "user": {"login": "pr-author"},
@@ -94,4 +94,4 @@ def test_parse_pr_arguments_does_not_set_fournos_owner_for_other_tests(monkeypat
         "openshift-psap", "forge", 123, test_name="jump-ci"
     )
 
-    assert "fournos.job.owner" not in config
+    assert config["fournos.job.owner"] == "reviewer"
