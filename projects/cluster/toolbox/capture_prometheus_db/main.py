@@ -179,6 +179,7 @@ def dump_metrics(args, ctx):
         f" --min-time={ctx.start_ms} --max-time={ctx.end_ms}"
         f" {ctx.temp_dir if args.head_only else TSDB_PATH}"
         f" | gzip",
+        timeout_seconds=1800,
         stdout_dest=output_file,
         text=False,
         **_pod_kwargs(ctx),
