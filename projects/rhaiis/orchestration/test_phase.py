@@ -236,9 +236,10 @@ def _run_test(
 
         logger.info("Deploying %s to %s/%s", model_cfg["hf_model_id"], namespace, deployment_name)
         ea = engine_args or {}
-        gpu_count = int(
-            ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or 1
-        )
+        tp = int(ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or 1)
+        pp = int(ea.get("pipeline-parallel-size") or ea.get("pp-size") or ea.get("pp_size") or 1)
+        dp = int(ea.get("data-parallel-size") or ea.get("dp-size") or ea.get("dp_size") or 1)
+        gpu_count = tp * pp * dp
 
         sr_manifest = build_servingruntime(
             deployment_name=deployment_name,
