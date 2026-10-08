@@ -50,6 +50,6 @@ benchmarks:
     # max_requests scale with the rate via forge's {rate} expressions.
     args:
       profile: "kind=concurrent,streams={rate}"
-      data: "kind=synthetic_text,prompt_tokens=128,output_tokens=128,turns=5,prefix_tokens=10000,prefix_count={2*rate}"
+      data: "kind=synthetic_text,prompt_tokens=128,output_tokens=128,turns=5,prefix_buckets[0].prefix_tokens=10000,prefix_buckets[0].prefix_count={2*rate}"
       constraint: "kind=max_requests,value={10*rate}"
     rate: [32, 64, 128, 256, 512]
