@@ -641,13 +641,14 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
 
         from projects.rhaiis.orchestration.analysis import run_regression_check
 
+        fjob_name = config.project.get_config("ci_job.fjob_name", "")
         run_regression_check(
             csv_path,
             compare_version,
             version,
             model_cfg,
             accelerator,
-            run_uuid="",
+            run_uuid=fjob_name,
             engine_args=ea,
         )
         return
