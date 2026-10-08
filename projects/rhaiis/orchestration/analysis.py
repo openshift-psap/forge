@@ -128,6 +128,7 @@ def run_regression_check(
 ) -> None:
     from projects.caliper.cli.s3_export import create_s3_client, get_aws_credentials
     from projects.core.library import config
+    from projects.rhaiis.orchestration import runtime_config
     from projects.rhaiis.postprocess.regression import METRICS, PROFILE_MAP, run_regression_analysis
 
     owner = config.project.get_config("ci_job.owner", "") or ""
