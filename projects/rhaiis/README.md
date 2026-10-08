@@ -142,7 +142,7 @@ spec:
         tests.rhaiis.model_key: nemotron3super-120b-fp8
         rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.24.0
         tests.rhaiis.version: "vLLM-0.24.0"
-        tests.rhaiis.workload_keys: ["profile1","profile2","profile4"]
+        runtime.benchmark_key: ["concurrent-1k-1k", "concurrent-512-2ki", "concurrent-8k-1k"]
         rhaiis.engines.vllm.args.tensor-parallel-size: 2
         rhaiis.cluster_tag: "zeus2"
         rhaiis.deploy.image_pull_secrets: ["npalaska-image-pull"]
@@ -177,7 +177,7 @@ spec:
       configOverrides:
         tests.rhaiis.model_key: nemotron3super-120b-fp8
         tests.rhaiis.version: "SGLang-0.5.11"
-        tests.rhaiis.workload_keys: ["profile1"]
+        runtime.benchmark_key: ["concurrent-1k-1k"]
         rhaiis.engine: sglang
         rhaiis.engines.sglang.args.tp-size: 2
         rhaiis.engines.sglang.args.disable-radix-cache: true
@@ -218,7 +218,7 @@ spec:
       configOverrides:
         tests.rhaiis.model_key: nemotron3super-120b-fp8
         tests.rhaiis.version: "TRT-LLM-1.3.0rc13"
-        tests.rhaiis.workload_keys: ["profile1"]
+        runtime.benchmark_key: ["concurrent-1k-1k"]
         rhaiis.engine: trtllm
         rhaiis.deploy.image_pull_secrets: ["npalaska-image-pull", "ngc-secret"]
         rhaiis.deploy.memory_request: "256Gi"
@@ -251,7 +251,7 @@ Jobs can also be triggered via PR comments on `openshift-psap/forge`:
 /cluster zeus
 /var tests.rhaiis.model_key: nemotron3super-120b-fp8
 /var tests.rhaiis.version: vLLM-0.24.0
-/var tests.rhaiis.workload_keys: ["profile1"]
+/var runtime.benchmark_key: ["concurrent-1k-1k"]
 /var rhaiis.engines.vllm.args.tensor-parallel-size: 2
 ```
 
@@ -267,7 +267,7 @@ Available configOverrides:
 |-----|-------------|
 | `tests.rhaiis.model_key` | Model key from config.d/models.yaml |
 | `tests.rhaiis.version` | Version label for dashboard and regression |
-| `tests.rhaiis.workload_keys` | List of workload profiles to run |
+| `runtime.benchmark_key` | BenchConf benchmark key or list of keys to run |
 | `tests.rhaiis.warmup` | Enable warmup pass before benchmarks |
 | `tests.rhaiis.slack_user` | Slack user ID for failure notifications |
 | `tests.rhaiis.compare_version` | Baseline version for regression comparison |

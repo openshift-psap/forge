@@ -1,22 +1,22 @@
 __multiple: true
 
 profile1-balanced:
-  tests.rhaiis.workload_key: profile1
+  runtime.benchmark_key: concurrent-1k-1k
 
 profile2-decode-heterogeneous:
-  tests.rhaiis.workload_key: profile2
+  runtime.benchmark_key: concurrent-512-2ki
 
 profile3-summarization:
-  tests.rhaiis.workload_key: profile3
+  runtime.benchmark_key: concurrent-2ki-128
 
 profile4-long-context:
-  tests.rhaiis.workload_key: profile4
+  runtime.benchmark_key: concurrent-8k-1k
 
 profile5-ultra-long-context:
-  tests.rhaiis.workload_key: profile5
+  runtime.benchmark_key: concurrent-100k-1k
 
 profile6-multi-turn:
-  tests.rhaiis.workload_key: profile6
+  runtime.benchmark_key: concurrent-128-128-multiturn
 
 profile7-heavy-heterogeneous:
-  tests.rhaiis.workload_key: profile7
+  runtime.benchmark_key: concurrent-8k-800

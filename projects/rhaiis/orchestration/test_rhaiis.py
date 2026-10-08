@@ -14,9 +14,7 @@ init = runtime_config.init
     namespace="rhaiis.namespace",
 )
 def test(_cfg):
-    workload_keys = config.project.get_config("tests.rhaiis.workload_keys", [])
-    if not workload_keys:
-        workload_keys = [_cfg.workload_key]
+    workload_keys = runtime_config.get_test_workload_keys()
 
     test_phase.run(
         model_key=_cfg.model_key,

@@ -213,7 +213,7 @@ def run_regression_check(
                 tp=str(tp),
                 dp=str(dp),
                 version=current_version,
-                workload_keys=config.project.get_config("tests.rhaiis.workload_keys", []),
+                workload_keys=runtime_config.get_test_workload_keys(),
                 cluster=config.project.get_config("rhaiis.cluster_tag", ""),
             )
     except Exception:

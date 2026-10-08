@@ -56,6 +56,27 @@ profile7:
   max_seconds: 275
   warmup: 75
 
+# Public selectors for /var runtime.benchmark_key, matching LLM_D's interface.
+benchmarks:
+  ci-quick:
+    workload_key: ci-quick
+  concurrent-1k-1k:
+    workload_key: profile1
+  concurrent-512-2ki:
+    workload_key: profile2
+  concurrent-2ki-128:
+    workload_key: profile3
+  concurrent-8k-1k:
+    workload_key: profile4
+  concurrent-100k-1k:
+    workload_key: profile5
+  concurrent-128-128-multiturn:
+    workload_key: profile6
+  concurrent-8k-800:
+    workload_key: profile7
+  custom:
+    workload_key: custom
+
 # Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
 custom:
   data: "prompt_tokens=1000,output_tokens=1000"
