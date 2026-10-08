@@ -3,56 +3,79 @@ ci-quick:
   rates: [1, 5]
   max_seconds: 60
 
+# Standard benchmark profiles live in BenchConf. Keep local data and warmup for
+# Forge's separate warmup/profiler passes, and rates/duration for MLflow metadata.
 profile1:
+  benchconf: rhaiis-regression/concurrent-1k-1k-equal
   data: "prompt_tokens=1000,output_tokens=1000"
   rates: [1,50,100,200,300]
   max_seconds: 275
-  rampup: 35
   warmup: 75
 
 profile2:
+  benchconf: rhaiis-regression/concurrent-512-2ki-norm
   data: "prompt_tokens=512,prompt_tokens_stdev=128,prompt_tokens_min=1,prompt_tokens_max=1024,output_tokens=2048,output_tokens_stdev=512,output_tokens_min=1,output_tokens_max=4096"
   rates: [1,50,100,200,300]
   max_seconds: 275
-  rampup: 35
   warmup: 75
 
 profile3:
+  benchconf: rhaiis-regression/concurrent-2ki-128-equal
   data: "prompt_tokens=2048,output_tokens=128"
   rates: [1, 50, 100, 200, 300]
   max_seconds: 275
-  rampup: 35
   warmup: 75
 
 profile4:
+  benchconf: rhaiis-regression/concurrent-8k-1k-equal
   data: "prompt_tokens=8000,output_tokens=1000"
   rates: [1,25,50,75,100]
   max_seconds: 275
-  rampup: 35
   warmup: 75
   samples: 50
 
 profile5:
+  benchconf: rhaiis-regression/concurrent-100k-1k-equal
   data: "prompt_tokens=100000,output_tokens=1000"
   rates: [1, 2, 5]
   max_seconds: 275
-  rampup: 35
   warmup: 75
   samples: 10
 
 profile6:
+  benchconf: rhaiis-regression/concurrent-128-128-multiturn
   data: "prompt_tokens=128,output_tokens=128,turns=5,prefix_buckets[0].prefix_count=10000,prefix_buckets[0].prefix_tokens=512"
   rates: [1, 32, 64, 128, 256, 512]
   max_seconds: 275
-  rampup: 35
   warmup: 75
 
 profile7:
+  benchconf: rhaiis-regression/concurrent-8k-800-norm
   data: "prompt_tokens=8000,prompt_tokens_stdev=8500,prompt_tokens_min=50,prompt_tokens_max=30000,output_tokens=800,output_tokens_stdev=1500,output_tokens_min=20,output_tokens_max=8000"
   rates: [1, 50, 100, 200, 300]
   max_seconds: 275
-  rampup: 35
   warmup: 75
+
+# Public selectors for /var runtime.benchmark_key, matching LLM_D's interface.
+benchmarks:
+  ci-quick:
+    workload_key: ci-quick
+  concurrent-1k-1k:
+    workload_key: profile1
+  concurrent-512-2ki:
+    workload_key: profile2
+  concurrent-2ki-128:
+    workload_key: profile3
+  concurrent-8k-1k:
+    workload_key: profile4
+  concurrent-100k-1k:
+    workload_key: profile5
+  concurrent-128-128-multiturn:
+    workload_key: profile6
+  concurrent-8k-800:
+    workload_key: profile7
+  custom:
+    workload_key: custom
 
 # Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
 custom:

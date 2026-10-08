@@ -128,6 +128,7 @@ def run_regression_check(
 ) -> None:
     from projects.caliper.cli.s3_export import create_s3_client, get_aws_credentials
     from projects.core.library import config
+    from projects.rhaiis.orchestration import runtime_config
     from projects.rhaiis.postprocess.regression import METRICS, PROFILE_MAP, run_regression_analysis
 
     owner = config.project.get_config("ci_job.owner", "") or ""
@@ -213,7 +214,7 @@ def run_regression_check(
                 tp=str(tp),
                 dp=str(dp),
                 version=current_version,
-                workload_keys=config.project.get_config("tests.rhaiis.workload_keys", []),
+                workload_keys=runtime_config.get_test_workload_keys(),
                 cluster=config.project.get_config("rhaiis.cluster_tag", ""),
             )
     except Exception:

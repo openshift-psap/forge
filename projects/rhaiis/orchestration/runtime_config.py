@@ -90,6 +90,35 @@ def get_workload(workload_key: str) -> dict:
     return dict(config.project.get_config(f"workloads.{workload_key}"))
 
 
+def get_benchmark_workload_keys() -> list[str]:
+    benchmark_keys = config.project.get_config("runtime.benchmark_key", [])
+    if isinstance(benchmark_keys, str):
+        benchmark_keys = [benchmark_keys]
+    if not isinstance(benchmark_keys, list):
+        raise ValueError("runtime.benchmark_key must be a string or list of strings")
+    if not benchmark_keys:
+        return []
+
+    benchmarks = config.project.get_config("workloads.benchmarks", {})
+    workload_keys = []
+    for benchmark_key in benchmark_keys:
+        if not isinstance(benchmark_key, str):
+            raise ValueError("runtime.benchmark_key must contain only strings")
+        benchmark = benchmarks.get(benchmark_key)
+        if benchmark is None:
+            raise ValueError(f"Unknown runtime.benchmark_key: {benchmark_key}")
+        workload_keys.append(benchmark["workload_key"])
+    return workload_keys
+
+
+def get_test_workload_keys() -> list[str]:
+    workload_keys = get_benchmark_workload_keys()
+    if workload_keys:
+        return workload_keys
+    workload_keys = config.project.get_config("tests.rhaiis.workload_keys", [])
+    return workload_keys or [get_test_workload_key()]
+
+
 def get_vaults() -> list[str]:
     return config.project.get_config("vaults")
 
@@ -204,9 +233,9 @@ def build_guidellm_args(
     *,
     benchmark_cfg: dict,
     model_id: str,
-    data: str,
-    rates: list[int],
-    max_seconds: int,
+    data: str | None,
+    rates: list[int] | None,
+    max_seconds: int | None,
     rampup: int | None = None,
 ) -> list[str]:
     guidellm_args = []
@@ -215,9 +244,12 @@ def build_guidellm_args(
         guidellm_args.append(f"--{cli_key}={_format_arg_value(value)}")
 
     guidellm_args.append(f"--model={model_id}")
-    guidellm_args.append(f"--data={data}")
-    guidellm_args.append(f"--rate={_format_arg_value(rates)}")
-    guidellm_args.append(f"--max-seconds={max_seconds}")
+    if data is not None:
+        guidellm_args.append(f"--data={data}")
+    if rates is not None:
+        guidellm_args.append(f"--rate={_format_arg_value(rates)}")
+    if max_seconds is not None:
+        guidellm_args.append(f"--max-seconds={max_seconds}")
     if rampup is not None:
         guidellm_args.append(f"--rampup={rampup}")
     return guidellm_args
