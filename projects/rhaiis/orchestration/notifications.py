@@ -23,7 +23,6 @@ def _send_alert(
 
     model_cfg = runtime_config.get_model(model_key)
     accelerator = runtime_config.get_accelerator()
-    gpu_type = runtime_config.get_gpu_type(accelerator) or accelerator
     cluster_tag = _cfg.project.get_config("rhaiis.cluster_tag", "")
     engine = runtime_config.get_engine()
     engine_args = runtime_config.merge_engine_args(
@@ -43,7 +42,7 @@ def _send_alert(
     send_failure_notification(
         error=error_message,
         model=model_cfg.get("hf_model_id", model_key),
-        accelerator=f"{gpu_type}_{cluster_tag}".upper() if cluster_tag else gpu_type.upper(),
+        accelerator=accelerator,
         job_id=os.environ.get("FJOB_NAME", ""),
         slack_user=_cfg.project.get_config("tests.rhaiis.slack_user", ""),
         owner=_cfg.project.get_config("ci_job.owner", "") or "",

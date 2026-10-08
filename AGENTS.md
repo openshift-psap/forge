@@ -272,6 +272,53 @@ finally:
         os.environ["MLFLOW_WORKSPACE"] = old_value
 ```
 
+## Comment Interaction Rules
+
+When processing, posting, or replying to user comments (GitHub PR reviews, issue comments, etc.):
+
+### Rules
+
+1. **Always identify as an agent.**
+   Every comment or reply posted by an agent must clearly state that it was written by an agent,
+   not a human. Include an explicit marker such as `[Agent response]` at the start of the comment.
+
+2. **Never use first person.**
+   Do not use "I", "me", "my", or "mine" when writing comment text. Use impersonal phrasing instead
+   (e.g., "This change introduces…", "The suggestion is…", "This was addressed in…").
+
+3. **Discourage using agents to reply to human comments.**
+   When asked to reply to a comment written by a human, warn the user that human comments
+   deserve a human reply. Suggest that the user write the response themselves. Only proceed
+   with an agent-generated reply if the user explicitly confirms after the warning.
+
+4. **Do not change PR state or modify existing comments.**
+   Agents may post new comments or replies only under Rules 1–3.
+   This includes:
+   - Do not resolve review comments.
+   - Do not close, merge, or approve PRs.
+   - Do not trigger CI tests (e.g., `/test fournos ...` or any `/test` directive).
+   - Do not add labels, change assignees, or modify PR metadata.
+   Agents are read-and-comment only — all state changes must be performed by the user.
+
+### Examples
+
+```
+# BAD: No identification, uses first person
+I think this looks good, I'll merge it.
+
+# BAD: No identification
+This change looks correct and has been addressed.
+
+# GOOD: Identified, impersonal, with disclaimer
+[Agent response] This change appears correct. The issue raised in the
+previous comment has been addressed in commit abc123.
+
+# GOOD: Warning before replying to a human comment
+"This comment was written by a human reviewer. Human comments are best
+answered by a human. Consider writing the reply yourself. Proceed with
+an agent-generated reply?"
+```
+
 ## Legacy support
 
 Overall, we do not want legacy support. Do not implement legacy fallback, unless explicitly requested by the user.

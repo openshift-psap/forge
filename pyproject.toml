@@ -134,6 +134,7 @@ testpaths = [
     "projects/guidellm/tests",
     "projects/fournos_launcher/tests",
     "projects/rhaiis/tests",
+    "projects/cluster/tests",
 ]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

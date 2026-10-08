@@ -1,0 +1,129 @@
+# params:
+#   LLMISVC_NAMESPACE: Target namespace
+#   LLMISVC_NAME: Name of the vLLM LLMInferenceService
+
+- query: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"kserve_vllm:time_to_first_token_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: ttft_p50_seconds
+  description: Ttft p50 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"kserve_vllm:time_to_first_token_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: ttft_p90_seconds
+  description: Ttft p90 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"kserve_vllm:time_to_first_token_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: ttft_p99_seconds
+  description: Ttft p99 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"kserve_vllm:request_time_per_output_token_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: tpot_p50_seconds
+  description: Tpot p50 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"kserve_vllm:request_time_per_output_token_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: tpot_p90_seconds
+  description: Tpot p90 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"kserve_vllm:request_time_per_output_token_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: tpot_p99_seconds
+  description: Tpot p99 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"kserve_vllm:e2e_request_latency_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: e2e_request_latency_p50_seconds
+  description: E2e request latency p50 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"kserve_vllm:e2e_request_latency_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: e2e_request_latency_p90_seconds
+  description: E2e request latency p90 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"kserve_vllm:e2e_request_latency_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: e2e_request_latency_p99_seconds
+  description: E2e request latency p99 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"kserve_vllm:request_prefill_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: prefill_time_p50_seconds
+  description: Prefill time p50 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"kserve_vllm:request_prefill_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: prefill_time_p90_seconds
+  description: Prefill time p90 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"kserve_vllm:request_prefill_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: prefill_time_p99_seconds
+  description: Prefill time p99 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"kserve_vllm:request_decode_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: decode_time_p50_seconds
+  description: Decode time p50 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"kserve_vllm:request_decode_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: decode_time_p90_seconds
+  description: Decode time p90 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"kserve_vllm:request_decode_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: decode_time_p99_seconds
+  description: Decode time p99 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"kserve_vllm:request_inference_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: inference_time_p50_seconds
+  description: Inference time p50 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"kserve_vllm:request_inference_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: inference_time_p90_seconds
+  description: Inference time p90 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"kserve_vllm:request_inference_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: inference_time_p99_seconds
+  description: Inference time p99 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.5, sum(rate({__name__=~"kserve_vllm:request_queue_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: queue_time_p50_seconds
+  description: Queue time p50 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.9, sum(rate({__name__=~"kserve_vllm:request_queue_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: queue_time_p90_seconds
+  description: Queue time p90 seconds
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99, sum(rate({__name__=~"kserve_vllm:request_queue_time_seconds_bucket", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-.*"}[5m])) by (le))
+  metricName: queue_time_p99_seconds
+  description: Queue time p99 seconds
+  unit: seconds

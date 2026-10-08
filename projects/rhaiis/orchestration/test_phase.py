@@ -341,11 +341,7 @@ def _run_test(
                 _run_warmup_step(**step_kwargs)
 
         if profiler_enabled:
-            try:
-                _upload_profiler_traces(model_cfg, gpu_type, engine_args, profiler_cfg)
-            except Exception:
-                logger.exception("Profiler trace upload failed")
-                _warnings.append("Profiler trace upload failed")
+            _upload_profiler_traces(model_cfg, gpu_type, engine_args, profiler_cfg)
 
         # Phase 2: benchmark + post-processing for ALL workloads
         trtllm_cfg = runtime_config.get_trtllm_config() if engine == "trtllm" else None
@@ -829,7 +825,7 @@ def _run_profiler_step(
 
     profiler_max_seconds = profiler_cfg.get("max_seconds", 60)
 
-    for label in labels:
+    for label_index, label in enumerate(labels):
         logger.info("Profiling label=%s", label)
 
         gate_value = label if isinstance(label, str) else str(label)
@@ -837,6 +833,7 @@ def _run_profiler_step(
             name=deployment_name,
             namespace=namespace,
             gate_value=gate_value,
+            clear_traces=label_index == 0,
         )
 
         profiler_rates = profiler_cfg.get("rates", [1])
@@ -868,10 +865,7 @@ def _run_profiler_step(
             )
 
     logger.info("Copying profiler traces from pod")
-    try:
-        copy_profiler_traces(name=deployment_name, namespace=namespace)
-    except Exception:
-        logger.warning("Failed to copy profiler traces", exc_info=True)
+    copy_profiler_traces(name=deployment_name, namespace=namespace)
 
 
 def _derive_profiler_label(workload: dict) -> str:
@@ -911,29 +905,22 @@ def _upload_profiler_traces(
     from pathlib import Path
 
     from projects.core.library import config
-    from projects.rhaiis.postprocess.s3_dashboard import upload_profiler_traces_to_s3
+    from projects.rhaiis.postprocess.s3_dashboard import (
+        select_rank0_profiler_traces,
+        upload_profiler_traces_to_s3,
+    )
 
-    trace_files = sorted(
+    trace_files = select_rank0_profiler_traces(
         Path(env.ARTIFACT_DIR).glob("*__copy_profiler_traces/artifacts/traces/trace_*")
     )
     if not trace_files:
-        logger.info("No profiler traces to upload")
-        return
+        raise RuntimeError("No rank-0 profiler traces found to upload")
 
-    traces_dir = trace_files[0].parent
-    if len({f.parent for f in trace_files}) > 1:
-        traces_dir = Path(env.ARTIFACT_DIR) / "artifacts" / "traces_combined"
-        traces_dir.mkdir(parents=True, exist_ok=True)
-        for f in trace_files:
-            import shutil
-
-            shutil.copy2(f, traces_dir / f.name)
-    logger.info("Found %d profiler trace files in %s", len(trace_files), traces_dir)
+    logger.info("Found %d rank-0 profiler trace files across profiler captures", len(trace_files))
 
     version = config.project.get_config("tests.rhaiis.version", "")
     if not version:
-        logger.info("No version configured, skipping profiler trace upload")
-        return
+        raise ValueError("tests.rhaiis.version is required to upload profiler traces")
 
     profile_labels = profiler_cfg.get("labels", [])
     if not profile_labels:
@@ -942,7 +929,7 @@ def _upload_profiler_traces(
 
     s3_cfg = config.project.get_config("rhaiis.s3", {})
     result = upload_profiler_traces_to_s3(
-        traces_dir,
+        trace_files,
         model_name=model_cfg.get("hf_model_id", ""),
         accelerator=accelerator,
         tp_size=int(
@@ -960,6 +947,13 @@ def _upload_profiler_traces(
         dry_run=config.project.get_config("caliper.export.dry_run", False),
     )
     logger.info("Profiler trace upload result: %s", result)
+    if result.get("status") != "success":
+        raise RuntimeError("Profiler trace upload did not complete successfully")
+    if not result.get("dry_run") and result.get("uploaded") != len(trace_files):
+        raise RuntimeError(
+            f"Profiler trace upload incomplete: {result.get('uploaded', 0)} "
+            f"of {len(trace_files)} files uploaded"
+        )
 
 
 def _update_fjob_inference_reference(job_name: str, namespace: str, reference: dict | None) -> None:

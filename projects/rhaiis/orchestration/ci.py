@@ -69,14 +69,12 @@ def _check_pipeline_failure_and_notify() -> None:
             model_name = model_key
 
         accelerator = runtime_config.get_accelerator()
-        gpu_type = runtime_config.get_gpu_type(accelerator) or accelerator
         cluster_tag = _cfg.project.get_config("rhaiis.cluster_tag", "")
-        accelerator_key = f"{gpu_type}_{cluster_tag}".upper() if cluster_tag else gpu_type.upper()
 
         send_failure_notification(
             error=error_text,
             model=model_name,
-            accelerator=accelerator_key,
+            accelerator=accelerator,
             job_id=os.environ.get("FJOB_NAME", ""),
             slack_user=_cfg.project.get_config("tests.rhaiis.slack_user", ""),
             owner=_cfg.project.get_config("ci_job.owner", "") or "",

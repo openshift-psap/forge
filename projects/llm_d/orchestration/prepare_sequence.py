@@ -2,6 +2,9 @@ import logging
 
 from projects.cluster.library.prom.collection import prepare_user_workload_monitoring
 from projects.core.library import config, env
+from projects.gpu_operator.toolbox.validate_gpu_operator_dcgm import (
+    main as validate_gpu_operator_dcgm,
+)
 from projects.llm_d.orchestration import prepare_phase, runtime_config
 
 logger = logging.getLogger(__name__)
@@ -21,6 +24,7 @@ def run_prepare_sequence() -> int:
     else:
         prepare_phase.prepare_nfd()
         prepare_phase.prepare_gpu_operator()
+        validate_gpu_operator_dcgm.run()
 
     prepare_phase.prepare_rhoai_operator()
     prepare_phase.apply_datasciencecluster()

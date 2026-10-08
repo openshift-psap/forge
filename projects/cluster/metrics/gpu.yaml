@@ -1,0 +1,87 @@
+# params:
+#   NAMESPACE: Target namespace
+#   POD_NAME: Pod name regex for the GPU metrics capture
+
+- query: >-
+    DCGM_FI_DEV_GPU_UTIL{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_utilization
+  description: GPU compute utilization
+  unit: percent
+
+- query: >-
+    DCGM_FI_DEV_FB_USED{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_fb_memory_used
+  description: GPU framebuffer memory used
+  unit: MiB
+
+- query: >-
+    DCGM_FI_DEV_FB_FREE{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_fb_memory_free
+  description: GPU framebuffer memory free
+  unit: MiB
+
+- query: >-
+    DCGM_FI_PROF_SM_ACTIVE{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_sm_active
+  description: GPU streaming multiprocessor active ratio
+  unit: ratio
+
+- query: >-
+    DCGM_FI_PROF_SM_OCCUPANCY{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_sm_occupancy
+  description: GPU streaming multiprocessor occupancy
+  unit: ratio
+
+- query: >-
+    DCGM_FI_DEV_MEM_COPY_UTIL{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_memory_copy_utilization
+  description: GPU memory transfer utilization
+  unit: percent
+
+- query: >-
+    DCGM_FI_PROF_GR_ENGINE_ACTIVE{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_gr_engine_active
+  description: GPU graphics engine active ratio
+  unit: ratio
+
+- query: >-
+    DCGM_FI_PROF_PIPE_FP16_ACTIVE{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_pipe_fp16_active
+  description: GPU FP16 pipe active ratio
+  unit: ratio
+
+- query: >-
+    DCGM_FI_PROF_PIPE_FP32_ACTIVE{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_pipe_fp32_active
+  description: GPU FP32 pipe active ratio
+  unit: ratio
+
+- query: >-
+    DCGM_FI_PROF_PIPE_FP64_ACTIVE{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_pipe_fp64_active
+  description: GPU FP64 pipe active ratio
+  unit: ratio
+
+- query: >-
+    DCGM_FI_PROF_NVLINK_RX_BYTES{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_nvlink_rx_bytes
+  description: GPU NVLink receive throughput
+  unit: bytes/s
+
+- query: >-
+    DCGM_FI_PROF_NVLINK_TX_BYTES{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_nvlink_tx_bytes
+  description: GPU NVLink transmit throughput
+  unit: bytes/s
+
+- query: >-
+    DCGM_FI_PROF_PCIE_RX_BYTES{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_pcie_rx_bytes
+  description: GPU PCIe receive throughput
+  unit: bytes/s
+
+- query: >-
+    DCGM_FI_PROF_PCIE_TX_BYTES{exported_namespace="{{.NAMESPACE}}", exported_pod=~"{{.POD_NAME}}"}
+  metricName: gpu_pcie_tx_bytes
+  description: GPU PCIe transmit throughput
+  unit: bytes/s

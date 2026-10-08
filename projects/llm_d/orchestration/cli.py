@@ -9,6 +9,7 @@ from pathlib import Path
 
 import click
 
+from projects.cluster.library.prom.metrics import capture_metrics_command
 from projects.core.library import config, env, run
 from projects.core.library.postprocess import postprocess_command
 
@@ -84,6 +85,7 @@ def deploy_and_test(ctx, deployment_profile, benchmark_key, stop_on_error) -> in
         return 1
 
 
+main.add_command(capture_metrics_command)
 main.add_command(postprocess_command)
 
 

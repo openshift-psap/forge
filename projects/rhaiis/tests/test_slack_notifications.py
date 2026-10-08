@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from projects.core.library import config
 from projects.rhaiis.postprocess import regression
 
@@ -29,6 +31,34 @@ def test_failure_notification_includes_owner(monkeypatch) -> None:
 
     assert len(messages) == 1
     assert "*Triggered by:* <@U01234567>\n*Owner:* nmiriyal\n" in messages[0]
+
+
+def test_pipeline_failure_uses_raw_accelerator_label(monkeypatch) -> None:
+    from projects.rhaiis.orchestration import notifications, runtime_config
+
+    captured: dict = {}
+    project_values = {"rhaiis.cluster_tag": "mi355x"}
+    monkeypatch.setattr(
+        config,
+        "project",
+        SimpleNamespace(get_config=lambda key, default=None: project_values.get(key, default)),
+    )
+    monkeypatch.setattr(runtime_config, "get_model", lambda _key: {"hf_model_id": "org/model"})
+    monkeypatch.setattr(runtime_config, "get_accelerator", lambda: "amd")
+    monkeypatch.setattr(runtime_config, "get_engine", lambda: "vllm")
+    monkeypatch.setattr(runtime_config, "get_engine_args", lambda _engine: {})
+    monkeypatch.setattr(runtime_config, "get_workload", lambda _key: {})
+    monkeypatch.setattr(runtime_config, "merge_engine_args", lambda *args: {})
+    monkeypatch.setattr(
+        regression,
+        "send_failure_notification",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    notifications._send_alert("test failure", model_key="model-key", workload_keys=["profile1"])
+
+    assert captured["accelerator"] == "amd"
+    assert captured["cluster"] == "mi355x"
 
 
 def test_success_notification_includes_owner(monkeypatch) -> None:
