@@ -520,18 +520,13 @@ def extract_results_from_copy_pod(args, ctx, results_dir: Path):
         temp_gz_path = local_path.with_suffix(".json.gz")
 
         result = oc(
-            "exec",
+            "cp",
             "-n",
             ctx.target_namespace,
-            f"{ctx.benchmark_name}-copy",
-            "--",
-            "gzip",
-            "-c",
-            remote_path,
+            f"{ctx.benchmark_name}-copy:{remote_path}",
+            str(local_path),
             check=False,
-            log_stdout=False,
-            stdout_dest=temp_gz_path,
-            text=False,
+            timeout_seconds=1800,
         )
         if result.returncode != 0:
             raise RuntimeError(f"No results found for {ctx.benchmark_name} run {run.label}")
@@ -616,20 +611,15 @@ def extract_results_from_sidecar(args, ctx, results_dir: Path):
         temp_gz_path = local_path.with_suffix(".json.gz")
 
         result = oc(
-            "exec",
+            "cp",
             "-n",
             ctx.target_namespace,
-            pod_name,
             "-c",
             "guidellm-sidecar",
-            "--",
-            "gzip",
-            "-c",
-            remote_path,
+            f"{pod_name}:{remote_path}",
+            str(local_path),
             check=False,
-            log_stdout=False,
-            stdout_dest=temp_gz_path,
-            text=False,
+            timeout_seconds=1800,
         )
         if result.returncode != 0:
             raise RuntimeError(f"No results found for {ctx.benchmark_name} run {run.label}")
