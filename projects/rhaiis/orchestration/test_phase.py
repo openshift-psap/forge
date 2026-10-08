@@ -853,7 +853,11 @@ def _run_profiler_step(
             )
 
     logger.info("Copying profiler traces from pod")
-    copy_profiler_traces(name=deployment_name, namespace=namespace)
+    copy_profiler_traces(
+        name=deployment_name,
+        namespace=namespace,
+        flush_timeout=profiler_cfg.get("flush_timeout", 300),
+    )
 
 
 def _derive_profiler_label(workload: dict) -> str:

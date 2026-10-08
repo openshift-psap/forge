@@ -14,7 +14,7 @@ logger = logging.getLogger("DSL")
 
 
 @entrypoint
-def run(*, name: str, namespace: str, flush_timeout: int = 120, flush_poll_interval: int = 10):
+def run(*, name: str, namespace: str, flush_timeout: int = 300, flush_poll_interval: int = 10):
     return execute_tasks(locals())
 
 
