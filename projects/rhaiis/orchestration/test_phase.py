@@ -129,6 +129,7 @@ def _run_test(
     run_uuid = _cfg.project.get_config("tests.rhaiis.run_uuid", "", warn=False) or str(
         _uuid_mod.uuid4()
     )
+    _cfg.project.set_config("tests.rhaiis.run_uuid", run_uuid)
     logger.info("Run UUID for this job: %s", run_uuid)
 
     import subprocess
@@ -647,7 +648,10 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
             version,
             model_cfg,
             accelerator,
-            run_uuid="",
+            run_uuid=(
+                config.project.get_config("tests.rhaiis.run_uuid", "", warn=False)
+                or os.environ.get("FJOB_NAME", "")
+            ),
             engine_args=ea,
         )
         return

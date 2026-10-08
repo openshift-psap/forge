@@ -1,6 +1,7 @@
 namespace: kserve-e2e-perf
 accelerator: nvidia
 cluster_tag: ""
+csv_accelerator: ""
 
 gpu_types:
   nvidia: h200
@@ -97,4 +98,4 @@ profiler:
 agent_analysis:
   enabled: false
   severity_threshold: 10
-  url: ""
+  model: gemini-3.8-flash

@@ -91,7 +91,12 @@ def get_workload(workload_key: str) -> dict:
 
 
 def get_vaults() -> list[str]:
-    return config.project.get_config("vaults")
+    vaults = config.project.get_config("vaults")
+    agent_analysis_enabled = config.project.get_config("rhaiis.agent_analysis.enabled", False)
+    agent_vault = "psap-forge-rhaiis-agent-analysis"
+    if agent_analysis_enabled and agent_vault not in vaults:
+        return [*vaults, agent_vault]
+    return vaults
 
 
 def get_test_model_key() -> str:
