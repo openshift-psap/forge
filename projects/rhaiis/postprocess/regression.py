@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 RHAIIS_SLACK_CHANNEL_ID = "C0B9T6JUW74"
+CHAI_BOT_USER_ID = "U0AKNPBBVT7"  # Chai Bot — automated failure triage
 
 _SLACK_USER_RE = re.compile(r"^[UW][A-Z0-9]+$")
 _SLACK_GROUP_RE = re.compile(r"^S[A-Z0-9]+$")
@@ -537,6 +538,7 @@ def send_regression_notification(
         f"{dashboard_line}"
         f"{mlflow_line}"
         f"*Changes:*\n{details}"
+        f"\n<@{CHAI_BOT_USER_ID}>"
     )
 
     if dry_run:
@@ -712,6 +714,7 @@ def send_failure_notification(
         f"{profiles_line}"
         f"{mlflow_line}"
         f"*Error:*\n```{error_text}```"
+        f"\n<@{CHAI_BOT_USER_ID}>"
     )
 
     if dry_run:

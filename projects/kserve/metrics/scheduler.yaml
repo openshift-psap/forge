@@ -1,101 +1,99 @@
-params:
-  llmisvc_namespace:
-    description: Target namespace
-  llmisvc_name:
-    description: Regex matching scheduler pod names
+# params:
+#   LLMISVC_NAMESPACE: Target namespace
+#   LLMISVC_NAME: Name of the KServe scheduler LLMInferenceService
 
-scheduler_average_kv_cache_utilization:
+- query: >-
+    kserve_inference_pool_average_kv_cache_utilization{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_average_kv_cache_utilization
   description: Scheduler average kv cache utilization
   unit: ratio
-  metric: >-
-    kserve_inference_pool_average_kv_cache_utilization{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}
 
-scheduler_average_queue_size:
+- query: >-
+    kserve_inference_pool_average_queue_size{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_average_queue_size
   description: Scheduler average queue size
   unit: unit
-  metric: >-
-    kserve_inference_pool_average_queue_size{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}
 
-scheduler_e2e_duration_p50_seconds:
+- query: >-
+    histogram_quantile(0.5, sum(rate(kserve_inference_extension_scheduler_e2e_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le))
+  metricName: scheduler_e2e_duration_p50_seconds
   description: Scheduler e2e duration p50 seconds
   unit: ratio
-  promql: >-
-    histogram_quantile(0.5, sum(rate(kserve_inference_extension_scheduler_e2e_duration_seconds_bucket{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])) by (le))
 
-scheduler_e2e_duration_p90_seconds:
+- query: >-
+    histogram_quantile(0.9, sum(rate(kserve_inference_extension_scheduler_e2e_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le))
+  metricName: scheduler_e2e_duration_p90_seconds
   description: Scheduler e2e duration p90 seconds
   unit: ratio
-  promql: >-
-    histogram_quantile(0.9, sum(rate(kserve_inference_extension_scheduler_e2e_duration_seconds_bucket{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])) by (le))
 
-scheduler_e2e_duration_p99_seconds:
+- query: >-
+    histogram_quantile(0.99, sum(rate(kserve_inference_extension_scheduler_e2e_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le))
+  metricName: scheduler_e2e_duration_p99_seconds
   description: Scheduler e2e duration p99 seconds
   unit: ratio
-  promql: >-
-    histogram_quantile(0.99, sum(rate(kserve_inference_extension_scheduler_e2e_duration_seconds_bucket{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])) by (le))
 
-scheduler_go_goroutines:
+- query: >-
+    kserve_go_goroutines{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_go_goroutines
   description: Scheduler go goroutines
   unit: count
-  metric: >-
-    kserve_go_goroutines{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}
 
-scheduler_per_pod_queue_size:
+- query: >-
+    kserve_inference_pool_per_pod_queue_size{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_per_pod_queue_size
   description: Scheduler per pod queue size
   unit: unit
-  metric: >-
-    kserve_inference_pool_per_pod_queue_size{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}
 
-scheduler_plugin_duration_p50_seconds_by_plugin:
+- query: >-
+    histogram_quantile(0.5, sum(rate(kserve_inference_extension_plugin_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le, plugin_name, extension_point))
+  metricName: scheduler_plugin_duration_p50_seconds_by_plugin
   description: Scheduler plugin duration p50 seconds by plugin
   unit: ratio
-  promql: >-
-    histogram_quantile(0.5, sum(rate(kserve_inference_extension_plugin_duration_seconds_bucket{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])) by (le, plugin_name, extension_point))
 
-scheduler_process_resident_memory_bytes:
+- query: >-
+    kserve_process_resident_memory_bytes{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_process_resident_memory_bytes
   description: Scheduler process resident memory bytes
   unit: bytes
-  metric: >-
-    kserve_process_resident_memory_bytes{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}
 
-scheduler_ready_pods:
+- query: >-
+    kserve_inference_pool_ready_pods{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_ready_pods
   description: Scheduler ready pods
   unit: count
-  metric: >-
-    kserve_inference_pool_ready_pods{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}
 
-scheduler_request_duration_p50_seconds:
+- query: >-
+    histogram_quantile(0.5, sum(rate(kserve_inference_objective_request_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le))
+  metricName: scheduler_request_duration_p50_seconds
   description: Scheduler request duration p50 seconds
   unit: ratio
-  promql: >-
-    histogram_quantile(0.5, sum(rate(kserve_inference_objective_request_duration_seconds_bucket{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])) by (le))
 
-scheduler_request_duration_p90_seconds:
+- query: >-
+    histogram_quantile(0.9, sum(rate(kserve_inference_objective_request_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le))
+  metricName: scheduler_request_duration_p90_seconds
   description: Scheduler request duration p90 seconds
   unit: ratio
-  promql: >-
-    histogram_quantile(0.9, sum(rate(kserve_inference_objective_request_duration_seconds_bucket{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])) by (le))
 
-scheduler_request_duration_p99_seconds:
+- query: >-
+    histogram_quantile(0.99, sum(rate(kserve_inference_objective_request_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le))
+  metricName: scheduler_request_duration_p99_seconds
   description: Scheduler request duration p99 seconds
   unit: ratio
-  promql: >-
-    histogram_quantile(0.99, sum(rate(kserve_inference_objective_request_duration_seconds_bucket{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])) by (le))
 
-scheduler_request_rate_per_second:
+- query: >-
+    rate(kserve_inference_objective_request_total{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])
+  metricName: scheduler_request_rate_per_second
   description: Scheduler request rate per second
   unit: ops/s
-  promql: >-
-    rate(kserve_inference_objective_request_total{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}[5m])
 
-scheduler_running_requests:
+- query: >-
+    kserve_inference_objective_running_requests{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_running_requests
   description: Scheduler running requests
   unit: count
-  metric: >-
-    kserve_inference_objective_running_requests{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*"}
 
-scheduler_up:
+- query: >-
+    up{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*", endpoint="metrics"}
+  metricName: scheduler_up
   description: Scheduler up
   unit: status
-  metric: >-
-    up{namespace="{llmisvc_namespace}", pod=~"{llmisvc_name}-kserve-router-.*", endpoint="metrics"}

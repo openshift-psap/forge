@@ -7,13 +7,12 @@ import pytest
 import yaml
 
 from projects.cluster.library.prom.metrics import (
-    build_index,
-    load_definitions,
-    resolve,
+    build_metadata_index,
+    interpolate_variables,
+    load_profile_metadata,
     resolve_files,
-    select,
-    write_capture_input,
-)
+    resolve_params,
+)  # noqa: E501
 
 CLUSTER_METRICS_DIR = Path(__file__).resolve().parent.parent / "metrics"
 KSERVE_METRICS_DIR = Path(__file__).resolve().parent.parent.parent / "kserve" / "metrics"
@@ -21,371 +20,258 @@ KSERVE_METRICS_DIR = Path(__file__).resolve().parent.parent.parent / "kserve" / 
 YAML_FILES = sorted(CLUSTER_METRICS_DIR.glob("*.yaml")) + sorted(KSERVE_METRICS_DIR.glob("*.yaml"))
 
 
-def _write_yaml(tmp_path, name, data):
+def _write_profile(tmp_path, name, entries):
     p = tmp_path / name
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    p.write_text(yaml.safe_dump(entries, sort_keys=False), encoding="utf-8")
     return p
 
 
-def _check_no_duplicate_keys(path: Path) -> list[str]:
-    class DuplicateKeyLoader(yaml.SafeLoader):
-        pass
-
-    duplicates = []
-
-    def _check_mapping(loader, node):
-        seen = {}
-        for key_node, _value_node in node.value:
-            key = loader.construct_object(key_node)
-            if key in seen:
-                duplicates.append(
-                    f"{path.name}: duplicate key {key!r} (lines {seen[key]} and {key_node.start_mark.line + 1})"
-                )
-            else:
-                seen[key] = key_node.start_mark.line + 1
-        return loader.construct_mapping(node)
-
-    DuplicateKeyLoader.add_constructor(
-        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _check_mapping
-    )
-
-    with path.open("r", encoding="utf-8") as f:
-        yaml.load(f, Loader=DuplicateKeyLoader)
-
-    return duplicates
-
-
-class TestLoadDefinitions:
+class TestLoadProfileMetadata:
     @pytest.mark.parametrize("yaml_file", YAML_FILES, ids=lambda p: p.name)
-    def test_no_duplicate_keys_in_yaml(self, yaml_file):
-        duplicates = _check_no_duplicate_keys(yaml_file)
-        assert duplicates == [], "\n".join(duplicates)
+    def test_load_real_profile(self, yaml_file):
+        metadata = load_profile_metadata(yaml_file)
+        assert len(metadata) > 0
+        for meta in metadata:
+            assert meta.metric_name
+            assert meta.description
+            assert meta.unit
 
-    def test_load_all_bundled_files(self):
-        defs = load_definitions(*YAML_FILES)
-        assert len(defs) > 0
-        keys = [d.key for d in defs]
-        assert len(keys) == len(set(keys))
+    def test_load_all_bundled_files_no_duplicates(self):
+        metadata = load_profile_metadata(*YAML_FILES)
+        assert len(metadata) > 0
+        names = [m.metric_name for m in metadata]
+        assert len(names) == len(set(names))
 
-    def test_all_definitions_have_required_fields(self):
-        for defn in load_definitions(*YAML_FILES):
-            assert defn.description
-            assert defn.unit
-            assert defn.promql or defn.metric
-            assert defn.on_error in ("ignore", "fail")
+    def test_basic_profile(self, tmp_path):
+        f = _write_profile(
+            tmp_path,
+            "test.yaml",
+            [
+                {"query": "count(up)", "metricName": "my_metric", "description": "d", "unit": "u"},
+            ],
+        )
+        metadata = load_profile_metadata(f)
+        assert len(metadata) == 1
+        assert metadata[0].metric_name == "my_metric"
+        assert metadata[0].description == "d"
+        assert metadata[0].unit == "u"
 
-    def test_duplicate_key_across_files_raises(self, tmp_path):
-        f1 = _write_yaml(
+    def test_duplicate_metric_name_raises(self, tmp_path):
+        f1 = _write_profile(
             tmp_path,
             "a.yaml",
-            {
-                "my_metric": {"description": "d", "unit": "u", "promql": "count(up)"},
-            },
+            [{"query": "up", "metricName": "my_metric", "description": "d", "unit": "u"}],
         )
-        f2 = _write_yaml(
+        f2 = _write_profile(
             tmp_path,
             "b.yaml",
-            {
-                "my_metric": {"description": "d", "unit": "u", "promql": "count(up)"},
-            },
+            [{"query": "up", "metricName": "my_metric", "description": "d", "unit": "u"}],
         )
-        with pytest.raises(ValueError, match="duplicate metric key"):
-            load_definitions(f1, f2)
+        with pytest.raises(ValueError, match="duplicate metricName"):
+            load_profile_metadata(f1, f2)
 
-    def test_unknown_field_raises(self, tmp_path):
-        f = _write_yaml(
+    def test_missing_metric_name_raises(self, tmp_path):
+        f = _write_profile(
             tmp_path,
             "bad.yaml",
-            {
-                "m": {"description": "d", "unit": "u", "promql": "count(up)", "bogus": 1},
-            },
+            [{"query": "up", "description": "d", "unit": "u"}],
         )
-        with pytest.raises(ValueError, match="unknown fields"):
-            load_definitions(f)
+        with pytest.raises(ValueError, match="missing required field 'metricName'"):
+            load_profile_metadata(f)
 
-    def test_defaults_applied(self, tmp_path):
-        f = _write_yaml(
+    def test_missing_query_raises(self, tmp_path):
+        f = _write_profile(
             tmp_path,
-            "minimal.yaml",
-            {
-                "m": {"description": "d", "unit": "u", "promql": "count(up)"},
-            },
+            "bad.yaml",
+            [{"metricName": "m", "description": "d", "unit": "u"}],
         )
-        defs = load_definitions(f)
-        assert defs[0].on_error == "ignore"
-        assert defs[0].params == ()
+        with pytest.raises(ValueError, match="missing required field 'query'"):
+            load_profile_metadata(f)
 
-    def test_metric_field_loaded(self, tmp_path):
-        f = _write_yaml(
+    def test_not_a_list_raises(self, tmp_path):
+        f = _write_profile(
             tmp_path,
-            "raw.yaml",
-            {
-                "m": {"description": "d", "unit": "u", "metric": 'my_gauge{ns="foo"}'},
-            },
+            "bad.yaml",
+            {"my_metric": {"query": "up"}},
         )
-        defs = load_definitions(f)
-        assert defs[0].metric == 'my_gauge{ns="foo"}'
-        assert defs[0].promql is None
-        assert defs[0].is_raw is True
-        assert defs[0].capture_expr == 'my_gauge{ns="foo"}'
+        with pytest.raises(ValueError, match="non-empty list"):
+            load_profile_metadata(f)
 
-    def test_both_promql_and_metric_raises(self, tmp_path):
-        f = _write_yaml(
+    def test_extra_fields_ignored(self, tmp_path):
+        f = _write_profile(
             tmp_path,
-            "both.yaml",
-            {
-                "m": {"description": "d", "unit": "u", "promql": "up", "metric": "up"},
-            },
-        )
-        with pytest.raises(ValueError, match="not both"):
-            load_definitions(f)
-
-    def test_neither_promql_nor_metric_raises(self, tmp_path):
-        f = _write_yaml(
-            tmp_path,
-            "neither.yaml",
-            {
-                "m": {"description": "d", "unit": "u"},
-            },
-        )
-        with pytest.raises(ValueError, match="must have either"):
-            load_definitions(f)
-
-    def test_bare_selector_in_promql_raises(self, tmp_path):
-        f = _write_yaml(
-            tmp_path,
-            "bare.yaml",
-            {
-                "m": {"description": "d", "unit": "u", "promql": "my_metric"},
-            },
-        )
-        with pytest.raises(ValueError, match="bare metric selector"):
-            load_definitions(f)
-
-    def test_bare_selector_with_labels_in_promql_raises(self, tmp_path):
-        f = _write_yaml(
-            tmp_path,
-            "bare_labels.yaml",
-            {
-                "m": {"description": "d", "unit": "u", "promql": 'my_metric{ns="foo"}'},
-            },
-        )
-        with pytest.raises(ValueError, match="bare metric selector"):
-            load_definitions(f)
-
-    def test_promql_expression_in_metric_raises(self, tmp_path):
-        f = _write_yaml(
-            tmp_path,
-            "expr.yaml",
-            {
-                "m": {"description": "d", "unit": "u", "metric": "rate(my_metric[5m])"},
-            },
-        )
-        with pytest.raises(ValueError, match="looks like a PromQL expression"):
-            load_definitions(f)
-
-
-class TestSelect:
-    @pytest.fixture()
-    def defs(self):
-        return load_definitions(*YAML_FILES)
-
-    def test_filter_by_keys(self, defs):
-        result = select(defs, keys=["avg_cpu_usage_percent", "avg_memory_working_set_bytes"])
-        assert {d.key for d in result} == {"avg_cpu_usage_percent", "avg_memory_working_set_bytes"}
-
-
-class TestResolve:
-    def test_substitute_params(self, tmp_path):
-        f = _write_yaml(
-            tmp_path,
-            "t.yaml",
-            {
-                "test_metric": {
+            "extra.yaml",
+            [
+                {
+                    "query": "count(up)",
+                    "metricName": "m",
                     "description": "d",
                     "unit": "u",
-                    "params": {"ns": {"description": "namespace regex"}},
-                    "promql": 'avg(up{namespace=~"{ns}"})',
+                    "instant": True,
+                    "captureStart": False,
+                    "custom_field": "ignored",
                 },
-            },
+            ],
         )
-        defs = load_definitions(f)
-        resolved = resolve(defs, {"ns": "foo|bar"})
-        assert resolved.queries == {"test_metric": 'avg(up{namespace=~"foo|bar"})'}
-        assert resolved.raw_metrics == {}
+        metadata = load_profile_metadata(f)
+        assert len(metadata) == 1
+        assert metadata[0].metric_name == "m"
 
-    def test_default_param_used(self, tmp_path):
-        f = _write_yaml(
+    def test_missing_description_defaults_empty(self, tmp_path):
+        f = _write_profile(
             tmp_path,
-            "t.yaml",
-            {
-                "test_metric": {
-                    "description": "d",
-                    "unit": "u",
-                    "params": {"ns": {"description": "ns", "default": "default-ns"}},
-                    "promql": 'avg(up{namespace=~"{ns}"})',
-                },
-            },
+            "no_desc.yaml",
+            [{"query": "up", "metricName": "m", "unit": "u"}],
         )
-        defs = load_definitions(f)
-        resolved = resolve(defs, {})
-        assert resolved.queries == {"test_metric": 'avg(up{namespace=~"default-ns"})'}
+        metadata = load_profile_metadata(f)
+        assert metadata[0].description == ""
 
-    def test_missing_mandatory_param_skips(self, tmp_path, caplog):
-        f = _write_yaml(
-            tmp_path,
-            "t.yaml",
-            {
-                "m1": {
-                    "description": "d",
-                    "unit": "u",
-                    "params": {"ns": {"description": "ns"}},
-                    "promql": "count(up)",
-                },
-                "m2": {
-                    "description": "d",
-                    "unit": "u",
-                    "params": {"ns": {"description": "ns"}, "foo": {"description": "f"}},
-                    "promql": "count(up)",
-                },
-            },
-        )
-        defs = load_definitions(f)
-        resolved = resolve(defs, {})
-        assert resolved.queries == {}
-        assert resolved.raw_metrics == {}
-        assert "m1.ns" in caplog.text
-        assert "m2.foo" in caplog.text
+    @pytest.mark.parametrize("yaml_file", YAML_FILES, ids=lambda p: p.name)
+    def test_profiles_have_go_template_syntax(self, yaml_file):
+        with yaml_file.open("r", encoding="utf-8") as f:
+            entries = yaml.safe_load(f)
+        for entry in entries:
+            query = entry["query"]
+            assert "{" not in query or "{{" in query, (
+                f"{yaml_file.name}: {entry['metricName']} uses old {{param}} syntax "
+                f"instead of Go template {{{{.PARAM}}}}"
+            )
 
-    def test_no_params_metric(self, tmp_path):
-        f = _write_yaml(
-            tmp_path,
-            "t.yaml",
-            {
-                "simple": {
-                    "description": "d",
-                    "unit": "u",
-                    "promql": "count(up)",
-                },
-            },
-        )
-        defs = load_definitions(f)
-        resolved = resolve(defs, {})
-        assert resolved.queries == {"simple": "count(up)"}
 
-    def test_resolve_real_cpu_metrics(self):
-        cpu_file = CLUSTER_METRICS_DIR / "resource_cpu.yaml"
-        defs = load_definitions(cpu_file)
-        resolved = resolve(
-            defs,
+class TestResolveParams:
+    def test_basic_resolution(self):
+        result = resolve_params(
             {"namespace": "test-ns", "pod_name": "my-pod"},
         )
-        assert len(resolved.queries) == len(defs)
-        assert resolved.raw_metrics == {}
-        for promql in resolved.queries.values():
-            assert "{namespace}" not in promql
-            assert "test-ns" in promql
+        assert result == {"namespace": "test-ns", "pod_name": "my-pod"}
 
-    def test_resolve_mixed_promql_and_metric(self, tmp_path):
-        f = _write_yaml(
-            tmp_path,
-            "mixed.yaml",
-            {
-                "query_m": {"description": "d", "unit": "u", "promql": "rate(up[5m])"},
-                "raw_m": {"description": "d", "unit": "u", "metric": "my_gauge"},
-            },
+    def test_runtime_override(self):
+        result = resolve_params(
+            {"namespace": "default", "name": "set_at_runtime"},
+            runtime_params={"name": "actual-name"},
         )
-        defs = load_definitions(f)
-        resolved = resolve(defs, {})
-        assert resolved.queries == {"query_m": "rate(up[5m])"}
-        assert resolved.raw_metrics == {"raw_m": "my_gauge"}
+        assert result == {"namespace": "default", "name": "actual-name"}
 
-    def test_resolve_raw_gpu_metrics(self):
-        gpu_file = CLUSTER_METRICS_DIR / "gpu.yaml"
-        defs = load_definitions(gpu_file)
-        resolved = resolve(
-            defs,
-            {"namespace": "test-ns", "pod_name": "my-pod-.*"},
+    def test_set_at_runtime_raises(self):
+        with pytest.raises(ValueError, match="not set at runtime"):
+            resolve_params({"name": "set_at_runtime"})
+
+    def test_no_inter_param_interpolation(self):
+        result = resolve_params(
+            {"base": "my-service", "pod_name": "{base}-.*"},
         )
-        assert resolved.queries == {}
-        assert len(resolved.raw_metrics) == len(defs)
-        for selector in resolved.raw_metrics.values():
-            assert "{namespace}" not in selector
-            assert "test-ns" in selector
+        assert result == {"base": "my-service", "pod_name": "{base}-.*"}
 
-
-class TestWriteCaptureInput:
-    def test_writes_flat_yaml(self, tmp_path):
-        queries = {"cpu_usage": "sum(rate(...))", "memory": "sum(...)"}
-        path = write_capture_input(queries, tmp_path / "input.yaml")
-        assert path.exists()
-
-        with path.open("r") as f:
-            loaded = yaml.safe_load(f)
-        assert loaded == queries
-
-    def test_creates_parent_dirs(self, tmp_path):
-        path = write_capture_input({"m": "up"}, tmp_path / "a" / "b" / "input.yaml")
-        assert path.exists()
-
-
-class TestBuildIndex:
-    @pytest.fixture()
-    def defs_file(self, tmp_path):
-        return _write_yaml(
-            tmp_path / "defs",
-            "t.yaml",
-            {
-                "ok_metric": {
-                    "description": "d",
-                    "unit": "cores",
-                    "params": {"ns": {"description": "ns"}},
-                    "promql": 'sum(up{ns="{ns}"})',
-                },
-                "empty_metric": {
-                    "description": "d2",
-                    "unit": "cores",
-                    "promql": "count(up)",
-                },
-                "error_metric": {
-                    "description": "d3",
-                    "unit": "bytes",
-                    "promql": "count(up)",
-                },
-                "missing_metric": {
-                    "description": "d4",
-                    "unit": "bytes",
-                    "promql": "count(up)",
-                },
-            },
+    def test_runtime_override_no_interpolation(self):
+        result = resolve_params(
+            {"name": "set_at_runtime", "pod_name": "{name}-.*"},
+            runtime_params={"name": "svc"},
         )
+        assert result == {"name": "svc", "pod_name": "{name}-.*"}
 
-    def test_builds_index_with_results(self, tmp_path, defs_file):
-        defs = load_definitions(defs_file)
+
+class TestInterpolateVariables:
+    def test_basic_interpolation(self):
+        result = interpolate_variables(
+            {"NAMESPACE": "{llmisvc_namespace}", "POD_NAME": "{llmisvc_name}-.*"},
+            {"llmisvc_namespace": "test-ns", "llmisvc_name": "my-svc"},
+        )
+        assert result == {"NAMESPACE": "test-ns", "POD_NAME": "my-svc-.*"}
+
+    def test_passthrough_when_no_placeholder(self):
+        result = interpolate_variables(
+            {"NAMESPACE": "hardcoded-ns"},
+            {"llmisvc_namespace": "other"},
+        )
+        assert result == {"NAMESPACE": "hardcoded-ns"}
+
+    def test_unknown_placeholder_left_as_is(self):
+        result = interpolate_variables(
+            {"NAMESPACE": "{missing_var}"},
+            {"other": "value"},
+        )
+        assert result == {"NAMESPACE": "{missing_var}"}
+
+    def test_empty_variables(self):
+        result = interpolate_variables({}, {"a": "1"})
+        assert result == {}
+
+    def test_empty_params(self):
+        result = interpolate_variables({"K": "{v}"}, {})
+        assert result == {"K": "{v}"}
+
+    def test_multiple_placeholders_in_one_value(self):
+        result = interpolate_variables(
+            {"FULL": "{ns}/{name}"},
+            {"ns": "default", "name": "pod-1"},
+        )
+        assert result == {"FULL": "default/pod-1"}
+
+
+class TestBuildMetadataIndex:
+    def test_builds_index_with_kube_burner_results(self, tmp_path):
+        metadata = [
+            load_profile_metadata(
+                _write_profile(
+                    tmp_path / "profiles",
+                    "test.yaml",
+                    [
+                        {
+                            "query": "up",
+                            "metricName": "ok_metric",
+                            "description": "d1",
+                            "unit": "cores",
+                        },
+                        {
+                            "query": "up",
+                            "metricName": "empty_metric",
+                            "description": "d2",
+                            "unit": "cores",
+                        },
+                        {
+                            "query": "up",
+                            "metricName": "error_metric",
+                            "description": "d3",
+                            "unit": "bytes",
+                        },
+                        {
+                            "query": "up",
+                            "metricName": "missing_metric",
+                            "description": "d4",
+                            "unit": "bytes",
+                        },
+                    ],
+                )
+            )
+        ]
+        all_metadata = [m for group in metadata for m in group]
 
         results_dir = tmp_path / "results"
         results_dir.mkdir()
+
         (results_dir / "ok_metric.json").write_text(
             json.dumps(
-                {
-                    "status": "success",
-                    "data": {
-                        "resultType": "matrix",
-                        "result": [{"metric": {}, "values": [[1, "1"]]}],
+                [
+                    {
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "labels": {},
+                        "value": 1.0,
+                        "metricName": "ok_metric",
                     },
-                }
+                ]
             )
         )
-        (results_dir / "empty_metric.json").write_text(
-            json.dumps({"status": "success", "data": {"resultType": "matrix", "result": []}})
-        )
-        (results_dir / "error_metric.json").write_text(
-            json.dumps({"status": "error", "errorType": "bad_data", "error": "parse error"})
-        )
+        (results_dir / "empty_metric.json").write_text(json.dumps([]))
+        (results_dir / "error_metric.json").write_text("not json")
 
-        index_path = build_index(
-            defs, {"ns": "test"}, results_dir, timestamp="2026-01-01T00:00:00Z"
+        test_variables = {"NAMESPACE": "test-ns", "POD_NAME": "my-pod-.*"}
+
+        index_path = build_metadata_index(
+            all_metadata,
+            results_dir,
+            variables=test_variables,
+            timestamp="2026-01-01T00:00:00Z",
         )
         assert index_path.exists()
 
@@ -393,45 +279,13 @@ class TestBuildIndex:
             index = yaml.safe_load(fh)
 
         assert index["timestamp"] == "2026-01-01T00:00:00Z"
+        assert index["variables"] == test_variables
         assert index["results"]["ok_metric"]["status"] == "ok"
-        assert index["results"]["ok_metric"]["params"] == {"ns": "test"}
-        assert "promql" in index["results"]["ok_metric"]
+        assert index["results"]["ok_metric"]["description"] == "d1"
+        assert index["results"]["ok_metric"]["unit"] == "cores"
         assert index["results"]["empty_metric"]["status"] == "no_data"
         assert index["results"]["error_metric"]["status"] == "error"
         assert index["results"]["missing_metric"]["status"] == "no_data"
-
-    def test_build_index_with_raw_metric(self, tmp_path):
-        f = _write_yaml(
-            tmp_path / "defs",
-            "raw.yaml",
-            {
-                "raw_m": {
-                    "description": "d",
-                    "unit": "bytes",
-                    "metric": "my_gauge",
-                },
-            },
-        )
-        defs = load_definitions(f)
-        results_dir = tmp_path / "results"
-        results_dir.mkdir()
-        (results_dir / "raw_m.json").write_text(
-            json.dumps(
-                {
-                    "status": "success",
-                    "data": {
-                        "resultType": "matrix",
-                        "result": [{"metric": {}, "values": [[1, "1"]]}],
-                    },
-                }
-            )
-        )
-        index_path = build_index(defs, {}, results_dir, timestamp="2026-01-01T00:00:00Z")
-        with index_path.open("r") as fh:
-            index = yaml.safe_load(fh)
-        assert index["results"]["raw_m"]["status"] == "ok"
-        assert "metric" in index["results"]["raw_m"]
-        assert "promql" not in index["results"]["raw_m"]
 
 
 class TestResolveFiles:
@@ -462,11 +316,11 @@ class TestResolveFiles:
         d2 = tmp_path / "d2"
         d1.mkdir()
         d2.mkdir()
-        (d1 / "test.yaml").write_text(
-            yaml.safe_dump({"m1": {"description": "d", "unit": "u", "promql": "count(up)"}})
+        _write_profile(
+            d1, "test.yaml", [{"query": "up", "metricName": "m1", "description": "d", "unit": "u"}]
         )
-        (d2 / "test.yaml").write_text(
-            yaml.safe_dump({"m2": {"description": "d", "unit": "u", "promql": "count(up)"}})
+        _write_profile(
+            d2, "test.yaml", [{"query": "up", "metricName": "m2", "description": "d", "unit": "u"}]
         )
         result = resolve_files(["test"], [d1, d2])
         assert result == [d1 / "test.yaml"]

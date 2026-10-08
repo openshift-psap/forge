@@ -1,17 +1,15 @@
-params:
-  namespace:
-    description: Target namespace
-  pod_name:
-    description: Pod name for the resource capture
+# params:
+#   NAMESPACE: Target namespace
+#   POD_NAME: Pod name regex for the resource capture
 
-memory_working_set_bytes_by_pod:
+- query: >-
+    container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}
+  metricName: memory_working_set_bytes_by_pod
   description: Memory working set bytes by pod
   unit: bytes
-  metric: >-
-    container_memory_working_set_bytes{namespace="{namespace}", pod=~"{pod_name}"}
 
-avg_memory_working_set_bytes:
+- query: >-
+    avg(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"})
+  metricName: avg_memory_working_set_bytes
   description: Avg memory working set bytes
   unit: bytes
-  promql: >-
-    avg(container_memory_working_set_bytes{namespace="{namespace}", pod=~"{pod_name}"})

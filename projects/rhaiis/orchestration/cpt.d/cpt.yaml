@@ -366,10 +366,16 @@ cpt-rhaiis-3.6-mi355x:
       rhaiis.engines.vllm.args.tensor-parallel-size: 8
       rhaiis.engines.vllm.args.kv-cache-dtype: fp8
       rhaiis.engines.vllm.args.trust-remote-code: true
+      rhaiis.engines.vllm.args.attention-config: '{"mla_prefill_backend":"FLASH_ATTN"}'
       rhaiis.engines.vllm.args.mm-encoder-tp-mode: data
       rhaiis.engines.vllm.args.tool-call-parser: kimi_k2
       rhaiis.engines.vllm.args.reasoning-parser: kimi_k2
       rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+      rhaiis.env_vars.VLLM_ROCM_USE_AITER_LINEAR: "0"
+      rhaiis.env_vars.MIOPEN_CUSTOM_CACHE_DIR: /tmp/.cache/miopen
+      rhaiis.env_vars.MIOPEN_USER_DB_PATH: /tmp/.config/miopen
+      rhaiis.env_vars.NUMBA_NUM_THREADS: 16
+      rhaiis.env_vars.OPENBLAS_NUM_THREADS: 32
       benchmarks.guidellm.args.tokenizer: '{"kind":"huggingface_auto","model":"RedHatAI/Kimi-K2.6-FP8-BLOCK","load_kwargs":{"trust_remote_code":true}}'
     kimi-k3/tp8:
       __workloads: [profile1, profile4, profile5, profile7, profile6]
