@@ -1,0 +1,71 @@
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  annotations:
+    security.opendatahub.io/enable-auth: "false"
+spec:
+  runtime: llm-d-sim-runtime
+{% if skip_router %}
+  router: {}
+{% else %}
+  router:
+    route:
+      http: {}
+    scheduler: {}
+{% if gateway_name and gateway_namespace %}
+    gateway:
+      refs:
+      - name: {{ gateway_name }}
+        namespace: {{ gateway_namespace }}
+{% endif %}
+{% endif %}
+  model:
+    name: {{ model_name }}
+    uri: "hf://{{ model_name }}"
+  storageInitializer:
+    enabled: false
+  template:
+    containers:
+      - name: main
+        image: {{ image }}
+        command: ["/app/llm-d-inference-sim"]
+        args:
+        - "--port=8000"
+        - "--model={{ model_name }}"
+        - "--max-num-seqs"
+        - "{{ max_num_seqs }}"
+        - "--max-model-len"
+        - "{{ max_model_len }}"
+        - "--time-to-first-token"
+        - "{{ time_to_first_token }}"
+        - "--inter-token-latency"
+        - "{{ inter_token_latency }}"
+        - "--mode"
+        - "{{ mode }}"
+        - "--logtostderr=true"
+        ports:
+        - containerPort: 8000
+          name: http1
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10

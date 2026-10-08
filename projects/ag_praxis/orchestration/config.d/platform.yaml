@@ -1,0 +1,31 @@
+cluster:
+  minimum_openshift_version: "4.19.9"
+  skip_gpu_readiness: true
+  namespace:
+    labels:
+      app.kubernetes.io/managed-by: forge
+      forge.openshift.io/project: ag_praxis
+
+maas:
+  namespace: default
+  repo_url: https://github.com/opendatahub-io/models-as-a-service
+  repo_ref: main
+  operator_type: odh
+  gateway:
+    name: maas-default-gateway
+    namespace: openshift-ingress
+
+sim:
+  gateway:
+    name: ag-praxis
+    namespace: openshift-ingress
+    gateway_class_name: data-science-gateway-class
+    status_address_name: gateway-internal
+    create_if_missing: true
+
+praxis:
+  version: "0.5"
+  replicas: 1
+
+artifacts:
+  capture_namespace_events: true

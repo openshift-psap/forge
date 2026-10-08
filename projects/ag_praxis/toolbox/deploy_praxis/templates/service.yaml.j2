@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: praxis
+  namespace: {{ namespace }}
+spec:
+  selector:
+    app: praxis
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

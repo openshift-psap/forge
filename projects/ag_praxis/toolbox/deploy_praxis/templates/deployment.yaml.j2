@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: praxis
+  namespace: {{ namespace }}
+spec:
+  replicas: {{ replicas }}
+  selector:
+    matchLabels:
+      app: praxis
+  template:
+    metadata:
+      labels:
+        app: praxis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: praxis
+          image: {{ image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-c"
+            - "/etc/praxis/praxis-ai.yaml"
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/praxis
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: praxis-config

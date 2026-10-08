@@ -1,0 +1,8 @@
+test:
+  namespace: forge-praxis
+  benchmark_key: short
+  flavors:
+  - direct
+  - gateway
+  - praxis
+  # - praxis-gateway
