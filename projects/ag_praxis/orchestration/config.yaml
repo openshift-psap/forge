@@ -1,13 +1,1 @@
-test:
-  namespace: forge-praxis
-  benchmark_key: short
-  run_benchmark: true
-  run_warmup: true
-  skip_cleanup: false
-  skip_prepare: false
-  continue_on_flavor_failure: true
-  flavors:
-  - direct
-  - direct-gateway
-  - praxis
-  - praxis-gateway
+# see the config.d/*.yaml files

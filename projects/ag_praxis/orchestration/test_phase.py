@@ -63,15 +63,13 @@ def _resolve_benchmark_config(benchmark_key: str) -> dict:
     return benchmark
 
 
-def _run_guidellm_benchmark(test_namespace: str, endpoint_url: str, benchmark_key: str):
-    """Run a GuideLLM benchmark by key."""
+def _execute_benchmark(test_namespace, endpoint_url, benchmark, artifact_suffix):
+    """Run a resolved benchmark config."""
     from projects.guidellm.library import benchconf as benchconf_lib
     from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
     from projects.guidellm.toolbox.run_guidellm_benchmark import (
         main as run_guidellm_benchmark_command,
     )
-
-    benchmark = _resolve_benchmark_config(benchmark_key)
 
     config_path = None
     benchconf_ref = benchmark.get("benchconf")
@@ -94,22 +92,108 @@ def _run_guidellm_benchmark(test_namespace: str, endpoint_url: str, benchmark_ke
         config_path=config_path,
         fs_group=benchmark.get("fs_group"),
         use_pvc=benchmark.get("use_pvc"),
-        artifact_dirname_suffix=benchmark_key,
+        artifact_dirname_suffix=artifact_suffix,
     )
+
+
+def _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key):
+    """Resolve a named benchmark and run it."""
+    benchmark = _resolve_benchmark_config(benchmark_key)
+    _execute_benchmark(test_namespace, endpoint_url, benchmark, benchmark_key)
+
+
+def _build_benchmark_config(payload_name, sweep_name):
+    """Build a benchmark config from payload and sweep dimensions."""
+    import copy
+
+    workloads = copy.deepcopy(config.project.get_config("workloads"))
+
+    payloads = workloads.get("payloads", {})
+    payload = payloads.get(payload_name)
+    if payload is None:
+        raise ValueError(f"Unknown payload: {payload_name!r}. Valid: {list(payloads)}")
+
+    sweeps = workloads.get("sweeps", {})
+    sweep = sweeps.get(sweep_name)
+    if sweep is None:
+        raise ValueError(f"Unknown sweep: {sweep_name!r}. Valid: {list(sweeps)}")
+
+    duration = workloads.get("duration", 180)
+
+    benchmark = {}
+    for key in (
+        "job_name",
+        "image",
+        "pvc_size",
+        "pvc_storage_class",
+        "timeout_seconds",
+        "fs_group",
+        "use_pvc",
+    ):
+        if key in workloads:
+            benchmark[key] = workloads[key]
+
+    workload_args = dict(workloads.get("args", {}))
+    workload_args.update(
+        {
+            "profile": "kind=concurrent,streams={rate}",
+            "data": f"kind=synthetic_text,prompt_tokens={payload['prompt_tokens']},output_tokens={payload['output_tokens']}",
+            "constraint": f"kind=max_duration,seconds={duration}",
+        }
+    )
+    benchmark["args"] = workload_args
+    benchmark["rate"] = sweep
+
+    return benchmark
+
+
+def _write_benchmark_dry_run(endpoint_url):
+    """Write the benchmark configuration that would be started to a YAML file."""
+    import yaml
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
+
+    payload_name = config.project.get_config("test.payload")
+    sweep_name = config.project.get_config("test.sweep")
+    benchmark = _build_benchmark_config(payload_name, sweep_name)
+
+    dry_run = {
+        "payload": payload_name,
+        "sweep": sweep_name,
+        "endpoint_url": endpoint_url,
+        "guidellm_args": build_guidellm_args(benchmark),
+        "benchmark": benchmark,
+    }
+
+    if config.project.get_config("test.run_warmup"):
+        warmup_key = config.project.get_config("workloads.warmup_benchmark_key")
+        if warmup_key:
+            warmup = _resolve_benchmark_config(warmup_key)
+            dry_run["warmup"] = {
+                "benchmark_key": warmup_key,
+                "guidellm_args": build_guidellm_args(warmup),
+                "benchmark": warmup,
+            }
+
+    dest = env.ARTIFACT_DIR / "benchmark_dry_run.yaml"
+    dest.write_text(yaml.safe_dump(dry_run, sort_keys=False))
+    logger.info("Benchmark dry-run config written to %s", dest)
 
 
 def _run_guidellm(test_namespace: str, endpoint_url: str):
     """Run the warmup (if enabled) then the main GuideLLM benchmark."""
     if config.project.get_config("test.run_warmup"):
         warmup_key = config.project.get_config("workloads.warmup_benchmark_key")
-        logger.info("Running warmup benchmark: %s", warmup_key)
         if warmup_key:
+            logger.info("Running warmup benchmark: %s", warmup_key)
             with env.NextArtifactDir("warmup"):
                 _run_guidellm_benchmark(test_namespace, endpoint_url, warmup_key)
 
-    benchmark_key = config.project.get_config("test.benchmark_key")
-    logger.info("Running benchmark: %s", benchmark_key)
-    _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key)
+    payload_name = config.project.get_config("test.payload")
+    sweep_name = config.project.get_config("test.sweep")
+    logger.info("Running benchmark: payload=%s sweep=%s", payload_name, sweep_name)
+    benchmark = _build_benchmark_config(payload_name, sweep_name)
+    _execute_benchmark(test_namespace, endpoint_url, benchmark, f"{payload_name}_{sweep_name}")
 
 
 def _deploy_sim_llmisvc(test_namespace):
@@ -205,7 +289,7 @@ def _prep_direct_gateway(test_namespace, gateway_cfg, sim_endpoint):
         backend_port=8000,
     )
     logger.info("[direct-gateway] gateway endpoint: %s", gateway_endpoint)
-    _smoke_test(test_namespace, gateway_endpoint)
+    _smoke_test(test_namespace, gateway_endpoint, "gateway")
     return gateway_endpoint
 
 
@@ -243,12 +327,12 @@ def _prep_praxis_gateway(test_namespace, gateway_cfg, sim_endpoint):
     _deploy_praxis(test_namespace, sim_endpoint)
     praxis_url = f"http://praxis.{test_namespace}.svc:8080"
     logger.info("[praxis-gateway] praxis endpoint: %s", praxis_url)
-    _smoke_test(test_namespace, praxis_url)
+    _smoke_test(test_namespace, praxis_url, "praxis")
 
     _ensure_gateway(gateway_cfg)
     gateway_endpoint = _add_gateway_route(test_namespace, gateway_cfg)
     logger.info("[praxis-gateway] gateway endpoint: %s", gateway_endpoint)
-    _smoke_test(test_namespace, gateway_endpoint)
+    _smoke_test(test_namespace, gateway_endpoint, "gateway")
     return gateway_endpoint
 
 
@@ -358,6 +442,8 @@ def _run_flavor_loop(test_namespace, gateway_cfg, sim_endpoint):
                     update_test_labels_with_timing(test_dir, "benchmark", "start")
                     _run_guidellm(test_namespace, benchmark_endpoint)
                     update_test_labels_with_timing(test_dir, "benchmark", "end")
+                else:
+                    _write_benchmark_dry_run(benchmark_endpoint)
             except Exception as e:
                 logger.exception("Flavor %s failed", flavor)
                 update_test_labels_with_status(test_dir, False, f"Flavor {flavor} failed: {e}")
