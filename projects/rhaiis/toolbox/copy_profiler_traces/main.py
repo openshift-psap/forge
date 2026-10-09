@@ -6,6 +6,7 @@ from projects.core.dsl import (
     shell,
     task,
 )
+from projects.core.library.ci import add_notification_file
 
 
 @entrypoint
@@ -44,16 +45,63 @@ def list_trace_files(args, context):
         log_stdout=False,
     )
 
-    if "NO_RANK0_TRACES" in result.stdout or not result.stdout.strip():
-        raise RuntimeError(f"No rank-0 profiler traces found in pod {context.pod_name}")
+    if "NO_RANK0_TRACES" not in result.stdout and result.stdout.strip():
+        trace_list = result.stdout.strip()
+        context.trace_count = len(trace_list.splitlines())
+        return f"Found {context.trace_count} rank-0 trace files"
 
-    trace_list = result.stdout.strip()
-    context.trace_count = len(trace_list.splitlines())
-    return f"Found {context.trace_count} rank-0 trace files"
+    if _profiler_window_missed(args, context):
+        # The benchmark window ended before the profiling range was reached, so
+        # the profiler never armed and no trace files can exist. The benchmark
+        # results are unaffected: surface a notification instead of failing the
+        # run.
+        add_notification_file(
+            "PROFILER_WINDOW_MISSED",
+            f"No profiler traces in {context.pod_name}: the profiler gate never "
+            f"armed during the benchmark window (the engine did not reach the "
+            f"profiling range call count before the window closed). Benchmark "
+            f"results are unaffected.",
+        )
+        context.trace_count = 0
+        return "No rank-0 trace files: profiler window missed (notification added)"
+
+    raise RuntimeError(f"No rank-0 profiler traces found in pod {context.pod_name}")
+
+
+def _profiler_window_missed(args, context) -> bool:
+    """Distinguish "the profiler never armed" from "it armed but produced no traces".
+
+    The injected profiler logs "[profiler] Gate activated" when a workload's
+    gate is set and "[profiler] Starting profiler" once per armed range. A pod
+    restart wipes both the trace files and the logs, so a non-zero restart
+    count is treated as "profiler did run" to keep engine-death failures fatal.
+
+    Only "Starting profiler" lines after the LAST "Gate activated" line count:
+    each workload runs its own profiler step against the same pod, so earlier
+    workloads leave their start lines in the log even though their trace files
+    were cleared before this workload's gate was set.
+    """
+    restarts = shell.run(
+        f"oc get {context.pod_name} -n {args.namespace} "
+        "-o jsonpath='{.status.containerStatuses[?(@.name==\"kserve-container\")].restartCount}'",
+        check=False,
+    )
+    if restarts.stdout.strip() not in ("", "0"):
+        return False
+
+    started = shell.run(
+        f"oc logs {context.pod_name} -n {args.namespace} -c kserve-container "
+        "| awk '/Gate activated/{last=NR} /Starting profiler/{s[NR]=1} "
+        "END{c=0; for(n in s) if(n+0>last+0) c++; print c+0}'",
+        check=False,
+    )
+    return started.stdout.strip() == "0"
 
 
 @task
 def copy_traces(args, context):
+    if getattr(context, "trace_count", None) == 0:
+        return "No trace files to copy (profiler window missed)"
     traces_dir = args.artifact_dir / "artifacts/traces"
     shell.run(
         'bash -o pipefail -c "'
