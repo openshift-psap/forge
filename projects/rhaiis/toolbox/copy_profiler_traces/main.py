@@ -100,6 +100,8 @@ def _profiler_window_missed(args, context) -> bool:
 
 @task
 def copy_traces(args, context):
+    if getattr(context, "trace_count", None) == 0:
+        return "No trace files to copy (profiler window missed)"
     traces_dir = args.artifact_dir / "artifacts/traces"
     shell.run(
         'bash -o pipefail -c "'
