@@ -13,6 +13,17 @@ import projects.core.library.env as env
 LINE_WIDTH = 80
 
 
+def format_duration(seconds):
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+
+    if hours > 0:
+        return f"{int(hours)}h{int(minutes):02d}m{int(secs):02d}s"
+    if minutes > 0:
+        return f"{int(minutes)}m{int(secs):02d}s"
+    return f"{seconds:.1f}s"
+
+
 def setup_clean_logger(name: str):
     """Set up logger that shows only the message without prefix"""
     logger = logging.getLogger(name)
@@ -60,9 +71,8 @@ def log_task_header(
     timestamp = datetime.fromtimestamp(current_time).strftime("%Y-%m-%d %H:%M:%S")
     if start_time is not None:
         elapsed_time = current_time - start_time
-        elapsed_mins, elapsed_secs = divmod(elapsed_time, 60)
         logger.info(f"~~ TASK: {task_name} : {(task_doc or 'No description').strip()}")
-        logger.info(f"~~ {timestamp} ({elapsed_time:.0f}s {elapsed_mins:.0f}m {elapsed_secs:.0f}s)")
+        logger.info(f"~~ {timestamp} ({format_duration(elapsed_time)})")
         logger.info("~" * LINE_WIDTH)
         logger.info("")
         return
@@ -123,20 +133,8 @@ def log_completion_banner(
 
     # Add duration if start_time is provided
     if start_time is not None:
-        end_time = time.time()
-        duration = end_time - start_time
-        minutes, seconds = divmod(duration, 60)
-        hours, minutes = divmod(minutes, 60)
-
-        # Format duration nicely
-        if hours > 0:
-            duration_str = f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
-        elif minutes > 0:
-            duration_str = f"{int(minutes)}m {int(seconds)}s"
-        else:
-            duration_str = f"{duration:.1f}s"
-
-        logger.info(f"| DURATION: {duration_str}")
+        duration = time.time() - start_time
+        logger.info(f"| DURATION: {format_duration(duration)}")
 
     logger.info(f"| ARTIFACTS: {env.ARTIFACT_DIR}")
     logger.info("===============================================================================")
