@@ -4,21 +4,23 @@ import pytest
 
 
 def test_profiler_trace_copy_failure_propagates(monkeypatch) -> None:
+    from projects.guidellm.library.loadgenerator.rhaiis import GuideLLMGenerator
     from projects.guidellm.toolbox.run_guidellm_benchmark import main as guidellm
     from projects.rhaiis.orchestration import test_phase
+    from projects.rhaiis.orchestration.loadgenerator import BenchmarkContext
     from projects.rhaiis.toolbox.copy_profiler_traces import main as copy_traces
     from projects.rhaiis.toolbox.enable_profiler_gate import main as profiler_gate
     from projects.rhaiis.toolbox.verify_profiler_prereqs import main as verify_prereqs
 
     monkeypatch.setattr(verify_prereqs, "run", lambda **kwargs: None)
-    monkeypatch.setattr(profiler_gate, "run", lambda **kwargs: None)
+    gates = []
+    monkeypatch.setattr(profiler_gate, "run", lambda **kwargs: gates.append(kwargs))
     monkeypatch.setattr(guidellm, "run", lambda **kwargs: None)
     monkeypatch.setattr(
         test_phase.runtime_config,
         "get_profiler_config",
-        lambda: {"labels": ["profile1"]},
+        lambda: {"labels": ["profile1", "profile2"]},
     )
-    monkeypatch.setattr(test_phase.runtime_config, "build_guidellm_args", lambda **kwargs: [])
 
     def fail_copy(**kwargs):
         raise RuntimeError("copy failed")
@@ -26,16 +28,21 @@ def test_profiler_trace_copy_failure_propagates(monkeypatch) -> None:
     monkeypatch.setattr(copy_traces, "run", fail_copy)
 
     with pytest.raises(RuntimeError, match="copy failed"):
-        test_phase._run_profiler_step(
-            deployment_name="model",
-            namespace="test",
-            endpoint_url="http://model",
-            benchmark_cfg={},
-            model_cfg={"hf_model_id": "org/model"},
-            workload={"data": "prompt_tokens=1000,output_tokens=1000"},
-            workload_key="profile1",
-            benchmark_timeout=60,
+        GuideLLMGenerator().profile(
+            BenchmarkContext(
+                deployment_name="model",
+                namespace="test",
+                endpoint_url="http://model",
+                benchmark_cfg={},
+                model_cfg={"hf_model_id": "org/model"},
+                workload={"data": "prompt_tokens=1000,output_tokens=1000"},
+                workload_key="profile1",
+                benchmark_timeout=60,
+            )
         )
+
+    assert [gate["clear_traces"] for gate in gates if "gate_value" in gate] == [True, False]
+    assert [gate["disable"] for gate in gates if "disable" in gate] == [True, True]
 
 
 @pytest.mark.parametrize(

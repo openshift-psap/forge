@@ -262,8 +262,9 @@ def create_guidellm_resources_task(args, ctx):
         )
 
 
-# An upper safety bound only; ctx.wait_deadline enforces the per-run timeout.
-@retry(attempts=1080, delay=WAIT_POLL_INTERVAL_SECONDS, backoff=1.0)
+# A generous safety bound; ctx.wait_deadline enforces each invocation's timeout.
+# Do not change the decorator's retry settings from project orchestration.
+@retry(attempts=8640, delay=WAIT_POLL_INTERVAL_SECONDS, backoff=1.0)
 @task
 def wait_guidellm_benchmark_task(args, ctx):
     """Wait for the GuideLLM benchmark to complete"""

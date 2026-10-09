@@ -12,8 +12,10 @@ import yaml
 
 from projects.core.library import config as core_config
 from projects.core.library import env
+from projects.guidellm.library import runner as guidellm_runner
+from projects.guidellm.library.loadgenerator import llm_d as guidellm_generator
 from projects.llm_d.orchestration import ci as llmd_ci
-from projects.llm_d.orchestration import runtime_config, test_phase
+from projects.llm_d.orchestration import loadgenerator, runtime_config, test_phase
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
 )
@@ -133,6 +135,17 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     assert multi_turn["timeout_seconds"] == 7200
 
 
+def test_guidellm_use_pvc_inherits_workload_default_and_allows_override() -> None:
+    _init_project_config()
+    core_config.project.set_config("runtime.benchmark_key", "concurrent-1k-1k")
+    core_config.project.set_config("workloads.use_pvc", True)
+
+    assert runtime_config.get_benchmark_config()["use_pvc"] is True
+
+    core_config.project.config["workloads"]["benchmarks"]["concurrent-1k-1k"]["use_pvc"] = False
+    assert runtime_config.get_benchmark_config()["use_pvc"] is False
+
+
 def test_guidellm_benchmark_uses_hf_model_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -149,26 +162,69 @@ def test_guidellm_benchmark_uses_hf_model_name(
         return 0
 
     mock_config_path = Path("/mock/benchconf/config.yaml")
-    monkeypatch.setattr(test_phase.run_guidellm_benchmark_command, "run", _fake_run)
+    monkeypatch.setattr(guidellm_runner.benchmark_command, "run", _fake_run)
     monkeypatch.setattr(
-        test_phase.benchconf_lib, "resolve_config_path", lambda ref: mock_config_path
+        guidellm_generator.benchconf_lib, "resolve_config_path", lambda ref: mock_config_path
     )
-    monkeypatch.setattr(test_phase.benchconf_lib, "_is_enabled", lambda: True)
-    monkeypatch.setattr(test_phase.benchconf_lib, "maybe_install_custom_version", lambda: None)
-    monkeypatch.setattr(test_phase.benchconf_lib, "save_version", lambda: None)
+    monkeypatch.setattr(guidellm_generator.benchconf_lib, "_is_enabled", lambda: True)
+    monkeypatch.setattr(
+        guidellm_generator.benchconf_lib, "maybe_install_custom_version", lambda: None
+    )
+    monkeypatch.setattr(guidellm_generator.benchconf_lib, "save_version", lambda: None)
 
     monkeypatch.setattr(
         test_phase,
         "update_test_labels_with_timing",
         lambda _dir, _section, _event: datetime.now(UTC),
     )
-    test_phase.run_guidellm_benchmark(None, endpoint_url="https://example.test/llm-d")
+    test_phase.run_benchmark(None, endpoint_url="https://example.test/llm-d")
 
     assert captured["timeout"] == 3600
     assert captured["config_path"] == mock_config_path
     guidellm_args = captured["guidellm_args"]
     assert isinstance(guidellm_args, list)
     assert "--tokenizer=kind=huggingface_auto,model=openai/gpt-oss-120b" in guidellm_args
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_benchmark_caller_owns_artifact_directory(
+    monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
+    _init_project_config()
+    core_config.project.set_config("runtime.benchmark_key", "short")
+    core_config.project.set_config("prom.capture.enabled", False)
+    original_dir = env.ARTIFACT_DIR
+    timing_events = []
+
+    def record_timing(_dir, _section, event):
+        timing_events.append((event, env.ARTIFACT_DIR))
+        return datetime.now(UTC)
+
+    class FakeGenerator:
+        def run(self, context):
+            assert context.benchmark_key == "short"
+            assert env.ARTIFACT_DIR.parent == original_dir
+            assert env.ARTIFACT_DIR.name.endswith("__benchmark_short")
+            (env.ARTIFACT_DIR / "result.txt").write_text("benchmark result")
+            if fail:
+                raise RuntimeError("Benchmark failed")
+
+    monkeypatch.setattr(test_phase, "update_test_labels_with_timing", record_timing)
+    expected_error = (
+        pytest.raises(RuntimeError, match="Benchmark failed") if fail else nullcontext()
+    )
+    with expected_error:
+        benchmark_times = test_phase.run_benchmark(
+            None, endpoint_url="https://example.test/llm-d", generator=FakeGenerator()
+        )
+
+    if not fail:
+        assert len(benchmark_times) == 2
+        assert all(isinstance(value, datetime) for value in benchmark_times)
+
+    assert env.ARTIFACT_DIR == original_dir
+    assert timing_events == [("start", original_dir), ("end", original_dir)]
+    assert len(list(original_dir.glob("*__benchmark_short/result.txt"))) == 1
 
 
 def test_release_preset_expands_benchmark_list_and_merges_workload_args() -> None:
@@ -867,6 +923,33 @@ def test_benchmark_job_name_from_activated_spec() -> None:
     for run_spec in runtime_config.get_run_specs():
         with runtime_config.activate_run_spec(run_spec):
             assert runtime_config.get_benchmark_job_name() == "guidellm-benchmark"
+
+
+def test_benchmark_tool_defaults_to_guidellm_without_profile_edits() -> None:
+    _init_project_config()
+    assert runtime_config.get_benchmark_config()["tool"] == "guidellm"
+
+
+def test_benchmark_tool_rejects_unknown_value() -> None:
+    _init_project_config()
+    core_config.project.config["workloads"]["benchmarks"]["unknown"] = {"tool": "other"}
+    core_config.project.set_config("runtime.benchmark_key", "unknown")
+    with pytest.raises(ValueError, match="has no runner"):
+        runtime_config.get_benchmark_config()
+
+
+def test_unavailable_runner_fails_before_namespace_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    _init_project_config()
+    core_config.project.set_config("runtime.benchmark_key", "short")
+    monkeypatch.setattr(loadgenerator, "RUNNERS", {})
+    monkeypatch.setattr(
+        test_phase,
+        "ensure_namespace",
+        lambda *_args, **_kwargs: pytest.fail("namespace work started before runner validation"),
+    )
+
+    with pytest.raises(ValueError, match="Benchmark tool 'guidellm' has no runner"):
+        test_phase.do_test()
 
 
 def test_smoke_preset_benchmark_behavior() -> None:
