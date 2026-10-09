@@ -71,10 +71,15 @@ def list_trace_files(args, context):
 def _profiler_window_missed(args, context) -> bool:
     """Distinguish "the profiler never armed" from "it armed but produced no traces".
 
-    The injected profiler logs "[profiler] Starting profiler" once per armed
-    range and "Exported trace" once per exported file. A pod restart wipes both
-    the trace files and the logs, so a non-zero restart count is treated as
-    "profiler did run" to keep engine-death failures fatal.
+    The injected profiler logs "[profiler] Gate activated" when a workload's
+    gate is set and "[profiler] Starting profiler" once per armed range. A pod
+    restart wipes both the trace files and the logs, so a non-zero restart
+    count is treated as "profiler did run" to keep engine-death failures fatal.
+
+    Only "Starting profiler" lines after the LAST "Gate activated" line count:
+    each workload runs its own profiler step against the same pod, so earlier
+    workloads leave their start lines in the log even though their trace files
+    were cleared before this workload's gate was set.
     """
     restarts = shell.run(
         f"oc get {context.pod_name} -n {args.namespace} "
@@ -86,7 +91,8 @@ def _profiler_window_missed(args, context) -> bool:
 
     started = shell.run(
         f"oc logs {context.pod_name} -n {args.namespace} -c kserve-container "
-        "| grep -c '\\[profiler\\] Starting profiler'",
+        "| awk '/Gate activated/{last=NR} /Starting profiler/{s[NR]=1} "
+        "END{c=0; for(n in s) if(n+0>last+0) c++; print c+0}'",
         check=False,
     )
     return started.stdout.strip() == "0"
