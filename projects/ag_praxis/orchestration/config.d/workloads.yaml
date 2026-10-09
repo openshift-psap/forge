@@ -6,20 +6,30 @@ pvc_storage_class: null
 fs_group: null
 timeout_seconds: 3600
 args:
-  processor: Qwen/Qwen3-0.6B
+  processor: gpt2
 
 smoke_request:
   prompt: San Francisco is a
   max_tokens: 50
   temperature: 0.7
 
+warmup_benchmark_key: null
+
 benchmarks:
+  warmup:
+    job_name: guidellm-warmup
+    timeout_seconds: 300
+    args:
+      profile: "kind=concurrent,streams=4"
+      data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
+      constraint: kind=max_duration,seconds=60
+
   short:
     timeout_seconds: 3600
     args:
       profile: "kind=concurrent,streams={rate}"
       data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
-      constraint: kind=max_duration,seconds=120
+      constraint: kind=max_duration,seconds=40
     rate: [1, 4, 8]
 
   full:
@@ -27,8 +37,24 @@ benchmarks:
     args:
       profile: "kind=concurrent,streams={rate}"
       data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
-      constraint: kind=max_duration,seconds=120
+      constraint: kind=max_duration,seconds=180
     rate: [1, 4, 16, 32, 64, 128]
+
+  payload_l:
+    timeout_seconds: 3600
+    args:
+      profile: "kind=concurrent,streams={rate}"
+      data: kind=synthetic_text,prompt_tokens=1000,output_tokens=500
+      constraint: kind=max_duration,seconds=180
+    rate: [1, 4, 8]
+
+  payload_xl:
+    timeout_seconds: 3600
+    args:
+      profile: "kind=concurrent,streams={rate}"
+      data: kind=synthetic_text,prompt_tokens=4000,output_tokens=4000
+      constraint: kind=max_duration,seconds=180
+    rate: [1, 4, 8]
 
   smoke:
     timeout_seconds: 300

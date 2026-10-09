@@ -63,15 +63,14 @@ def _resolve_benchmark_config(benchmark_key: str) -> dict:
     return benchmark
 
 
-def _run_guidellm(test_namespace: str, endpoint_url: str):
-    """Run the GuideLLM benchmark with the configured profile."""
+def _run_guidellm_benchmark(test_namespace: str, endpoint_url: str, benchmark_key: str):
+    """Run a GuideLLM benchmark by key."""
     from projects.guidellm.library import benchconf as benchconf_lib
     from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
     from projects.guidellm.toolbox.run_guidellm_benchmark import (
         main as run_guidellm_benchmark_command,
     )
 
-    benchmark_key = config.project.get_config("test.benchmark_key")
     benchmark = _resolve_benchmark_config(benchmark_key)
 
     config_path = None
@@ -95,21 +94,29 @@ def _run_guidellm(test_namespace: str, endpoint_url: str):
         config_path=config_path,
         fs_group=benchmark.get("fs_group"),
         use_pvc=benchmark.get("use_pvc"),
+        artifact_dirname_suffix=benchmark_key,
     )
 
 
-def _deploy_sim_llmisvc(test_namespace, gateway_cfg, with_router):
-    """Deploy sim LLMInferenceService with or without router/gateway."""
+def _run_guidellm(test_namespace: str, endpoint_url: str):
+    """Run the warmup (if enabled) then the main GuideLLM benchmark."""
+    if config.project.get_config("test.run_warmup"):
+        warmup_key = config.project.get_config("workloads.warmup_benchmark_key")
+        logger.info("Running warmup benchmark: %s", warmup_key)
+        if warmup_key:
+            with env.NextArtifactDir("warmup"):
+                _run_guidellm_benchmark(test_namespace, endpoint_url, warmup_key)
+
+    benchmark_key = config.project.get_config("test.benchmark_key")
+    logger.info("Running benchmark: %s", benchmark_key)
+    _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key)
+
+
+def _deploy_sim_llmisvc(test_namespace):
+    """Deploy sim LLMInferenceService without router."""
     from projects.kserve.toolbox.deploy_sim_llmisvc import main as deploy_sim_llmisvc_command
 
-    if with_router:
-        return deploy_sim_llmisvc_command.run(
-            namespace=test_namespace,
-            name=SIM_LLMISVC_NAME,
-            gateway_name=gateway_cfg["name"],
-            gateway_namespace=gateway_cfg["namespace"],
-            gateway_status_address_name=gateway_cfg["status_address_name"],
-        )
+    sim_cfg = config.project.get_config("platform.sim")
 
     endpoint = deploy_sim_llmisvc_command.run(
         namespace=test_namespace,
@@ -118,6 +125,10 @@ def _deploy_sim_llmisvc(test_namespace, gateway_cfg, with_router):
         gateway_namespace="",
         gateway_status_address_name=None,
         skip_router=True,
+        time_to_first_token=sim_cfg["time_to_first_token"],
+        inter_token_latency=sim_cfg["inter_token_latency"],
+        mode=sim_cfg["mode"],
+        max_num_seqs=sim_cfg["max_num_seqs"],
     )
     return endpoint.replace("https://", "http://", 1)
 
@@ -169,23 +180,20 @@ def _deploy_praxis(test_namespace, model_endpoint):
     )
 
 
-def _prep_direct(test_namespace, gateway_cfg):
-    endpoint = _deploy_sim_llmisvc(test_namespace, gateway_cfg, with_router=False)
-    logger.info("[direct] endpoint: %s", endpoint)
-    _smoke_test(test_namespace, endpoint, "sim")
-    return endpoint
+def _prep_direct(test_namespace, gateway_cfg, sim_endpoint):
+    _smoke_test(test_namespace, sim_endpoint, "sim")
+    return sim_endpoint
 
 
 DIRECT_GATEWAY_HTTPROUTE_NAME = "direct-gateway-route"
 SIM_LLMISVC_SVC_NAME = f"{SIM_LLMISVC_NAME}-kserve-workload-svc"
 
 
-def _prep_direct_gateway(test_namespace, gateway_cfg):
+def _prep_direct_gateway(test_namespace, gateway_cfg, sim_endpoint):
     from projects.ag_praxis.toolbox.add_gateway_route import main as add_gateway_route_command
 
-    endpoint = _deploy_sim_llmisvc(test_namespace, gateway_cfg, with_router=False)
-    logger.info("[direct-gateway] model direct endpoint: %s", endpoint)
-    _smoke_test(test_namespace, endpoint, "sim")
+    logger.info("[direct-gateway] model direct endpoint: %s", sim_endpoint)
+    _smoke_test(test_namespace, sim_endpoint, "sim")
 
     _ensure_gateway(gateway_cfg)
     gateway_endpoint = add_gateway_route_command.run(
@@ -201,12 +209,11 @@ def _prep_direct_gateway(test_namespace, gateway_cfg):
     return gateway_endpoint
 
 
-def _prep_praxis(test_namespace, gateway_cfg):
-    direct_endpoint = _deploy_sim_llmisvc(test_namespace, gateway_cfg, with_router=False)
-    logger.info("[praxis] model direct endpoint: %s", direct_endpoint)
-    _smoke_test(test_namespace, direct_endpoint, "praxis")
+def _prep_praxis(test_namespace, gateway_cfg, sim_endpoint):
+    logger.info("[praxis] model direct endpoint: %s", sim_endpoint)
+    _smoke_test(test_namespace, sim_endpoint, "sim")
 
-    _deploy_praxis(test_namespace, direct_endpoint)
+    _deploy_praxis(test_namespace, sim_endpoint)
     praxis_url = f"http://praxis.{test_namespace}.svc:8080"
     logger.info("[praxis] praxis endpoint: %s", praxis_url)
     _smoke_test(test_namespace, praxis_url, "praxis")
@@ -229,12 +236,11 @@ def _add_gateway_route(test_namespace, gateway_cfg):
     )
 
 
-def _prep_praxis_gateway(test_namespace, gateway_cfg):
-    direct_endpoint = _deploy_sim_llmisvc(test_namespace, gateway_cfg, with_router=False)
-    logger.info("[praxis-gateway] model direct endpoint: %s", direct_endpoint)
-    _smoke_test(test_namespace, direct_endpoint)
+def _prep_praxis_gateway(test_namespace, gateway_cfg, sim_endpoint):
+    logger.info("[praxis-gateway] model direct endpoint: %s", sim_endpoint)
+    _smoke_test(test_namespace, sim_endpoint, "sim")
 
-    _deploy_praxis(test_namespace, direct_endpoint)
+    _deploy_praxis(test_namespace, sim_endpoint)
     praxis_url = f"http://praxis.{test_namespace}.svc:8080"
     logger.info("[praxis-gateway] praxis endpoint: %s", praxis_url)
     _smoke_test(test_namespace, praxis_url)
@@ -253,27 +259,23 @@ def _cleanup_llmisvc(test_namespace):
 
 
 def _cleanup_praxis(test_namespace):
-    from projects.core.dsl.utils.k8s import best_effort_oc
+    from projects.ag_praxis.toolbox.teardown_praxis import main as teardown_praxis_command
 
-    best_effort_oc("delete", "deployment", "praxis", "-n", test_namespace)
-    best_effort_oc("delete", "service", "praxis", "-n", test_namespace)
-    best_effort_oc("delete", "configmap", "praxis-config", "-n", test_namespace)
+    teardown_praxis_command.run(namespace=test_namespace)
 
 
 def _cleanup_direct(test_namespace):
-    _cleanup_llmisvc(test_namespace)
+    pass
 
 
 def _cleanup_direct_gateway(test_namespace):
     from projects.core.dsl.utils.k8s import best_effort_oc
 
     best_effort_oc("delete", "httproute", DIRECT_GATEWAY_HTTPROUTE_NAME, "-n", test_namespace)
-    _cleanup_llmisvc(test_namespace)
 
 
 def _cleanup_praxis_flavor(test_namespace):
     _cleanup_praxis(test_namespace)
-    _cleanup_llmisvc(test_namespace)
 
 
 def _cleanup_praxis_gateway(test_namespace):
@@ -281,7 +283,6 @@ def _cleanup_praxis_gateway(test_namespace):
 
     best_effort_oc("delete", "httproute", PRAXIS_HTTPROUTE_NAME, "-n", test_namespace)
     _cleanup_praxis(test_namespace)
-    _cleanup_llmisvc(test_namespace)
 
 
 def _endpoint_direct(test_namespace, gateway_cfg):
@@ -317,6 +318,17 @@ def do_test_praxis():
     sim_cfg = config.project.get_config("platform.sim")
     gateway_cfg = sim_cfg["gateway"]
 
+    sim_endpoint = _deploy_sim_llmisvc(test_namespace)
+    logger.info("Sim LLMInferenceService endpoint: %s", sim_endpoint)
+
+    try:
+        _run_flavor_loop(test_namespace, gateway_cfg, sim_endpoint)
+    finally:
+        if not config.project.get_config("test.skip_cleanup"):
+            _cleanup_llmisvc(test_namespace)
+
+
+def _run_flavor_loop(test_namespace, gateway_cfg, sim_endpoint):
     flavors = config.project.get_config("test.flavors")
     continue_on_failure = config.project.get_config("test.continue_on_flavor_failure")
     failed_flavors = []
@@ -336,7 +348,7 @@ def do_test_praxis():
                 update_test_labels_with_timing(test_dir, "test", "start")
 
                 if not config.project.get_config("test.skip_prepare"):
-                    benchmark_endpoint = prep_fn(test_namespace, gateway_cfg)
+                    benchmark_endpoint = prep_fn(test_namespace, gateway_cfg, sim_endpoint)
                 else:
                     benchmark_endpoint = endpoint_fn(test_namespace, gateway_cfg)
 

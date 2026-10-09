@@ -16,6 +16,10 @@ maas:
     namespace: openshift-ingress
 
 sim:
+  time_to_first_token: "800ms"
+  inter_token_latency: "30ms"
+  mode: random
+  max_num_seqs: 10240
   gateway:
     name: ag-praxis
     namespace: openshift-ingress
