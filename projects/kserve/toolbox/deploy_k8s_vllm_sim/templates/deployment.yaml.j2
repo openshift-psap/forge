@@ -1,0 +1,57 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ name }}
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: forge
+    app: {{ name }}
+spec:
+  replicas: {{ replicas }}
+  selector:
+    matchLabels:
+      app: {{ name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: forge
+        app: {{ name }}
+    spec:
+      containers:
+        - name: sim
+          image: {{ image }}
+          command: ["/app/llm-d-inference-sim"]
+          args:
+            - "--port={{ port }}"
+            - "--model={{ model_name }}"
+            - "--max-num-seqs={{ max_num_seqs }}"
+            - "--max-model-len={{ max_model_len }}"
+            - "--time-to-first-token={{ time_to_first_token }}"
+            - "--inter-token-latency={{ inter_token_latency }}"
+            - "--mode={{ mode }}"
+            - "--logtostderr=true"
+          ports:
+            - containerPort: {{ port }}
+              name: http
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ port }}
+              scheme: HTTP
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          startupProbe:
+            failureThreshold: 60
+            httpGet:
+              path: /health
+              port: {{ port }}
+              scheme: HTTP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ port }}
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
