@@ -1,8 +1,12 @@
 test:
   namespace: forge-praxis
   benchmark_key: short
+  run_benchmark: true
+  skip_cleanup: false
+  skip_prepare: false
+  continue_on_flavor_failure: true
   flavors:
   - direct
-  - gateway
+  - direct-gateway
   - praxis
-  # - praxis-gateway
+  - praxis-gateway

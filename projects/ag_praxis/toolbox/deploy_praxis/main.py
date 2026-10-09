@@ -41,7 +41,7 @@ def run(
 
 @task
 def delete_previous(args, ctx):
-    """Delete existing Praxis Deployment and ConfigMap."""
+    """Delete existing Praxis Deployment (owned resources are garbage-collected)."""
     best_effort_oc(
         "delete",
         "deployment",
@@ -50,15 +50,7 @@ def delete_previous(args, ctx):
         args.namespace,
         "--ignore-not-found",
     )
-    best_effort_oc(
-        "delete",
-        "configmap",
-        "praxis-config",
-        "-n",
-        args.namespace,
-        "--ignore-not-found",
-    )
-    return "Deleted previous Praxis Deployment and ConfigMap"
+    return "Deleted previous Praxis Deployment"
 
 
 @task
@@ -78,26 +70,6 @@ def ensure_namespace(args, ctx):
     )
     oc_apply(src_dir / "namespace.yaml", manifest)
     return f"Created namespace {args.namespace}"
-
-
-@task
-def apply_configmap(args, ctx):
-    """Apply the Praxis configuration ConfigMap."""
-    src_dir = args.artifact_dir / "src"
-    src_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest = yaml.safe_load(
-        render_template(
-            "configmap.yaml.j2",
-            context={
-                "namespace": args.namespace,
-                "model_endpoint": args.model_endpoint,
-                "model_host": args.model_endpoint.rsplit(":", 1)[0],
-            },
-        )
-    )
-    oc_apply(src_dir / "configmap.yaml", manifest)
-    return f"Applied Praxis ConfigMap pointing to {args.model_endpoint}"
 
 
 @task
@@ -122,16 +94,71 @@ def apply_deployment(args, ctx):
     return f"Applied Praxis Deployment with image {image}"
 
 
+def _get_deployment_uid(namespace):
+    deploy = oc_get_json("deployment", name="praxis", namespace=namespace)
+    return deploy["metadata"]["uid"]
+
+
 @task
-def apply_service(args, ctx):
-    """Apply the Praxis Service."""
+def apply_configmap(args, ctx):
+    """Apply the Praxis configuration ConfigMap owned by the Deployment."""
     src_dir = args.artifact_dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
+
+    from urllib.parse import urlparse
+
+    parsed = urlparse(args.model_endpoint)
+    host_port = f"{parsed.hostname}:{parsed.port or 8000}"
+
+    deployment_uid = _get_deployment_uid(args.namespace)
+
+    praxis_config = render_template(
+        "praxis-ai.yaml.j2",
+        context={
+            "model_endpoint": host_port,
+            "model_host": parsed.hostname,
+        },
+    )
+
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "praxis-config",
+            "namespace": args.namespace,
+            "ownerReferences": [
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "praxis",
+                    "uid": deployment_uid,
+                }
+            ],
+        },
+        "data": {
+            "praxis-ai.yaml": praxis_config,
+        },
+    }
+
+    oc_apply(src_dir / "configmap.yaml", manifest)
+    return f"Applied Praxis ConfigMap pointing to {host_port}"
+
+
+@task
+def apply_service(args, ctx):
+    """Apply the Praxis Service owned by the Deployment."""
+    src_dir = args.artifact_dir / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    deployment_uid = _get_deployment_uid(args.namespace)
 
     manifest = yaml.safe_load(
         render_template(
             "service.yaml.j2",
-            context={"namespace": args.namespace},
+            context={
+                "namespace": args.namespace,
+                "deployment_uid": deployment_uid,
+            },
         )
     )
     oc_apply(src_dir / "service.yaml", manifest)
@@ -149,6 +176,27 @@ def wait_for_rollout(args, ctx):
         return False
 
     return "Praxis Deployment is available"
+
+
+@task
+def apply_servicemonitor(args, ctx):
+    """Apply the Praxis ServiceMonitor owned by the Deployment."""
+    src_dir = args.artifact_dir / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    deployment_uid = _get_deployment_uid(args.namespace)
+
+    manifest = yaml.safe_load(
+        render_template(
+            "servicemonitor.yaml.j2",
+            context={
+                "namespace": args.namespace,
+                "deployment_uid": deployment_uid,
+            },
+        )
+    )
+    oc_apply(src_dir / "servicemonitor.yaml", manifest)
+    return "Applied Praxis ServiceMonitor (owned by Deployment)"
 
 
 if __name__ == "__main__":

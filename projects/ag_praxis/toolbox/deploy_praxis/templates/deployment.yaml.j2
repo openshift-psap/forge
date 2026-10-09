@@ -27,19 +27,23 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: admin
+              containerPort: 9901
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
           readinessProbe:
-            tcpSocket:
-              port: http
+            httpGet:
+              path: /ready
+              port: admin
             initialDelaySeconds: 2
             periodSeconds: 5
           livenessProbe:
-            tcpSocket:
-              port: http
+            httpGet:
+              path: /healthy
+              port: admin
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:

@@ -15,16 +15,15 @@ def run(
     *,
     namespace: str,
     deployment_name: str = "praxis",
-    configmap_name: str = "praxis-config",
-    service_name: str = "praxis",
 ):
     """Capture Praxis state and tear down the deployment.
+
+    Owned resources (ConfigMap, Service, ServiceMonitor) are garbage-collected
+    when the Deployment is deleted.
 
     Args:
         namespace: Namespace where Praxis is deployed.
         deployment_name: Name of the Praxis Deployment.
-        configmap_name: Name of the Praxis ConfigMap.
-        service_name: Name of the Praxis Service.
     """
     execute_tasks(locals())
 
@@ -125,7 +124,7 @@ def capture_pods(args, ctx):
 
 @task
 def delete_resources(args, ctx):
-    """Delete the Praxis Deployment, Service, and ConfigMap."""
+    """Delete the Praxis Deployment (owned resources are garbage-collected)."""
     best_effort_oc(
         "delete",
         "deployment",
@@ -134,23 +133,7 @@ def delete_resources(args, ctx):
         args.namespace,
         "--ignore-not-found",
     )
-    best_effort_oc(
-        "delete",
-        "service",
-        args.service_name,
-        "-n",
-        args.namespace,
-        "--ignore-not-found",
-    )
-    best_effort_oc(
-        "delete",
-        "configmap",
-        args.configmap_name,
-        "-n",
-        args.namespace,
-        "--ignore-not-found",
-    )
-    return "Deleted Praxis Deployment, Service, and ConfigMap"
+    return "Deleted Praxis Deployment"
 
 
 if __name__ == "__main__":
