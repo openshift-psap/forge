@@ -1083,8 +1083,15 @@ def analyse_kpis_cmd(
     if status_data.message:
         click.echo("> " + status_data.message)
 
-    # Generate HTML report if requested and analysis was successful
-    if html and status_data.success:
+    # Generate HTML report if requested and a report file was actually written.
+    #
+    # Note: this is intentionally NOT gated on `status_data.success` — the
+    # analysis engine sets success=False whenever a regression is detected
+    # (StatusLevel.REGRESSION_DETECTED), which is precisely the case where a
+    # human most needs the visual regression report. The JSON report file is
+    # written unconditionally whenever analysis actually ran (see
+    # analyze_kpis()), so gate on that instead.
+    if html and status_data.output_file:
         try:
             from projects.caliper.engine.kpi.html_generator import (
                 generate_regression_html_from_file,
