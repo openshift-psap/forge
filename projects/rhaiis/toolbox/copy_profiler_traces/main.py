@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+import logging
+import time
+
 from projects.core.dsl import (
     entrypoint,
     execute_tasks,
@@ -7,9 +10,11 @@ from projects.core.dsl import (
     task,
 )
 
+logger = logging.getLogger("DSL")
+
 
 @entrypoint
-def run(*, name: str, namespace: str):
+def run(*, name: str, namespace: str, flush_timeout: int = 300, flush_poll_interval: int = 10):
     return execute_tasks(locals())
 
 
@@ -37,19 +42,42 @@ def find_predictor_pod(args, context):
 
 @task
 def list_trace_files(args, context):
-    result = shell.run(
-        f"oc exec {context.pod_name} -n {args.namespace} "
-        "-- sh -c 'ls /tmp/trace_rank0_*.json* 2>/dev/null || echo NO_RANK0_TRACES'",
-        check=False,
-        log_stdout=False,
-    )
+    if args.flush_poll_interval <= 0:
+        raise ValueError(
+            f"flush_poll_interval must be a positive integer, got {args.flush_poll_interval}"
+        )
 
-    if "NO_RANK0_TRACES" in result.stdout or not result.stdout.strip():
-        raise RuntimeError(f"No rank-0 profiler traces found in pod {context.pod_name}")
+    deadline = time.monotonic() + args.flush_timeout
 
-    trace_list = result.stdout.strip()
-    context.trace_count = len(trace_list.splitlines())
-    return f"Found {context.trace_count} rank-0 trace files"
+    while True:
+        result = shell.run(
+            f"oc exec {context.pod_name} -n {args.namespace} "
+            "-- sh -c 'ls /tmp/trace_rank0_*.json* 2>/dev/null || echo NO_RANK0_TRACES'",
+            check=False,
+            log_stdout=False,
+        )
+
+        traces_missing = "NO_RANK0_TRACES" in result.stdout or not result.stdout.strip()
+
+        if not traces_missing:
+            trace_list = result.stdout.strip()
+            context.trace_count = len(trace_list.splitlines())
+            return f"Found {context.trace_count} rank-0 trace files"
+
+        now = time.monotonic()
+        if now >= deadline:
+            raise RuntimeError(
+                f"No rank-0 profiler traces found in pod {context.pod_name} "
+                f"after waiting {args.flush_timeout}s"
+            )
+
+        remaining = deadline - now
+        logger.info(
+            f"Waiting for profiler traces to flush... "
+            f"retrying in {args.flush_poll_interval}s "
+            f"({remaining:.0f}s remaining of {args.flush_timeout}s timeout)"
+        )
+        time.sleep(min(args.flush_poll_interval, remaining))
 
 
 @task
