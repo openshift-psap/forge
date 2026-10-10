@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: praxis
+  namespace: {{ namespace }}
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: praxis
+      uid: {{ deployment_uid }}
+spec:
+  selector:
+    app: praxis
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: admin
+      port: 9901
+      targetPort: admin

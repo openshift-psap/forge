@@ -1,0 +1,17 @@
+namespace: forge-praxis
+
+payload: default
+sweep: small
+
+run_benchmark: false
+run_warmup: true
+
+skip_cleanup: false
+skip_prepare: false
+continue_on_flavor_failure: true
+
+flavors:
+  - direct
+  - direct-gateway
+  - praxis
+  - praxis-gateway

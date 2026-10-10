@@ -94,19 +94,16 @@ def _plugin_tuple(ctx: click.Context):
     """Get plugin module and plugin from context."""
 
     root = _root_obj(ctx)
-    try:
-        mod, _manifest_path = resolve_plugin_module_string(
-            base_dir=root.get("base_dir"),
-            postprocess_config=root.get("postprocess_config"),
-            cli_plugin=root.get("plugin_cli"),
-        )
-        if not mod:
-            raise RuntimeError("Plugin module not found")
-        plugin = load_plugin(mod)
-        if not plugin:
-            raise RuntimeError(f"Unable to load plugin: {mod}")
-    except RuntimeError as e:
-        _exit_with_help(ctx, str(e), code=2)
+    mod, _manifest_path = resolve_plugin_module_string(
+        base_dir=root.get("base_dir"),
+        postprocess_config=root.get("postprocess_config"),
+        cli_plugin=root.get("plugin_cli"),
+    )
+    if not mod:
+        raise RuntimeError("Plugin module not found")
+    plugin = load_plugin(mod)
+    if not plugin:
+        raise RuntimeError(f"Unable to load plugin: {mod}")
     return mod, plugin
 
 
@@ -196,15 +193,15 @@ def parse_cmd(
         postprocess_config=postprocess_config,
         plugin_module_override=plugin_module_override,
     )
-    mod, plugin = _plugin_tuple(ctx)
-    artifact_root: Path = _root_obj(ctx)["base_dir"]
-
-    # Parse label filters
-    include_filter, exclude_filter = _parse_label_filters(include_label, exclude_label)
-
     status = {"success": False}
 
     try:
+        mod, plugin = _plugin_tuple(ctx)
+        artifact_root: Path = _root_obj(ctx)["base_dir"]
+
+        # Parse label filters
+        include_filter, exclude_filter = _parse_label_filters(include_label, exclude_label)
+
         model = run_parse(
             base_dir=artifact_root,
             plugin_module=mod,
@@ -364,12 +361,12 @@ def visualize_cmd(
         postprocess_config=postprocess_config,
         plugin_module_override=plugin_module_override,
     )
-    mod, plugin = _plugin_tuple(ctx)
-    artifact_root: Path = _root_obj(ctx)["base_dir"]
-
     status = {"success": False}
 
     try:
+        mod, plugin = _plugin_tuple(ctx)
+        artifact_root: Path = _root_obj(ctx)["base_dir"]
+
         paths = run_visualize(
             base_dir=artifact_root,
             plugin_module=mod,

@@ -1,0 +1,4 @@
+__multiple: true
+
+no_dummy:
+  placeholder.dummy: false
