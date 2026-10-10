@@ -195,10 +195,12 @@ def _display_error_summary(e: Exception) -> None:
     summary_lines = []
     if isinstance(e, TaskExecutionError):
         summary_lines += dsl_toolbox.get_task_execution_error(e)
-        summary_lines.append("")
-        summary_lines.append("---")
+    else:
+        summary_lines.append(f"{e.__class__.__name__}: {e}")
 
-    # mind that any thing below a '---\n' will be cut in the notification
+    # mind that anything below a '---\n' will be cut in the notification
+    summary_lines.append("")
+    summary_lines.append("---")
 
     # Add the full stacktrace
     summary_lines.append(f"--- 📍{e.__class__.__name__} STACKTRACE ---")
@@ -209,9 +211,6 @@ def _display_error_summary(e: Exception) -> None:
     # Add each line of the stacktrace with proper indentation
     for line in full_traceback:
         summary_lines.append(f"   {line}")
-
-    if not isinstance(e, TaskExecutionError):
-        summary_lines.append("---")  # add the details marker after the stacktrace
 
     # Display on screen
     for line in summary_lines:
@@ -374,7 +373,7 @@ def ensure_kubeconfig_works():
 
     kubeconfig = os.environ.get("KUBECONFIG")
     if not kubeconfig:
-        raise CIError("KUBECONFIG environment variable is not set", ExitCategory.INFRA_FAILURE)
+        raise CIError("KUBECONFIG environment variable is not set", ExitCategory.CONFIG_ERROR)
 
     logger.info(f"KUBECONFIG is set to {kubeconfig}")
 
