@@ -178,6 +178,28 @@ def cleanup_previous_guidellm_resources_task(args, ctx):
     return f"Deleted previous GuideLLM resources for {ctx.benchmark_name} ({mode} mode)"
 
 
+@retry(attempts=60, delay=10, backoff=1.0)
+@task
+def wait_old_pods_gone(args, ctx):
+    """Wait for old GuideLLM benchmark pods to disappear."""
+    result = oc(
+        "get",
+        "pods",
+        "-n",
+        ctx.target_namespace,
+        "-l",
+        f"job-name={ctx.benchmark_name}",
+        "--ignore-not-found=true",
+        "--no-headers",
+        check=False,
+    )
+
+    if result.stdout.strip():
+        return False
+
+    return f"Old pods gone for {ctx.benchmark_name}"
+
+
 def _best_effort_delete(description: str, *oc_args: str) -> None:
     try:
         oc(*oc_args, check=False, timeout_seconds=60)
