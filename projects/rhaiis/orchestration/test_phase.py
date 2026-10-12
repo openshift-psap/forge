@@ -491,11 +491,25 @@ def _run_workload_benchmark(
                 _warnings.append(f"Standalone analysis failed for {workload_key}")
         else:
             runs = generator.expand(workload)
+            multi_run = len(runs) > 1
+            if multi_run:
+                _mark_parent_skip(env.ARTIFACT_DIR)
             for run_label, run_workload in runs:
                 run_dir_name = workload_key
                 if run_label != "default":
                     run_dir_name = f"{workload_key}_{run_label}"
                 with env.NextArtifactDir(run_dir_name):
+                    if multi_run:
+                        from projects.core.library.postprocess import create_test_metadata
+
+                        create_test_metadata(
+                            env.ARTIFACT_DIR,
+                            {
+                                "benchmark_tool": run_workload.get("tool", benchmark_tool),
+                                "workload_key": workload_key,
+                                "run_label": run_label,
+                            },
+                        )
                     generator.run(
                         BenchmarkContext(
                             deployment_name=deployment_name,
@@ -508,6 +522,18 @@ def _run_workload_benchmark(
                             benchmark_timeout=benchmark_timeout,
                         )
                     )
+
+
+def _mark_parent_skip(artifact_dir: Path) -> None:
+    """Set skip=True on the current metadata so Caliper processes each expanded run independently."""
+    metadata_path = artifact_dir / "__caliper_test_metadata__.yaml"
+    if not metadata_path.exists():
+        return
+    with metadata_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    data["skip"] = True
+    with metadata_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
 
 
 def _create_test_labels(

@@ -776,6 +776,20 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
     )
 
 
+def _mark_parent_skip_for_expansion(test_dir: Path | None) -> None:
+    """Set skip=True on the parent metadata so Caliper processes each expanded run independently."""
+    if test_dir is None:
+        return
+    metadata_path = test_dir / "__caliper_test_metadata__.yaml"
+    if not metadata_path.exists():
+        return
+    with metadata_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    data["skip"] = True
+    with metadata_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
+
 def run_benchmark(
     test_dir,
     *,
@@ -793,11 +807,25 @@ def run_benchmark(
     try:
         benchmark_key = runtime_config.get_benchmark_keys()[0]
         runs = generator.expand(benchmark)
+        multi_run = len(runs) > 1
+        if multi_run:
+            _mark_parent_skip_for_expansion(test_dir)
         for run_label, run_benchmark_cfg in runs:
             artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
             if run_label != "default":
                 artifact_name = f"{artifact_name}_{slugify_identifier(run_label, max_length=24)}"
             with env.NextArtifactDir(artifact_name):
+                if multi_run:
+                    run_labels = {
+                        "benchmark_tool": run_benchmark_cfg["tool"],
+                        "benchmark_key": benchmark_key,
+                        "run_label": run_label,
+                    }
+                    create_test_metadata(
+                        env.ARTIFACT_DIR,
+                        run_labels,
+                        kpi_labels=extract_kpi_labels_from_config(),
+                    )
                 generator.run(
                     BenchmarkContext(
                         test_dir=test_dir,
