@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import copy
+import logging
+from typing import Any
+
 from projects.aiperf.toolbox.run_aiperf_benchmark import main as aiperf_command
 from projects.rhaiis.orchestration import runtime_config
 from projects.rhaiis.orchestration.loadgenerator.base import BenchmarkContext, RhaiisLoadGenerator
+
+logger = logging.getLogger(__name__)
 
 
 def _job_name(workload_key: str, deployment_name: str) -> str:
@@ -17,6 +23,20 @@ def _job_name(workload_key: str, deployment_name: str) -> str:
 
 class AIPerfGenerator(RhaiisLoadGenerator):
     tool = "aiperf"
+
+    def expand(self, benchmark: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """Expand a concurrency list into sequential single-concurrency runs."""
+        concurrency = benchmark.get("concurrency")
+        if not isinstance(concurrency, list):
+            return [("default", benchmark)]
+
+        runs = []
+        for c in concurrency:
+            run_cfg = copy.deepcopy(benchmark)
+            run_cfg["concurrency"] = c
+            runs.append((f"concurrency-{c}", run_cfg))
+        logger.info("Expanded concurrency sweep into %d runs: %s", len(runs), concurrency)
+        return runs
 
     def run(self, context: BenchmarkContext) -> None:
         """Run AI Perf with this workload's profile and tool configuration."""

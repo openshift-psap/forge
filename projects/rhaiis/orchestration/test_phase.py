@@ -490,18 +490,24 @@ def _run_workload_benchmark(
                 logger.warning("Standalone analysis failed", exc_info=True)
                 _warnings.append(f"Standalone analysis failed for {workload_key}")
         else:
-            generator.run(
-                BenchmarkContext(
-                    deployment_name=deployment_name,
-                    namespace=namespace,
-                    endpoint_url=endpoint_url,
-                    benchmark_cfg=benchmark_cfg,
-                    model_cfg=model_cfg,
-                    workload=workload,
-                    workload_key=workload_key,
-                    benchmark_timeout=benchmark_timeout,
-                )
-            )
+            runs = generator.expand(workload)
+            for run_label, run_workload in runs:
+                run_dir_name = workload_key
+                if run_label != "default":
+                    run_dir_name = f"{workload_key}_{run_label}"
+                with env.NextArtifactDir(run_dir_name):
+                    generator.run(
+                        BenchmarkContext(
+                            deployment_name=deployment_name,
+                            namespace=namespace,
+                            endpoint_url=endpoint_url,
+                            benchmark_cfg=benchmark_cfg,
+                            model_cfg=model_cfg,
+                            workload=run_workload,
+                            workload_key=workload_key,
+                            benchmark_timeout=benchmark_timeout,
+                        )
+                    )
 
 
 def _create_test_labels(

@@ -792,19 +792,23 @@ def run_benchmark(
     start_time = update_test_labels_with_timing(test_dir, "benchmark", "start")
     try:
         benchmark_key = runtime_config.get_benchmark_keys()[0]
-        artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
-        with env.NextArtifactDir(artifact_name):
-            generator.run(
-                BenchmarkContext(
-                    test_dir=test_dir,
-                    endpoint_url=endpoint_url,
-                    benchmark_key=benchmark_key,
-                    benchmark=benchmark,
-                    workload=runtime_config.get_workload_config(),
-                    model_name=runtime_config.get_model_name(),
-                    namespace=runtime_config.get_namespace(),
+        runs = generator.expand(benchmark)
+        for run_label, run_benchmark_cfg in runs:
+            artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
+            if run_label != "default":
+                artifact_name = f"{artifact_name}_{slugify_identifier(run_label, max_length=24)}"
+            with env.NextArtifactDir(artifact_name):
+                generator.run(
+                    BenchmarkContext(
+                        test_dir=test_dir,
+                        endpoint_url=endpoint_url,
+                        benchmark_key=benchmark_key,
+                        benchmark=run_benchmark_cfg,
+                        workload=runtime_config.get_workload_config(),
+                        model_name=runtime_config.get_model_name(),
+                        namespace=runtime_config.get_namespace(),
+                    )
                 )
-            )
     finally:
         end_time = update_test_labels_with_timing(test_dir, "benchmark", "end")
 

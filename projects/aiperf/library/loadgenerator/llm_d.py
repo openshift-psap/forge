@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Any
 
 from projects.aiperf.toolbox.run_aiperf_benchmark import main as aiperf_command
@@ -11,6 +12,8 @@ from projects.core.library import env
 from projects.llm_d.orchestration import runtime_config
 from projects.llm_d.orchestration.loadgenerator.base import BenchmarkContext, LlmDLoadGenerator
 
+logger = logging.getLogger(__name__)
+
 
 class AIPerfGenerator(LlmDLoadGenerator):
     tool = "aiperf"
@@ -18,6 +21,26 @@ class AIPerfGenerator(LlmDLoadGenerator):
     def resolve_config(self, profile: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         """Apply AI Perf defaults without inheriting GuideLLM settings."""
         return runtime_config.deep_merge(defaults.get("aiperf", {}), copy.deepcopy(profile))
+
+    def expand(self, benchmark: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """Expand a concurrency list into sequential single-concurrency runs.
+
+        AI Perf's AgentX MVP scenario requires a single concurrency value.
+        Cache isolation across runs is handled by AI Perf's built-in
+        ``--cache-bust first_turn_prefix`` mechanism.
+        """
+        concurrency = benchmark.get("concurrency")
+        if not isinstance(concurrency, list):
+            return [("default", benchmark)]
+
+        runs = []
+        for c in concurrency:
+            run_cfg = copy.deepcopy(benchmark)
+            run_cfg["concurrency"] = c
+            run_cfg["job_name"] = f"{benchmark['job_name']}-c{c}"
+            runs.append((f"concurrency-{c}", run_cfg))
+        logger.info("Expanded concurrency sweep into %d runs: %s", len(runs), concurrency)
+        return runs
 
     def run(self, context: BenchmarkContext) -> None:
         """Run AI Perf through its standalone toolbox command."""

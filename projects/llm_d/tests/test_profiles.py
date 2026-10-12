@@ -201,6 +201,9 @@ def test_benchmark_caller_owns_artifact_directory(
         return datetime.now(UTC)
 
     class FakeGenerator:
+        def expand(self, benchmark):
+            return [("default", benchmark)]
+
         def run(self, context):
             assert context.benchmark_key == "short"
             assert env.ARTIFACT_DIR.parent == original_dir
