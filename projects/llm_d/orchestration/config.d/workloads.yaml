@@ -36,6 +36,7 @@ benchmarks:
 
   aiperf-smoke:
     tool: aiperf
+    ssl_verify: false
     concurrency: 1
     request_count: 10
     input_tokens: 128

@@ -117,16 +117,18 @@ def build_job_manifest(
     image_pull_secret: str | None,
     dataset_url: str | None,
     dataset_sha256: str | None,
+    ssl_verify: bool = True,
 ) -> dict:
     """Render a Job; dataset download is checksum verified before benchmarking."""
     volumes = [{"name": "results", "persistentVolumeClaim": {"claimName": pvc_name}}]
     mounts = [{"name": "results", "mountPath": "/results"}]
+    container: dict = {"name": "aiperf", "image": image, "command": command, "volumeMounts": mounts}
+    if not ssl_verify:
+        container["env"] = [{"name": "AIPERF_HTTP_SSL_VERIFY", "value": "False"}]
     pod_spec: dict = {
         "restartPolicy": "Never",
         "volumes": volumes,
-        "containers": [
-            {"name": "aiperf", "image": image, "command": command, "volumeMounts": mounts}
-        ],
+        "containers": [container],
     }
     if image_pull_secret:
         pod_spec["imagePullSecrets"] = [{"name": image_pull_secret}]
@@ -201,6 +203,7 @@ def run(
     fixed_schedule: bool = False,
     fixed_schedule_auto_offset: bool = False,
     image_pull_secret: str | None = None,
+    ssl_verify: bool = True,
 ) -> int:
     """Run AI Perf and collect summary metrics from a results PVC."""
     if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name) or len(name) > 55:
@@ -293,6 +296,7 @@ def create_resources(args, ctx):
         image_pull_secret=args.image_pull_secret,
         dataset_url=args.dataset_url,
         dataset_sha256=args.dataset_sha256,
+        ssl_verify=args.ssl_verify,
     )
     oc_apply(src / "aiperf-job.yaml", job)
     metadata = {

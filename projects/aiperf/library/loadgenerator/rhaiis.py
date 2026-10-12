@@ -47,4 +47,5 @@ class AIPerfGenerator(RhaiisLoadGenerator):
             fixed_schedule=workload.get("fixed_schedule", False),
             fixed_schedule_auto_offset=workload.get("fixed_schedule_auto_offset", False),
             image_pull_secret=cfg.get("image_pull_secret"),
+            ssl_verify=cfg.get("ssl_verify", True),
         )
