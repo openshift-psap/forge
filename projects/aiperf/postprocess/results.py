@@ -31,8 +31,10 @@ def benchmark_tool(node: BaseTestNode) -> str:
     if not isinstance(labels, dict):
         raise ValueError(f"Invalid benchmark labels for {node.test_path}")
     tool = labels.get("benchmark_tool")
+    if tool is None:
+        return "guidellm"
     if tool not in ("guidellm", "aiperf"):
-        raise ValueError(f"Missing or unsupported benchmark_tool for {node.test_path}: {tool!r}")
+        raise ValueError(f"Unsupported benchmark_tool for {node.test_path}: {tool!r}")
     return tool
 
 

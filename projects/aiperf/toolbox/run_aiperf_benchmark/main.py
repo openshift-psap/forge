@@ -270,6 +270,8 @@ def run(
 def create_resources(args, ctx):
     """Create the results PVC and benchmark Job."""
     ctx.pvc_name = f"{args.name}-results"
+    for kind, name in (("job", args.name), ("pod", f"{args.name}-copy")):
+        oc("delete", kind, name, "-n", args.namespace, "--ignore-not-found=true", check=False)
     src = args.artifact_dir / "src"
     src.mkdir(parents=True, exist_ok=True)
     pvc = {
