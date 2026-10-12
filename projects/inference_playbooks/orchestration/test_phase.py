@@ -50,17 +50,18 @@ def test():
 
 
 def create_custom_test_metadata(recipe_id: str | None = None):
-    workload_key = config.project.get_config("inference_playbooks.workload") if recipe_id else None
-    if recipe_id and (not isinstance(workload_key, str) or not workload_key):
-        raise ValueError("inference_playbooks.workload must be a configured workload key")
+    workload_keys = None
+    if recipe_id:
+        workload_configs = _get_workload_configs()
+        workload_keys = [k for k, _ in workload_configs]
+    workload_label = ",".join(workload_keys) if workload_keys else None
     labels = {
         "project": "inference-playbooks",
-        "validation": f"recipe-{workload_key}" if recipe_id else "recipe-catalog-validation",
+        "validation": f"recipe-{workload_label}" if recipe_id else "recipe-catalog-validation",
     }
     if recipe_id:
         labels["recipe_id"] = recipe_id
-        labels["workload_key"] = workload_key
-        # The parent contains both warmup and measured artifacts; parse phase-level nodes only.
+        labels["workload_key"] = workload_label
         labels["skip"] = True
     test_dir = env.ARTIFACT_DIR
     create_test_metadata(test_dir, labels)
@@ -341,8 +342,7 @@ def _deploy_benchmark_finalize(
     capture,
     cleanup,
 ) -> None:
-    workload_key, workload = _get_workload_config()
-    kpi_labels = _benchmark_kpi_labels(recipe_id, recipe, workload_key)
+    workload_configs = _get_workload_configs()
     primary_exc = None
     finalizer_exc = None
     endpoint_url = None
@@ -350,15 +350,18 @@ def _deploy_benchmark_finalize(
         logger.info("Launching recipe %s as %s in namespace %s", recipe_id, run_name, namespace)
         endpoint_url = deploy()
         logger.info("Recipe %s reached Ready at %s", recipe_id, endpoint_url)
-        _run_workload(
-            endpoint_url,
-            namespace,
-            run_name,
-            recipe["model_name"],
-            workload_key,
-            workload,
-            kpi_labels,
-        )
+        for workload_key, workload in workload_configs:
+            kpi_labels = _benchmark_kpi_labels(recipe_id, recipe, workload_key, workload)
+            logger.info("Running workload %s (%s)", workload_key, workload.get("tool", "guidellm"))
+            _run_workload(
+                endpoint_url,
+                namespace,
+                run_name,
+                recipe["model_name"],
+                workload_key,
+                workload,
+                kpi_labels,
+            )
     except Exception:
         primary_exc = sys.exc_info()
     finally:
@@ -383,7 +386,9 @@ def _deploy_benchmark_finalize(
         raise finalizer_exc[1].with_traceback(finalizer_exc[2])
 
 
-def _benchmark_kpi_labels(recipe_id: str, recipe: dict, workload_key: str) -> dict[str, str]:
+def _benchmark_kpi_labels(
+    recipe_id: str, recipe: dict, workload_key: str, workload: dict | None = None
+) -> dict[str, str]:
     platform = recipe.get("platform")
     product_version = platform.get("version") if isinstance(platform, dict) else None
     if not product_version:
@@ -435,27 +440,69 @@ def _benchmark_kpi_labels(recipe_id: str, recipe: dict, workload_key: str) -> di
         "platform": KPI_PLATFORM,
         "test_harness": KPI_TEST_HARNESS,
         "benchmark_key": workload_key,
+        "benchmark_tool": workload.get("tool", "guidellm") if isinstance(workload, dict) else "guidellm",
     }
 
 
-def _get_workload_config() -> tuple[str, dict]:
-    workload_key = config.project.get_config("inference_playbooks.workload")
+def _get_workload_configs() -> list[tuple[str, dict]]:
+    """Resolve one or more workload keys into validated (key, config) pairs.
+
+    Accepts a single string (``"profile1"``), a comma-separated string
+    (``"profile1,aiperf-agentx-128k"``), or a YAML list.
+    """
+    raw = config.project.get_config("inference_playbooks.workload")
+    if isinstance(raw, str):
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
+    elif isinstance(raw, list):
+        keys = [str(k).strip() for k in raw if str(k).strip()]
+    else:
+        raise ValueError("inference_playbooks.workload must be a string or list")
+    if not keys:
+        raise ValueError("inference_playbooks.workload must specify at least one workload key")
+
     workloads = config.Config(RHAIIS_WORKLOADS).config
-    if not isinstance(workload_key, str) or workload_key not in workloads:
-        available = ", ".join(sorted(workloads))
-        raise ValueError(
-            f"Unknown inference playbooks workload {workload_key!r}; available: {available}"
-        )
-    workload = workloads[workload_key]
-    if not isinstance(workload, dict):
-        raise ValueError(f"Workload {workload_key!r} must be a mapping")
-    missing = {"data", "rates", "max_seconds"} - workload.keys()
-    if missing:
-        raise ValueError(f"Workload {workload_key!r} is missing required fields: {sorted(missing)}")
-    return workload_key, workload
+    results = []
+    for key in keys:
+        if key not in workloads:
+            available = ", ".join(sorted(workloads))
+            raise ValueError(f"Unknown workload {key!r}; available: {available}")
+        workload = workloads[key]
+        if not isinstance(workload, dict):
+            raise ValueError(f"Workload {key!r} must be a mapping")
+        tool = workload.get("tool", "guidellm")
+        if tool == "guidellm":
+            missing = {"data", "rates", "max_seconds"} - workload.keys()
+            if missing:
+                raise ValueError(
+                    f"GuideLLM workload {key!r} is missing required fields: {sorted(missing)}"
+                )
+        results.append((key, workload))
+    return results
 
 
 def _run_workload(
+    endpoint_url: str,
+    namespace: str,
+    run_name: str,
+    model_name: str,
+    workload_key: str,
+    workload: dict,
+    kpi_labels: dict[str, str],
+) -> None:
+    tool = workload.get("tool", "guidellm")
+    if tool == "guidellm":
+        _run_guidellm_workload(
+            endpoint_url, namespace, run_name, model_name, workload_key, workload, kpi_labels
+        )
+    elif tool == "aiperf":
+        _run_aiperf_workload(
+            endpoint_url, namespace, run_name, model_name, workload_key, workload, kpi_labels
+        )
+    else:
+        raise ValueError(f"Unsupported benchmark tool {tool!r} in workload {workload_key!r}")
+
+
+def _run_guidellm_workload(
     endpoint_url: str,
     namespace: str,
     run_name: str,
@@ -471,8 +518,6 @@ def _run_workload(
             **benchmark["args"],
             "data": workload["data"],
             "max_seconds": max_seconds,
-            # GuideLLM discovers the served model from /v1/models; processor
-            # selects the matching tokenizer for generated workload prompts.
             "processor": model_name,
         }
         if rampup is not None:
@@ -501,6 +546,64 @@ def _run_workload(
     if workload.get("warmup") is not None:
         run_phase("warmup", [1], workload["warmup"], None)
     run_phase("benchmark", workload["rates"], workload["max_seconds"], workload.get("rampup"))
+
+
+def _run_aiperf_workload(
+    endpoint_url: str,
+    namespace: str,
+    run_name: str,
+    model_name: str,
+    workload_key: str,
+    workload: dict,
+    kpi_labels: dict[str, str],
+) -> None:
+    from projects.aiperf.toolbox.run_aiperf_benchmark import main as run_aiperf_benchmark
+
+    aiperf_cfg = config.Config(RHAIIS_CONFIG).get_config("benchmarks.aiperf")
+    concurrency_values = workload.get("concurrency")
+    if isinstance(concurrency_values, list):
+        sweep = concurrency_values
+    elif concurrency_values is not None:
+        sweep = [concurrency_values]
+    else:
+        sweep = [None]
+
+    for concurrency in sweep:
+        label = f"concurrency-{concurrency}" if concurrency is not None else "default"
+        phase_name = f"benchmark_{workload_key}"
+        if len(sweep) > 1:
+            phase_name = f"{phase_name}_{label}"
+        with env.NextArtifactDir(phase_name):
+            create_test_metadata(
+                env.ARTIFACT_DIR,
+                {"phase": "benchmark", "benchmark_tool": "aiperf"},
+                kpi_labels={**kpi_labels, "benchmark_tool": "aiperf"},
+            )
+            job_name = _unique_name(f"aiperf-{workload_key}-{run_name}")
+            if len(sweep) > 1:
+                job_name = _unique_name(f"aiperf-c{concurrency}-{run_name}")
+
+            run_aiperf_benchmark.run(
+                endpoint_url=endpoint_url,
+                model_name=model_name,
+                namespace=namespace,
+                name=job_name,
+                image=aiperf_cfg["image"],
+                timeout=workload.get("timeout_seconds", aiperf_cfg["timeout"]),
+                pvc_size=aiperf_cfg["pvc_size"],
+                pvc_storage_class=aiperf_cfg.get("pvc_storage_class"),
+                tokenizer=workload.get("tokenizer", model_name),
+                endpoint_type=workload.get("endpoint_type", "chat"),
+                endpoint_path=workload.get("endpoint_path", "/v1/chat/completions"),
+                streaming=workload.get("streaming", True),
+                concurrency=concurrency,
+                request_rate=workload.get("request_rate"),
+                request_count=workload.get("request_count"),
+                input_tokens=workload.get("input_tokens"),
+                output_tokens=workload.get("output_tokens"),
+                ssl_verify=workload.get("ssl_verify", True),
+                aiperf_args=workload.get("aiperf_args"),
+            )
 
 
 def _delete_resources(namespace: str, resources: list[tuple[str, str]]) -> None:

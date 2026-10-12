@@ -518,6 +518,7 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
         "platform": "OCP",
         "test_harness": "forge-inference-playbooks",
         "benchmark_key": "profile1",
+        "benchmark_tool": "guidellm",
     }
     monkeypatch.setattr(
         test_phase,
@@ -530,7 +531,8 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
         lambda **kwargs: calls.append(kwargs),
     )
 
-    workload_key, workload = test_phase._get_workload_config()
+    workload_configs = test_phase._get_workload_configs()
+    workload_key, workload = workload_configs[0]
     test_phase._run_workload(
         "http://model:8000",
         "namespace",
