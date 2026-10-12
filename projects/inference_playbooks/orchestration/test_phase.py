@@ -440,7 +440,9 @@ def _benchmark_kpi_labels(
         "platform": KPI_PLATFORM,
         "test_harness": KPI_TEST_HARNESS,
         "benchmark_key": workload_key,
-        "benchmark_tool": workload.get("tool", "guidellm") if isinstance(workload, dict) else "guidellm",
+        "benchmark_tool": workload.get("tool", "guidellm")
+        if isinstance(workload, dict)
+        else "guidellm",
     }
 
 
