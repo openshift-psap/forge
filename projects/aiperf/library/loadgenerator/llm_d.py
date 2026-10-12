@@ -49,4 +49,5 @@ class AIPerfGenerator(LlmDLoadGenerator):
                 fixed_schedule_auto_offset=benchmark.get("fixed_schedule_auto_offset", False),
                 image_pull_secret=benchmark.get("image_pull_secret"),
                 ssl_verify=benchmark.get("ssl_verify", True),
+                aiperf_args=benchmark.get("aiperf_args"),
             )

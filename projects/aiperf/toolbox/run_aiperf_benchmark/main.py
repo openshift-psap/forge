@@ -33,8 +33,16 @@ def build_profile_command(
     dataset_type: str | None,
     fixed_schedule: bool,
     fixed_schedule_auto_offset: bool,
+    extra_args: list[str] | None = None,
 ) -> list[str]:
-    """Build argv without a shell or credential-bearing command text."""
+    """Build argv without a shell or credential-bearing command text.
+
+    Args:
+        extra_args: Additional aiperf CLI flags appended after the structured
+            parameters.  Use for scenario-specific options such as
+            ``--scenario``, ``--public-dataset``, ``--benchmark-duration``,
+            or any other flag not exposed as a named parameter.
+    """
     if not endpoint_url or not model_name:
         raise ValueError("endpoint_url and model_name are required")
     parsed_url = urlsplit(endpoint_url)
@@ -46,7 +54,8 @@ def build_profile_command(
         raise ValueError("endpoint_path must start with /")
     if concurrency is not None and request_rate is not None:
         raise ValueError("Choose concurrency or request_rate, not both")
-    if concurrency is None and request_rate is None and not fixed_schedule:
+    has_extra = bool(extra_args)
+    if concurrency is None and request_rate is None and not fixed_schedule and not has_extra:
         raise ValueError("Set concurrency, request_rate, or fixed_schedule")
     for name, value in (
         ("concurrency", concurrency),
@@ -103,6 +112,8 @@ def build_profile_command(
         command.append("--fixed-schedule")
     if fixed_schedule_auto_offset:
         command.append("--fixed-schedule-auto-offset")
+    if extra_args:
+        command.extend(extra_args)
     return command
 
 
@@ -204,8 +215,16 @@ def run(
     fixed_schedule_auto_offset: bool = False,
     image_pull_secret: str | None = None,
     ssl_verify: bool = True,
+    aiperf_args: list[str] | None = None,
 ) -> int:
-    """Run AI Perf and collect summary metrics from a results PVC."""
+    """Run AI Perf and collect summary metrics from a results PVC.
+
+    Args:
+        aiperf_args: Additional CLI flags passed through to ``aiperf profile``
+            after the structured parameters.  Use for scenario-specific options
+            (e.g. ``["--scenario", "inferencex-agentx-mvp", "--public-dataset",
+            "semianalysis_cc_traces_weka_062126", "--benchmark-duration", "1800"]``).
+    """
     if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", name) or len(name) > 55:
         raise ValueError("name must be a Kubernetes-safe name of at most 55 characters")
     if timeout <= 0 or not namespace or not image:
@@ -222,8 +241,9 @@ def run(
             raise ValueError("dataset_type and SHA-256 digest are required for dataset_url")
     elif dataset_type or dataset_sha256:
         raise ValueError("dataset_type and dataset_sha256 require dataset_url")
-    if not dataset_url and request_count is None:
-        raise ValueError("request_count is required for a synthetic benchmark")
+    has_extra = bool(aiperf_args)
+    if not dataset_url and request_count is None and not has_extra:
+        raise ValueError("request_count is required for a synthetic benchmark without extra args")
     build_profile_command(
         endpoint_url=endpoint_url,
         model_name=model_name,
@@ -239,6 +259,7 @@ def run(
         dataset_type=dataset_type,
         fixed_schedule=fixed_schedule,
         fixed_schedule_auto_offset=fixed_schedule_auto_offset,
+        extra_args=aiperf_args,
     )
     wait_for_completion._retry_config["attempts"] = max(1, timeout // POLL_SECONDS + 1)
     execute_tasks(locals())
@@ -285,6 +306,7 @@ def create_resources(args, ctx):
         dataset_type=args.dataset_type,
         fixed_schedule=args.fixed_schedule,
         fixed_schedule_auto_offset=args.fixed_schedule_auto_offset,
+        extra_args=args.aiperf_args,
     )
     job = build_job_manifest(
         name=args.name,
