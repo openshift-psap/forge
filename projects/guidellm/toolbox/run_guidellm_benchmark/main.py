@@ -12,7 +12,14 @@ from pathlib import Path
 
 import yaml
 
-from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
+from projects.core.dsl import (  # noqa: F401
+    always,
+    entrypoint,
+    execute_tasks,
+    on_failure,
+    retry,
+    task,
+)
 from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
     oc,
@@ -262,7 +269,37 @@ def create_guidellm_resources_task(args, ctx):
         )
 
 
+def _handle_benchmark_wait_failure(args, ctx, exception):
+    """Generate AGENT.md file for post-mortem analysis of benchmark failure."""
+    benchmark_name = getattr(ctx, "benchmark_name", args.name)
+    namespace = getattr(ctx, "target_namespace", args.namespace)
+
+    agent_md_path = args.artifact_dir / "AGENT.md"
+    with open(agent_md_path, "w", encoding="utf-8") as f:
+        f.write(f"""# Post-Mortem: GuideLLM Benchmark Failure
+
+## Failure Details
+- **Benchmark**: {benchmark_name}
+- **Namespace**: {namespace}
+- **Failed Task**: wait_guidellm_benchmark_task
+- **Exception**: {exception.__class__.__name__}: {exception}
+
+## Available Files for Analysis
+- **Pod logs**: `artifacts/guidellm_benchmark_job.log`
+- **Pod YAML**: `artifacts/guidellm_benchmark_job.pods.yaml`
+- **Job YAML**: `artifacts/guidellm_benchmark_job.yaml`
+- **Pod description**: `artifacts/guidellm_benchmark_pod_description.txt`
+
+## Analysis Instructions
+1. **Review pod logs** in `guidellm_benchmark_job.log` for GuideLLM errors or crashes
+2. **Check pod status** in `guidellm_benchmark_job.pods.yaml` for OOM kills, image pull errors, or scheduling failures
+3. **Examine job YAML** for timeout or backoff limit issues
+4. **Check pod description** for K8s events (resource limits, node affinity, etc.)
+""")
+
+
 # An upper safety bound only; ctx.wait_deadline enforces the per-run timeout.
+@on_failure(_handle_benchmark_wait_failure)
 @retry(attempts=1080, delay=WAIT_POLL_INTERVAL_SECONDS, backoff=1.0)
 @task
 def wait_guidellm_benchmark_task(args, ctx):
