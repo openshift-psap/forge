@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import pathlib
 import signal
@@ -226,6 +227,43 @@ def build_guidellm_args(
     if rampup is not None:
         guidellm_args.append(f"--rampup={rampup}")
     return guidellm_args
+
+
+def build_configiq_knee_args(*, endpoint_url: str, model_id: str, workload: dict) -> list[str]:
+    """Build native GuideLLM v0.8.1 arguments for one ConfigIQ knee run."""
+    adaptive = workload["adaptive_pass"]
+    profile = {
+        "kind": "knee",
+        "initial_streams": workload["rates"],
+        "adaptive": adaptive["enabled"],
+        "points_each_side": adaptive["points_each_side"],
+        "max_step": adaptive["max_step"],
+    }
+    if rampup := workload.get("rampup"):
+        profile["rampup_duration"] = rampup
+
+    data = workload["data"]
+    if not data.startswith("kind="):
+        data = f"kind=synthetic_text,{data}"
+
+    args = [
+        f"--backend=kind=openai_http,target={endpoint_url},model={model_id}",
+        f"--profile={json.dumps(profile, separators=(',', ':'))}",
+        f"--data={data}",
+        f"--constraint=kind=max_duration,seconds={workload['max_seconds']}",
+        "--output=kind=json,path=/results/benchmarks-default.json",
+    ]
+
+    monitor = workload.get("saturation_monitor")
+    if monitor and monitor["enabled"]:
+        constraint = {
+            "kind": "over_saturation",
+            "mode": "monitor",
+            **{key: value for key, value in monitor.items() if key != "enabled"},
+        }
+        args.append(f"--constraint={json.dumps(constraint, separators=(',', ':'))}")
+
+    return args
 
 
 def split_image_tag(full_image: str) -> tuple[str, str]:

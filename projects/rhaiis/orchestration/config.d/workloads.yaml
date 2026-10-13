@@ -54,6 +54,25 @@ profile7:
   rampup: 35
   warmup: 75
 
+configiq:
+  data: "prompt_tokens=1000,output_tokens=1000"
+  rates: [1, 2, 5, 10, 25, 50, 75, 100, 200, 300]
+  max_seconds: 450
+  guidellm_image: ghcr.io/vllm-project/guidellm:v0.8.1
+  saturation_monitor:
+    enabled: true
+    min_seconds: 60
+    max_window_seconds: 120
+    moe_threshold: 2.0
+    minimum_ttft: 0.0
+    maximum_window_ratio: 0.75
+    minimum_window_size: 5
+    confidence: 0.95
+  adaptive_pass:
+    enabled: true
+    points_each_side: 5
+    max_step: 5
+
 # Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
 custom:
   data: "prompt_tokens=1000,output_tokens=1000"

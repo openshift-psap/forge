@@ -385,6 +385,7 @@ def render_guidellm_job_from_parts(
     hf_token_secret: str = "",
     fs_group: int | None = None,
     config_path: Path | None = None,
+    guidellm_run_args: list[str] | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest from individual components.
 
@@ -402,6 +403,7 @@ def render_guidellm_job_from_parts(
         config_path: Path to a GuideLLM config YAML file on the local filesystem.
             When set, the file is read and embedded in the container via heredoc,
             and GuideLLM is invoked with ``--config`` pointing to it.
+        guidellm_run_args: Native ``guidellm run`` arguments, used as supplied.
 
     Returns:
         Job manifest as dict
@@ -421,6 +423,11 @@ def render_guidellm_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
     container = manifest["spec"]["template"]["spec"]["containers"][0]
+
+    if guidellm_run_args is not None:
+        container["command"] = ["/opt/app-root/bin/guidellm"]
+        container["args"] = ["run", *guidellm_run_args]
+        return manifest
 
     # Config file mode requires a shell script to write the file first.
     # Plain single runs can invoke guidellm directly.
@@ -450,6 +457,7 @@ def render_guidellm_shared_volume_job_from_parts(
     hf_token_secret: str = "",
     fs_group: int | None = None,
     config_path: Path | None = None,
+    guidellm_run_args: list[str] | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest with shared volume (main + sidecar containers).
 
@@ -465,6 +473,7 @@ def render_guidellm_shared_volume_job_from_parts(
             the shared volume is writable by both containers.
         config_path: Path to a GuideLLM config YAML file on the local filesystem.
             When set, the file is read and embedded in the container via heredoc.
+        guidellm_run_args: Native ``guidellm run`` arguments, used as supplied.
 
     Returns:
         Job manifest as dict with main and sidecar containers
@@ -483,6 +492,13 @@ def render_guidellm_shared_volume_job_from_parts(
     )
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
+
+    if guidellm_run_args is not None:
+        command = ["/opt/app-root/bin/guidellm", "run", *guidellm_run_args]
+        main_script = "\n".join(["set -euo pipefail", "mkdir -p /results", shlex.join(command)])
+        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
+        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
+        return manifest
 
     # Config file mode always uses a shell script to write the file first.
     if not config_content and len(runs) == 1 and runs[0].rate is None:

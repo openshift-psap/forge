@@ -1,12 +1,45 @@
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
     expand_guidellm_runs,
     render_guidellm_job_from_parts,
+    render_guidellm_shared_volume_job_from_parts,
 )
+
+
+def test_native_knee_args_reach_the_job_without_legacy_conversion() -> None:
+    native_args = [
+        "--backend=kind=openai_http,target=https://example.test/v1,model=example/model",
+        '--profile={"kind":"knee","initial_streams":[1,5,10,20,40],"adaptive":true}',
+        "--output=kind=json,path=/results/benchmarks-default.json",
+    ]
+    kwargs = {
+        "namespace": "test",
+        "name": "configiq",
+        "image": "ghcr.io/vllm-project/guidellm:v0.8.1",
+        "endpoint_url": "https://example.test/v1",
+        "timeout_seconds": 14400,
+        "guidellm_args": [],
+        "guidellm_run_args": native_args,
+    }
+
+    pvc = render_guidellm_job_from_parts(**kwargs)
+    shared = render_guidellm_shared_volume_job_from_parts(**kwargs)
+    pvc_container = pvc["spec"]["template"]["spec"]["containers"][0]
+    shared_container = shared["spec"]["template"]["spec"]["containers"][0]
+
+    assert pvc_container["args"] == ["run", *native_args]
+    assert shlex.split(shared_container["args"][0].splitlines()[-1]) == [
+        "/opt/app-root/bin/guidellm",
+        "run",
+        *native_args,
+    ]
+    assert "--rate" not in shared_container["args"][0]
 
 
 def test_expand_guidellm_runs_converts_rates_to_individual_runs() -> None:

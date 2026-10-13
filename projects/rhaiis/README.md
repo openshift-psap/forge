@@ -521,6 +521,25 @@ GuideLLM ramp-up and a 75-second warmup pass before each selected workload.
 | `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
 | `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
 | `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 275 | 35 | 75 |
+| `configiq` | 1000 | 1000 | 1, 2, 5, 10, 25, 50, 75, 100, 200, 300 | 450 | — | 60 |
+
+The `configiq` workload uses GuideLLM v0.8.1's `knee` profile. Its `rates` are the
+initial concurrency points. `adaptive_pass.enabled` is true by default, so
+GuideLLM analyzes those points and runs up to five additional points on each
+side of the knee, with a maximum step of five. Change
+`workloads.configiq.adaptive_pass.points_each_side` or `max_step` to adjust the
+grid, or set `enabled: false` to report the knee without extra points. The
+over-saturation constraint runs in monitor mode and supplies independent
+saturation evidence without stopping the initial sweep. The one-time deployment
+warmup follows the normal workload setting.
+
+FORGE launches one GuideLLM job for this workload. GuideLLM stores both phases
+in its `benchmarks` list and the initial analysis, adaptive plan, and final
+analysis in the `knee_detection` entry of `conclusions`. The normal benchmark
+artifact is `artifacts/results/benchmarks-default.json` under the ConfigIQ test
+node, where Caliper parses all measured concurrency points. The ConfigIQ image
+is set with `workloads.configiq.guidellm_image`; other workloads continue to use
+`benchmarks.guidellm.image`.
 
 ## Presets
 
@@ -535,7 +554,7 @@ python3 -m projects.rhaiis.orchestration.cli test \
 # Available model presets: llama-8b, llama-70b, llama-405b, llama-4-scout,
 #   llama-4-maverick, granite-8b, mistral-24b, qwen25-7b, qwen3-235b,
 #   deepseek-r1, deepseek-v3, gpt-oss
-# Workload presets: profile1, profile2, profile3, profile4
+# Workload presets: profile1, profile2, profile3, profile4, configiq
 # Accelerator presets: nvidia, amd
 ```
 

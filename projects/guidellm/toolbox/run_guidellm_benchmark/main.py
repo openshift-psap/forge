@@ -27,6 +27,7 @@ from projects.core.dsl.utils.k8s import (
     oc_get_json,
 )
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
+    GuideLLMRun,
     expand_guidellm_runs,
     render_guidellm_copy_pod_from_parts,
     render_guidellm_job_from_parts,
@@ -83,6 +84,7 @@ def run(
     pvc_size: str = "1Gi",
     pvc_storage_class: str | None = None,
     guidellm_args: list[str] | None = None,
+    guidellm_run_args: list[str] | None = None,
     config_path: Path | None = None,
     hf_token_secret: str = "",
     fs_group: int | None = None,
@@ -100,6 +102,8 @@ def run(
         timeout: Active deadline for the Job and timeout in seconds to wait for completion
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
         guidellm_args: List of additional guidellm arguments (e.g., ["--profile=kind=concurrent,streams=10"])
+        guidellm_run_args: Native ``guidellm run`` arguments for profiles that
+            need GuideLLM's own scheduling, such as ``kind=knee``.
         config_path: Path to a GuideLLM config YAML file on the local filesystem.
             When set, the file is read and embedded in the container, and GuideLLM
             is invoked with ``--config`` pointing to it.
@@ -120,9 +124,18 @@ def run(
 def validate_parameters(args, ctx):
     """Validate and normalize parameters"""
 
+    if args.guidellm_run_args is not None and (args.guidellm_args or args.config_path):
+        raise ValueError("guidellm_run_args cannot be combined with guidellm_args or config_path")
+    if args.guidellm_run_args is not None and not args.guidellm_run_args:
+        raise ValueError("guidellm_run_args must not be empty")
+
     # Ensure guidellm_args is a list
     ctx.guidellm_args = args.guidellm_args or []
-    ctx.guidellm_runs = expand_guidellm_runs(ctx.guidellm_args)
+    ctx.guidellm_runs = (
+        [GuideLLMRun(rate=None, label="default", args=args.guidellm_run_args)]
+        if args.guidellm_run_args is not None
+        else expand_guidellm_runs(ctx.guidellm_args)
+    )
 
     # Auto-detect namespace if empty
     if not args.namespace:
@@ -217,6 +230,7 @@ def create_guidellm_resources_task(args, ctx):
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
+                guidellm_run_args=args.guidellm_run_args,
             ),
         )
 
@@ -261,6 +275,7 @@ def create_guidellm_resources_task(args, ctx):
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
+                guidellm_run_args=args.guidellm_run_args,
             ),
         )
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS

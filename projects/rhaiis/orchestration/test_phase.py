@@ -361,6 +361,13 @@ def _run_test(
             first_workload = runtime_config.get_workload(workload_keys[0])
             first_rates = first_workload.get("rates", [1])
             first_max_seconds = first_workload.get("max_seconds", 180)
+            metadata_benchmark_cfg = {
+                **benchmark_cfg,
+                "image": first_workload.get(
+                    "guidellm_image",
+                    benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4"),
+                ),
+            }
             _set_mlflow_metadata(
                 model_key,
                 ",".join(workload_keys),
@@ -368,7 +375,7 @@ def _run_test(
                 accelerator,
                 serving_image,
                 engine_args,
-                benchmark_cfg,
+                metadata_benchmark_cfg,
                 first_rates,
                 first_max_seconds,
                 namespace,
@@ -470,16 +477,26 @@ def _run_workload_benchmark(
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
-            benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
-
-            guidellm_args = runtime_config.build_guidellm_args(
-                benchmark_cfg=benchmark_cfg,
-                model_id=model_cfg["hf_model_id"],
-                data=workload["data"],
-                rates=rates,
-                max_seconds=max_seconds,
-                rampup=rampup,
+            benchmark_image = workload.get(
+                "guidellm_image", benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
             )
+            if workload_key == "configiq":
+                guidellm_args = None
+                guidellm_run_args = runtime_config.build_configiq_knee_args(
+                    endpoint_url=f"{endpoint_url}/v1",
+                    model_id=model_cfg["hf_model_id"],
+                    workload=workload,
+                )
+            else:
+                guidellm_args = runtime_config.build_guidellm_args(
+                    benchmark_cfg=benchmark_cfg,
+                    model_id=model_cfg["hf_model_id"],
+                    data=workload["data"],
+                    rates=rates,
+                    max_seconds=max_seconds,
+                    rampup=rampup,
+                )
+                guidellm_run_args = None
 
             run_guidellm_benchmark(
                 endpoint_url=f"{endpoint_url}/v1",
@@ -489,6 +506,7 @@ def _run_workload_benchmark(
                 timeout=benchmark_timeout,
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,
+                guidellm_run_args=guidellm_run_args,
                 hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
                 fs_group=benchmark_cfg.get("fs_group"),
             )
