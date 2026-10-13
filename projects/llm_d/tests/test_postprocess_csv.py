@@ -5,7 +5,7 @@ import json
 
 import yaml
 
-from projects.caliper.engine.model import TestBaseNode as CaliperTestBaseNode
+from projects.caliper.engine.model import BaseTestNode as CaliperBaseTestNode
 from projects.caliper.engine.model import UnifiedRunModel
 from projects.llm_d.postprocess.llm_d.csv_dashboard import DASHBOARD_FIELDNAMES
 from projects.llm_d.postprocess.llm_d.plugin import LlmDGuideLLMPlugin
@@ -96,7 +96,7 @@ def test_llmd_plugin_exports_dashboard_compatible_csv(tmp_path):
         ),
         encoding="utf-8",
     )
-    node = CaliperTestBaseNode(
+    node = CaliperBaseTestNode(
         directory=tmp_path,
         test_path=tmp_path,
         artifact_paths=[benchmark_path, llmisvc_path],
@@ -188,7 +188,7 @@ def test_llmd_plugin_recovers_deployment_metadata_from_config(tmp_path):
         ),
         encoding="utf-8",
     )
-    node = CaliperTestBaseNode(
+    node = CaliperBaseTestNode(
         directory=tmp_path,
         test_path=tmp_path,
         artifact_paths=[config_path],
@@ -237,7 +237,7 @@ def test_llmd_plugin_infers_accelerator_from_serving_pod_node(tmp_path):
         ),
         encoding="utf-8",
     )
-    node = CaliperTestBaseNode(
+    node = CaliperBaseTestNode(
         directory=tmp_path,
         test_path=tmp_path,
         artifact_paths=[config_path, pods_path],

@@ -166,14 +166,50 @@ kubeconfig_path = vault.content["kubeconfig"].file_path
 
 ## Environment Setup
 
-### Required Environment Variables
+### Auto-Discovery with `FORGE_VAULT_DIRECTORY`
 
-Each vault requires its corresponding environment variable to be set:
+Instead of setting individual environment variables for each vault, you
+can point `FORGE_VAULT_DIRECTORY` to a single directory containing all
+your vault subdirectories:
+
+```bash
+export FORGE_VAULT_DIRECTORY="/path/to/creds"
+```
+
+The directory should contain subdirectories named after vault
+definitions (matching the YAML filenames in `$FORGE_HOME/vaults/`):
+
+```
+/path/to/creds/
+├── psap-forge-ci/
+│   ├── kubeconfig
+│   └── server_url
+├── psap-forge-hf/
+│   └── hf_token
+├── psap-forge-mlflow-export/
+│   └── mlflow-secret.yaml
+└── ...
+```
+
+On `vault.init()`, the vault module scans this directory and
+automatically sets the corresponding environment variables (e.g.,
+`PSAP_FORGE_FOURNOS_CI_SECRET_PATH=/path/to/creds/psap-forge-ci`).
+Subdirectories that don't match any vault definition are silently
+skipped. Environment variables that are already set are not overridden.
+
+This mechanism is only active outside of Fournos CI (where
+`FOURNOS_SECRETS` handles vault setup instead).
+
+### Individual Environment Variables
+
+Alternatively, each vault can be configured with its own environment variable:
 
 ```bash
 export PSAP_FORGE_FOURNOS_CI_SECRET_PATH="/path/to/ci/secrets"
 export PSAP_FORGE_NOTIFICATIONS_SECRET_PATH="/path/to/notification/secrets"
 ```
+
+These take precedence over `FORGE_VAULT_DIRECTORY` auto-discovery.
 
 ### Directory Structure
 
@@ -212,6 +248,14 @@ content:
 
 ### 2. Set Environment Variable
 
+If using `FORGE_VAULT_DIRECTORY`, create the vault subdirectory under it:
+
+```bash
+mkdir -p $FORGE_VAULT_DIRECTORY/my-new-vault
+```
+
+Otherwise, set the individual environment variable:
+
 ```bash
 export MY_VAULT_SECRET_PATH="/path/to/my/secrets"
 ```
@@ -219,9 +263,9 @@ export MY_VAULT_SECRET_PATH="/path/to/my/secrets"
 ### 3. Create Secret Files
 
 ```bash
-mkdir -p /path/to/my/secrets
-echo "secret-key-value" > /path/to/my/secrets/api_key
-cp service-credentials.json /path/to/my/secrets/credentials.json
+# Use $FORGE_VAULT_DIRECTORY/my-new-vault or $MY_VAULT_SECRET_PATH
+echo "secret-key-value" > $FORGE_VAULT_DIRECTORY/my-new-vault/api_key
+cp service-credentials.json $FORGE_VAULT_DIRECTORY/my-new-vault/credentials.json
 ```
 
 ### 4. Add to Project Requirements

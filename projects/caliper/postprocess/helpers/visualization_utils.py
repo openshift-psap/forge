@@ -74,7 +74,7 @@ def save_figure(
             output_file = output_dir / f"{final_filename}.png"
             try:
                 fig.write_image(output_file, width=width, height=height)
-                logger.info(f"{final_filename} PNG saved successfully")
+                logger.debug(f"{final_filename} PNG saved successfully")
                 return str(output_file)
             except Exception as png_error:
                 # PNG generation failed - check if it's a Kaleido/Chrome issue
@@ -90,7 +90,7 @@ def save_figure(
                     logger.error(f"PNG generation failed for {final_filename}: {png_error}")
                 return None
         else:
-            logger.info(f"Saving {final_filename} as full-page interactive HTML...")
+            logger.debug(f"Saving {final_filename} as full-page interactive HTML...")
             output_file = output_dir / f"{final_filename}.html"
 
             # Configure figure for full-screen responsive behavior
@@ -99,8 +99,11 @@ def save_figure(
                 width=None,  # Remove any fixed width
                 height=None,  # Remove any fixed height
             )
-            fig.write_html(output_file)
-            logger.info(f"{final_filename} HTML saved successfully")
+
+            # Use CDN for both standalone files and reports - simple and works
+            fig.write_html(output_file, include_plotlyjs="cdn")
+            logger.debug(f"{final_filename} HTML saved successfully (CDN optimized)")
+
             return str(output_file)
 
     except Exception as e:

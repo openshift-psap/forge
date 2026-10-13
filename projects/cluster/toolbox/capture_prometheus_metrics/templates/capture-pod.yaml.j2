@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ ctx.pod_name }}
+  namespace: {{ ctx.prom_namespace }}
+spec:
+  serviceAccountName: {{ ctx.prom_service_account }}
+  automountServiceAccountToken: true
+  terminationGracePeriodSeconds: 1
+  restartPolicy: Never
+  volumes:
+    - name: config
+      configMap:
+        name: {{ ctx.configmap_name }}
+    - name: results
+      emptyDir: {}
+  containers:
+    - name: kube-burner
+      image: {{ ctx.kube_burner_image }}
+      workingDir: {{ results_dir }}
+      command:
+        - kube-burner
+        - index
+        - --skip-log-file
+        - -e
+        - {{ configmap_mount }}/config.yaml
+        - --start
+        - "{{ ctx.start_epoch }}"
+        - --end
+        - "{{ ctx.end_epoch }}"
+{%- if ctx.variables %}
+      env:
+{%- for key, value in ctx.variables.items() %}
+        - name: {{ key }}
+          value: "{{ value }}"
+{%- endfor %}
+{%- endif %}
+      volumeMounts:
+        - name: config
+          mountPath: {{ configmap_mount }}
+        - name: results
+          mountPath: {{ results_dir }}
+    - name: sidecar
+      image: {{ sidecar_image }}
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: results
+          mountPath: {{ results_dir }}

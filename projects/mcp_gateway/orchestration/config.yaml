@@ -134,3 +134,6 @@ caliper:
             single_run: "{prefix}-s{num_servers}-u{users}-v{mcp_gateway_version}-{timestamp}"
             parent_run: "{prefix}-{preset}-{mcp_gateway_version}-{timestamp}"
             child_run: "{prefix}-s{num_servers}-u{users}-v{mcp_gateway_version}-{timestamp}"
+    notifications:
+      enabled: true
+      vault: psap-forge-notifications

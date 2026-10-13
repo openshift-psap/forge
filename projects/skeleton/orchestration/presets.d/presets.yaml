@@ -17,5 +17,11 @@ medium_test:
 long_test:
   skeleton.test.duration_seconds: 300  # Long 5 minute test
 
+long_12h:
+  skeleton.test.duration_seconds: 43200  # 12 hour run
+
 agent:
   agentic.enabled: true
+
+fail:
+  skeleton.test.fail: true

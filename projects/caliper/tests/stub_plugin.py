@@ -8,16 +8,16 @@ from pathlib import Path
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.kpi.dataclasses import KpiCatalogEntry
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
-    TestBaseNode,
     UnifiedResultRecord,
     UnifiedRunModel,
 )
 
 
 class StubPlugin(PostProcessingPlugin):
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         records: list[UnifiedResultRecord] = []
         warnings: list[str] = []
         for node in nodes:

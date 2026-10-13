@@ -12,14 +12,12 @@ deployment-distributed-default:
 smoke-base:
   runtime.model_name: Qwen/Qwen3-0.6B
   runtime.smoke_request_key: default
-  runtime.benchmark_key: null
+  runtime.benchmark_key: short
 
 smoke:
   extends:
     - smoke-base
     - deployment-approximate-prefix-cache
-  runtime.benchmark_key: short
-  platform.gateway.status_address_name: gateway-internal
 
 smoke-precise:
   extends:

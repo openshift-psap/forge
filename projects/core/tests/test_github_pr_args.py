@@ -47,3 +47,29 @@ def test_parse_directives_preserves_var_types_through_yaml_roundtrip() -> None:
 def test_handle_var_directive_rejects_non_mapping_yaml() -> None:
     with pytest.raises(Exception, match="expected 'key: value'"):
         pr_args.handle_var_directive("/var false")
+
+
+def test_parse_pr_arguments_sets_owner_from_selected_test_comment(tmp_path, monkeypatch) -> None:
+    pull_request = {
+        "comments": 2,
+        "user": {"login": "pr-author"},
+        "body": "",
+    }
+    comments = [
+        {"user": {"login": "pr-author"}, "body": "/test fournos llm_d older"},
+        {"user": {"login": "reviewer"}, "body": "/test fournos llm_d current"},
+    ]
+    responses = iter([pull_request, comments])
+    monkeypatch.setattr(pr_args, "fetch_url", lambda _url: next(responses))
+    monkeypatch.setattr(
+        pr_args,
+        "load_owners_file",
+        lambda: {"approvers": [], "reviewers": ["reviewer"], "testers": []},
+    )
+
+    config, _directives = pr_args.parse_pr_arguments(
+        "openshift-psap", "forge", 123, test_name="fournos", artifact_path=tmp_path
+    )
+
+    assert config["ci_job.args"] == ["current"]
+    assert config["fournos.job.owner"] == "reviewer"

@@ -16,6 +16,7 @@ cpt:
   caliper.postprocess.s3.instance: forge-cpt
   caliper.postprocess.s3.directory: llm-d/default
   caliper.postprocess.s3.export.enabled: true
+  cpt.kpi.labels.product_version: null # must be overridden when testing for CPT
 
 cpt-xks:
   extends:

@@ -27,7 +27,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              set -euo pipefail
+              set -euxo pipefail
               mkdir -p /results
               touch /results/benchmarks.json
               rm -f /results/benchmarks.json

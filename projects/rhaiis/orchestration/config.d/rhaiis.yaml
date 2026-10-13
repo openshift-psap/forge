@@ -13,7 +13,7 @@ engines:
   vllm:
     images:
       nvidia: vllm/vllm-openai:v0.24.0
-      amd: quay.io/aipcc/rhaiis/rocm-ubi9:3.2.5
+      amd: vllm/vllm-openai-rocm:v0.26.0
     port: 8080
     args:
       gpu-memory-utilization: 0.92
@@ -60,6 +60,7 @@ deploy:
   storage_pvc: model-pvc
   image_pull_secrets: []
   service_account_name: ""
+  supplemental_groups: []
   ready_timeout: 3600
   health_check_timeout: 120
 
@@ -79,8 +80,13 @@ warmup:
   rate: 200
   max_seconds: 60
 
+optional_phase:
+  excluded_workloads:
+    - profile5
+
 profiler:
   enabled: false
+  ranges: "500-503"
   s3_bucket: psap-dashboard-data
   s3_prefix: pytorch-profiles/rhaiis
   vault: psap-forge-dashboard-s3
@@ -91,4 +97,4 @@ profiler:
 agent_analysis:
   enabled: false
   severity_threshold: 10
-  url: ""
+  model: gemini-3.8-flash

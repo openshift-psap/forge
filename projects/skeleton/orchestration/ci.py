@@ -9,7 +9,9 @@ building your own projects.
 
 import logging
 import pathlib
+import signal
 import types
+from datetime import datetime
 
 import click
 import prepare_skeleton
@@ -34,7 +36,29 @@ logger = logging.getLogger(__name__)
 def init():
     env.init()
     run.init()
+    run.register_signal_callback(_signal_callback)
     config.init(pathlib.Path(__file__).parent)
+
+
+def _signal_callback(sig, frame, log_file):
+    env.reset_artifact_dir()
+
+    sig_name = signal.Signals(sig).name
+    logger.info(f"Signal callback: received {sig_name}")
+    if not log_file:
+        return
+
+    module_name = (
+        pathlib.Path(__file__)
+        .relative_to(env.FORGE_HOME)
+        .with_suffix("")
+        .as_posix()
+        .replace("/", ".")
+    )
+    with log_file.open("a") as f:
+        f.write(
+            f"{datetime.now()}: {module_name}.{_signal_callback.__qualname__} {sig_name} handler\n"
+        )
 
 
 @click.group(cls=ci_lib.HelpfulGroup)
@@ -97,7 +121,7 @@ def post_cleanup(ctx):
 def preflight(ctx) -> int:
     """Preflight check phase - Validate that the cluster if ready for testing."""
 
-    logger.warning("Nothing so far for the preflight check")
+    logger.info("Nothing so far for the preflight check")
 
     return 0
 

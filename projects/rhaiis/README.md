@@ -69,9 +69,11 @@ Key sections:
 | `rhaiis.engines.trtllm.trtllm_config` | TRT-LLM server config (KV cache, CUDA graphs, MoE) |
 | `rhaiis.deploy` | Deploy settings (replicas, CPU/memory, image_pull_secrets list, storage) |
 | `rhaiis.s3` | S3 bucket, vault, and credentials for dashboard CSV and profiler trace uploads |
+| `rhaiis.agent_analysis` | Optional regression analysis using the PSAP agent, including its selected model |
+| `rhaiis.warmup` | Warmup benchmark settings applied before each selected workload |
 | `rhaiis.profiler` | PyTorch profiler settings (enable, S3 prefix, rates, labels) |
 | `models` | Model definitions (hf_model_id, per-model `vllm_args` overrides) |
-| `workloads` | Benchmark profiles (data shape, rates, max_seconds) |
+| `workloads` | Benchmark profiles (data shape, rates, max_seconds, rampup, warmup) |
 | `benchmarks.guidellm` | GuideLLM image, backend, timeout, PVC size, HF token secret, fs_group |
 | `tests` | CI test mapping (model_key, workload_keys, version) |
 | `caliper.postprocess` | Caliper postprocessing pipeline (parse, KPI, CSV export) |
@@ -116,6 +118,11 @@ bin/run_ci rhaiis ci export-artifacts         # Caliper export to MLflow
 ```
 
 ### FournosJob YAML (vLLM)
+
+When `rhaiis.agent_analysis.enabled` is true, the Fournos config resolver adds the
+`psap-forge-rhaiis-agent-analysis` secret reference automatically. Its
+`agent-url` content is mounted from the `psap-secrets` namespace and read through
+Forge's vault module; do not put the endpoint URL in `configOverrides`.
 
 ```yaml
 apiVersion: fournos.dev/v1
@@ -282,6 +289,7 @@ Available configOverrides:
 | `rhaiis.engines.trtllm.args.*` | TRT-LLM CLI args (e.g. `tp_size`, `ep_size`, `max_batch_size`) |
 | `rhaiis.engines.trtllm.trtllm_config.*` | TRT-LLM server config (kv_cache, cuda_graph, moe) |
 | `rhaiis.profiler.enabled` | Enable PyTorch profiler |
+| `rhaiis.profiler.ranges` | vLLM forward-pass range to capture (default: `500-503`) |
 | `rhaiis.agent_analysis.enabled` | Enable AI agent regression analysis |
 | `caliper.postprocess.csv_dashboard.enabled` | Enable dashboard CSV S3 sync |
 | `benchmarks.guidellm.timeout` | Benchmark timeout in seconds |
@@ -504,33 +512,34 @@ Full list: `grep "^[a-z]" orchestration/config.d/models.yaml`
 
 ## Workload profiles
 
-| Key | Prompt tokens | Output tokens | Rates | Max seconds |
-|-----|--------------|---------------|-------|-------------|
-| `profile1` | 1000 | 1000 | 1, 50, 100, 200, 300 | 450 |
-| `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 450 |
-| `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 450 |
-| `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 450 |
-| `configiq` | 1000 | 1000 | 1, 2, 5, 10, 25, 50, 75, 100, 200, 300 | 450 |
+The standard workload profiles run for 275 seconds per rate with a 35-second
+GuideLLM ramp-up and a 75-second warmup pass before each selected workload.
 
-The `configiq` profile retains the standard one-time deployment warmup before the sweep.
-It also runs GuideLLM's over-saturation detector in non-enforcing monitor mode. The
-monitor records its final concurrency and TTFT slope evidence without shortening the
-450-second measurements.
+| Key | Prompt tokens | Output tokens | Rates | Max seconds | Rampup | Warmup |
+|-----|--------------|---------------|-------|-------------|---------|--------|
+| `profile1` | 1000 | 1000 | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
+| `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
+| `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
+| `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 275 | 35 | 75 |
+| `configiq` | 1000 | 1000 | 1, 2, 5, 10, 25, 50, 75, 100, 200, 300 | 450 | — | 60 |
 
-Set `workloads.configiq.adaptive_pass.enabled: true` to analyze the completed ConfigIQ
-sweep and run a second GuideLLM benchmark at the generated rates. Both benchmarks run
-sequentially against the same deployment and are stored under the same `benchmark_configiq`
-workload directory, in separate `tier1` and `adaptive` test nodes. Their Caliper labels retain
-`workload_key: configiq` and add `configiq_pass: tier1` or `configiq_pass: adaptive`. The
-complete result is saved as
-`benchmark_configiq/artifacts/configiq-saturation-analysis.json`, with relative paths to
-the Tier 1 and adaptive `benchmarks.json` reports included for provenance. The result also
-contains an `adaptive_rate_plan`: up to five unmeasured concurrency points on either side
-of the selected saturation region. The generator uses a maximum step of five, reduces the
-step near low concurrency, and excludes rates already measured by Tier 1. Its defaults can
-be changed with `workloads.configiq.adaptive_pass.points_each_side` and
-`workloads.configiq.adaptive_pass.max_step`. If the analysis cannot safely generate a
-plan, it records the reason and skips the adaptive benchmark.
+The `configiq` workload uses GuideLLM v0.8.1's `knee` profile. Its `rates` are the
+initial concurrency points. `adaptive_pass.enabled` is true by default, so
+GuideLLM analyzes those points and runs up to five additional points on each
+side of the knee, with a maximum step of five. Change
+`workloads.configiq.adaptive_pass.points_each_side` or `max_step` to adjust the
+grid, or set `enabled: false` to report the knee without extra points. The
+over-saturation constraint runs in monitor mode and supplies independent
+saturation evidence without stopping the initial sweep. The one-time deployment
+warmup follows the normal workload setting.
+
+FORGE launches one GuideLLM job for this workload. GuideLLM stores both phases
+in its `benchmarks` list and the initial analysis, adaptive plan, and final
+analysis in the `knee_detection` entry of `conclusions`. The normal benchmark
+artifact is `artifacts/results/benchmarks-default.json` under the ConfigIQ test
+node, where Caliper parses all measured concurrency points. The ConfigIQ image
+is set with `workloads.configiq.guidellm_image`; other workloads continue to use
+`benchmarks.guidellm.image`.
 
 ## Presets
 

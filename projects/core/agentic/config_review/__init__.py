@@ -131,8 +131,8 @@ def load_artifact_directory_data(base_artifact_dir: str | Path) -> dict[str, Any
     # Define required files
     required_files = {
         "config": base_artifact_dir / "config.yaml",
-        "presets_applied": ci_lib.get_ci_metadata_dir() / "presets_applied.txt",
-        "fournos_fjob": ci_lib.get_ci_metadata_dir() / "fournos_fjob.yaml",
+        "presets_applied": ci_lib.get_ci_metadata_dir_location() / "presets_applied.txt",
+        "fournos_fjob": ci_lib.get_ci_metadata_dir_location() / "fournos_fjob.yaml",
     }
 
     result = {
@@ -319,7 +319,7 @@ def analyze_test_with_llm(
         # Save to 000__ci_metadata/notifications/000__TEST_DESCRIPTION.txt
         try:
             if base_artifact_dir:
-                notifications_dir = ci_lib.get_ci_metadata_dir() / "notifications"
+                notifications_dir = ci_lib.get_ci_metadata_dir_location() / "notifications"
                 notifications_dir.mkdir(parents=True, exist_ok=True)
                 test_description_path = notifications_dir / "000__TEST_DESCRIPTION.txt"
             else:

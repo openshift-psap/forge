@@ -204,7 +204,13 @@ def render_inference_service_from_parts(
     manifest["metadata"]["annotations"].update(deployment_profile.get("annotations", {}))
 
     manifest["spec"]["model"]["uri"] = cache_spec["model_uri"] if cache_spec else source_uri
-    manifest["spec"]["model"]["name"] = model_slug
+    # For HF models, use the original name so that vLLM's --served-model-name
+    # matches what GuideLLM sends in request bodies and uses for tokenizer
+    # resolution.  OCI models have no HF-style name, so the slug is used.
+    if model_name.startswith("oci://"):
+        manifest["spec"]["model"]["name"] = model_slug
+    else:
+        manifest["spec"]["model"]["name"] = model_name.removeprefix("hf://")
 
     if is_pd_deployment:
         rendered_manifest = _render_pd_deployment(

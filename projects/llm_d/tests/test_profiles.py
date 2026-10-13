@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from contextlib import nullcontext
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,11 +87,8 @@ def test_smoke_presets_inherit_deployment_modes(preset: str, expected_deployment
     core_config.project.apply_preset(preset)
     assert runtime_config.get_deployment_profile_name() == expected_deployment
     assert runtime_config.get_model_name() == "Qwen/Qwen3-0.6B"
-    # Only the base "smoke" preset enables benchmarking via runtime.benchmark_key: short
-    if preset == "smoke":
-        assert runtime_config.get_benchmark_config() is not None
-    else:
-        assert runtime_config.get_benchmark_config() is None
+    # All smoke presets inherit smoke-base which sets runtime.benchmark_key: short
+    assert runtime_config.get_benchmark_config() is not None
 
 
 def test_benchmark_workloads_are_available() -> None:
@@ -107,14 +105,12 @@ def test_benchmark_workloads_are_available() -> None:
         assert benchmark["timeout_seconds"] == 3600
     assert multi_turn["timeout_seconds"] == 7200
 
-    assert concurrent["args"]["rate"] == [1, 50, 100, 200, 300]
-    assert heavy["args"]["max_seconds"] == 600
-    assert "prompt_tokens_stdev=8500" in heavy["args"]["data"]
-    assert "output_tokens_max=8000" in heavy["args"]["data"]
-    assert multi_turn["args"]["rate"] == [32, 64, 128, 256, 512]
+    assert concurrent["benchconf"] == "llm-d/concurrent-1k-1k"
+    assert heavy["benchconf"] == "llm-d/concurrent-heavy-heterogeneous"
+    assert multi_turn["rate"] == [32, 64, 128, 256, 512]
     assert "turns=5" in multi_turn["args"]["data"]
     assert "prefix_count={2*rate}" in multi_turn["args"]["data"]
-    assert multi_turn["args"]["max_requests"] == "{10*rate}"
+    assert "kind=max_requests,value={10*rate}" == multi_turn["args"]["constraint"]
 
 
 def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overrides() -> None:
@@ -124,7 +120,7 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     concurrent = runtime_config.get_benchmark_config()
     assert concurrent is not None
     assert concurrent["job_name"] == "guidellm-benchmark"
-    assert concurrent["image"] == "ghcr.io/vllm-project/guidellm:v0.5.4"
+    assert concurrent["image"] == "ghcr.io/vllm-project/guidellm:v0.7.4"
     assert concurrent["pvc_size"] == "1Gi"
     assert concurrent["timeout_seconds"] == 3600
 
@@ -132,12 +128,12 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     multi_turn = runtime_config.get_benchmark_config()
     assert multi_turn is not None
     assert multi_turn["job_name"] == "guidellm-benchmark"
-    assert multi_turn["image"] == "ghcr.io/vllm-project/guidellm:v0.5.4"
+    assert multi_turn["image"] == "ghcr.io/vllm-project/guidellm:v0.7.4"
     assert multi_turn["pvc_size"] == "1Gi"
     assert multi_turn["timeout_seconds"] == 7200
 
 
-def test_guidellm_benchmark_uses_original_model_name_as_processor(
+def test_guidellm_benchmark_uses_hf_model_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _init_project_config()
@@ -152,13 +148,27 @@ def test_guidellm_benchmark_uses_original_model_name_as_processor(
         captured.update(kwargs)
         return 0
 
+    mock_config_path = Path("/mock/benchconf/config.yaml")
     monkeypatch.setattr(test_phase.run_guidellm_benchmark_command, "run", _fake_run)
-    test_phase.run_guidellm_benchmark(endpoint_url="https://example.test/llm-d")
+    monkeypatch.setattr(
+        test_phase.benchconf_lib, "resolve_config_path", lambda ref: mock_config_path
+    )
+    monkeypatch.setattr(test_phase.benchconf_lib, "_is_enabled", lambda: True)
+    monkeypatch.setattr(test_phase.benchconf_lib, "maybe_install_custom_version", lambda: None)
+    monkeypatch.setattr(test_phase.benchconf_lib, "save_version", lambda: None)
+
+    monkeypatch.setattr(
+        test_phase,
+        "update_test_labels_with_timing",
+        lambda _dir, _section, _event: datetime.now(UTC),
+    )
+    test_phase.run_guidellm_benchmark(None, endpoint_url="https://example.test/llm-d")
 
     assert captured["timeout"] == 3600
+    assert captured["config_path"] == mock_config_path
     guidellm_args = captured["guidellm_args"]
     assert isinstance(guidellm_args, list)
-    assert "--processor=openai/gpt-oss-120b" in guidellm_args
+    assert "--tokenizer=kind=huggingface_auto,model=openai/gpt-oss-120b" in guidellm_args
 
 
 def test_release_preset_expands_benchmark_list_and_merges_workload_args() -> None:
@@ -193,7 +203,7 @@ def test_release_preset_expands_benchmark_list_and_merges_workload_args() -> Non
     for run_spec in run_specs:
         with runtime_config.activate_run_spec(run_spec):
             benchmark = runtime_config.get_benchmark_config()
-            assert benchmark["args"]["request_type"] == "text_completions"
+            assert benchmark["args"]["backend"] == "request_format=/v1/completions"
 
 
 def test_gpt_release_preset_produces_deployment_workload_matrix() -> None:
@@ -317,16 +327,29 @@ def test_ci_init_uses_framework_project_args_preset_and_keeps_var_overrides() ->
     assert runtime_config.get_benchmark_keys() == ["multi-turn"]
 
 
-def test_list_vaults_only_includes_rhoai_custom_catalog_vaults_for_custom_catalog_runs() -> None:
+def test_list_vaults_only_includes_rhoai_custom_catalog_vaults_for_custom_catalog_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _init_project_config()
 
+    calls: list[dict[str, object]] = []
+
+    def _fake_init(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(llmd_ci.vault, "init", _fake_init)
+
     core_config.project.set_config("platform.rhoai.custom_catalog.enabled", False)
-    assert "psap-rhoai-rc" not in llmd_ci.list_vaults()
-    assert "psap-forge-staging-image-pull" not in llmd_ci.list_vaults()
+    llmd_ci.init_vaults_for_phase("prepare")
+
+    assert "psap-rhoai-rc" not in calls[0]["mandatory_vaults"]
+    assert "psap-forge-staging-image-pull" not in calls[0]["mandatory_vaults"]
 
     core_config.project.set_config("platform.rhoai.custom_catalog.enabled", True)
-    assert "psap-rhoai-rc" in llmd_ci.list_vaults()
-    assert "psap-forge-staging-image-pull" in llmd_ci.list_vaults()
+    llmd_ci.init_vaults_for_phase("prepare")
+
+    assert "psap-rhoai-rc" in calls[1]["mandatory_vaults"]
+    assert "psap-forge-staging-image-pull" in calls[1]["mandatory_vaults"]
 
 
 def test_prepare_phase_adds_rhoai_custom_catalog_vaults_only_for_custom_catalog_runs(
@@ -782,7 +805,7 @@ def test_render_uses_sanitized_model_name_and_profile_resources() -> None:
 
     assert manifest["spec"]["replicas"] == 4
     assert manifest["spec"]["model"]["uri"] == "hf://openai/gpt-oss-120b"
-    assert manifest["spec"]["model"]["name"] == "openai-gpt-oss-120b"
+    assert manifest["spec"]["model"]["name"] == "openai/gpt-oss-120b"
     assert manifest["spec"]["template"]["containers"][0]["resources"] == {
         "requests": {"nvidia.com/gpu": "2"},
         "limits": {"nvidia.com/gpu": "2"},

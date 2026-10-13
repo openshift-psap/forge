@@ -157,14 +157,14 @@ class TestKeywordPatterns:
 
     def test_token_pattern(self):
         # Test specific token patterns that are enabled (general token= is disabled)
-        assert self._matches_any_pattern("api_token=eyJhbGciOiJIUzI1NiJ9")
+        assert self._matches_any_pattern("api_token=eyJhbGciOiJIUzI1NiJ9")  # ggignore
 
     def test_bearer_token(self):
-        assert self._matches_any_pattern("Bearer eyJhbGciOiJIUzI1NiJ9")
+        assert self._matches_any_pattern("Bearer eyJhbGciOiJIUzI1NiJ9")  # ggignore
 
     def test_bearer_case_insensitive(self):
         # Since patterns are compiled with IGNORECASE, lowercase should match too
-        assert self._matches_any_pattern("bearer eyJhbGciOiJIUzI1NiJ9")
+        assert self._matches_any_pattern("bearer eyJhbGciOiJIUzI1NiJ9")  # ggignore
 
     def test_openai_key(self):
         assert self._matches_any_pattern("sk-abcdefghijklmnopqrstuvwxyz123456")
@@ -194,6 +194,95 @@ class TestKeywordPatterns:
         assert len(bearer_patterns) == 1, (
             f"Expected exactly 1 bearer pattern, found {len(bearer_patterns)}: {bearer_patterns}"
         )
+
+    def test_improved_patterns_avoid_false_positives(self):
+        """Test that improved patterns avoid common false positives."""
+        # These should NOT be flagged as secrets
+        false_positives = [
+            "password = get_password_from_user()",
+            "api_key = os.environ.get('API_KEY')",
+            "api_key = ''",
+            "password: <redacted>",
+            "api_key: [MASKED]",
+            "api_key=${API_KEY}",
+        ]
+
+        for text in false_positives:
+            matches = self._matches_any_pattern(text)
+            assert not matches, f"False positive detected: '{text}'"
+
+    def test_new_ml_ai_service_patterns(self):
+        """Test detection of ML/AI service tokens."""
+        ml_patterns = [
+            "huggingface_token=hf_abcd1234567890",
+            "anthropic_api_key=ant-abc123",
+            "openai_api_key=sk-proj123456789",
+            "claude_token=ant-123456",
+            "hf_abcdef1234567890123456",  # Direct HF token format
+        ]
+
+        for text in ml_patterns:
+            matches = self._matches_any_pattern(text)
+            assert matches, f"ML/AI pattern not detected: '{text}'"
+
+    def test_command_line_patterns(self):
+        """Test detection of command-line secrets."""
+        cli_patterns = [
+            "--password secret123",
+            "--api-key mykey456",
+            "--token bearer_token",
+            "export API_KEY=secret123",
+            "export DATABASE_PASSWORD=prod456",
+            "oc create secret generic test --from-literal=password=secret123",
+            "kubectl create secret generic test --from-literal=user=admin",
+        ]
+
+        for text in cli_patterns:
+            matches = self._matches_any_pattern(text)
+            assert matches, f"Command-line pattern not detected: '{text}'"
+
+    def test_webhook_and_service_secrets(self):
+        """Test detection of webhook and service secrets."""
+        service_patterns = [
+            "jwt_secret=mysecret123",
+            "webhook_secret=github789",
+            "slack_token=xoxb-123456789",
+            "encryption_key=enc123456",
+            "signing_key=sign789",
+            "xoxp-1234567890-abcdef",  # Slack app token format
+        ]
+
+        for text in service_patterns:
+            matches = self._matches_any_pattern(text)
+            assert matches, f"Service pattern not detected: '{text}'"
+
+    def test_export_pattern_avoids_variable_names(self):
+        """Test that export pattern only catches shell exports, not variable names."""
+        # These should NOT be flagged (false positives fixed)
+        false_positives = [
+            "PSAP_FORGE_AWS_S3_EXPORT_SECRET_PATH=/var/run/secrets/fournos/psap-forge-aws-s3-value",
+            "PSAP_FORGE_MLFLOW_EXPORT_SECRET_PATH=/var/run/secrets/fournos/psap-forge-mlflow-value",
+            "MY_EXPORT_SECRET_CONFIG=some_value",
+            "EXPORT_API_KEY_PATH=/path/to/file",
+            "CONFIG_EXPORT_PASSWORD_FILE=/etc/config",
+        ]
+
+        for text in false_positives:
+            matches = self._matches_any_pattern(text)
+            assert not matches, f"False positive detected in export pattern: '{text}'"
+
+        # These SHOULD be flagged (legitimate shell exports)
+        legitimate_exports = [
+            "export API_KEY=secret123",  # ggignore
+            "export DATABASE_PASSWORD=prod456",  # ggignore
+            "export SECRET_TOKEN=mytoken789",  # ggignore
+            "  export WEBHOOK_SECRET=hook123",  # ggignore — with leading whitespace
+            "\texport SLACK_TOKEN=slack456",  # ggignore — with tab
+        ]
+
+        for text in legitimate_exports:
+            matches = self._matches_any_pattern(text)
+            assert matches, f"Legitimate export not detected: '{text}'"
 
 
 # ---------------------------------------------------------------------------

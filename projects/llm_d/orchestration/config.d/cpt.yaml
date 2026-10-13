@@ -1,6 +1,6 @@
 kpi:
   labels:
     platform: OCP
-    test_harness: null
-    product_version: null
+    test_harness: default
+    product_version: RHOAI # placeholder
     gpu_type: null

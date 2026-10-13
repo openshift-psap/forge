@@ -287,7 +287,27 @@ def main():
         projects = discover_projects()
         project_name = args[0]
 
-        # Check if project exists
+        # Check if project exists (allow dash/underscore and prefix abbreviations)
+        if project_name not in projects:
+            input_segs = project_name.replace("-", "_").split("_")
+            matches = [
+                proj
+                for proj in projects
+                if len(proj.replace("-", "_").split("_")) == len(input_segs)
+                and all(
+                    ps.startswith(is_)
+                    for is_, ps in zip(input_segs, proj.replace("-", "_").split("_"), strict=True)
+                )
+            ]
+            if len(matches) == 1:
+                project_name = matches[0]
+            elif len(matches) > 1:
+                print(
+                    f"Error: Project '{project_name}' is ambiguous: {', '.join(sorted(matches))}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
         if project_name not in projects:
             print(f"Error: Project '{project_name}' not found", file=sys.stderr)
             print()

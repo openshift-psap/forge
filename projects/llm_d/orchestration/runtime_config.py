@@ -337,7 +337,16 @@ def get_model_uri(model_name: str | None = None) -> str:
 
 
 def get_served_model_name(model_name: str | None = None) -> str:
-    return get_model_slug(model_name)
+    """Return the model name as vLLM's --served-model-name sees it.
+
+    For HuggingFace models this is the original HF name (e.g.
+    ``openai/gpt-oss-120b``).  For OCI models the slug is used because
+    there is no HF-style name.
+    """
+    name = model_name or get_model_name()
+    if name.startswith("oci://"):
+        return get_model_slug(name)
+    return name.removeprefix("hf://")
 
 
 def get_model_cache_config() -> dict[str, Any]:

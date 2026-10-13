@@ -109,38 +109,69 @@ def update_fournos_job(job_name: str, namespace: str, fjob_obj: dict) -> None:
         raise RuntimeError(f"Failed to apply updated FournosJob: {e}") from e
 
 
-def resolve_fournos_config(
+def _patch_resolver_status(job_name: str, namespace: str, error_message: str | None = None) -> None:
+    """Patch the FournosJob status with resolver pod name and optional error (best-effort)."""
+
+    import json
+
+    resolver_status = {
+        "pod": os.environ.get("HOSTNAME", "unknown"),
+    }
+    if error_message:
+        resolver_status["error"] = error_message
+
+    patch_data = {
+        "status": {
+            "engineStatus": {
+                "forge": {
+                    "resolver": resolver_status,
+                }
+            }
+        }
+    }
+
+    patch_json = json.dumps(patch_data)
+    patch_cmd = f"oc patch fjob/{job_name} -n {namespace} --type=merge --subresource=status -p '{patch_json}'"
+
+    try:
+        run.run(patch_cmd, check=True)
+        logger.info(f"Patched resolver status on fjob/{job_name}")
+    except Exception as e:
+        logger.error(f"Failed to patch resolver status: {e}")
+
+
+def _execute_fournos_resolve(
     *,
-    dry_run: bool = False,
-    vaults: list[str],
+    vault_functions: list[Callable[[], list[str]]],
     hardware_resolver_func: Callable[[dict], dict] | None = None,
+    spec_resolver_func: Callable[[dict], None] | None = None,
+    dry_run: bool = False,
 ) -> int:
     """
-    Resolve the FournosJob object configuration by populating spec.secretRefs and spec.hardware.
+    Execute FournosJob resolution. Never raises.
 
-    Args:
-        dry_run: If True, show the updated spec without applying changes to the cluster
-        vaults: a list of vault names required for the rest of the testing
-        hardware_resolver_func: Optional function that takes spec.hardware dict and returns updated hardware dict
+    Resolves vaults, spec, and hardware independently. On any failure,
+    retains whatever was successfully resolved and sets
+    status.engineStatus.forge.resolver.error on the FournosJob.
 
     Returns:
-        Exit code (0 for success)
-
-    Raises:
-        ValueError: If required environment variables are missing
-        RuntimeError: If FournosJob operations fail
+        Exit code (always 0)
     """
-    # Check if we're in an interactive TTY environment
+
     is_tty = is_interactive_tty()
+    errors = []
+    job_name = None
+    namespace = None
 
     # Fetch the FournosJob object
     try:
         job_name, namespace, fjob_obj = fetch_fournos_job()
-
         logger.info(f"Resolving FournosJob: {job_name} in namespace: {namespace}")
     except ValueError as e:
         if not dry_run and not is_tty:
-            raise
+            logger.error(f"Failed to fetch FournosJob: {e}")
+            errors.append(f"Failed to fetch FournosJob: {e}")
+            return 0
 
         if is_tty:
             logger.warning(f"TTY MODE: {e}")
@@ -152,10 +183,23 @@ def resolve_fournos_config(
 
         fjob_obj = {"spec": {}}
 
-    # Ensure spec exists
     assert "spec" in fjob_obj, "FournosJob must have a spec section"
 
-    # Create secretRefs list with vault names
+    # Step 1: Resolve vaults
+    vaults = []
+    try:
+        all_vaults = []
+        for i, func in enumerate(vault_functions):
+            func_vaults = func()
+            logger.info(f"Vault function {i + 1} returned {len(func_vaults)} vaults: {func_vaults}")
+            all_vaults.extend(func_vaults)
+
+        vaults = list(dict.fromkeys(all_vaults))
+        logger.info(f"Combined vault list ({len(vaults)} unique vaults): {vaults}")
+    except Exception as e:
+        logger.error(f"Failed to resolve vaults: {e}")
+        errors.append(f"Failed to resolve vaults: {e}")
+
     fjob_obj["spec"]["secretRefs"] = list(vaults)
 
     logger.info(f"Vault configuration ({len(vaults)} vault references):")
@@ -164,13 +208,19 @@ def resolve_fournos_config(
 
     logger.info(f"Updated spec.secretRefs with {len(vaults)} vault references")
 
-    # Apply hardware resolution if function provided
+    # Step 2: Resolve spec and hardware
+    if spec_resolver_func:
+        try:
+            spec_resolver_func(fjob_obj["spec"])
+        except Exception as e:
+            logger.error(f"Failed to resolve spec: {e}")
+            errors.append(f"Failed to resolve spec: {e}")
+
     if hardware_resolver_func:
         try:
             hardware_spec = fjob_obj["spec"].get("hardware", {})
             updated_hardware = hardware_resolver_func(hardware_spec)
 
-            # Set hardware to null if empty or None, otherwise use the resolved hardware
             if updated_hardware and any(updated_hardware.values()):
                 fjob_obj["spec"]["hardware"] = updated_hardware
                 logger.info("Applied hardware resolution configuration")
@@ -178,8 +228,8 @@ def resolve_fournos_config(
                 fjob_obj["spec"]["hardware"] = None
                 logger.info("Set hardware to null (no hardware configuration)")
         except Exception as e:
-            logger.error(f"Failed to apply hardware resolution: {e}")
-            raise RuntimeError(f"Failed to apply hardware resolution: {e}") from e
+            logger.error(f"Failed to resolve hardware: {e}")
+            errors.append(f"Failed to resolve hardware: {e}")
 
     # Show the updated spec
     logger.info("Updated FournosJob spec:")
@@ -189,15 +239,23 @@ def resolve_fournos_config(
 
     if dry_run:
         logger.info("DRY RUN: Not applying changes to cluster")
+        if errors:
+            logger.warning(f"Resolution completed with errors: {errors}")
         return 0
 
-    # Check if we have valid job info for cluster update
-    if is_tty and ("job_name" not in locals() or "namespace" not in locals()):
+    if is_tty and job_name is None:
         logger.info("TTY MODE: Not applying changes to cluster (no FournosJob available)")
         return 0
 
-    # Update the FournosJob object
-    update_fournos_job(job_name, namespace, fjob_obj)
+    # Always update the FournosJob with whatever was resolved
+    try:
+        update_fournos_job(job_name, namespace, fjob_obj)
+    except Exception as e:
+        logger.error(f"Failed to update FournosJob: {e}")
+        errors.append(f"Failed to update FournosJob: {e}")
+
+    error_message = "; ".join(errors) if errors else None
+    _patch_resolver_status(job_name, namespace, error_message)
 
     return 0
 
@@ -206,6 +264,7 @@ def create_fournos_resolve_entrypoint(
     vault_list_func: Callable[[], list[str]] | None = None,
     vault_list_funcs: list[Callable[[], list[str]]] | None = None,
     hardware_resolver_func: Callable[[dict], dict] | None = None,
+    spec_resolver_func: Callable[[dict], None] | None = None,
 ):
     """
     Create a FournosJob resolve command with the given vault list and hardware resolver functions.
@@ -218,12 +277,10 @@ def create_fournos_resolve_entrypoint(
     Returns:
         Click command for FournosJob resolution
     """
-    # Handle backward compatibility
     if vault_list_func is not None and vault_list_funcs is not None:
         raise ValueError("Cannot specify both vault_list_func and vault_list_funcs")
 
     if vault_list_func is not None:
-        # Convert single function to list for backward compatibility
         vault_functions = [vault_list_func]
     elif vault_list_funcs is not None:
         vault_functions = vault_list_funcs
@@ -256,26 +313,11 @@ def create_fournos_resolve_entrypoint(
         if namespace:
             os.environ["FOURNOS_WORKLOAD_NAMESPACE"] = namespace
 
-        # Get vault lists from all provided functions
-        try:
-            all_vaults = []
-            for i, func in enumerate(vault_functions):
-                func_vaults = func()
-                logger.info(
-                    f"Vault function {i + 1} returned {len(func_vaults)} vaults: {func_vaults}"
-                )
-                all_vaults.extend(func_vaults)
-
-            # Remove duplicates while preserving order
-            vaults = list(dict.fromkeys(all_vaults))
-            logger.info(f"Combined vault list ({len(vaults)} unique vaults): {vaults}")
-
-        except Exception as e:
-            logger.error(f"Failed to get vault lists: {e}")
-            raise RuntimeError(f"Failed to get vault lists: {e}") from e
-
-        return resolve_fournos_config(
-            dry_run=dry_run, vaults=vaults, hardware_resolver_func=hardware_resolver_func
+        return _execute_fournos_resolve(
+            vault_functions=vault_functions,
+            hardware_resolver_func=hardware_resolver_func,
+            spec_resolver_func=spec_resolver_func,
+            dry_run=dry_run,
         )
 
     return fournos_resolve_command

@@ -1,0 +1,4 @@
+# this configuration file will be accessible with:
+# > config.project.get_config("placeholder.dummy")
+
+dummy: true

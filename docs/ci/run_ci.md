@@ -56,7 +56,7 @@ Scripts must be executable Python files that follow Click CLI conventions and mu
 **prepare_ci.py** performs comprehensive environment setup:
 
 - **Artifact Directory Management**: Creates and validates `$ARTIFACT_DIR` for storing CI artifacts
-- **Dependency Installation**: Automatically installs required packages (`fire`, `click`) using `uv` or `pip`
+- **Dependency Installation**: Automatically installs required packages (`click`) using `uv` or `pip`
 - **Tool Validation**: Ensures required tools (`jq`, `oc` for full images) are available
 - **Environment Variables**: Sets up `FORGE_HOME` and other necessary variables
 

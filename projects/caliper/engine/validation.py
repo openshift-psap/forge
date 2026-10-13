@@ -59,13 +59,13 @@ def model_to_jsonable(model: UnifiedRunModel) -> dict[str, Any]:
 
 def model_from_jsonable(data: dict[str, Any]) -> UnifiedRunModel:
     from projects.caliper.engine.model import (  # noqa: PLC0415
-        TestBaseNode,
+        BaseTestNode,
         UnifiedResultRecord,
     )
 
     base_dir = Path(data["base_directory"])
     nodes = [
-        TestBaseNode(
+        BaseTestNode(
             directory=Path(n["directory"]),
             test_labels=n["labels"],
             artifact_paths=[Path(p) for p in n.get("artifact_paths", [])],

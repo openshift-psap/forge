@@ -1,3 +1,0 @@
-prometheus-api-client
-kubernetes
-jinja2

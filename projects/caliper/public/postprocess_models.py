@@ -90,7 +90,8 @@ class VisualizeStepResult(BaseStepResult):
     output_files: list[str] = field(default_factory=list)
     output_dir: str | None = None
     generated_files: int = 0
-    detail: str | None = None
+    error: str | None = None
+    message: str | None = None
     exit_code: int | None = None
 
 
@@ -244,8 +245,20 @@ class PostprocessStatus:
             case FinalPostprocessStatus.TEST_FAILED:
                 return f"Test phase failed: {self.test_phase.message}"
             case FinalPostprocessStatus.PARSE_VISUALIZE_FAILED:
+                details = self._get_failed_step_details("parse", "visualize")
+                if details:
+                    return f"Parse or visualize step failed: {details}"
                 return "Parse or visualize step failed"
             case FinalPostprocessStatus.KPI_PIPELINE_FAILED:
+                details = self._get_failed_step_details(
+                    "artifacts_to_kpis",
+                    "artifacts_to_ai_data",
+                    "s3_import",
+                    "s3_export",
+                    "analyse_kpis",
+                )
+                if details:
+                    return f"KPI pipeline failed: {details}"
                 return "KPI pipeline failed"
             case FinalPostprocessStatus.PERFORMANCE_REGRESSION:
                 return "Performance regression detected"
@@ -253,6 +266,19 @@ class PostprocessStatus:
                 return "Performance improvement detected"
             case _:
                 return f"Unknown failure: {self.final_status}"
+
+    def _get_failed_step_details(self, *step_names: str) -> str | None:
+        """Extract error details from failed steps."""
+        failed_details = []
+        for name in step_names:
+            step = self.get_step_result(name)
+            if step and step.get("status") == "failed":
+                detail = step.get("error") or step.get("detail") or step.get("reason")
+                if detail:
+                    failed_details.append(f"{name}: {detail}")
+                else:
+                    failed_details.append(name)
+        return "; ".join(failed_details) if failed_details else None
 
 
 # Helper functions for creating status objects

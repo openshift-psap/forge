@@ -13,6 +13,7 @@ import pytest
 
 import projects.core.library.env as env
 from projects.core.dsl import always, execute_tasks, retry, task, when
+from projects.core.dsl.control_flow import EarlyReturn
 from projects.core.dsl.runtime import TaskExecutionError
 from projects.core.dsl.script_manager import reset_script_manager
 from projects.core.dsl.task import RetryFailure
@@ -244,3 +245,43 @@ def test_execute_tasks_success_returns_shared_context():
     out = execute_tasks(locals())
     assert out.marker is ctx_marker
     assert getattr(out, "artifact_dir", None) is not None
+
+
+def test_early_return_skips_pending_tasks():
+    """When a task returns EarlyReturn, subsequent non-@always tasks are skipped."""
+    reset_script_manager()
+    events = []
+
+    @task
+    def t1(args, ctx):
+        events.append("t1")
+        return EarlyReturn("stopping early")
+
+    @task
+    def t2_should_skip(args, ctx):
+        events.append("t2")  # Must NOT run
+
+    @always
+    @task
+    def t3_always(args, ctx):
+        events.append("t3")  # Must still run
+
+    execute_tasks(locals())
+    assert events == ["t1", "t3"]
+
+
+def test_early_return_pipeline_completes_cleanly():
+    """execute_tasks does not raise when a task triggers EarlyReturn."""
+    reset_script_manager()
+    completed = []
+
+    @task
+    def submitter(args, ctx):
+        return EarlyReturn("done early")
+
+    @task
+    def waiter(args, ctx):
+        completed.append("waiter_ran")  # Should not be reached
+
+    execute_tasks(locals())
+    assert "waiter_ran" not in completed

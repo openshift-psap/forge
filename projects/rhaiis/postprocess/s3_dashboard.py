@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -77,8 +78,22 @@ def sync_csv_to_s3(
             os.unlink(consolidated_path)
 
 
+def select_rank0_profiler_traces(trace_files: Iterable[Path]) -> list[Path]:
+    """Return existing rank-0 Chrome trace files, sorted by name."""
+    selected = []
+    for trace_file in trace_files:
+        path = Path(trace_file)
+        if (
+            path.is_file()
+            and path.name.startswith("trace_rank0_")
+            and path.suffix in (".json", ".gz")
+        ):
+            selected.append(path)
+    return sorted(selected)
+
+
 def upload_profiler_traces_to_s3(
-    traces_dir: Path,
+    traces_dir: Path | Iterable[Path],
     *,
     model_name: str,
     accelerator: str,
@@ -93,18 +108,19 @@ def upload_profiler_traces_to_s3(
 ) -> dict[str, Any]:
     """Upload profiler traces to S3.
 
-    Path: s3://{bucket}/{prefix}/{accel}/{model}/tp{N}/{version}/{profile_label}/
+    Accepts a directory or an iterable of trace files. Only rank-0 traces are
+    uploaded to s3://{bucket}/{prefix}/{accel}/{model}/tp{N}/{version}/{profile_label}/.
     """
-    if not traces_dir.exists():
-        return {"status": "skipped", "reason": f"traces dir not found: {traces_dir}"}
+    if isinstance(traces_dir, Path):
+        if not traces_dir.exists():
+            return {"status": "skipped", "reason": f"traces dir not found: {traces_dir}"}
+        candidates = traces_dir.iterdir()
+    else:
+        candidates = traces_dir
 
-    trace_files = [
-        f
-        for f in traces_dir.iterdir()
-        if f.name.startswith("trace") and "rank0" in f.name and f.suffix in (".json", ".gz")
-    ]
+    trace_files = select_rank0_profiler_traces(candidates)
     if not trace_files:
-        return {"status": "skipped", "reason": "no trace files found"}
+        return {"status": "skipped", "reason": "no rank-0 trace files found"}
 
     if dry_run:
         logger.info("DRY RUN: Would upload %d traces to S3", len(trace_files))

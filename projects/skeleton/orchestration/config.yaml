@@ -17,6 +17,7 @@ skeleton:
   deep_testing: false
   test:
     duration_seconds: 0  # Default test duration in seconds
+    fail: false # set to true to force the project to fail
 
 caliper:
   export:

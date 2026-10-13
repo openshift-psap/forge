@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shlex
+
 import pytest
 
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
@@ -8,6 +10,36 @@ from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
     render_guidellm_job_from_parts,
     render_guidellm_shared_volume_job_from_parts,
 )
+
+
+def test_native_knee_args_reach_the_job_without_legacy_conversion() -> None:
+    native_args = [
+        "--backend=kind=openai_http,target=https://example.test/v1,model=example/model",
+        '--profile={"kind":"knee","initial_streams":[1,5,10,20,40],"adaptive":true}',
+        "--output=kind=json,path=/results/benchmarks-default.json",
+    ]
+    kwargs = {
+        "namespace": "test",
+        "name": "configiq",
+        "image": "ghcr.io/vllm-project/guidellm:v0.8.1",
+        "endpoint_url": "https://example.test/v1",
+        "timeout_seconds": 14400,
+        "guidellm_args": [],
+        "guidellm_run_args": native_args,
+    }
+
+    pvc = render_guidellm_job_from_parts(**kwargs)
+    shared = render_guidellm_shared_volume_job_from_parts(**kwargs)
+    pvc_container = pvc["spec"]["template"]["spec"]["containers"][0]
+    shared_container = shared["spec"]["template"]["spec"]["containers"][0]
+
+    assert pvc_container["args"] == ["run", *native_args]
+    assert shlex.split(shared_container["args"][0].splitlines()[-1]) == [
+        "/opt/app-root/bin/guidellm",
+        "run",
+        *native_args,
+    ]
+    assert "--rate" not in shared_container["args"][0]
 
 
 def test_expand_guidellm_runs_converts_rates_to_individual_runs() -> None:
@@ -25,14 +57,12 @@ def test_expand_guidellm_runs_converts_rates_to_individual_runs() -> None:
     assert runs[0].args == [
         "--backend-type=openai_http",
         "--rate-type=concurrent",
-        "--rate=32",
         "--data=prompt_tokens=128,prefix_count=64",
         "--max-requests=320",
     ]
     assert runs[1].args == [
         "--backend-type=openai_http",
         "--rate-type=concurrent",
-        "--rate=64",
         "--data=prompt_tokens=128,prefix_count=128",
         "--max-requests=640",
     ]
@@ -52,13 +82,11 @@ def test_expand_guidellm_runs_expands_plain_rate_reference() -> None:
     assert runs[0].args == [
         "--backend-type=openai_http",
         "--rate-type=concurrent",
-        "--rate=32",
         "--max-requests=32",
     ]
     assert runs[1].args == [
         "--backend-type=openai_http",
         "--rate-type=concurrent",
-        "--rate=64",
         "--max-requests=64",
     ]
 
@@ -113,7 +141,7 @@ def test_render_guidellm_job_from_parts_uses_shell_for_multi_run_benchmarks() ->
     manifest = render_guidellm_job_from_parts(
         namespace="forge-llm-d",
         name="guidellm-benchmark",
-        image="ghcr.io/vllm-project/guidellm:v0.5.4",
+        image="ghcr.io/vllm-project/guidellm:v0.7.4",
         endpoint_url="https://example.test/llm-d",
         timeout_seconds=3600,
         guidellm_args=[
@@ -129,12 +157,11 @@ def test_render_guidellm_job_from_parts_uses_shell_for_multi_run_benchmarks() ->
     assert manifest["spec"]["activeDeadlineSeconds"] == 3600
     assert container["command"] == ["/bin/sh", "-lc"]
     script = container["args"][0]
-    assert "--rate=32" in script
-    assert "--rate=64" in script
+    assert "guidellm run" in script
+    assert "kind=openai_http" in script
     assert "prefix_count=64" in script
     assert "prefix_count=128" in script
-    assert "max-requests=320" in script
-    assert "max-requests=640" in script
+    assert "max_requests" in script
     assert "benchmarks-rate-32.json" in script
     assert "benchmarks-rate-64.json" in script
 
@@ -143,7 +170,7 @@ def test_render_guidellm_job_from_parts_keeps_plain_rates_as_single_guidellm_run
     manifest = render_guidellm_job_from_parts(
         namespace="forge-llm-d",
         name="guidellm-benchmark",
-        image="ghcr.io/vllm-project/guidellm:v0.5.4",
+        image="ghcr.io/vllm-project/guidellm:v0.7.4",
         endpoint_url="https://example.test/llm-d",
         timeout_seconds=3600,
         guidellm_args=[
@@ -157,42 +184,18 @@ def test_render_guidellm_job_from_parts_keeps_plain_rates_as_single_guidellm_run
 
     container = manifest["spec"]["template"]["spec"]["containers"][0]
     assert container["command"] == ["/opt/app-root/bin/guidellm"]
-    assert container["args"] == [
-        "benchmark",
-        "run",
-        "--target=https://example.test/llm-d",
-        "--backend-type=openai_http",
-        "--rate-type=concurrent",
-        "--rate=300,200,100",
-        "--data=prompt_tokens=1000,output_tokens=1000",
-        "--max-seconds=600",
-    ]
-
-
-def test_shared_volume_job_shell_quotes_structured_arguments() -> None:
-    saturation_config = '{"enabled":false,"min_seconds":15}'
-    manifest = render_guidellm_shared_volume_job_from_parts(
-        namespace="forge-llm-d",
-        name="guidellm-benchmark",
-        image="ghcr.io/vllm-project/guidellm:v0.6.0",
-        endpoint_url="https://example.test/rhaiis",
-        timeout_seconds=3600,
-        guidellm_args=[
-            "--rate=1,2,5,10",
-            "--over-saturation",
-            saturation_config,
-        ],
-    )
-
-    container = manifest["spec"]["template"]["spec"]["containers"][0]
-    assert container["command"] == ["/bin/sh", "-c"]
-    script = container["args"][0]
-    assert f"--over-saturation '{saturation_config}'" in script
+    args = container["args"]
+    assert args[0] == "run"
+    assert "--backend=kind=openai_http,target=https://example.test/llm-d" in args
+    assert "--data=kind=synthetic_text,prompt_tokens=1000,output_tokens=1000" in args
+    profile_arg = next(a for a in args if a.startswith("--profile="))
+    assert '"kind": "concurrent"' in profile_arg
+    assert "[300, 200, 100]" in profile_arg
+    assert "--constraint=kind=max_duration,seconds=600" in args
 
 
 def test_build_guidellm_args_renders_list_values() -> None:
     benchmark = {
-        "outputs": "json",
         "args": {
             "backend_type": "openai_http",
             "rate_type": "concurrent",
@@ -206,5 +209,169 @@ def test_build_guidellm_args_renders_list_values() -> None:
         "--rate-type=concurrent",
         "--rate=300,200,100,50,1",
         "--max-seconds=600",
-        "--outputs=json",
     ]
+
+
+def test_build_guidellm_args_renders_top_level_rate_list() -> None:
+    benchmark = {
+        "args": {
+            "profile": "kind=concurrent,streams={rate}",
+            "data": "kind=synthetic_text,prompt_tokens=256,output_tokens=128",
+            "constraint": "kind=max_duration,seconds=120",
+        },
+        "rate": [1, 4, 8],
+    }
+
+    args = build_guidellm_args(benchmark)
+    assert "--rate=1,4,8" in args
+
+
+class TestConvertDataSpec:
+    def _convert(self, spec: str) -> str:
+        from projects.guidellm.toolbox.run_guidellm_benchmark.utils import _convert_data_spec
+
+        return _convert_data_spec(spec)
+
+    def test_synthetic_text_from_token_spec(self) -> None:
+        assert (
+            self._convert("prompt_tokens=1000,output_tokens=100")
+            == "kind=synthetic_text,prompt_tokens=1000,output_tokens=100"
+        )
+
+    def test_json_file_from_path(self) -> None:
+        assert self._convert("/data/test.json") == "kind=json_file,path=/data/test.json"
+
+    def test_csv_file_from_path(self) -> None:
+        assert self._convert("dataset.csv") == "kind=csv_file,path=dataset.csv"
+
+    def test_huggingface_from_slash_source(self) -> None:
+        assert (
+            self._convert("abisee/cnn_dailymail") == "kind=huggingface,source=abisee/cnn_dailymail"
+        )
+
+    def test_passthrough_already_converted(self) -> None:
+        spec = "kind=synthetic_text,prompt_tokens=256"
+        assert self._convert(spec) == spec
+
+
+class TestBuildRunArgs:
+    def _build(self, endpoint: str, old_args: list[str]) -> list[str]:
+        from projects.guidellm.toolbox.run_guidellm_benchmark.utils import _build_run_args
+
+        return _build_run_args(endpoint, old_args)
+
+    def test_single_rate_concurrent(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            [
+                "--backend-type=openai_http",
+                "--rate-type=concurrent",
+                "--rate=16",
+                "--data=prompt_tokens=256,output_tokens=128",
+                "--max-seconds=60",
+            ],
+        )
+        assert "--backend=kind=openai_http,target=http://model:8000" in args
+        assert "--data=kind=synthetic_text,prompt_tokens=256,output_tokens=128" in args
+        assert "--profile=kind=concurrent,streams=16" in args
+        assert "--constraint=kind=max_duration,seconds=60" in args
+        assert "--output=kind=json,path=/results/benchmarks-default.json" in args
+
+    def test_warmup_injected_into_profile(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--rate-type=concurrent", "--rate=8", "--warmup=75"],
+        )
+        profile_arg = next(a for a in args if a.startswith("--profile="))
+        assert "warmup=75" in profile_arg
+        assert not any(a.startswith("--warmup") for a in args)
+
+    def test_rampup_injected_into_profile(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--rate-type=concurrent", "--rate=8", "--rampup=35"],
+        )
+        profile_arg = next(a for a in args if a.startswith("--profile="))
+        assert "rampup_duration=35" in profile_arg
+
+    def test_decimal_rates_preserved(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--rate-type=concurrent", "--rate=0.5,1.5"],
+        )
+        profile_arg = next(a for a in args if a.startswith("--profile="))
+        assert "0.5" in profile_arg
+        assert "1.5" in profile_arg
+
+    def test_model_included_in_backend(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--model=meta-llama/Llama-3.1-8B-Instruct"],
+        )
+        backend_arg = next(a for a in args if a.startswith("--backend="))
+        assert "model=meta-llama/Llama-3.1-8B-Instruct" in backend_arg
+
+    def test_max_requests_constraint(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--max-requests=500"],
+        )
+        assert "--constraint=kind=max_requests,count=500" in args
+
+    def test_outputs_stripped(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--outputs=json", "--output-dir=/tmp"],
+        )
+        assert not any("--outputs" in a for a in args)
+        assert not any("--output-dir" in a for a in args)
+        assert "--output=kind=json,path=/results/benchmarks-default.json" in args
+
+    def test_processor_converted_to_tokenizer(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--processor=meta-llama/Llama-3.1-8B-Instruct"],
+        )
+        assert "--tokenizer=kind=huggingface_auto,model=meta-llama/Llama-3.1-8B-Instruct" in args
+        assert not any("--processor" in a for a in args)
+
+    def test_processor_args_preserved_as_load_kwargs(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--processor=gpt2", '--processor-args={"use_fast": false}'],
+        )
+        import json
+
+        expected = json.dumps(
+            {"kind": "huggingface_auto", "model": "gpt2", "load_kwargs": {"use_fast": False}}
+        )
+        assert f"--tokenizer={expected}" in args
+        assert not any("--processor-args" in a for a in args)
+
+    def test_request_type_converted_to_backend_request_format(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--request-type=text_completions"],
+        )
+        backend_arg = next(a for a in args if a.startswith("--backend="))
+        assert "request_format=text_completions" in backend_arg
+        assert not any("--request-type" in a for a in args)
+
+    def test_backend_arg_merged_into_backend_spec(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--backend=request_format=/v1/completions"],
+        )
+        backend_arg = next(a for a in args if a.startswith("--backend="))
+        assert "request_format=/v1/completions" in backend_arg
+        assert "target=http://model:8000" in backend_arg
+        # Only one --backend= arg should exist
+        assert sum(1 for a in args if a.startswith("--backend=")) == 1
+
+    def test_rampup_in_no_rate_branch(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--rate-type=throughput", "--rampup=30"],
+        )
+        profile_arg = next(a for a in args if a.startswith("--profile="))
+        assert "rampup_duration=30" in profile_arg

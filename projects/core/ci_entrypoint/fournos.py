@@ -18,6 +18,122 @@ logger = logging.getLogger(__name__)
 FJOB_FORGE_ENGINE_NAME = "forge"
 
 
+def check_fjob_resolver_error():
+    """Fetch the FournosJob from the cluster and fail if a resolver error is set."""
+
+    import json
+
+    from projects.core.library import run
+
+    job_name = os.environ.get("FJOB_NAME")
+    namespace = os.environ.get("FOURNOS_WORKLOAD_NAMESPACE")
+
+    if not job_name or not namespace:
+        logger.info(
+            "FJOB_NAME or FOURNOS_WORKLOAD_NAMESPACE not set, skipping resolver error check"
+        )
+        return
+
+    logger.info(f"Checking FournosJob resolver status for fjob/{job_name} in {namespace}")
+
+    # Unset KUBECONFIG to use the pod SA access (fjob lives on the Fournos cluster)
+    original_kubeconfig = os.environ.get("KUBECONFIG")
+    if "KUBECONFIG" in os.environ:
+        del os.environ["KUBECONFIG"]
+
+    try:
+        try:
+            result = run.run(
+                f"oc get fjob/{job_name} -n {namespace} -o json",
+                capture_stdout=True,
+                check=True,
+            )
+            fjob_data = json.loads(result.stdout)
+        except Exception as e:
+            logger.warning(f"Could not fetch FournosJob for resolver error check: {e}")
+            return
+
+        resolver_error = (
+            fjob_data.get("status", {})
+            .get("engineStatus", {})
+            .get("forge", {})
+            .get("resolver", {})
+            .get("error")
+        )
+
+        resolver_status = (
+            fjob_data.get("status", {}).get("engineStatus", {}).get("forge", {}).get("resolver", {})
+        )
+        resolver_pod = resolver_status.get("pod")
+        logs_captured = resolver_status.get("logsCaptured", False)
+
+        if resolver_pod and not logs_captured:
+            logger.info(f"Capturing logs from resolver pod: {resolver_pod}")
+            _capture_resolver_pod_logs(job_name, namespace, resolver_pod)
+
+        if resolver_error:
+            raise RuntimeError(f"FournosJob resolver failed: {resolver_error}")
+
+        logger.info("FournosJob resolver status: OK (no errors)")
+    finally:
+        if original_kubeconfig is not None:
+            os.environ["KUBECONFIG"] = original_kubeconfig
+
+
+def _capture_resolver_pod_logs(job_name: str, namespace: str, pod_name: str) -> None:
+    """Fetch resolver pod logs, save to metadata dir, and mark as captured on the fjob."""
+
+    import json
+
+    from projects.core.library import run
+
+    # Fetch the logs
+    try:
+        result = run.run(
+            f"oc logs {pod_name} -n {namespace}",
+            capture_stdout=True,
+            check=False,
+        )
+    except Exception as e:
+        logger.warning(f"Could not fetch resolver pod logs: {e}")
+        return
+
+    resolver_logs = result.stdout or ""
+
+    # Save to metadata dir
+    artifact_dir = os.environ.get("ARTIFACT_DIR")
+    if artifact_dir:
+        from .prepare_ci import CI_METADATA_DIRNAME
+
+        metadata_dir = Path(artifact_dir) / CI_METADATA_DIRNAME
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        log_file = metadata_dir / "resolver_pod.log"
+        log_file.write_text(resolver_logs)
+        logger.info(f"Saved resolver pod logs to {log_file}")
+
+    # Mark logs as captured on the fjob status
+    patch_data = {
+        "status": {
+            "engineStatus": {
+                "forge": {
+                    "resolver": {
+                        "logsCaptured": True,
+                    }
+                }
+            }
+        }
+    }
+    patch_json = json.dumps(patch_data)
+    try:
+        run.run(
+            f"oc patch fjob/{job_name} -n {namespace} --type=merge --subresource=status -p '{patch_json}'",
+            check=True,
+        )
+        logger.info(f"Marked resolver logs as captured on fjob/{job_name}")
+    except Exception as e:
+        logger.warning(f"Could not mark resolver logs as captured: {e}")
+
+
 def process_fjob_environment(fjob_spec):
     """
     Process FOURNOS environment variables from FournosJob YAML.
@@ -55,7 +171,7 @@ def transform_fournos_config_to_variable_overrides(fjob: dict) -> dict:
 
     Returns:
         Dictionary in variable_overrides format:
-        - metadata.name -> ci_job.fjob
+        - metadata.name -> ci_job.fjob_name
         - spec.executionEngine.forge.project -> project.name
         - spec.executionEngine.forge.args -> project.args
         - spec.executionEngine.forge.configOverrides entries are flattened directly
@@ -63,7 +179,7 @@ def transform_fournos_config_to_variable_overrides(fjob: dict) -> dict:
         - spec.hardware -> ci_job.hardware
         - spec.cluster -> ci_job.cluster
         - spec.owner -> ci_job.owner
-        - spec.displayName -> ci_job.name
+        - spec.displayName -> ci_job.display_name
     """
     variable_overrides = {}
 
@@ -73,24 +189,23 @@ def transform_fournos_config_to_variable_overrides(fjob: dict) -> dict:
 
     fjob_engine = fjob_spec.get("executionEngine")
     forge_config = fjob_engine.get(FJOB_FORGE_ENGINE_NAME)
-    if forge_config:
-        # Process forge configuration
-        # Transform project -> project.name
-        if "project" in forge_config:
-            variable_overrides["project.name"] = forge_config["project"]
-
-        # Transform args -> project.args
-        if "args" in forge_config:
-            variable_overrides["project.args"] = forge_config["args"]
-
-        # Add all configOverrides entries directly (flatten them)
-        config_overrides = forge_config.get("configOverrides", {})
-        variable_overrides.update(config_overrides)
-
-    else:
+    if not forge_config:
         raise ValueError(
             f"Forge received an invalid fjob: spec.executionEngine.{FJOB_FORGE_ENGINE_NAME} not defined. Got {', '.join(fjob_engine.keys())}."
         )
+
+    # Process forge configuration
+    # Transform project -> project.name
+    if "project" in forge_config:
+        variable_overrides["project.name"] = forge_config["project"]
+
+    # Transform args -> project.args
+    if "args" in forge_config:
+        variable_overrides["project.args"] = forge_config["args"]
+
+    # Add all configOverrides entries directly (flatten them)
+    config_overrides = forge_config.get("configOverrides", {})
+    variable_overrides.update(config_overrides)
 
     # Add ci_job mappings from spec
     if "exclusive" in fjob_spec:
@@ -103,14 +218,14 @@ def transform_fournos_config_to_variable_overrides(fjob: dict) -> dict:
         variable_overrides["ci_job.cluster"] = fjob_spec["cluster"]
 
     if "displayName" in fjob_spec:
-        variable_overrides["ci_job.name"] = fjob_spec["displayName"]
+        variable_overrides["ci_job.display_name"] = fjob_spec["displayName"]
 
     if "owner" in fjob_spec:
         variable_overrides["ci_job.owner"] = fjob_spec["owner"]
 
     # Add ci_job mappings from metadata
     if "name" in metadata:
-        variable_overrides["ci_job.fjob"] = metadata["name"]
+        variable_overrides["ci_job.fjob_name"] = metadata["name"]
 
     return variable_overrides
 
@@ -135,6 +250,9 @@ def parse_and_save_pr_arguments_fournos():
     metadata_dir = artifact_path / CI_METADATA_DIRNAME
     # Create CI metadata directory
     metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check for resolver errors before proceeding
+    check_fjob_resolver_error()
 
     # Load FournosJob YAML
     fournos_fjob = metadata_dir.parent / "fournos_fjob.yaml"

@@ -57,14 +57,30 @@ def test_notification_formatting_success():
     )
 
     # Mock file link function
-    def mock_get_file_link(file_path: str) -> str:
-        return f"https://example.com/artifacts/{file_path}"
+    def mock_get_file_link(file_path, text: str = None):
+        # Handle both Path objects and strings
+        if hasattr(file_path, "name"):
+            filename = file_path.name
+            path_str = str(file_path)
+        else:
+            path_str = str(file_path)
+            filename = path_str.split("/")[-1]
+
+        # Strip base directory from path to get relative path
+        if "/test/artifacts/" in path_str:
+            relative_path = path_str.split("/test/artifacts/")[-1]
+        else:
+            # For paths that don't contain the base directory, keep the full relative path
+            relative_path = path_str
+
+        display_text = text if text else filename
+        return f"[{display_text}](https://example.com/artifacts/{relative_path})"
 
     notification_text = format_postprocess_status_notification(status, mock_get_file_link)
     print(f"Generated notification text:\n{notification_text}\n")
 
     # Verify overall structure
-    assert "**Post-processing Status** ✅" in notification_text
+    assert "✅ **Post-processing Status**" in notification_text
     assert (
         "- ✅ [**parse**](https://example.com/artifacts/logs/001_parse.log): `success`"
         in notification_text
@@ -110,13 +126,29 @@ def test_notification_formatting_regression():
         ],
     )
 
-    def mock_get_file_link(file_path: str) -> str:
-        return f"https://example.com/artifacts/{file_path}"
+    def mock_get_file_link(file_path, text: str = None):
+        # Handle both Path objects and strings
+        if hasattr(file_path, "name"):
+            filename = file_path.name
+            path_str = str(file_path)
+        else:
+            path_str = str(file_path)
+            filename = path_str.split("/")[-1]
+
+        # Strip base directory from path to get relative path
+        if "/test/artifacts/" in path_str:
+            relative_path = path_str.split("/test/artifacts/")[-1]
+        else:
+            # For paths that don't contain the base directory, keep the full relative path
+            relative_path = path_str
+
+        display_text = text if text else filename
+        return f"[{display_text}](https://example.com/artifacts/{relative_path})"
 
     notification_text = format_postprocess_status_notification(status, mock_get_file_link)
 
     # Verify overall failure status
-    assert "**Post-processing Status** ❌" in notification_text
+    assert "❌ **Post-processing Status**" in notification_text
 
     # Verify parse success
     assert "- ✅ **parse**: `success`" in notification_text
@@ -157,7 +189,7 @@ def test_notification_formatting_failure():
     notification_text = format_postprocess_status_notification(status)
 
     # Verify overall failure status
-    assert "**Post-processing Status** ❌" in notification_text
+    assert "❌ **Post-processing Status**" in notification_text
 
     # Verify failed step
     assert "- ❌ **parse**: `failed`" in notification_text
@@ -187,7 +219,7 @@ def test_notification_without_file_links():
     notification_text = format_postprocess_status_notification(status)
 
     # Verify basic formatting without links
-    assert "**Post-processing Status** ✅" in notification_text
+    assert "✅ **Post-processing Status**" in notification_text
     assert "- ✅ **parse**: `success`" in notification_text
     # Should not contain any links
     assert "https://" not in notification_text

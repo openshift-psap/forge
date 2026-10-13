@@ -13,7 +13,7 @@ from projects.caliper.engine.constants import (
     MATRIXBENCHMARKING_SETTINGS_FILE,
     METADATA_FILE,
 )
-from projects.caliper.engine.model import TestBaseNode
+from projects.caliper.engine.model import BaseTestNode
 
 # Primary marker
 MARKER = METADATA_FILE
@@ -27,8 +27,8 @@ def discover_test_bases(
     *,
     include_label_filter: dict[str, list[str]] | None = None,
     exclude_label_filter: dict[str, list[str]] | None = None,
-) -> tuple[list[TestBaseNode], list[dict[str, Any]]]:
-    """Walk base_dir; each directory containing MARKER or MATRIXBENCHMARKING_MARKER becomes a TestBaseNode.
+) -> tuple[list[BaseTestNode], list[dict[str, Any]]]:
+    """Walk base_dir; each directory containing MARKER or MATRIXBENCHMARKING_MARKER becomes a BaseTestNode.
 
     Args:
         base_dir: Base directory to search
@@ -42,7 +42,7 @@ def discover_test_bases(
     if not base_dir.is_dir():
         raise FileNotFoundError(f"Base directory does not exist: {base_dir}")
 
-    nodes: list[TestBaseNode] = []
+    nodes: list[BaseTestNode] = []
     excluded_dirs: list[dict[str, Any]] = []
     for dirpath, _dirnames, filenames in os.walk(base_dir, topdown=True):
         marker_found = None
@@ -143,7 +143,7 @@ def discover_test_bases(
             continue
 
         nodes.append(
-            TestBaseNode(
+            BaseTestNode(
                 directory=path,
                 test_labels=test_labels,
                 artifact_paths=_list_files_under(path, exclude_markers=True),

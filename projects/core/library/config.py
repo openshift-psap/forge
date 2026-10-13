@@ -5,7 +5,6 @@ import logging
 import os
 import pathlib
 import re
-import sys
 import types
 
 import click
@@ -21,6 +20,9 @@ logger = logging.getLogger(__name__)
 VARIABLE_OVERRIDES_FILENAME = "000__ci_metadata/variable_overrides.yaml"
 
 project = None  # the project config will be populated in init()
+
+# during these steps, avoid crashing in the initialization steps
+FORGE_LENIENT_STEPS = ("resolve-fournos-config", "export-artifacts")
 
 
 class TempValue:
@@ -83,7 +85,16 @@ class Config:
         mandatory_fields = {
             "presets": {},  # Special case: always create as empty dict
             "project": dict.fromkeys(["name", "args"]),
-            "ci_job": dict.fromkeys(["name", "fjob", "cluster", "exclusive", "hardware", "owner"]),
+            "ci_job": {
+                **dict.fromkeys(
+                    ["display_name", "fjob_name", "cluster", "exclusive", "hardware", "owner"]
+                ),
+                "gh": {
+                    "from_gh": False,
+                    "pr": {"num": None, "title": None},
+                    "repo": {"name": None, "owner": None},
+                },
+            },
         }
 
         # Apply the mandatory field structure
@@ -643,13 +654,14 @@ def init(orchestration_dir, *, apply_config_overrides=True, apply_cluster_config
     lenient_presets = False
     try:
         ctx = click.get_current_context()
-        lenient_presets = ctx.info_name == "resolve-fournos-config"
-    except (ImportError, RuntimeError):
-        # Fallback to sys.argv when Click context is not available
-        lenient_presets = "resolve-fournos-config" in sys.argv
+        lenient_presets = ctx.invoked_subcommand in FORGE_LENIENT_STEPS
+    except (ImportError, RuntimeError) as e:
+        logger.warning(f"Couldn't check the lenient steps: {e}")
 
     if lenient_presets:
-        logging.info("Fournos resolve step detected. Applying the presets in lenient mode.")
+        logging.info(
+            "Forge lenient step detected. Initializing the configuration in a fail-safe way."
+        )
 
     project.apply_config_overrides(ignore_not_found=lenient_presets)
     project.apply_presets_from_project_args(lenient=lenient_presets)

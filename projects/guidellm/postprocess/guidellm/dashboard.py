@@ -16,8 +16,8 @@ from projects.caliper.engine.kpi import (
     KpiRecord,
 )
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
-    TestBaseNode,
     UnifiedResultRecord,
     UnifiedRunModel,
 )
@@ -101,6 +101,13 @@ DASHBOARD_METADATA_LABEL_KEYS = frozenset(
 )
 
 
+def is_benchmarks_artifact(path: Path) -> bool:
+    """Return whether ``path`` is a GuideLLM benchmark result artifact."""
+    return path.suffix == ".json" and (
+        path.name == "benchmarks.json" or path.name.startswith("benchmarks-")
+    )
+
+
 def canonical_json(value: Any) -> str:
     """Serialize structured metadata deterministically for labels and CSVs."""
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
@@ -165,9 +172,10 @@ def _milliseconds_to_seconds(value: Any) -> Any:
 
 
 def enrich_guidellm_parse_result(
-    base_result: ParseResult, nodes: list[TestBaseNode]
+    base_result: ParseResult, nodes: list[BaseTestNode]
 ) -> ParseResult:
     """Preserve dashboard metrics from raw GuideLLM files on parsed records."""
+    job_mlflow_destination = _read_job_mlflow_destination()
     nodes_by_path = {str(node.test_path): node for node in nodes}
     records: list[UnifiedResultRecord] = []
     for record in base_result.records:
@@ -177,6 +185,11 @@ def enrich_guidellm_parse_result(
             continue
         extra, curves = _extract_dashboard_metrics(node)
         metrics = {**record.metrics, **extra}
+        if job_mlflow_destination:
+            if not metrics.get("mlflow_run_id"):
+                metrics["mlflow_run_id"] = job_mlflow_destination["run_id"]
+            if not metrics.get("mlflow_experiment_id"):
+                metrics["mlflow_experiment_id"] = job_mlflow_destination["experiment_id"]
         metrics["performance_curves"] = {
             **metrics.get("performance_curves", {}),
             **curves,
@@ -193,24 +206,44 @@ def enrich_guidellm_parse_result(
     return ParseResult(records=records, warnings=base_result.warnings)
 
 
-def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict[str, list]]:
-    files = sorted(
-        path
-        for path in node.artifact_paths
-        if path.name == "benchmarks.json"
-        or (path.name.startswith("benchmarks-rate-") and path.suffix == ".json")
-    )
+def _read_job_mlflow_destination() -> dict[str, str]:
+    """Read the single Fournos job-level MLflow destination for dashboard labels."""
+    from projects.core.library import env
+
+    if not env.running_inside_fournos():
+        return {}
+
+    from projects.caliper.orchestration.export import read_mlflow_destination_marker
+
+    destination = read_mlflow_destination_marker()
+    if destination is None:
+        logger.warning(
+            "FOURNOS CI is enabled but no MLflow destination marker was found; "
+            "dashboard MLflow IDs will be empty"
+        )
+        return {}
+    return {
+        "run_id": destination.run_id,
+        "experiment_id": destination.experiment_id,
+    }
+
+
+def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict[str, list]]:
+    files = sorted(path for path in node.artifact_paths if is_benchmarks_artifact(path))
     benchmarks: list[dict[str, Any]] = []
     metadata: dict[str, Any] = {}
     args: dict[str, Any] = {}
+    spec: dict[str, Any] = {}
     for path in files:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as error:
+            logger.warning("Failed to read GuideLLM benchmark artifact %s: %s", path, error)
             continue
         benchmarks.extend(payload.get("benchmarks", []))
         metadata = metadata or payload.get("metadata", {})
         args = args or payload.get("args", {})
+        spec = spec or payload.get("config", {}).get("spec", {})
     if not benchmarks:
         return {}, {}
 
@@ -224,6 +257,10 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         )
     )
     data_values = args.get("data", []) if isinstance(args, dict) else []
+    if not data_values:
+        spec_data = spec.get("data", [])
+        if isinstance(spec_data, list) and spec_data:
+            data_values = spec_data
     if not data_values:
         fallback_data = (
             benchmarks[0]
@@ -245,20 +282,37 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
                 tokens = parsed_data
         except json.JSONDecodeError:
             tokens = dict(re.findall(r"(\w+)=([\d.]+)", data_text))
+    token_data = tokens
+    prefix_buckets = tokens.get("prefix_buckets")
+    if (
+        isinstance(prefix_buckets, list)
+        and len(prefix_buckets) == 1
+        and isinstance(prefix_buckets[0], dict)
+    ):
+        token_data = {**tokens, **prefix_buckets[0]}
     starts = [
         b.get("scheduler_metrics", {}).get("start_time", b.get("start_time")) for b in benchmarks
     ]
     ends = [b.get("scheduler_metrics", {}).get("end_time", b.get("end_time")) for b in benchmarks]
     starts = [value for value in starts if value is not None]
     ends = [value for value in ends if value is not None]
+    request_type = ""
+    if isinstance(args, dict) and args.get("request_type"):
+        request_type = args["request_type"]
+    elif spec.get("backend", {}).get("request_format"):
+        request_type = spec["backend"]["request_format"]
     extra = {
         "guidellm_version": metadata.get("guidellm_version", ""),
         "prompt_toks": int(float(tokens["prompt_tokens"])) if "prompt_tokens" in tokens else "",
         "output_toks": int(float(tokens["output_tokens"])) if "output_tokens" in tokens else "",
         "turns": int(float(tokens["turns"])) if "turns" in tokens else "",
-        "prefix_tokens": int(float(tokens["prefix_tokens"])) if "prefix_tokens" in tokens else "",
-        "prefix_count": int(float(tokens["prefix_count"])) if "prefix_count" in tokens else "",
-        "request_type": args.get("request_type", "") if isinstance(args, dict) else "",
+        "prefix_tokens": (
+            int(float(token_data["prefix_tokens"])) if "prefix_tokens" in token_data else ""
+        ),
+        "prefix_count": (
+            int(float(token_data["prefix_count"])) if "prefix_count" in token_data else ""
+        ),
+        "request_type": request_type,
         "guidellm_start_time_ms": int(min(starts) * 1000) if starts else "",
         "guidellm_end_time_ms": int(max(ends) * 1000) if ends else "",
     }
@@ -351,7 +405,137 @@ def _extract_dashboard_metrics(node: TestBaseNode) -> tuple[dict[str, Any], dict
         for key in curves:
             curves[key].append(values.get(key))
     extra["run_uuids"] = run_uuids
+
+    per_turn = _extract_per_turn_curves(benchmarks)
+    if per_turn:
+        extra["per_turn_curves"] = per_turn
+
     return extra, curves
+
+
+def _percentile(sorted_vals: list[float], p: float) -> float | None:
+    if not sorted_vals:
+        return None
+    k = (len(sorted_vals) - 1) * p / 100.0
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    return sorted_vals[f] + (k - f) * (sorted_vals[c] - sorted_vals[f])
+
+
+def _extract_per_turn_curves(
+    benchmarks: list[dict[str, Any]],
+) -> dict[str, dict[str, list]]:
+    """Compute per-turn metric curves from individual request records.
+
+    Returns ``{"0": {curve_key: [value_per_benchmark_point]}, ...}``
+    when multiple turns exist, otherwise an empty dict.  Keys are
+    stringified integers so they survive JSON round-trips through the
+    caliper cache.
+    """
+    all_turns: set[int] = set()
+    for bench in benchmarks:
+        for bucket in ("successful", "errored"):
+            for req in bench.get("requests", {}).get(bucket, []):
+                ti = req.get("info", {}).get("turn_index")
+                if ti is not None:
+                    all_turns.add(ti)
+
+    if len(all_turns) <= 1:
+        return {}
+
+    per_turn: dict[str, dict[str, list]] = {}
+    for turn_idx in sorted(all_turns):
+        curves: dict[str, list] = {curve_key: [] for _, curve_key, _, _, _ in DASHBOARD_METRICS}
+        for bench in benchmarks:
+            reqs = [
+                r
+                for r in bench.get("requests", {}).get("successful", [])
+                if r.get("info", {}).get("turn_index") == turn_idx
+            ]
+            errored = len(
+                [
+                    r
+                    for r in bench.get("requests", {}).get("errored", [])
+                    if r.get("info", {}).get("turn_index") == turn_idx
+                ]
+            )
+            strategy = bench.get("config", {}).get("strategy", {}) or bench.get(
+                "scheduler", {}
+            ).get("strategy", {})
+
+            if not reqs and not errored:
+                for key in curves:
+                    curves[key].append(None)
+                continue
+
+            values = _turn_metric_values(reqs, strategy, errored_count=errored)
+            for key in curves:
+                curves[key].append(values.get(key))
+
+        per_turn[str(turn_idx)] = curves
+
+    return per_turn
+
+
+def _turn_metric_values(
+    reqs: list[dict[str, Any]], strategy: dict, *, errored_count: int = 0
+) -> dict[str, Any]:
+    """Compute dashboard metric values from individual requests for one turn."""
+
+    def _sorted_field(field: str) -> list[float]:
+        return sorted(r[field] for r in reqs if r.get(field) is not None)
+
+    def _mean(vals: list[float]) -> float | None:
+        return sum(vals) / len(vals) if vals else None
+
+    def _median(vals: list[float]) -> float | None:
+        n = len(vals)
+        if not n:
+            return None
+        return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+
+    ttft = _sorted_field("time_to_first_token_ms")
+    itl = _sorted_field("inter_token_latency_ms")
+    tpot = _sorted_field("time_per_output_token_ms")
+    lat = _sorted_field("request_latency")
+    ptoks = _sorted_field("prompt_tokens")
+    otoks = _sorted_field("output_tokens")
+    otps = _sorted_field("output_tokens_per_second")
+    tps = _sorted_field("tokens_per_second")
+
+    return {
+        "output_tok_per_sec": _mean(otps),
+        "total_tok_per_sec": _mean(tps),
+        "request_concurrency": None,
+        "measured_rps": None,
+        "intended_concurrency": strategy.get("streams", strategy.get("max_concurrency")),
+        "successful_requests": len(reqs),
+        "errored_requests": errored_count,
+        "ttft_median": _milliseconds_to_seconds(_median(ttft)),
+        "ttft_p95": _milliseconds_to_seconds(_percentile(ttft, 95)),
+        "ttft_p99": _milliseconds_to_seconds(_percentile(ttft, 99)),
+        "ttft_p1": _milliseconds_to_seconds(_percentile(ttft, 1)),
+        "ttft_p999": _milliseconds_to_seconds(_percentile(ttft, 99.9)),
+        "ttft_mean": _milliseconds_to_seconds(_mean(ttft)),
+        "tpot_median": _milliseconds_to_seconds(_median(tpot)),
+        "tpot_p95": _milliseconds_to_seconds(_percentile(tpot, 95)),
+        "tpot_p99": _milliseconds_to_seconds(_percentile(tpot, 99)),
+        "tpot_p1": _milliseconds_to_seconds(_percentile(tpot, 1)),
+        "tpot_p999": _milliseconds_to_seconds(_percentile(tpot, 99.9)),
+        "itl_median": _milliseconds_to_seconds(_median(itl)),
+        "itl_p95": _milliseconds_to_seconds(_percentile(itl, 95)),
+        "itl_p99": _milliseconds_to_seconds(_percentile(itl, 99)),
+        "itl_p1": _milliseconds_to_seconds(_percentile(itl, 1)),
+        "itl_p999": _milliseconds_to_seconds(_percentile(itl, 99.9)),
+        "itl_mean": _milliseconds_to_seconds(_mean(itl)),
+        "request_latency_median": _median(lat),
+        "request_latency_min": min(lat) if lat else None,
+        "request_latency_max": max(lat) if lat else None,
+        "prompt_token_count_mean": _mean(ptoks),
+        "prompt_token_count_p99": _percentile(ptoks, 99),
+        "output_token_count_mean": _mean(otoks),
+        "output_token_count_p99": _percentile(otoks, 99),
+    }
 
 
 def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRecord]:
@@ -451,6 +635,54 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
                 higher_is_better=higher_is_better if higher_is_better is not None else True,
             )
             output.append(kpi_record)
+
+        per_turn_data = record.metrics.get("per_turn_curves", {})
+        if per_turn_data:
+            for turn_idx, turn_curves in sorted(per_turn_data.items(), key=lambda x: int(x[0])):
+                turn_labels = {**labels}
+                turn_labels.update(metadata_labels)
+                turn_labels["turn"] = str(turn_idx)
+
+                turn_metadata = {
+                    "run_path": record.test_base_path,
+                }
+                turn_run_id = f"{record.test_base_path}__turn_{turn_idx}"
+                turn_ic = turn_curves.get("intended_concurrency", [])
+
+                for suffix, curve_key, _, unit, higher_is_better in DASHBOARD_METRICS:
+                    vals = turn_curves.get(curve_key, [])
+                    if not vals or all(v is None for v in vals):
+                        continue
+
+                    curve_data = []
+                    for i, value in enumerate(vals):
+                        if value is None:
+                            continue
+                        if i < len(turn_ic) and turn_ic[i] is not None:
+                            curve_data.append([float(turn_ic[i]), float(value)])
+
+                    if not curve_data:
+                        continue
+
+                    output.append(
+                        KpiRecord(
+                            schema_version="1",
+                            kpi_id=f"{prefix}_{suffix}",
+                            values=curve_data,
+                            x_unit="rps",
+                            y_unit=unit,
+                            x_help="Request rate (concurrency)",
+                            y_help=f"Dashboard metric: {suffix}",
+                            run_id=turn_run_id,
+                            timestamp=timestamp,
+                            labels=turn_labels,
+                            metadata=turn_metadata,
+                            is_curve=True,
+                            higher_is_better=(
+                                higher_is_better if higher_is_better is not None else True
+                            ),
+                        )
+                    )
 
     return output
 

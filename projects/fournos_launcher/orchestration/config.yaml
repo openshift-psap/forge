@@ -1,5 +1,7 @@
 vaults:
 - psap-forge-ci
+- psap-forge-notifications
+- psap-fournos-intlab-ci
 
 cluster:
   name: null
@@ -12,20 +14,30 @@ overrides: {} # don't touch this one directly, the config module will populate i
 extra_overrides: {}
 fournos_launcher:
   parallel_jobs: {}
-
+notifications:
+  vault:
+    name: psap-forge-notifications
 fournos:
+  instance: intlab # psap-mgmt or intlab
   namespace: psap-automation
-  kubeconfig:
+  psap_mgmt:
     vault:
       name: psap-forge-ci
       key: kubeconfig
+  intlab:
+    vault:
+      name: psap-fournos-intlab-ci
+    tunnel:
+      local_port: 6443
+      ssh_flags: [-o, StrictHostKeyChecking=no, -o, UserKnownHostsFile=/dev/null]
   job:
+    ttl: 12h # Valid format: ^(?:(?:\d+d)?(?:\d+h)?(?:\d+m)?)+$ (e.g., "12h", "1d6h", "30m")
     owner: "FORGE/fournos-launcher" # updated to the PR owner if available
     display_name: null # will be set to the job project/args if null
     pipeline_name: forge-test-only
     ci_label: null # will be generated from the CI job UID
     exclusive: true
-    clusterless: null
+    clusterless: true
     env:
       OPENSHIFT_CI_job: [JOB_TYPE, JOB_NAME, JOB_SPEC, OPENSHIFT_CI, JOB_NAME_SAFE, BUILD_ID]
       OPENSHIFT_CI_git_pr: [PULL_PULL_SHA, PULL_NUMBER, PULL_BASE_REF, REPO_NAME, REPO_OWNER, PULL_BASE_SHA, JOB_NAME, PULL_TITLE, PULL_REFS, PULL_HEAD_REF]

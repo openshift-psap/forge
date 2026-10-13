@@ -175,6 +175,16 @@ def merge_run_metadata_with_git_source(
     return merged if merged else None
 
 
+def _extra_params_from_metadata(run_metadata: dict[str, Any] | None) -> dict[str, str]:
+    """Extract tags from run metadata as extra MLflow parameters."""
+    if not run_metadata:
+        return {}
+    tags = run_metadata.get("tags")
+    if not isinstance(tags, dict):
+        return {}
+    return {str(k): (str(v) if v is not None else "") for k, v in tags.items()}
+
+
 def _apply_run_metadata(run_metadata: dict[str, Any] | None) -> None:
     """
     Set run description and tags from ``mlflow-config.yaml`` (non-secret section).
@@ -693,10 +703,15 @@ def log_multi_run_artifacts(
                             elif isinstance(v, int | float) and not isinstance(v, bool):
                                 mlflow.log_metric(str(k), float(v))
 
+                    extra_params = _extra_params_from_metadata(effective_meta)
+                    params = {**extra_params}
                     pf = run_dir / parameters_file
                     if pf.is_file():
-                        for k, v in _load_json_file(pf).items():
-                            mlflow.log_param(str(k), "" if v is None else str(v))
+                        params.update(_load_json_file(pf))
+                    for k, v in params.items():
+                        mlflow.log_param(str(k), "" if v is None else str(v))
+
+                    _apply_run_metadata(effective_meta)
 
                     _upload_mlflow_files_parallel(
                         client=client,

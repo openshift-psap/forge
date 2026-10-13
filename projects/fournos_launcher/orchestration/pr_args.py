@@ -68,6 +68,9 @@ def get_supported_fournos_directives() -> dict[str, str]:
                          Format: /replot.url URL
                          Example: /replot.url s3://bucket/path/to/artifacts
                          Effect: Sets caliper.replot.url in configuration.""",
+        "/external": """Use the external (psap-mgmt) FOURNOS instance instead of intlab.
+                       Format: /external
+                       Effect: Sets fournos.instance to psap-mgmt.""",
         "/help": """Show all supported FOURNOS directives.
                    Format: /help
                    Effect: Logs available directive information.""",
@@ -94,7 +97,7 @@ def handle_cluster_directive(line: str) -> dict[str, str]:
     if not cluster_name:
         raise ValueError(f"Invalid /cluster directive: cluster name cannot be empty in '{line}'")
 
-    return {"cluster.name": cluster_name}
+    return {"cluster.name": cluster_name, "fournos.job.clusterless": False}
 
 
 def handle_exclusive_directive(line: str) -> dict[str, str]:
@@ -195,6 +198,29 @@ def handle_pipeline_directive(line: str) -> dict[str, str]:
     return {"fournos.job.pipeline_name": pipeline_name}
 
 
+def handle_ttl_directive(line: str) -> dict[str, str]:
+    """
+    Handle /ttl directive for setting the Fjob TTL name.
+
+    Format: /ttl duration
+
+    Args:
+        line: The directive line
+
+    Returns:
+        Dictionary with ttl configuration
+
+    Raises:
+        ValueError: If ttl_value is empty
+    """
+    ttl_value = line.removeprefix("/ttl ").strip()
+
+    if not ttl_value:
+        raise ValueError(f"Invalid /ttl directive: ttl value cannot be empty in '{line}'")
+
+    return {"fournos.job.ttl": ttl_value}
+
+
 def handle_gpu_directive(line: str) -> dict[str, str]:
     """
     Handle /gpu directive for setting GPU hardware requirements.
@@ -244,6 +270,21 @@ def handle_gpu_directive(line: str) -> dict[str, str]:
         ) from None
 
     return {"fournos.job.hardware.gpu_type": gpu_type, "fournos.job.hardware.gpu_count": gpu_count}
+
+
+def handle_external_directive(line: str) -> dict[str, str]:
+    """
+    Handle /external directive for using the psap-mgmt FOURNOS instance.
+
+    Format: /external
+
+    Args:
+        line: The directive line
+
+    Returns:
+        Dictionary with instance configuration
+    """
+    return {"fournos.instance": "psap-mgmt"}
 
 
 def handle_replot_url_directive(line: str) -> dict[str, str]:
@@ -351,8 +392,10 @@ def get_fournos_directive_handlers() -> dict[str, callable]:
         "/clusterless": handle_clusterless_directive,
         "/fournos": handle_fournos_directive,
         "/pipeline": handle_pipeline_directive,
+        "/ttl": handle_ttl_directive,
         "/gpu": handle_gpu_directive,
         "/parallel": handle_parallel_directive,
+        "/external": handle_external_directive,
         "/replot.url": handle_replot_url_directive,
         "/help": handle_help_directive,
     }
@@ -389,6 +432,14 @@ def parse_fournos_directives(
     ):
         raise ValueError(
             "Conflicting directives: /clusterless and /exclusive true cannot both be used"
+        )
+
+    if (
+        "fournos.namespace" in config_overrides
+        and config_overrides.get("fournos.instance") != "psap-mgmt"
+    ):
+        raise ValueError(
+            "/fournos directive requires /external (namespace override only applies to the psap-mgmt instance)"
         )
 
     # Log successful parses at info level for FOURNOS

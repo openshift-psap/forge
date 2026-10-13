@@ -634,7 +634,7 @@ def _generate_restart_script(function_args: dict, caller_frame, meta_dir):
     script_content += f"# Original execution artifact dir: {env.ARTIFACT_DIR}\n\n"
 
     # Build command line with arguments on separate lines
-    script_content += f"exec python {shlex.quote(str(rel_filename))}"
+    script_content += f"python {shlex.quote(str(rel_filename))}"
 
     # Add arguments, each on a new line with proper indentation
     for key, value in function_args.items():

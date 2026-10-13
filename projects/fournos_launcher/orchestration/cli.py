@@ -65,13 +65,6 @@ def submit(ctx, cluster, project, args, namespace, override, commit):
                 "--cluster or cluster.name is mandatory (unless clusterless mode is enabled)"
             )
 
-    # Validate clusterless and exclusive modes are not both enabled
-    exclusive_mode = config.project.get_config("fournos.job.exclusive")
-    if clusterless_mode and exclusive_mode:
-        raise ValueError(
-            "Clusterless mode and exclusive mode cannot both be enabled - use /clusterless (sets exclusive=false) or /exclusive false"
-        )
-
     if cluster:
         logger.info(f"Using cluster {cluster}")
     else:

@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # The Application is still named forge-production because this is the
+  # production Forge instance in the Intlab cluster. This manifest is
+  # applied only to Intlab; management continues to use forge-production.yaml.
+  name: forge-production
+  namespace: openshift-gitops
+  labels:
+    app.kubernetes.io/name: forge-on-fournos
+    app.kubernetes.io/part-of: fournos
+    environment: intlab-production
+  annotations:
+    description: "FORGE Intlab production environment deployment via GitOps"
+spec:
+  project: forge-on-fournos
+  source:
+    repoURL: https://github.com/openshift-psap/forge
+    targetRevision: main
+    path: fournos/gitops/overlays/intlab-production
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: psap-automation
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  revisionHistoryLimit: 10

@@ -12,21 +12,22 @@ import re
 # Keyword patterns to detect in file content
 # These are compiled regex patterns that match common sensitive data patterns
 KEYWORD_PATTERNS = [
-    # Password patterns
-    r"password\s*[:=]\s*\S+",
-    r"passwd\s*[:=]\s*\S+",
-    # API key patterns
-    r"api[_-]?key\s*[:=]\s*\S+",
-    r"apikey\s*[:=]\s*\S+",
-    r"api[_-]?secret\s*[:=]\s*\S+",
-    # Token patterns (exclude version specifiers like ==0.14.0)
+    # Password patterns - exclude function calls, env lookups, already redacted content
+    r"password\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[|''|\"\"|\$)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"passwd\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[|''|\"\"|\$)['\"]?[^'\"\s<>\[\]()]{3,}",
+    # API key patterns - improved to exclude function calls and already redacted content
+    r"api[_-]?key\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[|''|\"\"|\$)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"apikey\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[|''|\"\"|\$)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"api[_-]?secret\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[|''|\"\"|\$)['\"]?[^'\"\s<>\[\]()]{3,}",
+    # Token patterns (general token pattern still disabled, but specific ones enabled)
     # r"(?:^|[^a-zA-Z])token\s*[:=]\s*(?![=~<>])\S+", # DISABLED, too sensitive for inference work ...
-    r"secret[_-]?token\s*[:=]\s*\S+",
-    r"access[_-]?token\s*[:=]\s*\S+",
-    r"api[_-]?token\s*[:=]\s*\S+",
-    r"refresh[_-]?token\s*[:=]\s*\S+",
+    r"secret[_-]?token\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"access[_-]?token\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"api[_-]?token\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"refresh[_-]?token\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
     # Bearer tokens (compiled with IGNORECASE, so one pattern covers both cases)
-    r"Bearer\s+[A-Za-z0-9+/=]+",
+    # Require minimum 20 characters and avoid matching descriptive text like "bearer token file"
+    r"Bearer\s+[A-Za-z0-9+/=]{20,}",
     # Specific service API keys
     r"sk-[a-zA-Z0-9]{32,}",  # OpenAI API keys
     r"ghp_[a-zA-Z0-9]{36}",  # GitHub personal access tokens
@@ -36,14 +37,30 @@ KEYWORD_PATTERNS = [
     r"ghr_[a-zA-Z0-9]{36}",  # GitHub refresh tokens
     # AWS patterns
     r"AKIA[0-9A-Z]{16}",  # AWS Access Key ID
-    r"aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*\S+",
+    r"aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
     # Database connection strings
     r"mongodb://[^/\s]+:[^@\s]+@",
     r"mysql://[^/\s]+:[^@\s]+@",
     r"postgresql://[^/\s]+:[^@\s]+@",
-    # Generic credential patterns
-    r"credential\s*[:=]\s*\S+",
-    r"private[_-]?key\s*[:=]\s*\S+",
+    # Generic credential patterns - improved
+    r"credential\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"private[_-]?key\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
+    # ML/AI service tokens
+    r"(?:huggingface|anthropic|openai|claude)[_-]?(?:token|key|api[_-]?key)\s*[:=]\s*[^'\"\s<>\[\]()]{3,}",
+    r"hf_[a-zA-Z0-9]{20,}",  # Hugging Face tokens
+    r"ant-[a-zA-Z0-9]{20,}",  # Anthropic API keys (if they use this format)
+    # Common secret/key patterns
+    r"(?:jwt|webhook|slack|discord|telegram)[_-]?(?:secret|token|key)\s*[:=]\s*[^'\"\s<>\[\]()]{3,}",
+    r"encryption[_-]?key\s*[:=]\s*[^'\"\s<>\[\]()]{3,}",
+    r"signing[_-]?key\s*[:=]\s*[^'\"\s<>\[\]()]{3,}",
+    # Slack tokens (specific patterns)
+    r"xox[bpoa]-[a-zA-Z0-9-]+",  # Slack tokens (bot, app, oauth, etc.)
+    # Command line arguments
+    r"--(?:password|api[_-]?key|token|secret)\s+[^'\"\s]{3,}",
+    # OpenShift/Kubernetes secret creation commands
+    r"(?:oc|kubectl)\s+create\s+secret\s+.*--from-literal[=\s]+[^=\s]+=[^'\"\s]{3,}",
+    # Environment variable exports in shell (explicit lowercase to avoid matching var names)
+    r"(?:^|\s)[e][x][p][o][r][t]\s+[A-Z_]*(?:PASSWORD|API_KEY|TOKEN|SECRET)[A-Z_]*=[^'\"\s]{3,}",
 ]
 
 # Compile patterns for better performance

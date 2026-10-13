@@ -9,9 +9,9 @@ from typing import Any
 from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
-    TestBaseNode,
     UnifiedRunModel,
 )
 
@@ -39,7 +39,7 @@ class SkeletonDefaultPlugin(PostProcessingPlugin):
             "throughput_chart": ThroughputChartPlot,
         }
 
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         """Parse test nodes using the skeleton parser."""
         return self.parser.parse(nodes)
 

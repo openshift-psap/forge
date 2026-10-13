@@ -9,7 +9,7 @@ from typing import Any
 
 
 @dataclass
-class TestBaseNode:
+class BaseTestNode:
     """Directory containing __caliper_test_metadata__.yaml or MatrixBenchmarking settings.yaml."""
 
     directory: Path
@@ -43,7 +43,7 @@ class UnifiedRunModel:
 
     plugin_module: str
     base_directory: str
-    test_nodes: list[TestBaseNode]
+    test_nodes: list[BaseTestNode]
     unified_result_records: list[UnifiedResultRecord]
     parse_cache_ref: str | None = None
     schema_version: str = "1"
@@ -84,7 +84,7 @@ class PostProcessingPlugin(ABC):
     """Project plugin: parse required; other hooks optional with defaults."""
 
     @abstractmethod
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         """Parse each labeled test base into unified records."""
 
     def visualize(

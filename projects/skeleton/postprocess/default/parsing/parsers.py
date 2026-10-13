@@ -7,13 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
-    TestBaseNode,
     UnifiedResultRecord,
 )
 
 
-def _labels_from_node(node: TestBaseNode) -> dict[str, Any]:
+def _labels_from_node(node: BaseTestNode) -> dict[str, Any]:
     """Extract labels from a test node."""
     raw = node.test_labels
     inner = raw.get("labels")
@@ -46,7 +46,7 @@ class SkeletonParser:
             warnings.append(f"Malformed JSON {file_path}: {e}")
             return {"_parse_error": True}, warnings
 
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         """
         Parse test nodes containing metrics.json files.
 

@@ -779,7 +779,6 @@ When writing a toolbox command, ensure:
 
 - **Specs**: Check `specs/008-toolbox-dsl/` for detailed DSL documentation
 - **Examples**: Look at existing commands in `projects/*/toolbox/`
-- **TOPSAIL Reference**: Check [openshift-psap/topsail](https://github.com/openshift-psap/topsail/pulls/@me) for mature patterns
 - **Code Review**: Have colleagues review for adherence to these principles
 
 Remember: The toolbox is a **DSL**, not plain Python. Embrace the constraints - they make your commands more reliable, debuggable, and reusable!

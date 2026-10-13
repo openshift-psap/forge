@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,13 +33,14 @@ from projects.caliper.orchestration.postprocess_config import (
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
+from projects.core.library.ci import ExitCategory
 from projects.core.library.reports_index import generate_caliper_reports_index
 from projects.core.library.status_to_html import convert_status_yaml_to_html
 
 logger = logging.getLogger(__name__)
 
 
-def write_test_labels(
+def create_test_metadata(
     directory: Path,
     labels: dict[str, str],
     *,
@@ -50,9 +52,6 @@ def write_test_labels(
     completion: CompletionData | None = None,
 ) -> Path:
     """Write Caliper test metadata files to mark a directory as a Caliper test base.
-
-    Creates both caliper metadata file (new format) and __test_labels__.yaml
-    (legacy format) with identical content for backward compatibility.
 
     Args:
         directory: Directory to create the test metadata files in
@@ -68,7 +67,7 @@ def write_test_labels(
         Path to the created caliper metadata file file
 
     Example:
-        write_test_labels(
+        create_test_metadata(
             test_dir,
             {
                 "model": "llama-3",
@@ -117,6 +116,102 @@ def write_test_labels(
             logger.warning(f"Failed to save project configuration: {e}")
 
     return metadata_path
+
+
+def update_test_labels_with_timing(
+    directory: Path, timing_section: str, timing_event: str
+) -> datetime:
+    """Update caliper metadata file with timing information.
+
+    Args:
+        directory: Directory to create the test metadata files in
+        timing_section: Section name (e.g., 'benchmark', 'test')
+        timing_event: Event name ('start' or 'end')
+    """
+
+    if timing_event not in ("start", "end"):
+        raise ValueError(f"Unexpected timing event '{timing_event}'")
+
+    timestamp_dt = datetime.now(UTC)
+    timestamp = timestamp_dt.isoformat().replace("+00:00", "Z")
+
+    test_labels_path = directory / METADATA_FILE
+
+    if not test_labels_path.exists():
+        logging.error("Caliper metadata file not found ...")
+        return datetime.now(UTC)
+
+    # Read existing labels and parse with dataclass
+    with test_labels_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    metadata = CaliperTestMetadata.from_dict(data)
+
+    # Ensure timing exists
+    if not metadata.timing:
+        metadata.timing = TimingData()
+
+    # Get or create the phase
+    phase = metadata.timing.get_phase(timing_section)
+    if not phase:
+        if timing_event == "start":
+            metadata.timing.set_phase(timing_section, timestamp)
+        else:
+            # If we're setting end but no start exists, create with empty start
+            metadata.timing.set_phase(timing_section, "", timestamp)
+    else:
+        # Update existing phase
+        if timing_event == "start":
+            phase.start = timestamp
+        elif timing_event == "end":
+            phase.end = timestamp
+
+    # Write updated labels
+    with test_labels_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
+
+    logger.info(
+        "Updated test labels with timing: %s.%s = %s", timing_section, timing_event, timestamp
+    )
+
+    return timestamp_dt
+
+
+def update_test_labels_with_status(directory: Path, success: bool, message: str) -> None:
+    """Update caliper metadata file with test execution status and end time.
+
+    Args:
+        directory: Directory to create the test metadata files in
+        success: True if test succeeded, False if failed
+        message: Status message describing the result
+    """
+    test_labels_path = directory / METADATA_FILE
+
+    # Read existing labels
+    if not test_labels_path.exists():
+        logging.error("Caliper metadata file not found ...")
+        return
+
+    with test_labels_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    metadata = CaliperTestMetadata.from_dict(data)
+
+    # Add completion information using dataclass
+    metadata.completion = CompletionData(success=success, message=message)
+
+    # Write updated labels
+    with test_labels_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
+
+    logger.info(
+        "Updated test labels with completion status success=%s, message=%s",
+        success,
+        message,
+    )
+
+    if not success:
+        (test_labels_path.parent / "FAILURE.txt").write_text(message)
 
 
 def generate_postprocess_status_report(
@@ -235,19 +330,17 @@ def run_and_postprocess(test_func, *args, **kwargs):
         except Exception as postprocess_exc:
             logger.exception("Caliper postprocess after test failed with exception")
             if original_exc is not None:
-                # Both test and postprocess failed: chain so both are visible in the traceback
                 raise postprocess_exc from original_exc
 
-            # Only postprocess failed: return failure code instead of raising
             logger.error(
                 "Test succeeded but postprocessing failed with exception - returning exit code 1"
             )
-            return 1
+            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing exception: {postprocess_exc}"
 
 
 def _handle_postprocess_failure(
     status: dict, original_exc: BaseException | None, final_status: str
-) -> int | None:
+) -> tuple[int, ExitCategory, str] | None:
     """Handle postprocessing failure logic.
 
     Args:
@@ -256,37 +349,31 @@ def _handle_postprocess_failure(
         final_status: Final status from postprocessing
 
     Returns:
-        Exit code to return, or None to re-raise original exception
+        (return_code, ExitCategory, reason) tuple, or None to re-raise original exception
     """
-    # Check if failure is only due to warnings
     if _is_warnings_only_failure(status):
         if original_exc is not None:
-            # Test failed, postprocess has warnings: still fail due to test
             logger.error(
                 "Test failed and postprocessing completed with warnings (final_status: %s)",
                 final_status,
             )
-            return None  # Signal to re-raise original exception
+            return None
         else:
-            # Test succeeded, postprocess has warnings only: treat as success
             logger.warning(
                 "Test succeeded and postprocessing completed with warnings (final_status: %s) - returning exit code 0",
                 final_status,
             )
-            return 0
+            return 0, ExitCategory.SUCCESS, ""
     else:
-        # Actual postprocessing failures (not just warnings)
         if original_exc is not None:
-            # Both test and postprocess failed: log both issues
             logger.error("Both test and postprocessing failed (final_status: %s)", final_status)
-            return None  # Signal to re-raise original exception
+            return None
         else:
-            # Only postprocess failed: return failure code
             logger.error(
                 "Test succeeded but postprocessing failed (final_status: %s) - returning exit code 1",
                 final_status,
             )
-            return 1
+            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing failed: {final_status}"
 
 
 def _is_warnings_only_failure(status: dict) -> bool:
@@ -473,10 +560,9 @@ def postprocess_command(_ctx, artifact_dir: Path, output_dir: Path):
     # Check success flag and return appropriate exit code
     success = status.get("success", False)
     if not success:
+        final_status = status.get("final_status", "unknown")
         logger.error(
             "Postprocessing failed (final_status: %s) - returning exit code 1",
-            status.get("final_status", "unknown"),
+            final_status,
         )
-        return 1
-
-    return 0
+        return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing failed: {final_status}"

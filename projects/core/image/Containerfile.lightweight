@@ -8,7 +8,7 @@ LABEL     io.k8s.display-name="OpenShift PSAP FORGE lightweight image" \
           url="https://github.com/openshift-psap/forge"
 
 RUN dnf install -y --quiet \
-      git jq vim wget curl rsync time file psmisc procps ca-certificates \
+      git jq vim wget curl rsync time file psmisc procps ca-certificates openssh-clients \
       python3 python3-pip python3-setuptools \
     && dnf clean all \
     && rm -rf /var/cache/yum

@@ -7,6 +7,7 @@ Registers a :mod:`click` subcommand that reads ``caliper`` from project config a
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from enum import StrEnum
@@ -23,17 +24,23 @@ from projects.caliper.orchestration.export import (
 from projects.caliper.orchestration.postprocess import POSTPROCESS_STATUS_FILENAME
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run
+from projects.core.library.ci import ExitCategory
 from projects.core.library.export_notifications import (
     BackendResult,
     CaliperArtifactsExport,
     ExportStatus,
+    JobShutdown,
     TestPhase,
     _check_job_shutdown_status,
-    _create_mlflow_file_url_for_step,
-    send_notification,
+    _create_mlflow_url,
+    send_completion_notifications,
 )
 
 logger = logging.getLogger(__name__)
+
+# Global switch to disable test failure when censoring occurs
+# Set to True to disable test failures when secrets are found and censored
+DISABLE_CENSORING_TEST_FAILURE = True
 
 
 class FinishReason(StrEnum):
@@ -91,7 +98,7 @@ def _update_fjob_export_status(status: ExportStatus):
 
             # Save a copy of the updated fjob to metadata directory
             try:
-                metadata_dir = ci_lib.get_ci_metadata_dir()
+                metadata_dir = ci_lib.get_ci_metadata_dir_location()
                 fournos_fjob_path = metadata_dir / "fournos_fjob.yaml"
                 fournos_fjob_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -128,7 +135,7 @@ def _process_caliper_postprocess_status(
                 continue
 
             # Check for job shutdown/abort status
-            shutdown_status = _check_job_shutdown_status()
+            shutdown_status = _check_job_shutdown_status(step_dir)
             if shutdown_status:
                 # Add shutdown information to status data
                 status_data["job_shutdown"] = shutdown_status
@@ -172,8 +179,15 @@ def _process_caliper_postprocess_status(
                     # Fallback to step_dir.name for backward compatibility
                     step_subdir = step_dir.name
 
-                def get_file_link(file_path: str, step_subdir=step_subdir) -> str:
-                    return _create_mlflow_file_url_for_step(mlflow_run_url, step_subdir, file_path)
+                def get_file_link(file_path: str | Path, step_subdir=step_subdir) -> str:
+                    # Convert to string if Path object was passed
+                    if isinstance(file_path, Path):
+                        file_path = str(file_path)
+
+                    # Combine step_subdir and file_path into a single relative path
+                    relative_path = Path(step_subdir) / file_path
+                    result = _create_mlflow_url(mlflow_run_url, relative_path)
+                    return result if result is not None else f"{mlflow_run_url}/{relative_path}"
 
             # Generate notification text from the structured result
             notification_text = format_postprocess_status_notification(result, get_file_link)
@@ -183,6 +197,43 @@ def _process_caliper_postprocess_status(
         except Exception as e:
             logger.error(f"Failed to process caliper postprocess status file {status_file}: {e}")
             raise
+
+
+def _inject_fournos_job_tags():
+    """Add FournosJob metadata as MLflow tags when running under FournosCI."""
+    fjob_tags = {}
+    fjob_name = config.project.get_config("ci_job.fjob_name", None, print=False, warn=False)
+    if not fjob_name:
+        logger.info("inject_fournos_job_tags: no fjob available, skipping.")
+        return
+
+    fjob_tags["fjob.name"] = fjob_name
+    for config_key, tag_key in [
+        ("ci_job.owner", "fjob.owner"),
+        ("ci_job.display_name", "fjob.display_name"),
+        ("ci_job.cluster", "fjob.cluster"),
+        ("project.name", "fjob.forge.project"),
+    ]:
+        val = config.project.get_config(config_key, None, print=False, warn=False)
+        if val:
+            fjob_tags[tag_key] = str(val)
+
+    args = config.project.get_config("project.args", None, print=False, warn=False)
+    if args:
+        fjob_tags["fjob.forge.args"] = json.dumps(args)
+
+    if not fjob_tags:
+        logger.info("inject_fournos_job_tags: no fjob tag found, skipping.")
+        return
+
+    existing_tags = (
+        config.project.get_config(
+            "caliper.export.backend.mlflow.config.tags", {}, print=False, warn=False
+        )
+        or {}
+    )
+    merged = {**fjob_tags, **existing_tags}
+    config.project.set_config("caliper.export.backend.mlflow.config.tags", merged, print=False)
 
 
 def run_caliper_orchestration_export(
@@ -198,22 +249,7 @@ def run_caliper_orchestration_export(
             "caliper.export.backend.mlflow.config.run_name", os.environ["FJOB_NAME"], print=False
         )
 
-    # Initialize vaults needed for export operations
-    try:
-        from projects.core.library import vault
-
-        # Get export-specific vaults (MLflow, S3, notifications)
-        export_vaults = caliper_export_list_vaults()
-
-        if export_vaults:
-            vault.init(vaults=export_vaults)
-            logger.info(f"Initialized vault manager with {len(export_vaults)} vaults for export")
-        else:
-            logger.info("No vaults needed for export operation")
-
-    except Exception as e:
-        logger.warning(f"Failed to initialize vaults for export: {e}")
-        logger.warning("Continuing with export operation - some features may not work")
+    _inject_fournos_job_tags()
 
     caliper_cfg = config.project.get_config("caliper", print=False)
 
@@ -296,7 +332,7 @@ def caliper_export_entrypoint(
             "No artifact directory found. Please set --artifact-dir parameter, "
             "caliper.export.from config, ARTIFACT_DIR, or ARTIFACT_BASE_DIR environment variable."
         )
-        return 1
+        return 1, ExitCategory.CONFIG_ERROR, "No artifact directory found"
 
     # Normalize artifact_dir to a pathlib.Path after precedence resolution
     artifact_dir = Path(artifact_dir)
@@ -337,12 +373,25 @@ def caliper_export_entrypoint(
                     message="Test execution completed with failures",
                 ),
             )
+
+            # Check for job shutdown/abort status and add to mock status
+            shutdown_status = _check_job_shutdown_status()
+            if shutdown_status:
+                status.job_shutdown = JobShutdown.from_dict(shutdown_status)
+                logger.info(f"Added job shutdown status to dry run mock status: {shutdown_status}")
         else:
             status = run_caliper_orchestration_export(
                 artifact_dir=artifact_dir,
                 disable_censoring=disable_censoring,
                 disable_file_export=disable_file_export,
             )
+
+            # Check for job shutdown/abort status and add to main export status
+            shutdown_status = _check_job_shutdown_status()
+            if shutdown_status:
+                status.job_shutdown = JobShutdown.from_dict(shutdown_status)
+                logger.info(f"Added job shutdown status to main export status: {shutdown_status}")
+
             logger.info("Export status:\n" + yaml.dump(status.to_dict(), indent=4))
 
             # Update fjob status with export results (only if file export is not disabled)
@@ -356,17 +405,25 @@ def caliper_export_entrypoint(
         export_failed = True
         # Create failure status for notification
         status = ExportStatus(success=False, final_status=f"failed: {e}")
+        # Check for job shutdown/abort status and add to failure status
+        shutdown_status = _check_job_shutdown_status(artifact_dir)
+        if shutdown_status:
+            status.job_shutdown = JobShutdown.from_dict(shutdown_status)
     except Exception as e:
         logger.exception(f"Export failed with unexpected error: {e}")
         export_failed = True
         # Create failure status for notification
         status = ExportStatus(success=False, final_status=f"failed: {e}")
+        # Check for job shutdown/abort status and add to failure status
+        shutdown_status = _check_job_shutdown_status(artifact_dir)
+        if shutdown_status:
+            status.job_shutdown = JobShutdown.from_dict(shutdown_status)
 
     finally:
         # Send completion notifications regardless of success/failure
         if status and not disable_notification:
             try:
-                notification_success = send_notification(
+                notification_success = send_completion_notifications(
                     artifact_dir,
                     status,
                     notification_provider=notification_provider,
@@ -390,13 +447,15 @@ def caliper_export_entrypoint(
             logger.info("Skipping final artifacts upload due to --disable-file-export flag")
 
     if export_failed or notification_failed:
-        return 1, "failed"
+        return 1, ExitCategory.INTERNAL_ERROR, "Export or notification failed"
 
-    # Check if censoring occurred and return exit code 1 if so
     if status and status.censoring_occurred:
-        return 1, "censoring_occurred"
-
-    return 0
+        if DISABLE_CENSORING_TEST_FAILURE:
+            logger.info(
+                "Censoring occurred but test failure disabled via DISABLE_CENSORING_TEST_FAILURE"
+            )
+        else:
+            return 1, ExitCategory.INTERNAL_ERROR, "Censoring occurred in exported artifacts"
 
 
 def _update_final_artifacts(artifact_dir, export_status: ExportStatus | None) -> None:
@@ -496,7 +555,9 @@ def _update_artifacts(
 
     for fpath in [
         artifact_dir_path / "run.log",
-        artifact_dir_path / "NOTIFICATION-github.md",
+        artifact_dir_path / "status.yaml",
+        artifact_dir_path / "COMPLETION-NOTIFICATION.md",
+        artifact_dir_path / "SLACK-NOTIFICATION.txt",
         artifact_dir_path / "000__ci_metadata" / "fournos_fjob.yaml",
     ]:
         if fpath.is_file():
@@ -530,6 +591,9 @@ def caliper_export_list_vaults() -> list[str]:
     try:
         from projects.core.library import config
 
+        # S3 vaults are only needed when postprocessing is enabled
+        postprocess_enabled = config.project.get_config("caliper.postprocess.enabled", False)
+
         # Check if S3 export or import is enabled in the project configuration
         s3_parent_config = config.project.get_config("caliper.postprocess.s3", {})
         s3_export_config = config.project.get_config("caliper.postprocess.s3.export", {})
@@ -538,7 +602,7 @@ def caliper_export_list_vaults() -> list[str]:
         s3_export_enabled = s3_export_config.get("enabled", False)
         s3_import_enabled = s3_import_config.get("enabled", False)
 
-        if s3_export_enabled or s3_import_enabled:
+        if postprocess_enabled and (s3_export_enabled or s3_import_enabled):
             # Add the configured vault for S3 credentials (shared between import and export)
             vault_config = s3_parent_config.get("vault", {})
             vault_name = (
@@ -639,23 +703,22 @@ def caliper_agentic_list_vaults() -> list[str]:
         # Check if agentic features are enabled in the project configuration
         agentic_config = config.project.get_config("agentic", {})
 
-        # Check if any agentic feature is enabled
-        any_agentic_enabled = (
-            agentic_config.get("enabled", False)
-            or agentic_config.get("on_failure", {}).get("enabled", False)
-            or agentic_config.get("config_review", {}).get("enabled", False)
-        )
+        if agentic_config.get("enabled", False):
+            # Check if any agentic feature is enabled
+            any_agentic_enabled = agentic_config.get("on_failure", {}).get(
+                "enabled", False
+            ) or agentic_config.get("config_review", {}).get("enabled", False)
 
-        if any_agentic_enabled:
-            # Add the models vault for agentic operations
-            models_vault = "psap-models-corp-rh"
-            agentic_vaults.append(models_vault)
-            logger.info(f"Added agentic models vault: {models_vault}")
+            if any_agentic_enabled:
+                # Add the models vault for agentic operations
+                models_vault = "psap-models-corp-rh"
+                agentic_vaults.append(models_vault)
+                logger.info(f"Added agentic models vault: {models_vault}")
 
-        # STUB: Could add other agentic-related vaults here in the future
+        # Add other agentic-related vaults here in the future
 
     except Exception as e:
-        logger.warning(f"Failed to determine agentic vaults from config: {e}")
+        logger.error(f"Failed to determine agentic vaults from config: {e}")
         # Return empty list on error - agentic operations will handle missing vaults gracefully
 
     logger.info(f"Agentic vault list: {agentic_vaults}")

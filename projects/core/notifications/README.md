@@ -44,9 +44,8 @@ run my_project test
 
 ```
 Any calling component
-└── send_notification(message, github=True, slack=False)
-    ├── GitHub: send_notification_to_github()
-    └── Slack: send_notification_to_slack()
+└── send_notification(message, github=True)
+    └── GitHub: send_notification_to_github()
 ```
 
 ### Usage Example
@@ -58,7 +57,6 @@ from projects.core.notifications.send import send_notification
 success = send_notification(
     message="🟢 Test completed successfully\nResults: https://example.com/results",
     github=True,
-    slack=False,
     dry_run=False,
 )
 ```

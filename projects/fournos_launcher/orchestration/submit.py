@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import pathlib
@@ -16,8 +17,8 @@ from projects.core.dsl.utils.k8s import sanitize_k8s_name
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
 from projects.core.library.run_parallel import Parallel
-from projects.core.notifications.send import get_ocpci_link, send_notification
-from projects.fournos_launcher.orchestration import job_management, pr_args
+from projects.core.notifications.send import send_notification
+from projects.fournos_launcher.orchestration import job_management, pr_args, tunnelling
 from projects.fournos_launcher.toolbox.cleanup_fjob.main import (
     run as cleanup_fjob,
 )
@@ -68,6 +69,17 @@ def send_github_notification(
     error: Exception | None = None,
 ):
     """Send a simplified GitHub notification with essential test information."""
+
+    def get_ocpci_link(path, is_raw_file=False, base=None, is_dir=False):
+        if base is None:
+            base, suffix = get_ci_base_link(is_raw_file, is_dir)
+        else:
+            suffix = None
+
+        link = base + (f"/{path}" if path else "") + (suffix if suffix else "")
+
+        return link
+
     try:
         artifact_dir = pathlib.Path(env.ARTIFACT_DIR)
 
@@ -110,7 +122,7 @@ def send_github_notification(
 
         # Read test configuration from pr_config.txt
         pr_config_content = "Configuration not available"
-        metadata_dir = ci_lib.get_ci_metadata_dir()
+        metadata_dir = ci_lib.get_ci_metadata_dir_location()
         pr_config_file = metadata_dir / "pr_config.txt"
         if pr_config_file.exists():
             try:
@@ -177,7 +189,7 @@ def send_github_notification(
 
         # Write simplified notification to file for notification system pickup
         try:
-            notification_file = artifact_dir / "NOTIFICATION-github.md"
+            notification_file = artifact_dir / "COMPLETION-NOTIFICATION.md"
             with open(notification_file, "w", encoding="utf-8") as f:
                 f.write(notification_status)
             logger.info(f"Created notification content for {job_type} job")
@@ -187,13 +199,65 @@ def send_github_notification(
 
         # Send notification through notification system
         try:
-            send_notification(message=notification_status, github=True, slack=False, dry_run=False)
-            logger.info(f"Sent GitHub notification for {job_type} job")
+            notification_vault = config.project.get_config("notifications.vault.name")
+
+            ok = send_notification(
+                message=notification_status,
+                github=True,
+                dry_run=False,
+                notification_vault=notification_vault,
+            )
+            if ok:
+                logger.info(f"Sent GitHub notification for {job_type} job")
+            else:
+                logger.warning(f"GitHub notification for {job_type} job returned failure")
         except Exception as send_error:
             logger.warning(f"Failed to send notification: {send_error}")
 
     except Exception as e:
         logger.warning(f"Failed to send GitHub notification: {e}")
+
+
+# returns a tuple (base_link, link_suffix)
+def get_ci_base_link(is_raw_file=False, is_dir=False):
+    if os.environ.get("OPENSHIFT_CI") != "true":
+        logger.warning(
+            "Test not running from a well-known CI engine, cannot extract the artifacts link."
+        )
+
+        return "https://no_known_ci_engine/", "?no_ext=true"
+
+    try:
+        job_spec = json.loads(os.environ["JOB_SPEC"])
+    except KeyError:
+        logger.error("JOB_SPEC environment variable is not set")
+        raise
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse JOB_SPEC as JSON: %s", e)
+        raise
+    test_name = os.environ["JOB_NAME_SAFE"]
+    job = job_spec["job"]
+    build_id = job_spec["buildid"]
+
+    if job_spec["type"] == "periodic":
+        link_path = f"logs/{job}/{build_id}"
+
+    else:
+        pull_number = job_spec["refs"]["pulls"][0]["number"]
+        github_org = job_spec["refs"]["org"]
+        github_repo = job_spec["refs"]["repo"]
+
+        link_path = f"pr-logs/pull/{github_org}_{github_repo}/{pull_number}/{job}/{build_id}"
+
+    hostname = os.environ["HOSTNAME"]
+    test_path = f"{hostname.replace(test_name + '-', '', 1)}/artifacts"
+
+    return (
+        "https://gcs.ci.openshift.org/gcs/test-platform-results-public/"
+        + link_path
+        + f"/artifacts/{test_name}/{test_path}",
+        "",
+    )
 
 
 def init():
@@ -213,12 +277,22 @@ def init():
 
 
 def prepare_env():
-    kubeconfig_path = vault.get_vault_content_path(
-        config.project.get_config("fournos.kubeconfig.vault.name"),
-        config.project.get_config("fournos.kubeconfig.vault.key"),
-    )
+    instance = config.project.get_config("fournos.instance")
 
-    os.environ["KUBECONFIG"] = str(kubeconfig_path)
+    if instance == "intlab":
+        logger.info("Using intlab Fournos instance (via SSH tunnel)")
+        tunnelling.open_tunnel()
+    elif instance == "psap-mgmt":
+        logger.info("Using psap-mgmt Fournos instance (direct)")
+        kubeconfig_path = vault.get_vault_content_path(
+            config.project.get_config("fournos.psap_mgmt.vault.name"),
+            config.project.get_config("fournos.psap_mgmt.vault.key"),
+        )
+        os.environ["KUBECONFIG"] = str(kubeconfig_path)
+    else:
+        raise ValueError(
+            f"Unknown fournos.instance: {instance!r} (expected 'psap-mgmt' or 'intlab')"
+        )
 
 
 def submit_job():
@@ -241,6 +315,13 @@ def submit_job():
                 if env_var in os.environ:
                     env_dict[env_var] = os.environ[env_var]
 
+        foreign_testing_project = os.environ.get("FORGE_FOREIGN_TESTING_PROJECT")
+        if foreign_testing_project:
+            logger.info("Foreign testing project detected: %s", foreign_testing_project)
+            for env_var_name in ("PULL_PULL_SHA", "PULL_NUMBER"):
+                if env_var_name in env_dict:
+                    env_dict[f"FORGE_FOREIGN_TESTING_{env_var_name}"] = env_dict.pop(env_var_name)
+
         # Add extra environment variables
         extra_env = config.project.get_config("fournos.job.extra_env", {}, print=False)
         env_dict.update(extra_env)
@@ -248,6 +329,16 @@ def submit_job():
         # Update display name with project and args
         project_name = config.project.get_config("ci_job.project")
         job_args = config.project.get_config("ci_job.args")
+
+        if foreign_testing_project:
+            if project_name != "project_not_set":
+                job_args = [project_name, *job_args]
+            project_name = foreign_testing_project
+            config.project.set_config("ci_job.project", project_name)
+            config.project.set_config("ci_job.args", job_args)
+
+        if project_name == "project_not_set":
+            raise RuntimeError("Forge project isn't configured. Cannot submit the Fjob")
 
         # job_args is always a list, format accordingly
         args_str = " ".join(job_args)
@@ -263,13 +354,6 @@ def submit_job():
         if not cluster_name and not clusterless_mode:
             raise ValueError(
                 "/cluster (cluster.name) must be set - cannot submit job without target cluster (unless /clusterless is used)"
-            )
-
-        # Validate clusterless and exclusive modes are not both enabled
-        exclusive_mode = config.project.get_config("fournos.job.exclusive")
-        if clusterless_mode and exclusive_mode:
-            raise ValueError(
-                "Clusterless mode and exclusive mode cannot both be enabled - use /clusterless (sets exclusive=false) or /exclusive false"
             )
 
         # Get GPU hardware configuration
@@ -306,6 +390,7 @@ def submit_job():
             "clusterless": config.project.get_config("fournos.job.clusterless"),
             "gpu_count": gpu_count,
             "gpu_type": gpu_type,
+            "ttl": config.project.get_config("fournos.job.ttl"),
         }
 
         if parallel_job_configs:

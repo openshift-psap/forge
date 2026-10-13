@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
+import signal
+from datetime import datetime
 
 from projects.core.library import config, env, run
 
@@ -14,7 +16,22 @@ CONFIG_DIR = pathlib.Path(__file__).resolve().parent
 def init() -> None:
     env.init()
     run.init()
+    run.register_signal_callback(_signal_callback)
     config.init(CONFIG_DIR)
+
+
+def _signal_callback(sig, frame, log_file):
+    env.reset_artifact_dir()
+
+    sig_name = signal.Signals(sig).name
+    logger.info(f"Signal callback: received {sig_name}")
+    if not log_file:
+        return
+
+    with log_file.open("a") as f:
+        f.write(
+            f"{datetime.now()}: {__name__}.{_signal_callback.__qualname__} {sig_name} handler\n"
+        )
 
 
 def get_namespace() -> str:
@@ -75,7 +92,12 @@ def get_workload(workload_key: str) -> dict:
 
 
 def get_vaults() -> list[str]:
-    return config.project.get_config("vaults")
+    vaults = config.project.get_config("vaults")
+    agent_analysis_enabled = config.project.get_config("rhaiis.agent_analysis.enabled", False)
+    agent_vault = "psap-forge-rhaiis-agent-analysis"
+    if agent_analysis_enabled and agent_vault not in vaults:
+        return [*vaults, agent_vault]
+    return vaults
 
 
 def get_test_model_key() -> str:
@@ -184,20 +206,6 @@ def _format_arg_value(value: object) -> str:
     return str(value)
 
 
-def build_guidellm_saturation_monitor(monitor_cfg: dict | None) -> dict | None:
-    """Translate FORGE monitor settings to GuideLLM v0.6 configuration.
-
-    In GuideLLM v0.6, ``enabled`` controls enforcement rather than whether the
-    detector runs. Setting it to false retains detector metadata without
-    stopping the benchmark.
-    """
-    if not monitor_cfg or not monitor_cfg.get("enabled", False):
-        return None
-
-    detector_cfg = {key: value for key, value in monitor_cfg.items() if key != "enabled"}
-    return {"enabled": False, **detector_cfg}
-
-
 def build_guidellm_args(
     *,
     benchmark_cfg: dict,
@@ -206,7 +214,6 @@ def build_guidellm_args(
     rates: list[int],
     max_seconds: int,
     rampup: int | None = None,
-    over_saturation: dict | None = None,
 ) -> list[str]:
     guidellm_args = []
     for key, value in benchmark_cfg.get("args", {}).items():
@@ -219,10 +226,44 @@ def build_guidellm_args(
     guidellm_args.append(f"--max-seconds={max_seconds}")
     if rampup is not None:
         guidellm_args.append(f"--rampup={rampup}")
-    if over_saturation is not None:
-        serialized = json.dumps(over_saturation, separators=(",", ":"), sort_keys=True)
-        guidellm_args.extend(["--over-saturation", serialized])
     return guidellm_args
+
+
+def build_configiq_knee_args(*, endpoint_url: str, model_id: str, workload: dict) -> list[str]:
+    """Build native GuideLLM v0.8.1 arguments for one ConfigIQ knee run."""
+    adaptive = workload["adaptive_pass"]
+    profile = {
+        "kind": "knee",
+        "initial_streams": workload["rates"],
+        "adaptive": adaptive["enabled"],
+        "points_each_side": adaptive["points_each_side"],
+        "max_step": adaptive["max_step"],
+    }
+    if rampup := workload.get("rampup"):
+        profile["rampup_duration"] = rampup
+
+    data = workload["data"]
+    if not data.startswith("kind="):
+        data = f"kind=synthetic_text,{data}"
+
+    args = [
+        f"--backend=kind=openai_http,target={endpoint_url},model={model_id}",
+        f"--profile={json.dumps(profile, separators=(',', ':'))}",
+        f"--data={data}",
+        f"--constraint=kind=max_duration,seconds={workload['max_seconds']}",
+        "--output=kind=json,path=/results/benchmarks-default.json",
+    ]
+
+    monitor = workload.get("saturation_monitor")
+    if monitor and monitor["enabled"]:
+        constraint = {
+            "kind": "over_saturation",
+            "mode": "monitor",
+            **{key: value for key, value in monitor.items() if key != "enabled"},
+        }
+        args.append(f"--constraint={json.dumps(constraint, separators=(',', ':'))}")
+
+    return args
 
 
 def split_image_tag(full_image: str) -> tuple[str, str]:

@@ -11,9 +11,9 @@ import yaml
 from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
-    TestBaseNode,
     UnifiedRunModel,
 )
 from projects.guidellm.postprocess.guidellm.dashboard import (
@@ -48,7 +48,7 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
     def __init__(self):
         super().__init__()
 
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         parsed = enrich_guidellm_parse_result(super().parse(nodes), nodes)
         nodes_by_path = {str(node.test_path): node for node in nodes}
         records = []
@@ -126,6 +126,8 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
                 "guidellm_version": labels.get("guidellm_version", ""),
                 "mlflow_run_id": labels.get("mlflow_run_id", ""),
                 "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+                "turns": labels.get("turns", ""),
+                "turn_index": labels.get("turn", ""),
                 "notes": labels.get("notes", ""),
             }
 
@@ -143,7 +145,7 @@ def get_plugin() -> PostProcessingPlugin:
     return LlmDGuideLLMPlugin()
 
 
-def _extract_deployment_metadata(node: TestBaseNode) -> dict[str, Any]:
+def _extract_deployment_metadata(node: BaseTestNode) -> dict[str, Any]:
     """Recover llm-d deployment metadata when only config.yaml was exported."""
     config_path = next((path for path in node.artifact_paths if path.name == "config.yaml"), None)
     if config_path is None:
@@ -183,7 +185,7 @@ def _extract_deployment_metadata(node: TestBaseNode) -> dict[str, Any]:
     return {key: value for key, value in metadata.items() if value not in (None, "")}
 
 
-def _extract_serving_image(node: TestBaseNode) -> str | None:
+def _extract_serving_image(node: BaseTestNode) -> str | None:
     deployment_path = next(
         (
             path
@@ -212,7 +214,7 @@ def _extract_serving_image(node: TestBaseNode) -> str | None:
     return None
 
 
-def _extract_accelerator(node: TestBaseNode) -> str | None:
+def _extract_accelerator(node: BaseTestNode) -> str | None:
     """Infer the GPU family from captured serving-pod placement."""
     pods_path = next(
         (path for path in node.artifact_paths if path.name == "llminferenceservice.pods.yaml"),

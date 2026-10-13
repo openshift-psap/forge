@@ -27,18 +27,17 @@ dependencies = [
     "dash>=2.14.0",
     "dash-bootstrap-components>=1.5.0",
     "jinja2",
+    "markdown>=3.6",
     "pyyaml>=6.0",
     "jsonschema>=4.19.0",
     "structlog>=23.1.0",
     "click>=8.1.0",
     "requests",
     "slack_sdk==3.35.0",
-    "ansible", "fire",
     "pyjwt",
     "jsonpath_ng",
     "pydantic>=2.0",
     "yq",
-    "joblib",
 ]
 
 [project.optional-dependencies]
@@ -68,24 +67,13 @@ caliper = [
 prometheus_metrics = [
     "pyyaml>=6.0",
 ]
-matrix_benchmarking = [
-    "pandas",
-    "dash",
-    "plotly",
-    "kaleido>=1.0.0",
-    "fire",
-    "pyyaml",
-    "BeautifulSoup4==4.11.*",
-    "prometheus_api_client",
-    "pydantic",
-    "opensearch-py",
-    "boto3",
-    "pandas",
-]
 agentic_review = [
     "httpx",
     "langchain-openai",
     "langchain-core",
+]
+benchconf = [
+    "benchconf @ git+https://github.com/openshift-psap/benchconf@main",
 ]
 
 [project.scripts]
@@ -115,10 +103,6 @@ exclude = '''
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-exclude = [
-    "projects/matrix_benchmarking",
-    "projects/llm_d_legacy",
-]
 
 [tool.ruff.lint]
 select = [
@@ -148,7 +132,10 @@ testpaths = [
     "projects/core/tests",
     "projects/llm_d/tests",
     "projects/caliper/tests",
+    "projects/guidellm/tests",
+    "projects/fournos_launcher/tests",
     "projects/rhaiis/tests",
+    "projects/cluster/tests",
 ]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

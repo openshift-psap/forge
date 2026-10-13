@@ -16,8 +16,25 @@ from projects.cluster.toolbox.deploy_custom_catalog import main as deploy_custom
 from projects.cluster.toolbox.wait_for_crds import main as wait_for_crds_command
 from projects.core.dsl.utils.k8s import oc, oc_get_json
 from projects.core.library import vault
+from projects.core.library.config import requires
 
 logger = logging.getLogger(__name__)
+
+RHOAI_CUSTOM_CATALOG_VAULTS = [
+    "psap-rhoai-rc",
+    "psap-forge-staging-image-pull",
+]
+
+
+@requires(custom_catalog_enabled="platform.rhoai.custom_catalog.enabled")
+def list_mandatory_vaults(_cfg) -> list[str]:
+    """Return extra mandatory vaults needed when custom catalog is enabled."""
+
+    if _cfg.custom_catalog_enabled:
+        return list(RHOAI_CUSTOM_CATALOG_VAULTS)
+
+    return []
+
 
 RHOAI_PULL_SECRET_NAMESPACE = "openshift-config"
 RHOAI_PULL_SECRET_NAME = "pull-secret"

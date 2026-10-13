@@ -1,0 +1,84 @@
+export:
+  from: null
+  verbose: true
+  dry_run: false
+  backend:
+    mlflow:
+      enabled: true
+      secrets:
+        vault:
+          name: psap-forge-mlflow-export
+          mlflow_secret: mlflow-secret.yaml
+
+      config:
+        # Same keys/values as docs/caliper/mlflow-config.example.yaml
+        workspace: forge-sandbox
+        experiment: forge-inference-playbooks
+        run_name:
+        description: >
+          Caliper export from FORGE
+        source_script: inference-playbooks project
+        tags: {}
+        parameters: {}
+        metrics: {}
+  notifications:
+    enabled: true
+    vault: psap-forge-notifications
+
+replot:
+  url: null  # Set via /replot.url directive
+  keep: false  # Set to true to keep download directory after replotting
+
+postprocess:
+  enabled: false
+  artifacts_dir: null
+  plugin_module: null # configure your caliper plugin here
+  postprocess_config: null
+  parse:
+    enabled: true
+    no_cache: false
+  visualize:
+    enabled: false
+    output_dir: reports
+    reports: []
+    report_group: null
+
+  kpi:
+    enabled: true
+    artifacts_to_kpis:
+      enabled: true
+      output: kpis/kpis.json
+    dashboard_csv:
+      enabled: false
+      output: kpis/dashboard.csv
+    artifacts_to_ai_data:
+      enabled: false
+      output_dir: ai_data
+
+  s3:
+    bucket: psap-dashboard-data
+    instance: smoke
+    directory: inference-playbooks-dashboard
+    vault:
+      name: psap-forge-aws-s3-export
+      aws_credentials_file: aws.credentials
+    import:
+      enabled: true
+      output_dir: historical_data
+      include_kpis_json: true
+      include_kpis_csv: false
+      include_ai_data: false
+      max_downloads: 50
+    export:
+      enabled: true
+      upload_id: null  # use timestamp if null
+      dry_run: false
+      include_csv: false
+      include_kpis_json: true
+      include_ai_data: true
+
+  analyze:
+    enabled: true
+    current_kpis: kpis/kpis.json
+    historical_kpis: historical_data
+    output: regression_analyze/kpi_analyze.json

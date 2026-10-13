@@ -25,9 +25,12 @@ Signals that this file contains CPT pipeline definitions (not regular presets).
   __description: "Human-readable description"
   __engine: vllm | sglang | trtllm
   __accelerator: nvidia | amd        # optional, defaults to nvidia
+  __gpu_type: h200 | b200 | mi355x  # optional display metadata
+  __clusters: [hera, zeus]           # optional allowed Fournos clusters
   __models:
     <preset-name>/tp<N>:             # model alias from presets.yaml + GPU count
     <preset-name>/tp<N>:
+      __workloads: [profile1, profile4, profile5]  # optional per-model list
       <dotted.config.key>: value     # per-model overrides (optional)
   __workloads:
     - <workload-preset-name>         # from presets.yaml (maps to workload_key)
@@ -56,8 +59,18 @@ specific model (e.g. to override `tensor-parallel-size`):
 __models:
   llama-70b/tp4:           # uses model's default tp=4, no extra overrides
   llama-70b/tp2:           # override tp to 2 for this specific entry
-    rhaiis.engines.vllm.args.tensor-parallel-size: 2
+      rhaiis.engines.vllm.args.tensor-parallel-size: 2
 ```
+
+`__workloads` in a model entry is CPT metadata, not a Forge config override. It
+replaces the pipeline-level `__workloads` list for that model. This allows a
+matrix to run an optional profile, such as `profile5`, only for the models that
+require it. The Fournos UI still creates one job per model and passes the
+selected workload list in `tests.rhaiis.workload_keys`.
+
+When `__clusters` is present, it limits the cluster choices shown by the
+Fournos UI and is validated again by the submission API. The user still chooses
+the actual cluster at submission time.
 
 ## Workload Entries (`__workloads`)
 

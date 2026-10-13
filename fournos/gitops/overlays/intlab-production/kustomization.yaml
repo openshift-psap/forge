@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: psap-automation
+
+resources:
+  - ../../base
+
+# Intlab does not run the OpenShift internal image registry. Keep resolver
+# Jobs on the published Forge image; the management production overlay
+# intentionally continues to use its internal forge-core ImageStream.
+patches:
+  - target:
+      group: tekton.dev
+      version: v1
+      kind: Pipeline
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/fournos.dev~1resolve-image
+        value: "quay.io/rh_perfscale/forge:latest"
+  - target:
+      group: tekton.dev
+      version: v1
+      kind: Task
+      name: forge-step
+    patch: |-
+      - op: replace
+        path: /spec/steps/0/image
+        value: "quay.io/rh_perfscale/forge:latest"
+
+commonLabels:
+  environment: intlab-production

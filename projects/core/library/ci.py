@@ -6,23 +6,128 @@ Provides common CI functionality including error handling, logging,
 and tooling setup for consistent behavior across all projects.
 """
 
+import dataclasses
 import functools
 import logging
-import pathlib
+import os
 import sys
 import traceback
+from enum import StrEnum
+from pathlib import Path
 
 import click
+import yaml
 
 from projects.core.dsl import toolbox as dsl_toolbox
 from projects.core.dsl.runtime import TaskExecutionError
+from projects.core.dsl.utils.k8s import oc
 from projects.core.library import env
 
 logger = logging.getLogger(__name__)
 
+EXIT_STATUS_FILENAME = "exit_status.yaml"
+
+
+class ExitCategory(StrEnum):
+    SUCCESS = "success"
+    TEST_FAILURE = "test_failure"
+    INFRA_FAILURE = "infra_failure"
+    SIGNAL_ABORT = "signal_abort"
+    CONFIG_ERROR = "config_error"
+    INTERNAL_ERROR = "internal_error"
+
+
+class CIError(Exception):
+    """Exception with an associated ExitCategory for structured exit status reporting."""
+
+    def __init__(self, message: str, category: ExitCategory):
+        super().__init__(message)
+        self.category = category
+
+
+@dataclasses.dataclass
+class ExitRecord:
+    return_code: int
+    category: ExitCategory
+    reason: str
+    details: str = ""
+
+    def to_dict(self) -> dict:
+        d = {
+            "return_code": self.return_code,
+            "category": str(self.category),
+            "reason": self.reason,
+        }
+        if self.details:
+            d["details"] = self.details
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExitRecord":
+        return cls(
+            return_code=data["return_code"],
+            category=ExitCategory(data["category"]),
+            reason=data.get("reason", ""),
+            details=data.get("details", ""),
+        )
+
+
+@dataclasses.dataclass
+class ExitStatus:
+    records: list[ExitRecord] = dataclasses.field(default_factory=list)
+
+    def add(self, return_code: int, category: ExitCategory, reason: str) -> None:
+        first_line, _, remaining = reason.partition("\n")
+        self.records.append(
+            ExitRecord(
+                return_code=return_code,
+                category=category,
+                reason=first_line,
+                details=remaining.strip(),
+            )
+        )
+
+    def save(self, metadata_dir: Path) -> None:
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        exit_status_file = metadata_dir / EXIT_STATUS_FILENAME
+        data = {"records": [r.to_dict() for r in self.records]}
+        with open(exit_status_file, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        logger.info(f"Exit status saved: {exit_status_file}")
+
+    @classmethod
+    def load(cls, metadata_dir: Path) -> "ExitStatus":
+        exit_status_file = metadata_dir / EXIT_STATUS_FILENAME
+        if not exit_status_file.exists():
+            return cls()
+
+        with open(exit_status_file, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        if not data or "records" not in data:
+            return cls()
+
+        records = [ExitRecord.from_dict(r) for r in data["records"]]
+        return cls(records=records)
+
+    @property
+    def is_success(self) -> bool:
+        return bool(self.records) and all(r.return_code == 0 for r in self.records)
+
+    @property
+    def primary(self) -> ExitRecord | None:
+        return self.records[0] if self.records else None
+
+
+def get_ci_metadata_dir_location():
+    metadata_dir = env.BASE_ARTIFACT_DIR / "000__ci_metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    return metadata_dir
+
 
 # CI metadata directory path
-def get_ci_metadata_dir(base_ci_dir=None):
+def get_ci_metadata_dir(base_ci_dir, any_level=False):
     """Get the CI metadata directory path.
 
     Args:
@@ -34,15 +139,19 @@ def get_ci_metadata_dir(base_ci_dir=None):
     Raises:
         ValueError: If both base_ci_dir and env.BASE_ARTIFACT_DIR are None
     """
-    if base_ci_dir is not None:
-        return pathlib.Path(base_ci_dir) / "000__ci_metadata"
 
-    if env.BASE_ARTIFACT_DIR is not None:
-        return env.BASE_ARTIFACT_DIR / "000__ci_metadata"
+    meta_dir = base_ci_dir / "000__ci_metadata"
+    if meta_dir.exists():
+        return meta_dir
 
-    raise ValueError(
-        "Cannot determine CI metadata directory: both base_ci_dir parameter and env.BASE_ARTIFACT_DIR are None"
-    )
+    if not any_level:
+        raise ValueError(f"Cannot determine CI metadata directory in {base_ci_dir}")
+
+    rglob = list(base_ci_dir.rglob("000__ci_metadata"))
+    if not rglob:
+        raise ValueError(f"Cannot find CI metadata directory at any level of {base_ci_dir}")
+
+    return rglob[0]
 
 
 class HelpfulGroup(click.Group):
@@ -76,37 +185,27 @@ def handle_ci_exception(e: Exception) -> None:
 def _display_error_summary(e: Exception) -> None:
     """Display a comprehensive error summary on screen and write to FAILURES file."""
 
-    # Build the error summary as a list of lines
-    logger.error("")
-    logger.error("=" * 80)
-    logger.error("🚨 CI EXECUTION FAILED")
-    logger.error("=" * 80)
-    logger.error("")
-
     summary_lines = []
     if isinstance(e, TaskExecutionError):
         summary_lines += dsl_toolbox.get_task_execution_error(e)
-        summary_lines.append("")
-        summary_lines.append("---")
+    else:
+        summary_lines.append(f"{e.__class__.__name__}: {e}")
 
-    # mind that any thing below a '---\n' will be cut in the notification
-
-    # Add the full stacktrace
-    summary_lines.append(f"--- 📍{e.__class__.__name__} STACKTRACE ---")
-    summary_lines.append(f"--- 📍{str(e)}")
+    # mind that anything below a '---\n' will be cut in the notification
     summary_lines.append("")
+    summary_lines.append("---")
 
     full_traceback = traceback.format_exc().splitlines()
-    # Add each line of the stacktrace with proper indentation
     for line in full_traceback:
         summary_lines.append(f"   {line}")
 
-    if not isinstance(e, TaskExecutionError):
-        summary_lines.append("---")  # add the details marker after the stacktrace
+    summary_lines.append("---")  # add the details marker after the stacktrace
 
-    # Display on screen
-    for line in summary_lines:
-        logger.error(line)
+    header = "\n".join(["", "=" * 80, "🚨 CI EXECUTION FAILED", "=" * 80, ""])
+    logger.error(header)
+    logger.error("--- 📍%s STACKTRACE ---", e.__class__.__name__)
+    logger.error("--- 📍%s", e)
+    logger.info("\n".join([""] + summary_lines + ["=" * 80]))
 
     # Attempt to write to FAILURES file if environment is initialized
     try:
@@ -118,8 +217,6 @@ def _display_error_summary(e: Exception) -> None:
             )
     except Exception as write_error:
         logger.warning(f"Could not save error summary to file: {write_error}")
-
-    logger.error("=" * 80)
 
 
 def _write_error_summary_to_file(summary_lines: list) -> None:
@@ -134,80 +231,84 @@ def _write_error_summary_to_file(summary_lines: list) -> None:
         logger.error(f"Failed to write error summary to file: {write_error}")
 
 
-def safe_ci_command(command_func):
+def _run_ci_function(command_func, args, kwargs):
+    """Run a CI function with consistent error handling and result parsing.
+
+    Returns:
+        (exit_code, category, reason) tuple
     """
-    Decorator/wrapper for CI commands to provide consistent error handling.
-
-    Args:
-        command_func: Function to execute safely
-    """
-
-    @functools.wraps(command_func)
-    def wrapper(*args, **kwargs):
-        try:
-            exit_code = command_func(*args, **kwargs)
-            sys.exit(exit_code)
-        except Exception as e:
-            handle_ci_exception(e)
-            sys.exit(1)
-
-    return wrapper
+    try:
+        result = command_func(*args, **kwargs)
+        if result is None or result == 0:
+            return 0, ExitCategory.SUCCESS, None
+        elif isinstance(result, tuple) and len(result) == 3:
+            return result
+        else:
+            logger.error(
+                f"Unexpected return value from {command_func.__name__}: {result!r}. "
+                "Expected None, 0, or (return_code, ExitCategory, reason)."
+            )
+            return 1, ExitCategory.INTERNAL_ERROR, f"Unexpected return value: {result!r}"
+    except Exception as e:
+        handle_ci_exception(e)
+        category = e.category if isinstance(e, CIError) else ExitCategory.INTERNAL_ERROR
+        return 1, category, str(e)
 
 
 def safe_ci_entrypoint(command_func):
     """
-    Decorator/wrapper for CI entrypoints to provide consistent error handling and exit status saving.
+    Decorator for CI phase entrypoints (prepare, test, cleanup, ...).
 
-    Saves the return code to exit_status.yaml in the CI metadata directory.
-
-    Args:
-        command_func: Function to execute safely
+    Saves exit status to exit_status.yaml then calls sys.exit().
     """
-
-    import yaml
 
     @functools.wraps(command_func)
     def wrapper(*args, **kwargs):
-        exit_code = 0
-        reason = None
-        try:
-            result = command_func(*args, **kwargs)
-            if result is None:
-                exit_code = 0
-            elif isinstance(result, tuple) and len(result) == 2:
-                exit_code, reason = result
-            else:
-                exit_code = result
-        except Exception as e:
-            handle_ci_exception(e)
-            exit_code = 1
-            reason = str(e)
-
-        # Save exit status to YAML file
-        try:
-            metadata_dir = get_ci_metadata_dir()
-            metadata_dir.mkdir(parents=True, exist_ok=True)
-
-            exit_status_file = metadata_dir / "exit_status.yaml"
-            exit_status_data = {"return_code": exit_code}
-            if reason is not None:
-                exit_status_data["reason"] = reason
-
-            with open(exit_status_file, "w", encoding="utf-8") as f:
-                yaml.dump(exit_status_data, f, default_flow_style=False)
-
-            if reason:
-                logger.info(
-                    f"Exit status saved: {exit_status_file} (return_code: {exit_code}, reason: {reason})"
-                )
-            else:
-                logger.info(f"Exit status saved: {exit_status_file} (return_code: {exit_code})")
-        except Exception as save_error:
-            logger.warning(f"Failed to save exit status: {save_error}")
-
+        exit_code, category, reason = _run_ci_function(command_func, args, kwargs)
+        logger.info(
+            f"[safe_ci_entrypoint] {command_func.__name__}: "
+            f"exit_code={exit_code}, category={category}, reason={reason!r}"
+        )
+        save_exit_status(exit_code, category, reason)
         sys.exit(exit_code)
 
     return wrapper
+
+
+def safe_ci_function(command_func):
+    """
+    Decorator for CI group commands (main).
+
+    Saves exit status and calls sys.exit() on failure.
+    Does NOT exit on success — lets Click proceed to subcommands.
+    """
+
+    @functools.wraps(command_func)
+    def wrapper(*args, **kwargs):
+        exit_code, category, reason = _run_ci_function(command_func, args, kwargs)
+        if exit_code != 0:
+            logger.info(
+                f"[safe_ci_function] {command_func.__name__}: "
+                f"exit_code={exit_code}, category={category}, reason={reason!r}"
+            )
+            save_exit_status(exit_code, category, reason)
+            sys.exit(exit_code)
+
+    return wrapper
+
+
+def save_exit_status(return_code: int, category: ExitCategory, reason: str | None = None) -> None:
+    if category != ExitCategory.SUCCESS and not reason:
+        logger.warning(f"No reason supplied for category {category}", stack_info=True)
+        reason = f"{category} (no reason provided)"
+
+    try:
+        metadata_dir = get_ci_metadata_dir_location()
+        exit_status = ExitStatus.load(metadata_dir)
+        exit_status.add(return_code, category, reason or "")
+        exit_status.save(metadata_dir)
+    except Exception as save_error:
+        logger.warning(f"Failed to save exit status: {save_error}")
 
 
 def add_notification_file(
@@ -225,7 +326,7 @@ def add_notification_file(
     Returns:
         Path to the created notification file, or None if creation failed
     """
-    metadata_dir = get_ci_metadata_dir(base_ci_dir)
+    metadata_dir = get_ci_metadata_dir_location()
     notifications_dir = metadata_dir / "notifications"
     notifications_dir.mkdir(parents=True, exist_ok=True)
 
@@ -254,21 +355,22 @@ def add_notification_file(
         return None
 
 
-def safe_ci_function(command_func):
-    """
-    Decorator/wrapper for CI commands to provide consistent error handling.
-    This version does NOT exit on success.
+def ensure_kubeconfig_works():
+    if os.environ.get("FORGE_SKIP_CLUSTER_CHECK"):
+        logger.info("FORGE_SKIP_CLUSTER_CHECK is set, skipping kubeconfig check")
+        return
 
-    Args:
-        command_func: Function to execute safely
-    """
+    kubeconfig = os.environ.get("KUBECONFIG")
+    if not kubeconfig:
+        raise CIError("KUBECONFIG environment variable is not set", ExitCategory.CONFIG_ERROR)
 
-    @functools.wraps(command_func)
-    def wrapper(*args, **kwargs):
-        try:
-            return command_func(*args, **kwargs)
-        except Exception as e:
-            handle_ci_exception(e)
-            sys.exit(1)
+    logger.info(f"KUBECONFIG is set to {kubeconfig}")
 
-    return wrapper
+    result = oc("whoami", check=False)
+    if result.returncode != 0:
+        logging.error(f"Cluster is not reachable (KUBECONFIG={kubeconfig}): oc whoami failed")
+        raise CIError(
+            "Cluster is not reachable: oc whoami failed",
+            ExitCategory.INFRA_FAILURE,
+        )
+    logger.info(f"Cluster is reachable at {result.stdout.strip()}")

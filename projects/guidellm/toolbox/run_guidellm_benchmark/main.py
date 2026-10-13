@@ -5,11 +5,21 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
+import yaml
+
+from projects.core.dsl import (  # noqa: F401
+    always,
+    entrypoint,
+    execute_tasks,
+    on_failure,
+    retry,
+    task,
+)
 from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
     oc,
@@ -17,6 +27,7 @@ from projects.core.dsl.utils.k8s import (
     oc_get_json,
 )
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
+    GuideLLMRun,
     expand_guidellm_runs,
     render_guidellm_copy_pod_from_parts,
     render_guidellm_job_from_parts,
@@ -29,19 +40,35 @@ WAIT_POLL_INTERVAL_SECONDS = 10
 JOB_COMPLETION_GRACE_SECONDS = 60
 
 
+_REQUEST_BULK_FIELDS = {"request_args", "output", "reasoning_output"}
+
+
 def trim_benchmark_json(obj):
-    """Remove 'requests' field recursively from JSON data"""
+    """Trim bulky text from request entries while keeping per-turn metrics.
+
+    Strips ``request_args`` (full message history), ``output``, and
+    ``reasoning_output`` from each request entry. Small fields like
+    ``info`` (conversation_id, turn_index, timings), token counts, and
+    computed metrics (TTFT, ITL, latency, tokens/sec) are preserved so
+    that per-turn analysis is possible from the trimmed file.
+    """
     if isinstance(obj, dict):
         return {
-            k: trim_benchmark_json(v)
+            k: _trim_request_entry(v) if k == "requests" else trim_benchmark_json(v)
             for k, v in obj.items()
-            if k
-            not in [
-                "requests",
-            ]
         }
     elif isinstance(obj, list):
         return [trim_benchmark_json(item) for item in obj]
+    else:
+        return obj
+
+
+def _trim_request_entry(obj):
+    """Recursively trim bulky text fields from request entries."""
+    if isinstance(obj, dict):
+        return {k: _trim_request_entry(v) for k, v in obj.items() if k not in _REQUEST_BULK_FIELDS}
+    elif isinstance(obj, list):
+        return [_trim_request_entry(item) for item in obj]
     else:
         return obj
 
@@ -52,11 +79,13 @@ def run(
     endpoint_url: str,
     name: str = "guidellm-benchmark",
     namespace: str = "",
-    image: str = "ghcr.io/vllm-project/guidellm:v0.6.0",
+    image: str = "ghcr.io/vllm-project/guidellm:v0.7.4",
     timeout: int = 900,
     pvc_size: str = "1Gi",
     pvc_storage_class: str | None = None,
     guidellm_args: list[str] | None = None,
+    guidellm_run_args: list[str] | None = None,
+    config_path: Path | None = None,
     hf_token_secret: str = "",
     fs_group: int | None = None,
     keep_full_benchmark_file: bool = False,
@@ -72,7 +101,12 @@ def run(
         image: Full container image reference for the benchmark
         timeout: Active deadline for the Job and timeout in seconds to wait for completion
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
-        guidellm_args: List of additional guidellm arguments (e.g., ["--rate=10", "--max-seconds=30"])
+        guidellm_args: List of additional guidellm arguments (e.g., ["--profile=kind=concurrent,streams=10"])
+        guidellm_run_args: Native ``guidellm run`` arguments for profiles that
+            need GuideLLM's own scheduling, such as ``kind=knee``.
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container, and GuideLLM
+            is invoked with ``--config`` pointing to it.
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds securityContext.fsGroup to the GuideLLM job pod.
         keep_full_benchmark_file: Whether to keep the full untrimmed benchmark JSON files alongside trimmed ones (default: False)
@@ -90,9 +124,18 @@ def run(
 def validate_parameters(args, ctx):
     """Validate and normalize parameters"""
 
+    if args.guidellm_run_args is not None and (args.guidellm_args or args.config_path):
+        raise ValueError("guidellm_run_args cannot be combined with guidellm_args or config_path")
+    if args.guidellm_run_args is not None and not args.guidellm_run_args:
+        raise ValueError("guidellm_run_args must not be empty")
+
     # Ensure guidellm_args is a list
     ctx.guidellm_args = args.guidellm_args or []
-    ctx.guidellm_runs = expand_guidellm_runs(ctx.guidellm_args)
+    ctx.guidellm_runs = (
+        [GuideLLMRun(rate=None, label="default", args=args.guidellm_run_args)]
+        if args.guidellm_run_args is not None
+        else expand_guidellm_runs(ctx.guidellm_args)
+    )
 
     # Auto-detect namespace if empty
     if not args.namespace:
@@ -160,13 +203,23 @@ def create_guidellm_resources_task(args, ctx):
     """Create the GuideLLM benchmark job and optionally PVC with job as owner"""
 
     # Ensure src directory exists
-    (args.artifact_dir / "src").mkdir(parents=True, exist_ok=True)
+    src_dir = args.artifact_dir / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy and validate the config file into the artifact src/ directory
+    ctx.config_path = args.config_path
+    if ctx.config_path is not None:
+        dest = src_dir / "guidellm-config.yaml"
+        shutil.copy2(ctx.config_path, dest)
+        # Validate the YAML is well-formed
+        yaml.safe_load(dest.read_text())
+        ctx.config_path = dest
 
     # Create the job based on mode
     if args.use_pvc:
         # PVC mode - traditional single container job + PVC
         oc_apply(
-            args.artifact_dir / "src" / "guidellm-job.yaml",
+            src_dir / "guidellm-job.yaml",
             render_guidellm_job_from_parts(
                 namespace=ctx.target_namespace,
                 name=ctx.benchmark_name,
@@ -176,6 +229,8 @@ def create_guidellm_resources_task(args, ctx):
                 timeout_seconds=args.timeout,
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
+                config_path=ctx.config_path,
+                guidellm_run_args=args.guidellm_run_args,
             ),
         )
 
@@ -194,7 +249,7 @@ def create_guidellm_resources_task(args, ctx):
 
         # Create the PVC with job as owner
         oc_apply(
-            args.artifact_dir / "src" / "guidellm-pvc.yaml",
+            src_dir / "guidellm-pvc.yaml",
             render_guidellm_pvc_from_parts(
                 namespace=ctx.target_namespace,
                 name=ctx.benchmark_name,
@@ -209,7 +264,7 @@ def create_guidellm_resources_task(args, ctx):
     else:
         # Shared volume mode - job with main + sidecar containers
         oc_apply(
-            args.artifact_dir / "src" / "guidellm-job.yaml",
+            src_dir / "guidellm-job.yaml",
             render_guidellm_shared_volume_job_from_parts(
                 namespace=ctx.target_namespace,
                 name=ctx.benchmark_name,
@@ -219,6 +274,8 @@ def create_guidellm_resources_task(args, ctx):
                 timeout_seconds=args.timeout,
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
+                config_path=ctx.config_path,
+                guidellm_run_args=args.guidellm_run_args,
             ),
         )
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS
@@ -227,7 +284,37 @@ def create_guidellm_resources_task(args, ctx):
         )
 
 
+def _handle_benchmark_wait_failure(args, ctx, exception):
+    """Generate AGENT.md file for post-mortem analysis of benchmark failure."""
+    benchmark_name = getattr(ctx, "benchmark_name", args.name)
+    namespace = getattr(ctx, "target_namespace", args.namespace)
+
+    agent_md_path = args.artifact_dir / "AGENT.md"
+    with open(agent_md_path, "w", encoding="utf-8") as f:
+        f.write(f"""# Post-Mortem: GuideLLM Benchmark Failure
+
+## Failure Details
+- **Benchmark**: {benchmark_name}
+- **Namespace**: {namespace}
+- **Failed Task**: wait_guidellm_benchmark_task
+- **Exception**: {exception.__class__.__name__}: {exception}
+
+## Available Files for Analysis
+- **Pod logs**: `artifacts/guidellm_benchmark_job.log`
+- **Pod YAML**: `artifacts/guidellm_benchmark_job.pods.yaml`
+- **Job YAML**: `artifacts/guidellm_benchmark_job.yaml`
+- **Pod description**: `artifacts/guidellm_benchmark_pod_description.txt`
+
+## Analysis Instructions
+1. **Review pod logs** in `guidellm_benchmark_job.log` for GuideLLM errors or crashes
+2. **Check pod status** in `guidellm_benchmark_job.pods.yaml` for OOM kills, image pull errors, or scheduling failures
+3. **Examine job YAML** for timeout or backoff limit issues
+4. **Check pod description** for K8s events (resource limits, node affinity, etc.)
+""")
+
+
 # An upper safety bound only; ctx.wait_deadline enforces the per-run timeout.
+@on_failure(_handle_benchmark_wait_failure)
 @retry(attempts=1080, delay=WAIT_POLL_INTERVAL_SECONDS, backoff=1.0)
 @task
 def wait_guidellm_benchmark_task(args, ctx):
@@ -492,12 +579,8 @@ def extract_results_from_copy_pod(args, ctx, results_dir: Path):
     """Extract results from copy pod (PVC mode)"""
     extracted_files: list[dict[str, str | None]] = []
     for run in ctx.guidellm_runs:
-        if run.rate is None:
-            remote_path = "/results/benchmarks.json"
-            local_path = results_dir / "benchmarks.json"
-        else:
-            remote_path = f"/results/benchmarks-{run.label}.json"
-            local_path = results_dir / f"benchmarks-{run.label}.json"
+        remote_path = f"/results/benchmarks-{run.label}.json"
+        local_path = results_dir / f"benchmarks-{run.label}.json"
 
         logger.info(f"Retrieving the compressed benchmark file for {run.label}...")
 
@@ -592,12 +675,8 @@ def extract_results_from_sidecar(args, ctx, results_dir: Path):
 
     extracted_files: list[dict[str, str | None]] = []
     for run in ctx.guidellm_runs:
-        if run.rate is None:
-            remote_path = "/results/benchmarks.json"
-            local_path = results_dir / "benchmarks.json"
-        else:
-            remote_path = f"/results/benchmarks-{run.label}.json"
-            local_path = results_dir / f"benchmarks-{run.label}.json"
+        remote_path = f"/results/benchmarks-{run.label}.json"
+        local_path = results_dir / f"benchmarks-{run.label}.json"
 
         logger.info(f"Retrieving the compressed benchmark file for {run.label} from sidecar...")
 

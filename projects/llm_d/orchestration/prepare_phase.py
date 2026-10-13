@@ -18,6 +18,9 @@ from projects.gpu_operator.toolbox.bootstrap_gpu_clusterpolicy import (
     main as bootstrap_gpu_clusterpolicy,
 )
 from projects.gpu_operator.toolbox.bootstrap_nfd_instance import main as bootstrap_nfd_instance
+from projects.gpu_operator.toolbox.validate_gpu_operator_dcgm import (
+    main as validate_gpu_operator_dcgm,
+)
 from projects.kserve.toolbox.prepare_hf_model_cache.main import (
     run as prepare_hf_model_cache_toolbox_run,
 )
@@ -123,6 +126,7 @@ def prepare_gpu_operator() -> None:
         display_name="GPU Operator bootstrap CRD",
     )
     bootstrap_gpu_clusterpolicy.run()
+    validate_gpu_operator_dcgm.run()
 
 
 def prepare_rhoai_operator() -> None:

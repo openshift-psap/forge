@@ -8,9 +8,9 @@ from pathlib import Path
 from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
-    TestBaseNode,
     UnifiedRunModel,
 )
 
@@ -35,7 +35,7 @@ class MCPGatewayPlugin(PostProcessingPlugin):
         self.parser = MCPGatewayParser()
         self.kpi_handler = MCPGatewayKpiHandler()
 
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         return self.parser.parse(nodes)
 
     def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:

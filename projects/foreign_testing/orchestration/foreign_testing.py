@@ -5,6 +5,7 @@ import shutil
 
 from projects.core.ci_entrypoint import run_common
 from projects.core.library import config, env, run
+from projects.foreign_testing.library import initialize
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +42,11 @@ def prepare():
     repo_name = os.environ.get("REPO_NAME")
     pull_pull_sha = os.environ.get("PULL_PULL_SHA")
 
-    repo_dest = env.FORGE_HOME / "foreign_testing" / repo_name
-    run.run(f'git clone "https://github.com/{repo_owner}/{repo_name}" "{repo_dest}"')
-    run.run(f'git -C "{repo_dest}" fetch --quiet origin "{pull_pull_sha}"')
-    run.run(f'git -C "{repo_dest}" reset --hard FETCH_HEAD')
+    repo_dest = initialize.clone_repository(
+        repo_owner=repo_owner,
+        repo_name=repo_name,
+        pull_pull_sha=pull_pull_sha,
+    )
 
     # Copy foreign projects to FORGE home
     forge_projects_dir = env.FORGE_HOME / "projects"

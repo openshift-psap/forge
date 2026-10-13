@@ -133,7 +133,7 @@ def init(daily_artifact_dir=False):
     # Ensure CI metadata directory exists (lazy import to avoid circular imports)
     from . import ci as ci_lib
 
-    ci_metadata_dir = ci_lib.get_ci_metadata_dir()
+    ci_metadata_dir = ci_lib.get_ci_metadata_dir_location()
     ci_metadata_dir.mkdir(parents=True, exist_ok=True)
 
 

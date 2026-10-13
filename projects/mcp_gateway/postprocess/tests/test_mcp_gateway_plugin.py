@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from projects.caliper.engine.constants import METADATA_FILE
-from projects.caliper.engine.model import TestBaseNode, UnifiedRunModel
+from projects.caliper.engine.model import BaseTestNode, UnifiedRunModel
 from projects.caliper.prometheus_metrics.queries import load_queries
 from projects.mcp_gateway.postprocess.mcp_gateway.parsing.kpis import MCPGatewayKpiHandler
 from projects.mcp_gateway.postprocess.mcp_gateway.parsing.parsers import MCPGatewayParser
@@ -82,7 +82,7 @@ def _make_test_node(
     labels: dict,
     *,
     prom_files: dict[str, dict] | None = None,
-) -> TestBaseNode:
+) -> BaseTestNode:
     """Create a test base directory with stats.csv and __caliper_test_metadata__.yaml."""
     node_dir = base_dir / name
     node_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +103,7 @@ def _make_test_node(
     artifact_paths = sorted(
         p for p in node_dir.rglob("*") if p.is_file() and p.name != METADATA_FILE
     )
-    return TestBaseNode(
+    return BaseTestNode(
         directory=node_dir,
         test_path=Path(name),
         test_labels={"version": "1", "labels": labels},
@@ -173,7 +173,7 @@ class TestMCPGatewayParser:
         node_dir = tmp_path / "run-empty"
         node_dir.mkdir(parents=True)
         (node_dir / "master.log").write_text("log")
-        node = TestBaseNode(
+        node = BaseTestNode(
             directory=node_dir,
             test_path=Path("run-empty"),
             test_labels={"version": "1", "labels": TEST_LABELS},

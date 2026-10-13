@@ -11,12 +11,13 @@ import jsonpath_ng
 import yaml
 
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
-    TestBaseNode,
     UnifiedResultRecord,
 )
 from projects.guidellm.postprocess.guidellm.dashboard import (
     canonical_json,
+    is_benchmarks_artifact,
     normalize_product_version,
 )
 
@@ -25,7 +26,7 @@ from .models import GuideLLMBenchmark, GuideLLMConfiguration
 logger = logging.getLogger(__name__)
 
 
-def _labels_from_node(node: TestBaseNode) -> dict[str, Any]:
+def _labels_from_node(node: BaseTestNode) -> dict[str, Any]:
     """Extract labels from a test node."""
     raw = node.test_labels
     inner = raw.get("labels")
@@ -36,7 +37,7 @@ def _labels_from_node(node: TestBaseNode) -> dict[str, Any]:
     return {"facet": "default"}
 
 
-def _kpi_labels_from_node(node: TestBaseNode) -> dict[str, Any]:
+def _kpi_labels_from_node(node: BaseTestNode) -> dict[str, Any]:
     """Extract kpi_labels from a test node."""
     raw = node.test_labels
     kpi_labels = raw.get("kpi_labels")
@@ -122,9 +123,7 @@ class GuideLLMParser:
 
     @staticmethod
     def _is_benchmarks_artifact(path: Path) -> bool:
-        return path.name == "benchmarks.json" or (
-            path.name.startswith("benchmarks-rate-") and path.suffix == ".json"
-        )
+        return is_benchmarks_artifact(path)
 
     @staticmethod
     def _is_llmisvc_artifact(path: Path) -> bool:
@@ -153,7 +152,7 @@ class GuideLLMParser:
             file_path: Path to llminferenceservice.yaml file
 
         Returns:
-            Dictionary with extracted fields (product_version, deployment_profile, model_name)
+            Dictionary with extracted fields (product_version, deployment_profile)
         """
         result = {}
         try:
@@ -192,12 +191,6 @@ class GuideLLMParser:
                 logger.debug(
                     f"Extracted deployment_profile '{deployment_profile}' from {file_path}"
                 )
-
-            # Extract model name from spec
-            model_name = extract_field_by_jsonpath(yaml_data, "spec.model.name")
-            if model_name:
-                result["model_name"] = model_name
-                logger.debug(f"Extracted model_name '{model_name}' from {file_path}")
 
             replicas = extract_field_by_jsonpath(yaml_data, "spec.replicas")
             if replicas is not None:
@@ -626,7 +619,7 @@ class GuideLLMParser:
 
         return metrics
 
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         """
         Parse test nodes containing GuideLLM benchmarks.json files.
 
@@ -717,7 +710,6 @@ class GuideLLMParser:
                     "gpu_type",
                     "product_version",
                     "deployment_profile",
-                    "model_name",
                     "cluster",
                     "benchmark_key",
                 ]

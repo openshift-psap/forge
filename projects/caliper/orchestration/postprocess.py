@@ -955,7 +955,8 @@ class CaliperPostprocessOrchestrator:
                     VisualizeStepResult(
                         status=StepStatus.FAILED,
                         completed_at=time.time(),
-                        detail=error_msg,
+                        error=error_msg,
+                        message=(status_data or {}).get("message"),
                         exit_code=result.returncode,
                     ),
                     log_file,
@@ -969,7 +970,7 @@ class CaliperPostprocessOrchestrator:
                 VisualizeStepResult(
                     status=StepStatus.FAILED,
                     completed_at=time.time(),
-                    detail=f"{str(e)}\n{traceback.format_exc()}",
+                    error=str(e),
                 ),
                 None,  # No log file if we couldn't even start
             )
@@ -1389,7 +1390,7 @@ class CaliperPostprocessOrchestrator:
                 ai_data_dir = env.ARTIFACT_DIR / ai_data_step["ai_data_dir"]
                 logger.info(f"AI data directory set to: {ai_data_dir}")
             else:
-                logger.warning(
+                logger.info(
                     f"AI data directory not found - step status: {ai_data_step.get('status') if ai_data_step else 'step not found'}, ai_data_dir: {ai_data_step.get('ai_data_dir') if ai_data_step else 'N/A'}"
                 )
 

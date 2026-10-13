@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from projects.caliper.engine.model import TestBaseNode
+from projects.caliper.engine.model import BaseTestNode
 from projects.guidellm.postprocess.guidellm.parsing.parsers import GuideLLMParser
 
 
@@ -74,7 +74,7 @@ def test_parser_accepts_rate_split_benchmark_files(tmp_path: Path) -> None:
     _write_benchmark_file(file_b, 64)
 
     parser = GuideLLMParser()
-    node = TestBaseNode(
+    node = BaseTestNode(
         directory=test_dir,
         test_labels={"labels": {"guidellm_loadshape": "multi-turn"}},
         artifact_paths=[file_b, file_a],
@@ -109,7 +109,7 @@ def test_parser_orders_by_intended_concurrency_not_request_rate(tmp_path: Path) 
     _write_benchmark_file(file_c, streams=32, request_rate=75.0)  # middle rate, highest concurrency
 
     parser = GuideLLMParser()
-    node = TestBaseNode(
+    node = BaseTestNode(
         directory=test_dir,
         test_labels={"labels": {"guidellm_loadshape": "multi-turn"}},
         artifact_paths=[file_a, file_b, file_c],

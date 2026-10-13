@@ -9,22 +9,29 @@ from typing import Any
 
 import yaml
 
-from projects.caliper.engine.constants import METADATA_FILE
-from projects.caliper.engine.kpi.dataclasses import (
-    CaliperTestMetadata,
-    CompletionData,
-    MlflowDestination,
-    TimingData,
+from projects.caliper.engine.kpi.dataclasses import TimingData
+from projects.cluster.library.prom.collection import (
+    capture_prometheus,
+    prepare_user_workload_monitoring,
+    validate_user_workload_monitoring,
 )
-from projects.cluster.toolbox.capture_prometheus.main import run as capture_prometheus
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.dsl import shell
 from projects.core.dsl.utils import slugify_identifier
 from projects.core.dsl.utils.k8s import oc
 from projects.core.library import config, env
-from projects.core.library.postprocess import run_and_postprocess, write_test_labels
+from projects.core.library.postprocess import (
+    create_test_metadata,
+    run_and_postprocess,
+    update_test_labels_with_status,
+    update_test_labels_with_timing,
+)
 from projects.core.library.run import SignalInterrupt
 from projects.core.orchestration.utils.k8s import ensure_namespace
+from projects.gpu_operator.toolbox.validate_gpu_operator_dcgm import (
+    main as validate_gpu_operator_dcgm,
+)
+from projects.guidellm.library import benchconf as benchconf_lib  # noqa: F401
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark import main as run_guidellm_benchmark_command
 from projects.guidellm.toolbox.run_smoke_request import main as run_smoke_request_command
@@ -163,9 +170,23 @@ def extract_kpi_labels_from_config() -> dict[str, str]:
         if v is None:
             del kpi_labels[k]
 
-    product_version = config.project.get_config("cpt.kpi.labels.product_version")
-    if product_version:
-        kpi_labels["product_version"] = product_version
+    # Ensure critical labels are present (fail fast if missing)
+    model_name = runtime_config.get_model_name()
+    if not model_name:
+        raise ValueError("model_name is required but not configured in runtime config")
+    kpi_labels["model_name"] = model_name
+
+    # Validate that essential labels are configured
+    essential_label_configs = [
+        ("platform", "cpt.kpi.labels.platform"),
+    ]
+
+    for label_name, config_path in essential_label_configs:
+        if label_name not in kpi_labels:  # Not already set by cpt.kpi.labels
+            value = config.project.get_config(config_path)
+            if not value:
+                raise ValueError(f"{label_name} is required but not configured at {config_path}")
+            kpi_labels[label_name] = value
 
     return kpi_labels
 
@@ -175,9 +196,7 @@ def get_iso_timestamp() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def create_test_labels(
-    mlflow_destination: dict[str, str] | None = None,
-) -> None:
+def create_test_labels() -> None:
     """Create caliper metadata file with model name, guidellm configuration, and test start time."""
 
     model_name = runtime_config.get_model_name()
@@ -195,17 +214,13 @@ def create_test_labels(
     # Extract kpi_labels from config
     kpi_labels = extract_kpi_labels_from_config()
 
-    # Create initial timing structure with test start
     timing_data = TimingData()
-    timing_data.set_phase("test", get_iso_timestamp())  # Start time only
+    timing_data.set_phase("test", get_iso_timestamp())
 
-    write_test_labels(
+    create_test_metadata(
         env.ARTIFACT_DIR,
         labels,
         kpi_labels=kpi_labels if kpi_labels else None,
-        mlflow_destination=MlflowDestination.from_dict(mlflow_destination)
-        if mlflow_destination
-        else None,
         timing=timing_data,
     )
     logger.info("Created test labels with start time: %s", labels)
@@ -230,107 +245,6 @@ def create_test_labels(
             logger.warning("Failed to copy fournos job file: %s", e)
     else:
         logger.debug("No fournos job file found at: %s", fournos_source)
-
-
-def update_test_labels_with_timing(timing_section: str, timing_event: str) -> datetime:
-    """Update caliper metadata file with timing information.
-
-    Args:
-        timing_section: Section name (e.g., 'benchmark', 'test')
-        timing_event: Event name (e.g., 'start', 'end')
-    """
-    timestamp_dt = datetime.now(UTC)
-    timestamp = timestamp_dt.isoformat().replace("+00:00", "Z")
-
-    test_labels_path = env.ARTIFACT_DIR / METADATA_FILE
-
-    if not test_labels_path.exists():
-        logging.error("Caliper metadata file not found ...")
-        return datetime.now(UTC)
-
-    # Read existing labels and parse with dataclass
-    with test_labels_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    metadata = CaliperTestMetadata.from_dict(data)
-
-    # Ensure timing exists
-    if not metadata.timing:
-        metadata.timing = TimingData()
-
-    # Get or create the phase
-    phase = metadata.timing.get_phase(timing_section)
-    if not phase:
-        if timing_event == "start":
-            metadata.timing.set_phase(timing_section, timestamp)
-        else:
-            # If we're setting end but no start exists, create with empty start
-            metadata.timing.set_phase(timing_section, "", timestamp)
-    else:
-        # Update existing phase
-        if timing_event == "start":
-            phase.start = timestamp
-        elif timing_event == "end":
-            phase.end = timestamp
-
-    # Write updated labels
-    with test_labels_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
-
-    logger.info(
-        "Updated test labels with timing: %s.%s = %s", timing_section, timing_event, timestamp
-    )
-
-    return timestamp_dt
-
-
-def update_test_labels_with_status(success: bool, message: str) -> None:
-    """Update caliper metadata file with test execution status and end time.
-
-    Args:
-        success: True if test succeeded, False if failed
-        message: Status message describing the result
-    """
-    test_labels_path = env.ARTIFACT_DIR / METADATA_FILE
-
-    # Read existing labels
-    if not test_labels_path.exists():
-        logging.error("Caliper metadata file not found ...")
-        return
-
-    with test_labels_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    metadata = CaliperTestMetadata.from_dict(data)
-
-    # Add completion information using dataclass
-    metadata.completion = CompletionData(success=success, message=message)
-
-    # Add test end timing
-    test_end_time = get_iso_timestamp()
-    if not metadata.timing:
-        metadata.timing = TimingData()
-
-    # Get or update the test phase end time
-    test_phase = metadata.timing.get_phase("test")
-    if test_phase:
-        test_phase.end = test_end_time
-    else:
-        # If test phase doesn't exist, create it with empty start and the end time
-        metadata.timing.set_phase("test", "", test_end_time)
-
-    # Write updated labels
-    with test_labels_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(metadata.to_dict(), f, sort_keys=False)
-
-    logger.info(
-        "Updated test labels with completion status and end time: success=%s, message=%s",
-        success,
-        message,
-    )
-
-    if not success:
-        (test_labels_path.parent / "FAILURE.txt").write_text(message)
 
 
 def run_all_tests(stop_on_error: bool = False) -> int:
@@ -385,6 +299,7 @@ def run_finalizers(
     llmisvc_name: str | None,
     primary_exc: tuple[type[BaseException], BaseException, Any] | None,
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None,
+    benchmark_times: tuple[datetime, datetime] | None = None,
 ) -> tuple[type[BaseException], BaseException, Any] | None:
     def _run_finalizer(
         description: str,
@@ -429,6 +344,21 @@ def run_finalizers(
         capture_namespace_events=capture_namespace_events,
     )
 
+    if benchmark_times:
+        if not llmisvc_name:
+            logging.warning("No llmisvc name received. Some metrics will be empty ...")
+
+        start_time, end_time = benchmark_times
+        runtime_params = {"llmisvc_name": llmisvc_name or "llmisvc-name-not-available"}
+
+        def _capture_prom():
+            with env.NextArtifactDir("prometheus_metrics"):
+                capture_prometheus(start_time, end_time, runtime_params=runtime_params)
+
+        finalizer_exc = _run_finalizer("capturing Prometheus metrics", _capture_prom)
+    else:
+        logging.error("No benchmark times received, cannot capture the Prometheus metrics.")
+
     finalizer_exc = _run_finalizer(
         "cleaning up runtime resources",
         cleanup_test_resources,
@@ -456,22 +386,22 @@ def do_test() -> int:
         # Delete all existing resources if configured
         cleanup_existing_resources(namespace)
 
-    try:
-        from projects.caliper.orchestration.export import precreate_mlflow_run_if_configured
-
-        mlflow_destination = precreate_mlflow_run_if_configured()
-    except Exception:
-        logger.error("MLflow run pre-creation failed; continuing", exc_info=True)
-        mlflow_destination = None
-
+        # validate before prepare: fail_if_not_enabled is a safeguard against
+        # accidentally enabling UWM, so it must run before prepare gets a chance to.
+        validate_user_workload_monitoring()
+        validate_gpu_operator_dcgm.run()
+        prepare_user_workload_monitoring(during="test")
     endpoint_url: str | None = None
+    benchmark_times: tuple[datetime, datetime] | None = None
     primary_exc: tuple[type[BaseException], BaseException, Any] | None = None
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None = None
 
     actual_llmisvc_name = "llmisvc-na-not-computed"
+    test_dir = env.ARTIFACT_DIR
     try:
         # Create test labels with actual model and profile information
-        create_test_labels(mlflow_destination=mlflow_destination)
+        create_test_labels()
+        update_test_labels_with_timing(test_dir, "test", "start")
 
         # Generate the LLMInferenceService name before deployment
         # so we have it available even if deployment fails
@@ -494,7 +424,8 @@ def do_test() -> int:
 
         if dry_run:
             logging.warning("Running in dry-run mode, skipping the rest of the test steps")
-            update_test_labels_with_status(True, "Dry-run completed successfully")
+            update_test_labels_with_timing(test_dir, "test", "end")
+            update_test_labels_with_status(test_dir, True, "Dry-run completed successfully")
             return 0
 
         if not endpoint_url:
@@ -502,16 +433,25 @@ def do_test() -> int:
 
         run_smoke_request(endpoint_url=endpoint_url)
 
-        run_guidellm_benchmark(endpoint_url=endpoint_url)
+        benchmark_start = datetime.now(UTC)
+        try:
+            benchmark_times = run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
+        except Exception:
+            benchmark_times = (benchmark_start, datetime.now(UTC))
+            raise
     except Exception as e:
         primary_exc = sys.exc_info()
-        update_test_labels_with_status(False, f"Test failed with exception: {str(e)}")
+
+        update_test_labels_with_status(test_dir, False, f"Test failed with exception: {str(e)}")
         logger.exception("Test failed with exception")
     except SignalInterrupt as e:
         primary_exc = sys.exc_info()
-        update_test_labels_with_status(False, f"Test interrupted: {str(e)}")
+
+        update_test_labels_with_status(test_dir, False, f"Test interrupted: {str(e)}")
         logger.error("Test interrupted")
     finally:
+        update_test_labels_with_timing(test_dir, "test", "end")
+
         do_finalizers = config.project.get_config("runtime.run_test_finalizers")
         if primary_exc and isinstance(primary_exc[1], SignalInterrupt):
             logging.warning("Caught a SignalInterrupt, skipping the finalizers")
@@ -522,17 +462,25 @@ def do_test() -> int:
 
         if do_finalizers:
             primary_exc, finalizer_exc = run_finalizers(
-                endpoint_url, actual_llmisvc_name, primary_exc, finalizer_exc
+                endpoint_url,
+                actual_llmisvc_name,
+                primary_exc,
+                finalizer_exc,
+                benchmark_times=benchmark_times,
             )
 
     if primary_exc is not None:
         raise primary_exc[1].with_traceback(primary_exc[2])
 
     if finalizer_exc is not None:
+        update_test_labels_with_status(
+            test_dir, False, f"Test finalizers failed with exception: {str(finalizer_exc[1])}"
+        )
+
         raise finalizer_exc[1].with_traceback(finalizer_exc[2])
 
     # Update test labels with success status
-    update_test_labels_with_status(True, "Test completed successfully")
+    update_test_labels_with_status(test_dir, True, "Test completed successfully")
 
     return 0
 
@@ -802,22 +750,33 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
     )
 
 
-def run_guidellm_benchmark(*, endpoint_url: str) -> None:
+def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, datetime] | None:
     namespace = runtime_config.get_namespace()
     benchmark = runtime_config.get_benchmark_config()
     workload = runtime_config.get_workload_config()
 
     if benchmark is None:
-        return
+        return None
 
     # Add benchmark start timing
-    start_time = update_test_labels_with_timing("benchmark", "start")
+    start_time = update_test_labels_with_timing(test_dir, "benchmark", "start")
 
     try:
         benchmark_key = runtime_config.get_benchmark_keys()[0]
+
+        # Resolve benchconf config if enabled and the benchmark references one
+        config_path = None
+        benchconf_ref = benchmark.get("benchconf")
+        if benchconf_ref and benchconf_lib._is_enabled():
+            benchconf_lib.maybe_install_custom_version()
+            config_path = benchconf_lib.resolve_config_path(benchconf_ref)
+            benchconf_lib.save_version()
+
         guidellm_args = build_guidellm_args(benchmark)
-        if not any(arg.startswith("--processor=") for arg in guidellm_args):
-            guidellm_args.append(f"--processor={runtime_config.get_model_name()}")
+        if not any(arg.startswith(("--tokenizer=", "--processor=")) for arg in guidellm_args):
+            guidellm_args.append(
+                f"--tokenizer=kind=huggingface_auto,model={runtime_config.get_model_name()}"
+            )
 
         # Get fs_group from workload config
         fs_group = None
@@ -835,16 +794,14 @@ def run_guidellm_benchmark(*, endpoint_url: str) -> None:
                 pvc_size=benchmark.get("pvc_size"),
                 pvc_storage_class=benchmark.get("pvc_storage_class"),
                 guidellm_args=guidellm_args,
+                config_path=config_path,
                 fs_group=fs_group,
                 use_pvc=benchmark.get("use_pvc"),
             )
     finally:
-        # Add benchmark end timing (even if benchmark failed)
-        end_time = update_test_labels_with_timing("benchmark", "end")
+        end_time = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
-        # Capture prometheus metrics if enabled
-        if config.project.get_config("prom.capture.enabled"):
-            capture_prometheus(start_time, end_time)
+    return start_time, end_time
 
 
 def capture_inference_service_state(llmisvc_name: str) -> None:

@@ -94,7 +94,9 @@ def build_inferenceservice(
     storage_pvc: str,
     model_id: str,
     service_account_name: str = "",
+    supplemental_groups: list[int] | None = None,
     labels: dict | None = None,
+    profiler_ranges: str | None = None,
 ) -> dict[str, Any]:
     """Build a KServe InferenceService manifest dict."""
     annotations: dict[str, str] = {
@@ -105,6 +107,8 @@ def build_inferenceservice(
         "prometheus.io/path": "/metrics",
         "prometheus.io/port": str(engine_port),
     }
+    if profiler_ranges is not None:
+        annotations["vllm.profiler/ranges"] = profiler_ranges
 
     metadata: dict[str, Any] = {
         "annotations": annotations,
@@ -150,6 +154,9 @@ def build_inferenceservice(
 
     if service_account_name:
         predictor["serviceAccountName"] = service_account_name
+
+    if supplemental_groups:
+        predictor["securityContext"] = {"supplementalGroups": supplemental_groups}
 
     return {
         "apiVersion": "serving.kserve.io/v1beta1",

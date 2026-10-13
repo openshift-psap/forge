@@ -16,7 +16,7 @@ import os
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
 from projects.core.library.config import requires
-from projects.core.library.postprocess import write_test_labels
+from projects.core.library.postprocess import create_test_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def _create_fournos_job(project: str, version: str, source_cfg: dict, _cfg) -> N
     )
 
 
-def _write_test_labels() -> None:
+def _create_test_metadata() -> None:
     """Write Caliper test metadata so the caliper export ``run_naming``
     templates can resolve the ``{outcome}`` placeholder."""
     result_file = env.ARTIFACT_DIR / "result.txt"
@@ -135,7 +135,7 @@ def _write_test_labels() -> None:
         outcome = "error"
 
     labels = {"outcome": outcome}
-    write_test_labels(env.ARTIFACT_DIR, labels, dump_config=False)
+    create_test_metadata(env.ARTIFACT_DIR, labels, dump_config=False)
     logger.info("Wrote test labels: %s", labels)
 
 
@@ -161,4 +161,4 @@ def run():
         ci_lib.add_notification_file("nightly-confirm-failed", f"FATAL: {e}")
         raise
     finally:
-        _write_test_labels()
+        _create_test_metadata()

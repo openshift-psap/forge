@@ -18,7 +18,11 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
+from projects.caliper.engine.constants import (
+    LEGACY_METADATA_FILE,
+    METADATA_FILE,
+    MLFLOW_DESTINATION_FILE,
+)
 from projects.caliper.engine.file_export.artifacts_export_run import (
     discover_run_dirs,
     run_artifacts_export,
@@ -27,6 +31,7 @@ from projects.caliper.engine.file_export.mlflow_config import (
     load_mlflow_config_yaml,
     project_metadata_fields,
 )
+from projects.caliper.engine.kpi.dataclasses import MlflowDestination
 from projects.caliper.orchestration.censoring import (
     orchestration_apply_censoring,
 )
@@ -231,15 +236,18 @@ def run_from_orchestration_config(
 
     run_dirs = discover_run_dirs(from_path)
 
-    # Resume a pre-created MLflow run if the test step left mlflow_destination in test labels
-    discovered_run_id = _discover_precreated_mlflow_run_id(from_path)
+    # Resume the single pre-created MLflow run persisted at the artifact root.
+    job_destination = read_mlflow_destination_marker()
+    discovered_run_id = job_destination.run_id if job_destination else None
+    if discovered_run_id:
+        logger.info("Found pre-created MLflow run_id: %s", discovered_run_id)
     if (
         export_cfg.mlflow_run_id
         and discovered_run_id
         and export_cfg.mlflow_run_id != discovered_run_id
     ):
         logger.error(
-            "Conflicting MLflow run_ids: export config has %s, test labels have %s. Using export config.",
+            "Conflicting MLflow run_ids: export config has %s, destination marker has %s. Using export config.",
             export_cfg.mlflow_run_id,
             discovered_run_id,
         )
@@ -269,6 +277,7 @@ def run_from_orchestration_config(
                 mlflow_secrets_path=mlflow_secrets_path,
                 mlflow_config_data=mlflow_config_data,
                 run_dirs=run_dirs,
+                mlflow_run_id=mlflow_run_id,
                 resolved_parent_name=naming.get("parent_run_name"),
                 child_run_names=naming.get("child_run_names") or {},
                 disable_censoring=disable_censoring,
@@ -337,12 +346,13 @@ def run_from_orchestration_config(
     experiment="caliper.export.backend.mlflow.config.experiment",
     workspace="caliper.export.backend.mlflow.config.workspace",
 )
-def precreate_mlflow_run_if_configured(_cfg, force=False) -> dict[str, str] | None:
-    """Pre-create an MLflow run and return the ``mlflow_destination`` dict.
+def precreate_mlflow_run_if_configured(_cfg, force=False) -> MlflowDestination | None:
+    """Pre-create an MLflow run and return its destination.
 
     Uses ``@requires`` to read vault and MLflow config from the project config.
-    Returns ``None`` if MLflow is not configured or pre-creation fails.
-    The returned dict contains ``run_id``, ``experiment_id``, and ``workspace``.
+    Returns ``None`` if MLflow is not configured. Errors from a configured
+    MLflow setup are propagated to the caller.
+    The returned destination contains ``run_id``, ``experiment_id``, and ``workspace``.
 
     Args:
       force: if not forced, precreate only on FournosCI
@@ -359,25 +369,93 @@ def precreate_mlflow_run_if_configured(_cfg, force=False) -> dict[str, str] | No
         return None
 
     secrets_path = vault_lib.get_vault_content_path(vault_name, vault_key)
-    if not secrets_path or not secrets_path.exists():
-        logger.info("MLflow secrets file not found, skipping run pre-creation")
-        return None
+    if not secrets_path:
+        raise FileNotFoundError("Configured MLflow secrets could not be resolved")
+    if not secrets_path.exists():
+        raise FileNotFoundError(f"Configured MLflow secrets file not found: {secrets_path}")
 
-    try:
-        meta = precreate_mlflow_run(
-            secrets_path=secrets_path,
-            experiment=_cfg.experiment or None,
-            workspace=_cfg.workspace or None,
+    return precreate_mlflow_run(
+        secrets_path=secrets_path,
+        experiment=_cfg.experiment or None,
+        workspace=_cfg.workspace or None,
+    )
+
+
+def _mlflow_destination_path() -> Path:
+    """Return the single job-level MLflow destination marker path."""
+    configured_root = os.environ.get("ARTIFACT_BASE_DIR")
+    if configured_root:
+        artifact_root = Path(configured_root)
+    elif env.BASE_ARTIFACT_DIR is not None:
+        # In Fournos, ARTIFACT_DIR points to the current step directory
+        # (for example /workspace/artifacts/03__test). The job marker must
+        # live one level above it, alongside all step directories.
+        artifact_root = env.BASE_ARTIFACT_DIR.parent
+    else:
+        raise RuntimeError(
+            "Cannot write MLflow destination marker: base artifact directory is not set"
         )
-    except Exception:
-        logger.warning("MLflow run pre-creation failed; continuing", exc_info=True)
+    return artifact_root / MLFLOW_DESTINATION_FILE
+
+
+def write_mlflow_destination_marker(
+    destination: MlflowDestination,
+) -> Path | None:
+    """Persist the pre-created MLflow destination at the job artifact root.
+
+    The marker is written only for Fournos CI jobs. It is created exclusively so a
+    later phase cannot replace the destination selected for the job.
+    """
+    if not env.running_inside_fournos():
+        logger.info("Not running inside FOURNOS CI, skipping MLflow destination marker")
         return None
 
-    return {
-        "run_id": meta["run_id"],
-        "experiment_id": meta.get("experiment_id", ""),
-        "workspace": _cfg.workspace or "",
-    }
+    marker_path = _mlflow_destination_path()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with marker_path.open("x", encoding="utf-8") as marker_file:
+        yaml.safe_dump(destination.to_dict(), marker_file, sort_keys=False)
+    logger.info("Created MLflow destination marker: %s", marker_path)
+
+    return marker_path
+
+
+def read_mlflow_destination_marker() -> MlflowDestination | None:
+    """Read and validate the job-level MLflow destination marker."""
+    marker_path = _mlflow_destination_path()
+    if not marker_path.exists():
+        return None
+    if not marker_path.is_file():
+        raise ValueError(f"Invalid MLflow destination marker: {marker_path}")
+
+    marker_data = yaml.safe_load(marker_path.read_text(encoding="utf-8"))
+    if not isinstance(marker_data, dict):
+        raise ValueError(f"Invalid MLflow destination marker: {marker_path}")
+    try:
+        destination = MlflowDestination.from_dict(marker_data)
+    except KeyError as error:
+        raise ValueError(f"Incomplete MLflow destination in marker: {marker_path}") from error
+    if not destination.run_id or not destination.experiment_id:
+        raise ValueError(f"Incomplete MLflow destination in marker: {marker_path}")
+    return destination
+
+
+def ensure_mlflow_destination_marker() -> Path | None:
+    """Create the job-level MLflow marker once, before a CI phase starts."""
+    if not env.running_inside_fournos():
+        logger.info("Not running inside FOURNOS CI, skipping MLflow destination marker")
+        return None
+
+    marker_path = _mlflow_destination_path()
+    if marker_path.exists():
+        read_mlflow_destination_marker()
+        logger.info("Using existing MLflow destination marker: %s", marker_path)
+        return marker_path
+
+    destination = precreate_mlflow_run_if_configured()
+    if destination is None:
+        return None
+    return write_mlflow_destination_marker(destination)
 
 
 def precreate_mlflow_run(
@@ -385,16 +463,16 @@ def precreate_mlflow_run(
     secrets_path: Path,
     experiment: str | None = None,
     workspace: str | None = None,
-) -> dict[str, str]:
+) -> MlflowDestination:
     """Pre-create an MLflow run so the export step can resume it.
 
     The run is created and immediately ended (status FINISHED).  The export step
     will resume it via ``mlflow.start_run(run_id=...)`` to upload artifacts.
 
-    The caller is responsible for persisting the returned IDs (e.g. via the
-    ``mlflow_destination`` section of test metadata files).
+    The caller is responsible for persisting the returned destination using
+    :func:`write_mlflow_destination_marker`.
 
-    Returns a dict with ``run_id`` and ``experiment_id``.
+    Returns an :class:`MlflowDestination` with ``run_id`` and ``experiment_id``.
     """
     import mlflow
 
@@ -429,38 +507,15 @@ def precreate_mlflow_run(
             os.environ.pop("MLFLOW_WORKSPACE", None)
         mlflow.set_tracking_uri(prev_tracking_uri)
 
-    meta = {"run_id": run_id, "experiment_id": experiment_id}
+    meta = MlflowDestination(
+        run_id=run_id,
+        experiment_id=experiment_id,
+        workspace=workspace or "",
+    )
 
     logger.info("Pre-created MLflow run %s (experiment=%s)", run_id, experiment_id)
 
     return meta
-
-
-def _read_mlflow_ids_from_test_labels() -> tuple[str, str]:
-    """Read run_id and experiment_id from ``mlflow_destination`` in test labels."""
-    artifact_dir = Path(env.ARTIFACT_DIR) if env.ARTIFACT_DIR else None
-    if not artifact_dir:
-        logger.warning("ARTIFACT_DIR not set, cannot read MLflow destination from test labels")
-        return "", ""
-    # Search for both new and legacy metadata files
-    metadata_files = []
-    metadata_files.extend(artifact_dir.rglob(METADATA_FILE))
-    metadata_files.extend(artifact_dir.rglob(LEGACY_METADATA_FILE))
-
-    for labels_file in sorted(metadata_files):
-        try:
-            data = yaml.safe_load(labels_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                continue
-            dest = data.get("mlflow_destination")
-            if not isinstance(dest, dict):
-                continue
-            run_id = dest.get("run_id", "")
-            if run_id:
-                return run_id, dest.get("experiment_id", "")
-        except (OSError, yaml.YAMLError) as e:
-            logger.warning("Failed to read test labels %s: %s", labels_file, e)
-    return "", ""
 
 
 @requires(
@@ -505,9 +560,22 @@ def build_mlflow_run_url(
         load_mlflow_secrets_yaml,
     )
 
-    run_id, experiment_id = _read_mlflow_ids_from_test_labels()
-    if not run_id or not experiment_id:
-        logger.warning("Cannot build MLflow URL: run_id or experiment_id missing from test labels")
+    try:
+        destination = read_mlflow_destination_marker()
+    except RuntimeError as error:
+        logger.warning("Cannot read MLflow destination: %s", error)
+        return ""
+
+    if not destination:
+        logger.warning("Cannot build MLflow URL: MLflow destination marker not found")
+        return ""
+
+    run_id = destination.run_id
+    experiment_id = destination.experiment_id
+    if not experiment_id:
+        logger.warning(
+            "Cannot build MLflow URL: experiment_id missing from MLflow destination marker"
+        )
         return ""
 
     if not secrets_path.exists():
@@ -522,32 +590,7 @@ def build_mlflow_run_url(
     assert_tracking_uri_has_no_userinfo(tracking_uri)
 
     qs = f"?workspace={quote(workspace, safe='')}" if workspace else ""
-    return f"{tracking_uri}/{qs}#/experiments/{experiment_id}/runs/{run_id}/artifacts"
-
-
-def _discover_precreated_mlflow_run_id(from_path: Path) -> str | None:
-    """Find a pre-created MLflow run_id from ``mlflow_destination`` in test labels."""
-    # Search for both new and legacy metadata files
-    metadata_files = []
-    metadata_files.extend(from_path.rglob(METADATA_FILE))
-    metadata_files.extend(from_path.rglob(LEGACY_METADATA_FILE))
-
-    for labels_file in sorted(metadata_files):
-        try:
-            data = yaml.safe_load(labels_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                continue
-            dest = data.get("mlflow_destination")
-            if not isinstance(dest, dict):
-                continue
-            run_id = dest.get("run_id")
-            if run_id:
-                logger.info("Found pre-created MLflow run_id: %s (from %s)", run_id, labels_file)
-                return run_id
-        except (OSError, yaml.YAMLError) as e:
-            logger.warning("Failed to read test labels %s: %s", labels_file, e)
-
-    return None
+    return f"{tracking_uri}#/experiments/{experiment_id}/runs/{run_id}/artifacts{qs}"
 
 
 METRICS_FILE = "metrics.json"
@@ -580,6 +623,7 @@ def _run_multi_run_export(
     mlflow_secrets_path: Path,
     mlflow_config_data: dict[str, Any] | None,
     run_dirs: list[Path],
+    mlflow_run_id: str | None = None,
     resolved_parent_name: str | None = None,
     child_run_names: dict[Path, str] | None = None,
     disable_censoring: bool = False,
@@ -682,6 +726,7 @@ def _run_multi_run_export(
                 parameters_file=PARAMETERS_FILE,
                 tracking_uri=tracking_uri,
                 experiment=experiment,
+                run_id=mlflow_run_id,
                 parent_run_name=run_name,
                 insecure_tls=insecure_tls,
                 connection=mlflow_connection,

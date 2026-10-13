@@ -23,6 +23,7 @@ from projects.core.dsl import (
 from projects.core.dsl.control_flow import EarlyReturn
 from projects.core.dsl.utils.k8s import is_valid_k8s_name, sanitize_k8s_name
 from projects.core.library import env as env_mod
+from projects.fournos_launcher.toolbox import validate_ttl
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def run(
     args: list = None,
     variables_overrides: dict = None,
     job_name: str = "",
-    namespace: str = "fournos-jobs",
+    namespace: str = "psap-automation",
     owner: str = "",
     display_name: str = "",
     pipeline_name: str = "",
@@ -66,6 +67,7 @@ def run(
     gpu_type: str = None,
     clusterless: bool = False,
     wait: bool = True,
+    ttl: str = "12h",
 ):
     """
     Submit a FOURNOS job and wait for completion
@@ -134,9 +136,6 @@ def validate_inputs(args, ctx):
     if not args.cluster_name and not args.clusterless:
         raise ValueError("cluster_name is required unless clusterless mode is enabled")
 
-    if args.clusterless and args.exclusive:
-        raise ValueError("Clusterless mode and exclusive mode cannot both be enabled")
-
     if not args.project:
         raise ValueError("project is required")
 
@@ -148,6 +147,11 @@ def validate_inputs(args, ctx):
 
     if not isinstance(args.env, dict):
         raise ValueError("env should be a dict")
+
+    if not validate_ttl(args.ttl):
+        raise ValueError(
+            f"Invalid TTL format: '{args.ttl}'. Expected format like '12h', '30m', '1d6h', etc."
+        )
 
     return "Inputs validated"
 

@@ -11,9 +11,11 @@ from __future__ import annotations
 import functools
 import importlib
 import logging
+import signal
 import types
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -95,7 +97,21 @@ class CIApp:
         """Bootstrap env, run, and config.  Override to add custom init."""
         env.init()
         run.init()
+        run.register_signal_callback(self._signal_callback)
         config.init(self.config_dir)
+
+    def _signal_callback(self, sig, frame, log_file):
+        env.reset_artifact_dir()
+
+        sig_name = signal.Signals(sig).name
+        logger.info(f"Signal callback: received {sig_name}")
+        if not log_file:
+            return
+
+        with log_file.open("a") as f:
+            f.write(
+                f"{datetime.now()}: {__name__}.{type(self).__name__}.{self._signal_callback.__name__} {sig_name} handler\n"
+            )
 
     def init_vaults(self, phase: str) -> None:
         """Resolve and initialize vaults for *phase*.

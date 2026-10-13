@@ -15,7 +15,7 @@ spec:
   replicas: 4
   model:
     uri: pvc://llm-d-model-openai-gpt-oss-120b-7ab79ddecd/model
-    name: openai-gpt-oss-120b
+    name: openai/gpt-oss-120b
   template:
     tolerations: null
     containers:

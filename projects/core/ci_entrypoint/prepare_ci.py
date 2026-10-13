@@ -186,6 +186,51 @@ def shutdown_dual_output():
 
 
 # PR arguments
+def _add_gh_overrides() -> None:
+    """Append ci_job.gh.* keys to variable_overrides.yaml from env vars and PR data."""
+    artifact_dir = os.environ.get("ARTIFACT_DIR")
+    if not artifact_dir:
+        return
+
+    repo_owner = os.environ.get("REPO_OWNER", "")
+    repo_name = os.environ.get("REPO_NAME", "")
+    pull_number = os.environ.get("PULL_NUMBER", "")
+
+    if not any([repo_owner, repo_name, pull_number]):
+        logger.info("add_gh_overrides: GH env var not found, nothing to do")
+        return
+
+    overrides_path = Path(artifact_dir) / CI_METADATA_DIRNAME / "variable_overrides.yaml"
+    if overrides_path.exists():
+        with open(overrides_path) as f:
+            overrides = yaml.safe_load(f) or {}
+    else:
+        overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        overrides = {}
+
+    overrides["ci_job.gh.from_gh"] = True
+    overrides["ci_job.gh.repo.owner"] = repo_owner
+    overrides["ci_job.gh.repo.name"] = repo_name
+
+    if pull_number:
+        overrides["ci_job.gh.pr.num"] = int(pull_number)
+
+        pr_json_path = Path(artifact_dir) / CI_METADATA_DIRNAME / "pull_request.json"
+        if pr_json_path.exists():
+            import json
+
+            try:
+                pr_data = json.loads(pr_json_path.read_text())
+                overrides["ci_job.gh.pr.title"] = pr_data.get("title", "")
+            except Exception:
+                logger.warning("Could not read PR title from %s", pr_json_path)
+
+    with open(overrides_path, "w") as f:
+        yaml.dump(overrides, f, default_flow_style=False, sort_keys=True)
+
+    logger.info("Added ci_job.gh.* overrides to %s", overrides_path)
+
+
 def parse_and_save_pr_arguments() -> Path | None:
     """
     Parse GitHub PR arguments and save to variable overrides file.
@@ -202,6 +247,8 @@ def parse_and_save_pr_arguments() -> Path | None:
         fournos.parse_and_save_pr_arguments_fournos()
     else:
         parse_and_save_pr_arguments_ocpci()
+
+    _add_gh_overrides()
 
 
 def parse_and_save_pr_arguments_ocpci() -> Path | None:
@@ -324,34 +371,30 @@ def ci_banner(project: str, operation: str, args: list[str]):
         args: Additional arguments
     """
 
+    if os.environ.get("FORGE_FOREIGN_TESTING_PULL_NUMBER"):
+        logger.info("Forge foreign-testing detect. Skipping the forge git history banner.")
+        return
+
     base_sha = os.environ.get("PULL_BASE_SHA", "main")
     if base_sha == "main":
         logger.info("PULL_BASE_SHA not set. Showing the last commits from main.")
+
     pull_sha = os.environ.get("PULL_PULL_SHA", "")
     if not pull_sha:
-        logger.info("PULL_PULL_SHA not set. Showing the last commits from main.")
-
-    logger.info(f"Git command will be: git show --quiet --oneline {base_sha}..{pull_sha}")
+        logger.info("PULL_PULL_SHA not set. Showing the last commits up to HEAD.")
+        pull_sha = "HEAD"
 
     try:
-        result = subprocess.run(
-            ["git", "show", "--quiet", "--oneline", f"{base_sha}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        logger.info(f"Git command returncode: {result.returncode}")
-        logger.info(f"Git stdout: {result.stdout}")
-        logger.info(f"Git stderr: {result.stderr}")
+        run.run("git fetch --quiet origin main --deepen=20", check=False, timeout=30)
 
-        if result.returncode == 0:
-            lines = result.stdout.split("\n")[:10]  # head 10
-            for line in lines:
-                logger.info(line)
-        else:
-            logger.warning("Could not access git history (main..) ...")
+        run.run(
+            f"git show --quiet --oneline {base_sha}..{pull_sha} -n 20",
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Git banner commands timed out after 30s, continuing CI setup")
     except Exception as e:
-        logger.warning(f"Could not access git history: {e}")
+        logger.warning(f"Git banner commands failed: {e}, continuing CI setup")
 
 
 def system_prechecks() -> bool:
@@ -373,18 +416,6 @@ def system_prechecks() -> bool:
         raise ValueError(
             f"File '{failures_file}' already exists, cannot continue. Set FORGE_IGNORE_FAILURES_FILE=1 to ignore this."
         )
-
-    # Handle OpenShift CI PR arguments (already handled by parse_and_save_pr_arguments)
-    if (
-        os.environ.get("OPENSHIFT_CI") == "true"
-        and os.environ.get("FORGE_JUMP_CI_INSIDE_JUMP_HOST") != "true"
-    ):
-        if not os.environ.get("FORGE_OPENSHIFT_CI_STEP_DIR"):
-            hostname = os.environ.get("HOSTNAME", "")
-            job_name_safe = os.environ.get("JOB_NAME_SAFE", "")
-            if hostname and job_name_safe:
-                step_dir = hostname.replace(f"{job_name_safe}-", "") + "/artifacts"
-                os.environ["FORGE_OPENSHIFT_CI_STEP_DIR"] = step_dir
 
     # Remove any old failure markers
     old_failure = artifact_path / "FAILURE.txt"

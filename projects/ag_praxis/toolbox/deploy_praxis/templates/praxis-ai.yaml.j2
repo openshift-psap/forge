@@ -1,0 +1,28 @@
+admin:
+  address: "0.0.0.0:9901"
+
+insecure_options:
+  allow_public_admin: true
+
+listeners:
+  - name: ai
+    address: "0.0.0.0:8080"
+    filter_chains: [rhoai]
+
+filter_chains:
+  - name: rhoai
+    filters:
+      - filter: router
+        routes:
+          - path_prefix: "/v1"
+            cluster: rhoai_model
+          - path_prefix: "/health"
+            cluster: rhoai_model
+
+      - filter: load_balancer
+        clusters:
+          - name: rhoai_model
+            trusted_private_endpoints:
+              - "{{ model_host }}"
+            endpoints:
+              - "{{ model_endpoint }}"

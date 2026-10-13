@@ -24,7 +24,7 @@ from projects.caliper.prometheus_metrics.capture import capture_metrics
 from projects.caliper.prometheus_metrics.config import MetricsCaptureConfig
 from projects.core.dsl.utils import write_json
 from projects.core.library import config, env
-from projects.core.library.postprocess import run_and_postprocess, write_test_labels
+from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
 from projects.mcp_gateway.orchestration.runtime_config import cfg
 from projects.mcp_gateway.toolbox.apply_infrastructure import main as apply_infra
 
@@ -144,7 +144,7 @@ def run_one_test(
     """Run a single test iteration inside a NextArtifactDir context."""
     version_kind = "sha" if re.fullmatch(r"[0-9a-f]{40}", version) else "release"
     version_source = "ghcr" if version_kind == "sha" else "tag"
-    write_test_labels(
+    create_test_metadata(
         env.ARTIFACT_DIR,
         {
             "preset": preset,

@@ -1,0 +1,8 @@
+env_key: PSAP_FORGE_RHAIIS_AGENT_ANALYSIS_SECRET_PATH
+description: |
+  Private endpoint configuration for the RHAIIS agent analysis service.
+
+content:
+  agent-url:
+    description: |
+      Private stream endpoint URL for RHAIIS agent analysis.

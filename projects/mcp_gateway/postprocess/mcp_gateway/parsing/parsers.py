@@ -7,8 +7,8 @@ from typing import Any
 
 from projects.agentic_tools.locust.helpers.parse_results import RunMetrics, parse_stats_csv
 from projects.caliper.engine.model import (
+    BaseTestNode,
     ParseResult,
-    TestBaseNode,
     UnifiedResultRecord,
 )
 
@@ -23,7 +23,7 @@ _TOOLS_LIST_NAME = "tools/list"
 _TTFTR_NAME = "ttftr"
 
 
-def _labels_from_node(node: TestBaseNode) -> dict[str, Any]:
+def _labels_from_node(node: BaseTestNode) -> dict[str, Any]:
     """Extract distinguishing labels from a test node."""
     raw = node.test_labels
     inner = raw.get("labels")
@@ -125,7 +125,7 @@ def _weighted_avg(rows: list[dict[str, float]], field: str) -> float | None:
 class MCPGatewayParser:
     """Parser for Locust stats.csv artifacts from MCP Gateway tests."""
 
-    def parse(self, nodes: list[TestBaseNode]) -> ParseResult:
+    def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         records: list[UnifiedResultRecord] = []
         warnings: list[str] = []
 

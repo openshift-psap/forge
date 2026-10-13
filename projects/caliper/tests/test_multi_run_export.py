@@ -27,7 +27,7 @@ from projects.caliper.engine.file_export.artifacts_export_run import discover_ru
 TEST_LABELS_MARKER = METADATA_FILE
 
 
-def _write_test_labels(directory: Path, labels: dict) -> None:
+def _create_test_metadata(directory: Path, labels: dict) -> None:
     """Helper to write a test metadata marker file."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / TEST_LABELS_MARKER).write_text(
@@ -68,7 +68,7 @@ def artifact_tree(tmp_path: Path) -> Path:
     # Run A
     run_a = runs / "mcp-smoke-s1-u16-gateway"
     run_a.mkdir()
-    _write_test_labels(
+    _create_test_metadata(
         run_a, {"preset": "smoke", "target": "gateway", "users": "16", "num_servers": "1"}
     )
     (run_a / METRICS_FILE).write_text(
@@ -101,7 +101,7 @@ def artifact_tree(tmp_path: Path) -> Path:
     # Run B
     run_b = runs / "mcp-smoke-s1-u64-gateway"
     run_b.mkdir()
-    _write_test_labels(
+    _create_test_metadata(
         run_b, {"preset": "smoke", "target": "gateway", "users": "64", "num_servers": "1"}
     )
     (run_b / METRICS_FILE).write_text(
@@ -672,7 +672,7 @@ class TestSingleRunExport:
         base = tmp_path / "artifacts"
         run_a = base / "000__mcp-smoke-s1-u16-gateway"
         run_a.mkdir(parents=True)
-        _write_test_labels(run_a, {"preset": "smoke"})
+        _create_test_metadata(run_a, {"preset": "smoke"})
         (run_a / METRICS_FILE).write_text(json.dumps({"total_requests": 100}))
         (run_a / PARAMETERS_FILE).write_text(json.dumps({"preset": "smoke"}))
 

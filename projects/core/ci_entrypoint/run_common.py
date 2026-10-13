@@ -34,46 +34,112 @@ EXTRA_PACKAGES = []
 # Global reference to child process for signal forwarding
 _child_process = None
 
+# Track which signals have already been forwarded to prevent re-entrant loops
+_signals_forwarded = set()
 
-def signal_handler_sigint(sig, frame):
-    """Handle SIGINT (Ctrl+C) gracefully."""
-    logger.info("🚫 Received SIGINT (Ctrl+C) - Interrupting operation...")
+CHILD_SIGNAL_TIMEOUT = 30
 
-    # Forward signal to child process first
-    if _child_process and _child_process.poll() is None:  # Child is still running
-        logger.info("📡 Forwarding SIGINT to child process...")
-        try:
-            _child_process.send_signal(signal.SIGINT)
-        except (OSError, ProcessLookupError):
-            pass  # Child may have already terminated
+
+def _write_signal_file(sig_name, exit_code):
+    from datetime import datetime
+
+    import yaml
+
+    artifact_dir = os.environ.get("ARTIFACT_DIR")
+    if not artifact_dir:
+        return
+    sig_file = Path(artifact_dir) / f"{sig_name}_interrupted.txt"
+    with sig_file.open("a") as f:
+        f.write(f"{datetime.now()}: {__name__}._forward_signal_and_exit {sig_name} handler\n")
+
+    # Write exit_status.yaml only if the child process didn't already write one
+    metadata_dir = Path(artifact_dir) / "000__ci_metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    exit_status_file = metadata_dir / "exit_status.yaml"
+    if exit_status_file.exists():
+        logger.info(f"exit_status.yaml already exists at {exit_status_file}, not overwriting")
+        return
+
+    exit_status_data = {
+        "records": [
+            {
+                "return_code": exit_code,
+                "category": "signal_abort",
+                "reason": f"Aborted by signal {sig_name}",
+            }
+        ]
+    }
+    with open(exit_status_file, "w", encoding="utf-8") as f:
+        yaml.dump(exit_status_data, f, default_flow_style=False, sort_keys=False)
+    logger.info(f"Wrote abort exit status to {exit_status_file}")
+
+
+def _forward_signal_to_child(child_pid, sig, sig_name):
+    try:
+        os.killpg(child_pid, sig)
+        logger.info(f"Forwarded {sig_name} to child process group pgid={child_pid}")
+    except (OSError, ProcessLookupError) as e:
+        logger.info(f"Failed to forward {sig_name} to child pid={child_pid}: {e}")
+        return
+
+    logger.info(f"Waiting up to {CHILD_SIGNAL_TIMEOUT}s for child pid={child_pid} to exit ...")
+    try:
+        _child_process.wait(timeout=CHILD_SIGNAL_TIMEOUT)
+        logger.info(f"Child pid={child_pid} exited after {sig_name}")
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            f"Child pid={child_pid} did not exit within {CHILD_SIGNAL_TIMEOUT}s after {sig_name}"
+        )
+
+
+def _forward_signal_and_exit(sig, exit_code):
+    global _signals_forwarded
+
+    sig_name = signal.Signals(sig).name
+    child_pid = _child_process.pid if _child_process else None
+    child_alive = _child_process.poll() is None if _child_process else False
+
+    logger.info(
+        f"Received {sig_name} in pid={os.getpid()} pgid={os.getpgrp()}, child_pid={child_pid} child_alive={child_alive}"
+    )
+
+    if sig in _signals_forwarded:
+        logger.info(f"{sig_name} already forwarded, escalating to SIGTERM")
+        if _child_process and child_alive:
+            _forward_signal_to_child(child_pid, signal.SIGTERM, "SIGTERM")
+        prepare_ci.shutdown_dual_output()
+        sys.exit(exit_code)
+
+    _signals_forwarded.add(sig)
+    _write_signal_file(sig_name, exit_code)
+
+    if _child_process and child_alive:
+        _forward_signal_to_child(child_pid, sig, sig_name)
+
+        if _child_process.poll() is None:
+            logger.info(f"Child still alive after {sig_name}, escalating to SIGTERM")
+            _forward_signal_to_child(child_pid, signal.SIGTERM, "SIGTERM")
+    else:
+        logger.info(f"No child to forward {sig_name} to")
 
     # Emergency cleanup of dual output
     prepare_ci.shutdown_dual_output()
 
-    sys.exit(130)  # Standard exit code for SIGINT
+    sys.exit(exit_code)
+
+
+def signal_handler_sigint(sig, frame):
+    _forward_signal_and_exit(sig, 130)
 
 
 def signal_handler_sigterm(sig, frame):
-    """Handle SIGTERM gracefully."""
-    logger.info("🛑 Received SIGTERM - Terminating operation...")
-
-    # Forward signal to child process first
-    if _child_process and _child_process.poll() is None:  # Child is still running
-        logger.info("📡 Forwarding SIGTERM to child process...")
-        try:
-            _child_process.send_signal(signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass  # Child may have already terminated
-
-    # Emergency cleanup of dual output
-    prepare_ci.shutdown_dual_output()
-
-    sys.exit(143)  # Standard exit code for SIGTERM
+    _forward_signal_and_exit(sig, 143)
 
 
 def setup_signal_handlers():
     """Set up signal handlers for graceful interruption."""
     try:
+        logger.info(f"Installing parent signal handlers for pid={os.getpid()} pgid={os.getpgrp()}")
         signal.signal(signal.SIGINT, signal_handler_sigint)
         signal.signal(signal.SIGTERM, signal_handler_sigterm)
         # SIGPIPE handling for broken pipes
@@ -167,24 +233,40 @@ def prepare():
         prepare_ci.setup_dual_output()
 
 
-def find_project_directory(project_name: str) -> Path | None:
+def find_project_directory(project_name: str) -> tuple[Path | None, list[str]]:
     """
     Find the directory for the specified project.
 
-    Args:
-        project_name: Name of the project to find
+    Supports exact match, dash/underscore normalization, and
+    prefix-per-segment abbreviations (e.g. "l-d" matches "llm_d").
 
     Returns:
-        Path to project directory if found, None otherwise
+        (project_dir, candidates) — project_dir is set when exactly one
+        match is found; candidates lists all matching directory names
+        (useful for reporting ambiguity).
     """
-    # Look in the projects directory
     projects_dir = FORGE_HOME / "projects"
     project_dir = projects_dir / project_name
 
     if project_dir.exists() and project_dir.is_dir():
-        return project_dir
+        return project_dir, [project_name]
 
-    return None
+    # Fuzzy match: normalize dashes/underscores, then prefix-per-segment
+    input_segs = project_name.replace("-", "_").split("_")
+    matches = []
+    for proj_dir in projects_dir.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        proj_segs = proj_dir.name.replace("-", "_").split("_")
+        if len(input_segs) != len(proj_segs):
+            continue
+        if all(ps.startswith(is_) for is_, ps in zip(input_segs, proj_segs, strict=True)):
+            matches.append(proj_dir)
+
+    if len(matches) == 1:
+        return matches[0], [matches[0].name]
+
+    return None, sorted(m.name for m in matches)
 
 
 def find_script(project_dir: Path, operation: str, *, use_cli: bool = False) -> Path | None:
@@ -318,17 +400,25 @@ def execute_project_operation(
         logger.warning(f"{mode_name} preparation not enabled, skipping preparation")
 
     # Find project directory
-    project_dir = find_project_directory(project)
+    project_dir, candidates = find_project_directory(project)
     if not project_dir:
-        click.echo(click.style(f"❌ ERROR: Project '{project}' not found.", fg="red"), err=True)
-
-        available_projects = get_available_projects(use_cli=use_cli)
-        if available_projects:
-            click.echo("\n📂 Available projects:")
-            for proj in available_projects:
+        if candidates:
+            click.echo(
+                click.style(f"❌ ERROR: Project '{project}' is ambiguous.", fg="red"), err=True
+            )
+            click.echo("\n📂 Matching projects:")
+            for proj in candidates:
                 click.echo(f"   • {proj}")
         else:
-            click.echo("📂 No projects found in projects/ directory")
+            click.echo(click.style(f"❌ ERROR: Project '{project}' not found.", fg="red"), err=True)
+
+            available_projects = get_available_projects(use_cli=use_cli)
+            if available_projects:
+                click.echo("\n📂 Available projects:")
+                for proj in available_projects:
+                    click.echo(f"   • {proj}")
+            else:
+                click.echo("📂 No projects found in projects/ directory")
 
         sys.exit(1)
 
@@ -407,8 +497,14 @@ def execute_project_operation(
             stderr=None,  # Inherit stderr for pdb/debugging
         )
 
-        # Wait for process to complete
-        result_code = _child_process.wait()
+        logger.info(f"Parent pid={os.getpid()} pgid={os.getpgrp()}, child pid={_child_process.pid}")
+
+        # Poll instead of blocking wait: Python's blocking waitpid uses
+        # SA_RESTART, which prevents signal handlers from firing. Polling
+        # with sleep allows SIGINT/SIGTERM handlers to run between checks.
+        while _child_process.poll() is None:
+            time.sleep(1)
+        result_code = _child_process.returncode
 
         # Create result object similar to subprocess.run()
         class Result:
@@ -501,9 +597,15 @@ def show_project_operations(project: str, *, use_cli: bool = False):
     click.echo(f"🔧 Available operations for project '{project}':")
 
     # Find project directory
-    project_dir = find_project_directory(project)
+    project_dir, candidates = find_project_directory(project)
     if not project_dir:
-        click.echo(click.style(f"❌ ERROR: Project '{project}' not found.", fg="red"), err=True)
+        if candidates:
+            click.echo(
+                click.style(f"❌ ERROR: Project '{project}' is ambiguous.", fg="red"), err=True
+            )
+            click.echo("Matching projects: " + ", ".join(candidates))
+        else:
+            click.echo(click.style(f"❌ ERROR: Project '{project}' not found.", fg="red"), err=True)
         return
 
     if use_cli:

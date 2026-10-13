@@ -2,7 +2,7 @@ selected_preset: null
 model_name: Qwen/Qwen3-0.6B
 deployment_profile: approximate-prefix-cache
 smoke_request_key: default
-benchmark_key: null
+benchmark_key: short
 job_name: null
 namespace: forge-llm-d
 kserve:

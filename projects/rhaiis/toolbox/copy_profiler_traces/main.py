@@ -39,17 +39,17 @@ def find_predictor_pod(args, context):
 def list_trace_files(args, context):
     result = shell.run(
         f"oc exec {context.pod_name} -n {args.namespace} "
-        "-- sh -c 'ls /tmp/trace_*.json* 2>/dev/null || echo NO_TRACES'",
+        "-- sh -c 'ls /tmp/trace_rank0_*.json* 2>/dev/null || echo NO_RANK0_TRACES'",
         check=False,
         log_stdout=False,
     )
 
-    if "NO_TRACES" in result.stdout or not result.stdout.strip():
-        raise RuntimeError(f"No profiler traces found in pod {context.pod_name}")
+    if "NO_RANK0_TRACES" in result.stdout or not result.stdout.strip():
+        raise RuntimeError(f"No rank-0 profiler traces found in pod {context.pod_name}")
 
     trace_list = result.stdout.strip()
     context.trace_count = len(trace_list.splitlines())
-    return f"Found {context.trace_count} trace files"
+    return f"Found {context.trace_count} rank-0 trace files"
 
 
 @task
@@ -58,11 +58,11 @@ def copy_traces(args, context):
     shell.run(
         'bash -o pipefail -c "'
         f"oc exec {context.pod_name} -n {args.namespace}"
-        " -- sh -c 'cd /tmp && tar cf - trace_*.json*'"
+        " -- sh -c 'cd /tmp && tar cf - trace_rank0_*.json*'"
         f' | tar --no-same-owner -xf - -C {traces_dir}"',
     )
-    copied = list(traces_dir.glob("trace_*.json*"))
-    return f"Copied {len(copied)} trace files to {traces_dir}"
+    copied = list(traces_dir.glob("trace_rank0_*.json*"))
+    return f"Copied {len(copied)} rank-0 trace files to {traces_dir}"
 
 
 if __name__ == "__main__":

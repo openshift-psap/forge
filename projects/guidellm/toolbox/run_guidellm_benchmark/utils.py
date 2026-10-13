@@ -4,14 +4,21 @@ Utilities for the GuideLL-M benchmark toolbox module.
 
 from __future__ import annotations
 
+import json as _json
+import logging
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from projects.core.dsl import template
+
+logger = logging.getLogger(__name__)
+
+_CONFIG_FILE_PATH = "/tmp/guidellm-config.yaml"
 
 
 @dataclass(frozen=True)
@@ -90,7 +97,6 @@ def expand_guidellm_runs(guidellm_args: list[str]) -> list[GuideLLMRun]:
         run_args: list[str] = []
         for arg in guidellm_args:
             if arg.startswith("--rate="):
-                run_args.append(f"--rate={rate}")
                 continue
             run_args.append(_substitute_rate_expressions(arg, rate))
 
@@ -118,31 +124,215 @@ def build_guidellm_args(benchmark: dict[str, object]) -> list[str]:
             guidellm_args.append(f"--{cli_key}={rendered_value}")
 
     if "rate" in benchmark and "rate" not in benchmark_args:
-        guidellm_args.append(f"--rate={benchmark['rate']}")
-
-    if not any(arg.startswith("--outputs=") for arg in guidellm_args):
-        guidellm_args.append(f"--outputs={benchmark.get('outputs', 'json')}")
+        rate = benchmark["rate"]
+        if isinstance(rate, list):
+            rate = ",".join(str(r) for r in rate)
+        guidellm_args.append(f"--rate={rate}")
 
     return guidellm_args
 
 
-def _build_multi_run_script(*, endpoint_url: str, runs: list[GuideLLMRun]) -> str:
-    lines = ["set -euo pipefail", "mkdir -p /results"]
-    for run in runs:
-        lines.append("rm -f /results/benchmarks.json")
-        command = [
-            "/opt/app-root/bin/guidellm",
-            "benchmark",
-            "run",
-            f"--target={endpoint_url}",
-            *run.args,
-        ]
-        lines.append(shlex.join(command))
-        output_path = shlex.quote(f"/results/benchmarks-{run.label}.json")
-        lines.append(
-            f"test -f /results/benchmarks.json && mv /results/benchmarks.json {output_path}"
-        )
+_RATE_KEY_BY_PROFILE = {
+    "concurrent": "streams",
+    "sweep": "sweep_size",
+    "throughput": "max_concurrency",
+}
 
+
+_FILE_KIND_BY_EXT = {
+    ".json": "json_file",
+    ".jsonl": "json_file",
+    ".csv": "csv_file",
+    ".parquet": "parquet_file",
+    ".arrow": "arrow_file",
+    ".txt": "text_file",
+    ".hdf5": "hdf5_file",
+    ".h5": "hdf5_file",
+    ".db": "db_file",
+    ".tar": "tar_file",
+}
+
+
+def _convert_data_spec(data_spec: str) -> str:
+    """Convert a ``--data`` value to GuideLLM ``kind=…`` format if needed."""
+    if data_spec.startswith("kind="):
+        return data_spec
+
+    for ext, kind in _FILE_KIND_BY_EXT.items():
+        if data_spec.endswith(ext):
+            return f"kind={kind},path={data_spec}"
+
+    if "prompt_tokens" in data_spec or "output_tokens" in data_spec:
+        return f"kind=synthetic_text,{data_spec}"
+
+    if "/" in data_spec and "=" not in data_spec:
+        return f"kind=huggingface,source={data_spec}"
+
+    return f"kind=synthetic_text,{data_spec}"
+
+
+def _build_run_args(endpoint_url: str, old_args: list[str]) -> list[str]:
+    """Transform config-derived CLI args into ``guidellm run`` arguments."""
+    backend_type = "openai_http"
+    model = None
+    data_spec = None
+    rate_type = "concurrent"
+    rates_str = None
+    max_seconds = None
+    max_requests = None
+    rampup = None
+    warmup = None
+    request_format = None
+    processor = None
+    processor_args: dict | None = None
+    passthrough: list[str] = []
+    extra_backend_parts: list[str] = []
+
+    for arg in old_args:
+        key, _, val = arg.partition("=")
+        if key == "--backend-type":
+            backend_type = val
+        elif key == "--rate-type":
+            rate_type = val
+        elif key == "--model":
+            model = val
+        elif key == "--data":
+            data_spec = val
+        elif key == "--rate":
+            rates_str = val
+        elif key == "--max-seconds":
+            max_seconds = val
+        elif key == "--max-requests":
+            max_requests = val
+        elif key == "--rampup":
+            rampup = val
+        elif key == "--warmup":
+            warmup = val
+        elif key in ("--processor", "--processor-args"):
+            if key == "--processor":
+                processor = val
+            else:
+                try:
+                    processor_args = _json.loads(val)
+                except (ValueError, TypeError):
+                    pass
+        elif key == "--request-type":
+            request_format = val
+        elif key == "--backend":
+            # v0.7.x-style --backend=subkey=subval from presets/workload args.
+            # Parse the comma-separated parts and merge known keys; pass
+            # anything else through as extra backend properties.
+            for part in val.split(","):
+                subkey, _, subval = part.partition("=")
+                if subkey == "kind":
+                    backend_type = subval
+                elif subkey == "model":
+                    model = subval
+                elif subkey == "request_format":
+                    request_format = subval
+                elif subkey == "target":
+                    pass  # endpoint_url is already set
+                else:
+                    extra_backend_parts.append(part)
+        elif key in ("--outputs", "--output-dir"):
+            pass
+        else:
+            passthrough.append(arg)
+
+    new_args: list[str] = []
+
+    backend_spec = f"kind={backend_type},target={endpoint_url}"
+    if model:
+        backend_spec += f",model={model}"
+    if request_format:
+        backend_spec += f",request_format={request_format}"
+    for part in extra_backend_parts:
+        backend_spec += f",{part}"
+    new_args.append(f"--backend={backend_spec}")
+
+    if data_spec:
+        new_args.append(f"--data={_convert_data_spec(data_spec)}")
+
+    rate_key = _RATE_KEY_BY_PROFILE.get(rate_type, "rate")
+    if rates_str:
+        rate_values = [v.strip() for v in rates_str.split(",") if v.strip()]
+        if len(rate_values) == 1:
+            profile_spec = f"kind={rate_type},{rate_key}={rate_values[0]}"
+            if warmup:
+                profile_spec += f",warmup={warmup}"
+            if rampup:
+                profile_spec += f",rampup_duration={rampup}"
+            new_args.append(f"--profile={profile_spec}")
+        else:
+            parsed_rates: list[int | float] = []
+            for r in rate_values:
+                f = float(r)
+                parsed_rates.append(int(f) if f == int(f) else f)
+            profile_dict: dict = {
+                "kind": rate_type,
+                rate_key: parsed_rates,
+            }
+            if warmup:
+                f = float(warmup)
+                profile_dict["warmup"] = int(f) if f == int(f) else f
+            if rampup:
+                f = float(rampup)
+                profile_dict["rampup_duration"] = int(f) if f == int(f) else f
+            new_args.append(f"--profile={_json.dumps(profile_dict)}")
+    else:
+        profile_spec = f"kind={rate_type}"
+        if warmup:
+            profile_spec += f",warmup={warmup}"
+        if rampup:
+            profile_spec += f",rampup_duration={rampup}"
+        new_args.append(f"--profile={profile_spec}")
+
+    if max_seconds:
+        new_args.append(f"--constraint=kind=max_duration,seconds={max_seconds}")
+    if max_requests:
+        new_args.append(f"--constraint=kind=max_requests,count={max_requests}")
+
+    new_args.append("--output=kind=json,path=/results/benchmarks-default.json")
+
+    if processor:
+        if processor_args:
+            tokenizer_dict = {
+                "kind": "huggingface_auto",
+                "model": processor,
+                "load_kwargs": processor_args,
+            }
+            new_args.append(f"--tokenizer={_json.dumps(tokenizer_dict)}")
+        else:
+            new_args.append(f"--tokenizer=kind=huggingface_auto,model={processor}")
+
+    new_args.extend(passthrough)
+    return new_args
+
+
+def _build_config_heredoc(config_content: str) -> str:
+    """Build a shell heredoc that writes a GuideLLM config YAML to a file."""
+    return f"cat > {_CONFIG_FILE_PATH} <<'__CONFIG_EOF__'\n{config_content}__CONFIG_EOF__"
+
+
+def _build_multi_run_script(
+    *,
+    endpoint_url: str,
+    runs: list[GuideLLMRun],
+    config_content: str | None = None,
+) -> str:
+    """Shell script for multiple GuideLLM runs (rate-expression expansion)."""
+    lines = ["set -euxo pipefail", "mkdir -p /results"]
+    if config_content:
+        lines.append(_build_config_heredoc(config_content))
+    for run in runs:
+        run_args = _build_run_args(endpoint_url, run.args)
+        if config_content:
+            run_args.append(f"--config={_CONFIG_FILE_PATH}")
+        output_path = f"/results/benchmarks-{run.label}.json"
+        filtered = [a for a in run_args if not a.startswith("--output=")]
+        filtered.append(f"--output=kind=json,path={output_path}")
+        command = ["/opt/app-root/bin/guidellm", "run", *filtered]
+        lines.append(shlex.join(command))
     return "\n".join(lines)
 
 
@@ -194,6 +384,8 @@ def render_guidellm_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
+    config_path: Path | None = None,
+    guidellm_run_args: list[str] | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest from individual components.
 
@@ -208,10 +400,15 @@ def render_guidellm_job_from_parts(
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the PVC is writable by the container. Needed on clusters where the
             CSI driver provisions volumes with root-only permissions.
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container via heredoc,
+            and GuideLLM is invoked with ``--config`` pointing to it.
+        guidellm_run_args: Native ``guidellm run`` arguments, used as supplied.
 
     Returns:
         Job manifest as dict
     """
+    config_content = config_path.read_text() if config_path else None
     runs = expand_guidellm_runs(guidellm_args)
     rendered_yaml = template.render_template(
         "guidellm_job.yaml.j2",
@@ -226,18 +423,26 @@ def render_guidellm_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
     container = manifest["spec"]["template"]["spec"]["containers"][0]
-    if len(runs) == 1 and runs[0].rate is None:
+
+    if guidellm_run_args is not None:
+        container["command"] = ["/opt/app-root/bin/guidellm"]
+        container["args"] = ["run", *guidellm_run_args]
+        return manifest
+
+    # Config file mode requires a shell script to write the file first.
+    # Plain single runs can invoke guidellm directly.
+    if not config_content and len(runs) == 1 and runs[0].rate is None:
         container["command"] = ["/opt/app-root/bin/guidellm"]
         container["args"] = [
-            "benchmark",
             "run",
-            f"--target={endpoint_url}",
-            *runs[0].args,
+            *_build_run_args(endpoint_url, runs[0].args),
         ]
         return manifest
 
     container["command"] = ["/bin/sh", "-lc"]
-    container["args"] = [_build_multi_run_script(endpoint_url=endpoint_url, runs=runs)]
+    container["args"] = [
+        _build_multi_run_script(endpoint_url=endpoint_url, runs=runs, config_content=config_content)
+    ]
     return manifest
 
 
@@ -251,6 +456,8 @@ def render_guidellm_shared_volume_job_from_parts(
     timeout_seconds: int,
     hf_token_secret: str = "",
     fs_group: int | None = None,
+    config_path: Path | None = None,
+    guidellm_run_args: list[str] | None = None,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest with shared volume (main + sidecar containers).
 
@@ -264,10 +471,14 @@ def render_guidellm_shared_volume_job_from_parts(
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds a pod-level securityContext.fsGroup to ensure
             the shared volume is writable by both containers.
+        config_path: Path to a GuideLLM config YAML file on the local filesystem.
+            When set, the file is read and embedded in the container via heredoc.
+        guidellm_run_args: Native ``guidellm run`` arguments, used as supplied.
 
     Returns:
         Job manifest as dict with main and sidecar containers
     """
+    config_content = config_path.read_text() if config_path else None
     runs = expand_guidellm_runs(guidellm_args)
     rendered_yaml = template.render_template(
         "guidellm_shared_volume_job.yaml.j2",
@@ -282,28 +493,31 @@ def render_guidellm_shared_volume_job_from_parts(
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
 
-    # Build the main container script
-    if len(runs) == 1 and runs[0].rate is None:
-        command = [
-            "/opt/app-root/bin/guidellm",
-            "benchmark",
-            "run",
-            f"--target={endpoint_url}",
-            *runs[0].args,
-        ]
-        main_script_lines = [
-            "set -euo pipefail",
-            "mkdir -p /results",
-            shlex.join(command),
-        ]
-        main_script = "\n".join(main_script_lines)
+    if guidellm_run_args is not None:
+        command = ["/opt/app-root/bin/guidellm", "run", *guidellm_run_args]
+        main_script = "\n".join(["set -euo pipefail", "mkdir -p /results", shlex.join(command)])
         manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
         manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
-    else:
-        main_script = _build_multi_run_script(endpoint_url=endpoint_url, runs=runs)
-        manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
-        manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
+        return manifest
 
+    # Config file mode always uses a shell script to write the file first.
+    if not config_content and len(runs) == 1 and runs[0].rate is None:
+        run_args = _build_run_args(endpoint_url, runs[0].args)
+        cmd = shlex.join(["/opt/app-root/bin/guidellm", "run", *run_args])
+        main_script = "\n".join(
+            [
+                "set -euxo pipefail",
+                "mkdir -p /results",
+                cmd,
+            ]
+        )
+    else:
+        main_script = _build_multi_run_script(
+            endpoint_url=endpoint_url, runs=runs, config_content=config_content
+        )
+
+    manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]
+    manifest["spec"]["template"]["spec"]["containers"][0]["args"] = [main_script]
     return manifest
 
 
