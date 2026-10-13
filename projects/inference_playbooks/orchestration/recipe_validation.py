@@ -7,23 +7,31 @@ from typing import Any
 import yaml
 
 CATALOG = "tests/forge/recipes.yaml"
-RECIPE_GLOB = "models/*/*/*/recipes/*/*/*/recipe.yaml"
+RECIPE_GLOB_V3 = "models/*/*/*/recipes/*/*/*/recipe.yaml"
+RECIPE_GLOB_V4 = "models/*/recipes/*/recipe.yaml"
+PRIMARY_KINDS = ("Deployment", "InferenceService", "LeaderWorkerSet", "LLMInferenceService")
 
 
 def load_recipe_catalog(repository_path: Path) -> dict[str, dict[str, Any]]:
-    """Validate legacy Forge entries and Recipe v3 files, indexed by recipe ID."""
+    """Validate legacy Forge entries and Recipe v3/v4 files, indexed by recipe ID."""
     root = repository_path.resolve(strict=True)
     recipes_by_id: dict[str, dict[str, Any]] = {}
 
     if (root / CATALOG).exists():
         _load_legacy_catalog(root, recipes_by_id)
 
-    recipe_paths = sorted(root.glob(RECIPE_GLOB))
-    for recipe_path in recipe_paths:
-        _load_recipe_v3(root, recipe_path, recipes_by_id)
+    for recipe_path in sorted(set(root.glob(RECIPE_GLOB_V3)) | set(root.glob(RECIPE_GLOB_V4))):
+        recipe = _load_yaml(recipe_path)
+        schema_version = recipe.get("schema_version") if isinstance(recipe, dict) else None
+        if schema_version == 3:
+            _load_recipe_v3(root, recipe_path, recipes_by_id)
+        elif schema_version == 4:
+            _load_recipe_v4(root, recipe_path, recipes_by_id)
+        else:
+            raise ValueError(f"{recipe_path} must define schema_version: 3 or 4")
 
     if not recipes_by_id:
-        raise ValueError(f"Repository must define {CATALOG} or at least one Recipe v3 file")
+        raise ValueError(f"Repository must define {CATALOG} or at least one Recipe v3/v4 file")
     return recipes_by_id
 
 
@@ -133,6 +141,110 @@ def _load_recipe_v3(
         "model_cache": model_cache,
         "hardware_profile_data": hardware_profile,
     }
+
+
+def _load_recipe_v4(
+    root: Path,
+    recipe_path: Path,
+    recipes_by_id: dict[str, dict[str, Any]],
+) -> None:
+    recipe = _load_yaml(recipe_path)
+    recipe_id = _validate_recipe_id(recipe.get("recipe_id"), str(recipe_path))
+    _ensure_unique_recipe_id(recipes_by_id, recipe_id)
+
+    model_id = _validate_recipe_id(recipe.get("model_id"), f"{recipe_path} model_id")
+    model_path = _repository_file(root, f"models/{model_id}/model.yaml", f"{recipe_path} model")
+    model = _load_yaml(model_path)
+    if not isinstance(model, dict) or model.get("model_id") != model_id:
+        raise ValueError(f"{model_path} must define model_id: {model_id}")
+    model_name = model.get("huggingface_id")
+    if not isinstance(model_name, str) or not model_name:
+        serving = recipe.get("serving")
+        model_name = serving.get("model") if isinstance(serving, dict) else None
+    if not isinstance(model_name, str) or not model_name:
+        raise ValueError(f"{model_path} must define huggingface_id")
+
+    primary, primary_path, service, service_path = _resolve_v4_manifests(root, recipe_path, recipe)
+
+    hardware_profile_path = _repository_file(
+        root, recipe.get("hardware_profile"), f"{recipe_path} hardware profile"
+    )
+    hardware_profile = _load_yaml(hardware_profile_path)
+    if not isinstance(hardware_profile, dict):
+        raise ValueError(f"{hardware_profile_path} must define a mapping")
+
+    deployment = recipe.get("deployment")
+    model_cache = deployment.get("model_cache") if isinstance(deployment, dict) else None
+    if model_cache is not None:
+        if primary.get("kind") != "LeaderWorkerSet":
+            raise ValueError(f"{recipe_path} deployment.model_cache requires a LeaderWorkerSet")
+        _validate_lws_model_cache(recipe_path, primary, model_cache)
+
+    platform = None
+    platforms = recipe.get("platforms")
+    if isinstance(platforms, list) and platforms and isinstance(platforms[0], dict):
+        platform = {"version": platforms[0].get("version")}
+
+    auxiliary_manifests = [{"path": service_path, "data": service}] if service is not None else []
+    recipes_by_id[recipe_id] = {
+        **recipe,
+        "recipe_type": "recipe-v4",
+        "recipe_path": recipe_path,
+        "manifest_path": primary_path,
+        "manifest_data": primary,
+        "auxiliary_manifests": auxiliary_manifests,
+        "model_name": model_name,
+        "model_cache": model_cache,
+        "hardware_profile_data": hardware_profile,
+        "platform": platform,
+    }
+
+
+def _resolve_v4_manifests(
+    root: Path, recipe_path: Path, recipe: dict[str, Any]
+) -> tuple[dict[str, Any], Path, dict[str, Any] | None, Path | None]:
+    """Locate the primary manifest and optional companion Service for a v4 recipe."""
+    recipe_dir = recipe_path.parent
+    deployment = recipe.get("deployment")
+    manifests = deployment.get("manifests") if isinstance(deployment, dict) else None
+
+    documents: list[tuple[dict[str, Any], Path]] = []
+    if isinstance(manifests, list) and manifests:
+        for entry in manifests:
+            if not isinstance(entry, dict):
+                raise ValueError(f"{recipe_path} deployment.manifests entries must be mappings")
+            manifest_path = _recipe_file(root, recipe_dir, entry.get("path"), "manifest")
+            documents.extend((doc, manifest_path) for doc in _load_yaml_all(manifest_path))
+    elif (recipe_dir / "manifests").is_dir():
+        for manifest_path in sorted((recipe_dir / "manifests").rglob("*.yaml")):
+            documents.extend((doc, manifest_path) for doc in _load_yaml_all(manifest_path))
+    else:
+        raise ValueError(
+            f"{recipe_path} must define deployment.manifests or a manifests/ directory"
+        )
+
+    primary_docs = [(doc, path) for doc, path in documents if doc.get("kind") in PRIMARY_KINDS]
+    service_docs = [(doc, path) for doc, path in documents if doc.get("kind") == "Service"]
+    if len(primary_docs) != 1:
+        raise ValueError(f"{recipe_path} must define exactly one primary deployment resource")
+    if len(service_docs) > 1:
+        raise ValueError(f"{recipe_path} must define at most one Service")
+    primary, primary_path = primary_docs[0]
+    if service_docs:
+        service, service_path = service_docs[0]
+        _validate_service_manifest(service, str(service_path))
+    else:
+        service, service_path = None, None
+    return primary, primary_path, service, service_path
+
+
+def _load_yaml_all(path: Path) -> list[dict[str, Any]]:
+    try:
+        with path.open(encoding="utf-8") as stream:
+            documents = list(yaml.safe_load_all(stream))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML in {path}") from exc
+    return [document for document in documents if document is not None]
 
 
 def _validate_recipe_id(value: Any, label: str) -> str:

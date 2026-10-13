@@ -3,6 +3,13 @@ ci-quick:
   rates: [1, 5]
   max_seconds: 60
 
+aiperf-smoke:
+  tool: aiperf
+  concurrency: 1
+  request_count: 10
+  input_tokens: 128
+  output_tokens: 64
+
 profile1:
   data: "prompt_tokens=1000,output_tokens=1000"
   rates: [1,50,100,200,300]
@@ -53,6 +60,62 @@ profile7:
   max_seconds: 275
   rampup: 35
   warmup: 75
+
+aiperf-agentx-128k:
+  tool: aiperf
+  ssl_verify: false
+  concurrency: 32
+  timeout_seconds: 7200
+  aiperf_args:
+    - --scenario
+    - inferencex-agentx-mvp
+    - --public-dataset
+    - semianalysis_cc_traces_weka_062126
+    - --max-context-length
+    - "128000"
+    - --benchmark-duration
+    - "1800"
+    - --agentic-cache-warmup-duration
+    - "600"
+    - --warmup-grace-period
+    - "1800"
+    - --failed-request-threshold
+    - "0.10"
+    - --use-server-token-count
+    - --tokenizer-trust-remote-code
+    - --num-dataset-entries
+    - "393"
+    - --slice-duration
+    - "1.0"
+    - --output-artifact-dir
+    - /results
+
+aiperf-agentx-unlimited:
+  tool: aiperf
+  ssl_verify: false
+  concurrency: [1, 4, 16, 32]
+  timeout_seconds: 7200
+  aiperf_args:
+    - --scenario
+    - inferencex-agentx-mvp
+    - --public-dataset
+    - semianalysis_cc_traces_weka_062126
+    - --benchmark-duration
+    - "1800"
+    - --agentic-cache-warmup-duration
+    - "600"
+    - --warmup-grace-period
+    - "1800"
+    - --failed-request-threshold
+    - "0.10"
+    - --use-server-token-count
+    - --tokenizer-trust-remote-code
+    - --num-dataset-entries
+    - "393"
+    - --slice-duration
+    - "1.0"
+    - --output-artifact-dir
+    - /results
 
 # Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
 custom:

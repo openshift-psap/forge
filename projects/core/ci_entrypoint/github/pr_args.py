@@ -110,6 +110,7 @@ def get_directive_handlers() -> dict[str, Callable[[str], dict[str, Any]]]:
     return {
         "/test": handle_test_directive,
         "/var": handle_var_directive,
+        "/path": handle_path_directive,
         "/help": handle_help_directive,
     }
 
@@ -181,6 +182,14 @@ def handle_var_directive(line: str) -> dict[str, Any]:
         raise Exception(f"Invalid /var directive format: {line} (expected a non-empty key)")
 
     return {key.strip(): value}
+
+
+def handle_path_directive(line: str) -> dict[str, Any]:
+    """Select a manifest bundle for an Inference Playbooks run."""
+    manifest_path = line[len("/path") :].strip()
+    if not manifest_path:
+        raise ValueError("Expected '/path <manifest-path>'")
+    return {"inference_playbooks.manifest_path": manifest_path}
 
 
 def format_help_text(directives_dict: dict[str, str], title: str) -> str:
@@ -303,6 +312,10 @@ def get_supported_directives() -> dict[str, str]:
                             /var tests.llmd.flavors: [simple, simple-tp4, simple-tp2-x4]
                             /var tests.llmd.benchmarks.guidellm.rate: "1,10,50".
                    """,
+        "/path": """Select a deployment manifest from the Inference Playbooks checkout.
+                    Format: /path <manifest-path>
+                    Path may be relative to the repository root or selected recipe directory.
+                    Example: /path manifests/vllm-v0.31.0/deployment.yaml""",
         "/help": """Show all supported GitHub PR directives.
                    Format: /help
                    Effect: Logs available directive information to help users understand available options.""",

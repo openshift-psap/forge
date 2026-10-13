@@ -182,6 +182,93 @@ spec:
     assert recipe["hardware_profile_data"]["accelerators"]["model"] == "H200"
 
 
+def test_load_recipe_v4_discovers_declared_and_scanned_manifests(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "models/kimi-k3/model.yaml",
+        "model_id: kimi-k3\nhuggingface_id: moonshotai/Kimi-K3\n",
+    )
+    _write(
+        tmp_path,
+        "models/glm-5.2/model.yaml",
+        "model_id: glm-5.2\nhuggingface_id: zai-org/GLM-5.2-FP8\n",
+    )
+    _write(tmp_path, "hardware-profiles/h200.yaml", "profile_id: h200\n")
+
+    kimi_dir = "models/kimi-k3/recipes/h200-x8-pp2-tp8-8k1k"
+    _write(
+        tmp_path,
+        f"{kimi_dir}/recipe.yaml",
+        """schema_version: 4
+recipe_id: kimi-k3-vllm-h200-pp2-tp8
+model_id: kimi-k3
+platforms:
+  - stack: vllm
+    version: v0.29.0
+hardware_profile: hardware-profiles/h200.yaml
+deployment:
+  scope: multi-node
+  manifests:
+    - {path: manifests/vllm-v0.29.0/leaderworkerset.yaml, kind: LeaderWorkerSet}
+""",
+    )
+    _write(
+        tmp_path,
+        f"{kimi_dir}/manifests/vllm-v0.29.0/leaderworkerset.yaml",
+        """apiVersion: v1
+kind: Service
+metadata: {name: kimi}
+spec:
+  ports: [{port: 8000}]
+  selector: {app: kimi}
+---
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata: {name: kimi}
+spec: {}
+""",
+    )
+
+    glm_dir = "models/glm-5.2/recipes/h200-x8-pp2-tp8-agentx-128k-rhoai"
+    _write(
+        tmp_path,
+        f"{glm_dir}/recipe.yaml",
+        """schema_version: 4
+recipe_id: glm-5.2-rhoai-pp2-tp8
+model_id: glm-5.2
+platforms:
+  - stack: rhoai
+    version: "3.5"
+hardware_profile: hardware-profiles/h200.yaml
+deployment:
+  scope: multi-node
+""",
+    )
+    _write(
+        tmp_path,
+        f"{glm_dir}/manifests/rhoai-3.5/llminferenceservice.yaml",
+        """apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata: {name: glm-5-2-rhoai}
+spec:
+  model: {uri: pvc://glm-weights, name: zai-org/GLM-5.2-FP8}
+""",
+    )
+
+    recipes = load_recipe_catalog(tmp_path)
+
+    kimi = recipes["kimi-k3-vllm-h200-pp2-tp8"]
+    assert kimi["recipe_type"] == "recipe-v4"
+    assert kimi["manifest_data"]["kind"] == "LeaderWorkerSet"
+    assert kimi["auxiliary_manifests"][0]["data"]["kind"] == "Service"
+    assert kimi["model_name"] == "moonshotai/Kimi-K3"
+    assert kimi["platform"] == {"version": "v0.29.0"}
+    glm = recipes["glm-5.2-rhoai-pp2-tp8"]
+    assert glm["manifest_data"]["kind"] == "LLMInferenceService"
+    assert glm["auxiliary_manifests"] == []
+    assert glm["model_cache"] is None
+
+
 def test_validate_recipe_catalog_rejects_duplicate_ids(tmp_path: Path) -> None:
     _write(tmp_path, "models/hf.yaml", _manifest("hf://test/model"))
     _write(
@@ -518,6 +605,7 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
         "platform": "OCP",
         "test_harness": "forge-inference-playbooks",
         "benchmark_key": "profile1",
+        "benchmark_tool": "guidellm",
     }
     monkeypatch.setattr(
         test_phase,
@@ -530,7 +618,8 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
         lambda **kwargs: calls.append(kwargs),
     )
 
-    workload_key, workload = test_phase._get_workload_config()
+    workload_configs = test_phase._get_workload_configs()
+    workload_key, workload = workload_configs[0]
     test_phase._run_workload(
         "http://model:8000",
         "namespace",

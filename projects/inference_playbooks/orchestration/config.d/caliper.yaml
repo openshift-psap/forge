@@ -32,7 +32,7 @@ replot:
 postprocess:
   enabled: true
   artifacts_dir: null
-  plugin_module: projects.guidellm.postprocess.guidellm.plugin
+  plugin_module: projects.rhaiis.postprocess.plugin
   postprocess_config: null
   parse:
     enabled: true

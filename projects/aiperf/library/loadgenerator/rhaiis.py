@@ -1,0 +1,72 @@
+"""AI Perf execution adapter for RHAIIS workloads."""
+
+from __future__ import annotations
+
+import copy
+import logging
+from typing import Any
+
+from projects.aiperf.toolbox.run_aiperf_benchmark import main as aiperf_command
+from projects.rhaiis.orchestration import runtime_config
+from projects.rhaiis.orchestration.loadgenerator.base import BenchmarkContext, RhaiisLoadGenerator
+
+logger = logging.getLogger(__name__)
+
+
+def _job_name(workload_key: str, deployment_name: str) -> str:
+    """Keep the Job name short enough for AI Perf's result PVC suffix."""
+    base = f"aiperf-bench-{workload_key}-"
+    available = 55 - len(base)
+    model = deployment_name[:available] if available > 0 else ""
+    return f"{base}{model}".rstrip("-")
+
+
+class AIPerfGenerator(RhaiisLoadGenerator):
+    tool = "aiperf"
+
+    def expand(self, benchmark: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """Expand a concurrency list into sequential single-concurrency runs."""
+        concurrency = benchmark.get("concurrency")
+        if not isinstance(concurrency, list):
+            return [("default", benchmark)]
+
+        runs = []
+        for c in concurrency:
+            run_cfg = copy.deepcopy(benchmark)
+            run_cfg["concurrency"] = c
+            runs.append((f"concurrency-{c}", run_cfg))
+        logger.info("Expanded concurrency sweep into %d runs: %s", len(runs), concurrency)
+        return runs
+
+    def run(self, context: BenchmarkContext) -> None:
+        """Run AI Perf with this workload's profile and tool configuration."""
+        cfg = runtime_config.get_aiperf_config()
+        workload = context.workload
+        model_id = context.model_cfg["hf_model_id"]
+        aiperf_command.run(
+            endpoint_url=context.endpoint_url,
+            model_name=model_id,
+            namespace=context.namespace,
+            name=_job_name(context.workload_key, context.deployment_name),
+            image=cfg["image"],
+            timeout=workload.get("timeout_seconds", cfg["timeout"]),
+            pvc_size=cfg["pvc_size"],
+            pvc_storage_class=cfg.get("pvc_storage_class"),
+            tokenizer=workload.get("tokenizer", model_id),
+            endpoint_type=workload.get("endpoint_type", "chat"),
+            endpoint_path=workload.get("endpoint_path", "/v1/chat/completions"),
+            streaming=workload.get("streaming", True),
+            concurrency=workload.get("concurrency"),
+            request_rate=workload.get("request_rate"),
+            request_count=workload.get("request_count"),
+            input_tokens=workload.get("input_tokens"),
+            output_tokens=workload.get("output_tokens"),
+            dataset_url=workload.get("dataset_url"),
+            dataset_sha256=workload.get("dataset_sha256"),
+            dataset_type=workload.get("dataset_type"),
+            fixed_schedule=workload.get("fixed_schedule", False),
+            fixed_schedule_auto_offset=workload.get("fixed_schedule_auto_offset", False),
+            image_pull_secret=cfg.get("image_pull_secret"),
+            ssl_verify=cfg.get("ssl_verify", True),
+            aiperf_args=cfg.get("aiperf_args"),
+        )

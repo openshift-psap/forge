@@ -31,14 +31,13 @@ from projects.core.orchestration.utils.k8s import ensure_namespace
 from projects.gpu_operator.toolbox.validate_gpu_operator_dcgm import (
     main as validate_gpu_operator_dcgm,
 )
-from projects.guidellm.library import benchconf as benchconf_lib  # noqa: F401
-from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
-from projects.guidellm.toolbox.run_guidellm_benchmark import main as run_guidellm_benchmark_command
 from projects.guidellm.toolbox.run_smoke_request import main as run_smoke_request_command
 from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state
 from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
 from projects.kserve.toolbox.wait_kserve_ready import main as wait_kserve_ready
 from projects.llm_d.orchestration import runtime_config
+from projects.llm_d.orchestration.loadgenerator import get_load_generator
+from projects.llm_d.orchestration.loadgenerator.base import BenchmarkContext, LlmDLoadGenerator
 from projects.llm_d.orchestration.prepare_phase import prepare_model_cache
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
@@ -209,7 +208,11 @@ def create_test_labels() -> None:
     }
 
     if benchmark_keys:
-        labels["guidellm_loadshape"] = benchmark_keys[0]
+        benchmark = runtime_config.get_benchmark_config()
+        labels["benchmark_tool"] = benchmark["tool"]
+        labels["benchmark_key"] = benchmark_keys[0]
+        if benchmark["tool"] == "guidellm":
+            labels["guidellm_loadshape"] = benchmark_keys[0]
 
     # Extract kpi_labels from config
     kpi_labels = extract_kpi_labels_from_config()
@@ -291,7 +294,25 @@ def run() -> int:
         logger.info("Kserve dry-run mode enabled - Skipping caliper post-processing")
         return ret
 
-    return run_and_postprocess(do_test)
+    benchmark_keys = runtime_config.get_benchmark_keys()
+    aiperf_only = bool(benchmark_keys) and all(
+        runtime_config.get_benchmark_tool(key) == "aiperf" for key in benchmark_keys
+    )
+    if not aiperf_only:
+        return run_and_postprocess(do_test)
+
+    disabled_steps = (
+        "caliper.postprocess.kpi.dashboard_csv.enabled",
+        "caliper.postprocess.visualize.enabled",
+    )
+    previous_values = {key: config.project.get_config(key) for key in disabled_steps}
+    try:
+        for key in disabled_steps:
+            config.project.set_config(key, False, print=False)
+        return run_and_postprocess(do_test)
+    finally:
+        for key, value in previous_values.items():
+            config.project.set_config(key, value, print=False)
 
 
 def run_finalizers(
@@ -374,6 +395,9 @@ def do_test() -> int:
     namespace = runtime_config.get_namespace()
     dry_run = config.project.get_config("runtime.kserve.dry_run", False)
 
+    benchmark = runtime_config.get_benchmark_config() if not dry_run else None
+    generator = get_load_generator(benchmark["tool"]) if benchmark is not None else None
+
     if not dry_run:
         # Ensure namespace exists before starting any deployments
         ensure_namespace(
@@ -435,7 +459,9 @@ def do_test() -> int:
 
         benchmark_start = datetime.now(UTC)
         try:
-            benchmark_times = run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
+            benchmark_times = run_benchmark(
+                test_dir, endpoint_url=endpoint_url, benchmark=benchmark, generator=generator
+            )
         except Exception:
             benchmark_times = (benchmark_start, datetime.now(UTC))
             raise
@@ -750,54 +776,67 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
     )
 
 
-def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, datetime] | None:
-    namespace = runtime_config.get_namespace()
-    benchmark = runtime_config.get_benchmark_config()
-    workload = runtime_config.get_workload_config()
+def _mark_parent_skip_for_expansion(test_dir: Path | None) -> None:
+    """Set skip=True on the parent metadata so Caliper processes each expanded run independently."""
+    if test_dir is None:
+        return
+    metadata_path = test_dir / "__caliper_test_metadata__.yaml"
+    if not metadata_path.exists():
+        return
+    with metadata_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    data["skip"] = True
+    with metadata_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
 
+
+def run_benchmark(
+    test_dir,
+    *,
+    endpoint_url: str,
+    benchmark: dict[str, Any] | None = None,
+    generator: LlmDLoadGenerator | None = None,
+) -> tuple[datetime, datetime] | None:
     if benchmark is None:
-        return None
-
-    # Add benchmark start timing
+        benchmark = runtime_config.get_benchmark_config()
+    if benchmark is None:
+        return
+    if generator is None:
+        generator = get_load_generator(benchmark["tool"])
     start_time = update_test_labels_with_timing(test_dir, "benchmark", "start")
-
     try:
         benchmark_key = runtime_config.get_benchmark_keys()[0]
-
-        # Resolve benchconf config if enabled and the benchmark references one
-        config_path = None
-        benchconf_ref = benchmark.get("benchconf")
-        if benchconf_ref and benchconf_lib._is_enabled():
-            benchconf_lib.maybe_install_custom_version()
-            config_path = benchconf_lib.resolve_config_path(benchconf_ref)
-            benchconf_lib.save_version()
-
-        guidellm_args = build_guidellm_args(benchmark)
-        if not any(arg.startswith(("--tokenizer=", "--processor=")) for arg in guidellm_args):
-            guidellm_args.append(
-                f"--tokenizer=kind=huggingface_auto,model={runtime_config.get_model_name()}"
-            )
-
-        # Get fs_group from workload config
-        fs_group = None
-        if workload:
-            fs_group = workload.get("fs_group")
-
-        artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
-        with env.NextArtifactDir(artifact_name):
-            run_guidellm_benchmark_command.run(
-                endpoint_url=endpoint_url,
-                name=benchmark.get("job_name"),
-                namespace=namespace,
-                image=benchmark.get("image"),
-                timeout=benchmark.get("timeout_seconds"),
-                pvc_size=benchmark.get("pvc_size"),
-                pvc_storage_class=benchmark.get("pvc_storage_class"),
-                guidellm_args=guidellm_args,
-                config_path=config_path,
-                fs_group=fs_group,
-                use_pvc=benchmark.get("use_pvc"),
-            )
+        runs = generator.expand(benchmark)
+        multi_run = len(runs) > 1
+        if multi_run:
+            _mark_parent_skip_for_expansion(test_dir)
+        for run_label, run_benchmark_cfg in runs:
+            artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
+            if run_label != "default":
+                artifact_name = f"{artifact_name}_{slugify_identifier(run_label, max_length=24)}"
+            with env.NextArtifactDir(artifact_name):
+                if multi_run:
+                    run_labels = {
+                        "benchmark_tool": run_benchmark_cfg["tool"],
+                        "benchmark_key": benchmark_key,
+                        "run_label": run_label,
+                    }
+                    create_test_metadata(
+                        env.ARTIFACT_DIR,
+                        run_labels,
+                        kpi_labels=extract_kpi_labels_from_config(),
+                    )
+                generator.run(
+                    BenchmarkContext(
+                        test_dir=test_dir,
+                        endpoint_url=endpoint_url,
+                        benchmark_key=benchmark_key,
+                        benchmark=run_benchmark_cfg,
+                        workload=runtime_config.get_workload_config(),
+                        model_name=runtime_config.get_model_name(),
+                        namespace=runtime_config.get_namespace(),
+                    )
+                )
     finally:
         end_time = update_test_labels_with_timing(test_dir, "benchmark", "end")
 

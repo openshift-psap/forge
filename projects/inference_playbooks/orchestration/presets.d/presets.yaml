@@ -2,3 +2,7 @@ __multiple: true
 
 no_dummy:
   placeholder.dummy: false
+
+cluster_janus:
+  model_cache.pvc.access_mode: ReadWriteMany
+  model_cache.pvc.storage_class_name: nfs

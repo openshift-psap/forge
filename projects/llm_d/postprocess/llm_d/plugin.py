@@ -8,6 +8,12 @@ from typing import Any
 
 import yaml
 
+from projects.aiperf.postprocess.results import (
+    AIPerfParser,
+    benchmark_tool,
+    compute_aiperf_kpis,
+    model_for_tool,
+)
 from projects.caliper.engine.kpi import KpiCatalogEntry, KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
@@ -53,7 +59,10 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
         )
 
     def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
-        parsed = enrich_guidellm_parse_result(super().parse(nodes), nodes)
+        guidellm_nodes = [node for node in nodes if benchmark_tool(node) == "guidellm"]
+        aiperf_nodes = [node for node in nodes if benchmark_tool(node) == "aiperf"]
+        parsed = enrich_guidellm_parse_result(super().parse(guidellm_nodes), guidellm_nodes)
+        aiperf_parsed = AIPerfParser().parse(aiperf_nodes)
         nodes_by_path = {str(node.test_path): node for node in nodes}
         records = []
         for record in parsed.records:
@@ -72,19 +81,36 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
             for key, value in deployment_metadata.items():
                 record.metrics.setdefault(key, value)
             records.append(record)
-        return ParseResult(records=records, warnings=parsed.warnings)
+        return ParseResult(
+            records=records + aiperf_parsed.records,
+            warnings=parsed.warnings + aiperf_parsed.warnings,
+        )
 
     def kpi_catalog(self) -> list[KpiCatalogEntry]:
         return self.kpi_handler.get_catalog()
 
     def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
         """Compute KPI values using dataclasses with status details."""
-        # Store model for independent dashboard KPI generation in CSV export
-        self._cached_model = model
-        return super().compute_kpis(model)
+        guidellm_model = model_for_tool(model, "guidellm")
+        self._cached_model = guidellm_model
+        guide_rows, _ = super().compute_kpis(guidellm_model)
+        aiperf_rows, _ = compute_aiperf_kpis(model)
+        return guide_rows + aiperf_rows, KpiComputationStatus.success_status(
+            len(model.unified_result_records)
+        )
 
     def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
         """Generate dashboard CSV using shared architecture with LLM-D specific metadata mapping."""
+        model = model_for_tool(model, "guidellm")
+        if not model.unified_result_records:
+            import csv
+
+            from .csv_dashboard import DASHBOARD_FIELDNAMES
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("w", newline="", encoding="utf-8") as stream:
+                csv.DictWriter(stream, fieldnames=DASHBOARD_FIELDNAMES).writeheader()
+            return str(output_path)
         from projects.guidellm.postprocess.guidellm.dashboard import (
             DashboardCsvExporter,
             normalize_product_version,

@@ -9,7 +9,7 @@ logger = logging.getLogger("TOOLBOX")
 
 
 @entrypoint
-def run(*, namespace: str, lws_name: str, service_name: str, pod_selector: str):
+def run(*, namespace: str, lws_name: str, service_name: str | None, pod_selector: str):
     """Capture the LeaderWorkerSet deployment, Service, pods, events, and logs."""
     return execute_tasks(locals())
 
@@ -38,6 +38,8 @@ def capture_leader_worker_set(args, ctx):
 
 @task
 def capture_service(args, ctx):
+    if not args.service_name:
+        return "No explicit Service name to capture"
     return _capture(
         "Service",
         ctx.artifact_directory / "service.yaml",
@@ -69,22 +71,13 @@ def capture_pods(args, ctx):
 
 @task
 def capture_resource_descriptions(args, ctx):
-    captures = (
+    captures = [
         (
             "LeaderWorkerSet description and events",
             ctx.artifact_directory / "leaderworkerset.describe.txt",
             "describe",
             "leaderworkerset",
             args.lws_name,
-            "-n",
-            args.namespace,
-        ),
-        (
-            "Service description and events",
-            ctx.artifact_directory / "service.describe.txt",
-            "describe",
-            "service",
-            args.service_name,
             "-n",
             args.namespace,
         ),
@@ -98,7 +91,20 @@ def capture_resource_descriptions(args, ctx):
             "-l",
             args.pod_selector,
         ),
-    )
+    ]
+    if args.service_name:
+        captures.insert(
+            1,
+            (
+                "Service description and events",
+                ctx.artifact_directory / "service.describe.txt",
+                "describe",
+                "service",
+                args.service_name,
+                "-n",
+                args.namespace,
+            ),
+        )
     return "\n".join(_capture(*capture) for capture in captures)
 
 
