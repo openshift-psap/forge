@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from projects.core.dsl import entrypoint, execute_tasks, task
+from projects.core.dsl import entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc, oc_apply, oc_get_json
 
 logger = logging.getLogger("TOOLBOX")
@@ -30,10 +30,10 @@ STARTUP_FAILURE_REASONS = {
 def run(
     *,
     namespace: str,
-    service_manifest_path: str,
     leader_worker_set_manifest_path: str,
     pod_selector: str,
     timeout_seconds: int,
+    service_manifest_path: str | None = None,
 ) -> str:
     """Deploy a Service and LeaderWorkerSet, then wait for availability."""
     ctx = execute_tasks(locals())
@@ -49,50 +49,50 @@ def load_and_validate_manifests(args, ctx):
     if type(args.timeout_seconds) is not int or args.timeout_seconds <= 0:
         raise ValueError("LWS readiness timeout must be a positive integer")
 
-    service = _load_yaml(Path(args.service_manifest_path))
     lws = _load_yaml(Path(args.leader_worker_set_manifest_path))
-    if not isinstance(service, dict) or service.get("kind") != "Service":
-        raise ValueError("service_manifest_path must contain a Service")
     if not isinstance(lws, dict) or lws.get("kind") != "LeaderWorkerSet":
         raise ValueError("leader_worker_set_manifest_path must contain a LeaderWorkerSet")
-
-    service_metadata = service.get("metadata")
     lws_metadata = lws.get("metadata")
-    if (
-        not isinstance(service_metadata, dict)
-        or not isinstance(service_metadata.get("name"), str)
-        or not service_metadata["name"]
-    ):
-        raise ValueError("Service manifest must define metadata.name")
     if (
         not isinstance(lws_metadata, dict)
         or not isinstance(lws_metadata.get("name"), str)
         or not lws_metadata["name"]
     ):
         raise ValueError("LeaderWorkerSet manifest must define metadata.name")
-    service_spec = service.get("spec")
-    ports = service_spec.get("ports") if isinstance(service_spec, dict) else None
-    if (
-        not isinstance(ports, list)
-        or not ports
-        or not isinstance(ports[0], dict)
-        or type(ports[0].get("port")) is not int
-        or not 1 <= ports[0]["port"] <= 65535
-    ):
-        raise ValueError("Service manifest must define a valid spec.ports[0].port")
 
-    service_metadata["namespace"] = args.namespace
+    service = None
+    ctx.service_name = None
+    ctx.port = None
+    if args.service_manifest_path:
+        service = _load_yaml(Path(args.service_manifest_path))
+        if not isinstance(service, dict) or service.get("kind") != "Service":
+            raise ValueError("service_manifest_path must contain a Service")
+        service_metadata = service.get("metadata")
+        if (
+            not isinstance(service_metadata, dict)
+            or not isinstance(service_metadata.get("name"), str)
+            or not service_metadata["name"]
+        ):
+            raise ValueError("Service manifest must define metadata.name")
+        service_spec = service.get("spec")
+        ports = service_spec.get("ports") if isinstance(service_spec, dict) else None
+        if not isinstance(ports, list) or not ports:
+            raise ValueError("Service manifest must define spec.ports")
+        service_metadata["namespace"] = args.namespace
+        ctx.service_name = service_metadata["name"]
+        ctx.port = _service_port(service)
+
     lws_metadata["namespace"] = args.namespace
     ctx.service = service
     ctx.lws = lws
-    ctx.service_name = service_metadata["name"]
     ctx.lws_name = lws_metadata["name"]
-    ctx.port = ports[0]["port"]
-    return f"Validated Service {ctx.service_name} and LeaderWorkerSet {ctx.lws_name}"
+    return f"Validated LeaderWorkerSet {ctx.lws_name}"
 
 
 @task
 def apply_service(args, ctx):
+    if ctx.service is None:
+        return "No Service manifest supplied; endpoint discovery will use the operator Service"
     oc_apply(Path(args.service_manifest_path), ctx.service)
     return f"Applied Service {ctx.service_name}"
 
@@ -164,10 +164,75 @@ def wait_for_leader_worker_set(args, ctx):
     )
 
 
+@retry(attempts=60, delay=10, backoff=1.0)
 @task
 def resolve_endpoint(args, ctx):
+    if ctx.service_name:
+        ctx.endpoint_url = (
+            f"http://{ctx.service_name}.{args.namespace}.svc.cluster.local:{ctx.port}"
+        )
+        return f"Resolved LeaderWorkerSet endpoint {ctx.endpoint_url}"
+
+    labelled = oc_get_json(
+        "services",
+        namespace=args.namespace,
+        selector=f"leaderworkerset.sigs.k8s.io/name={ctx.lws_name}",
+    )
+    services = (labelled or {}).get("items", [])
+    service = _select_operator_service(services, ctx.lws_name)
+    if service is None:
+        all_services = oc_get_json("services", namespace=args.namespace) or {}
+        service = _select_operator_service(all_services.get("items", []), ctx.lws_name)
+    if service is None:
+        return False, f"Waiting for the operator Service for LeaderWorkerSet {ctx.lws_name}"
+
+    metadata = service.get("metadata", {})
+    ctx.service_name = metadata.get("name")
+    ctx.port = _service_port(service)
     ctx.endpoint_url = f"http://{ctx.service_name}.{args.namespace}.svc.cluster.local:{ctx.port}"
-    return f"Resolved LeaderWorkerSet endpoint {ctx.endpoint_url}"
+    return f"Resolved operator Service endpoint {ctx.endpoint_url}"
+
+
+def _select_operator_service(services: list[dict], lws_name: str) -> dict | None:
+    matches = []
+    for service in services:
+        metadata = service.get("metadata", {})
+        labels = metadata.get("labels", {})
+        name = metadata.get("name", "")
+        if labels.get("leaderworkerset.sigs.k8s.io/name") == lws_name or (
+            name == lws_name or name.startswith(f"{lws_name}-")
+        ):
+            matches.append(service)
+
+    if len(matches) <= 1:
+        return matches[0] if matches else None
+    leaders = [
+        service
+        for service in matches
+        if service.get("metadata", {}).get("name", "").endswith("-leader")
+    ]
+    if len(leaders) == 1:
+        return leaders[0]
+    names = sorted(service.get("metadata", {}).get("name", "unknown") for service in matches)
+    raise ValueError(
+        f"Found multiple operator Services for LeaderWorkerSet {lws_name}: {', '.join(names)}"
+    )
+
+
+def _service_port(service: dict) -> int:
+    ports = service.get("spec", {}).get("ports")
+    if not isinstance(ports, list) or not ports:
+        raise ValueError("Service must define spec.ports")
+    http_ports = [
+        port for port in ports if isinstance(port, dict) and port.get("name") in {"http", "https"}
+    ]
+    candidates = http_ports or ports
+    if len(candidates) != 1:
+        raise ValueError("Service must define one HTTP port for the GuideLLM endpoint")
+    port = candidates[0].get("port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("Service must define a valid spec.ports[].port")
+    return port
 
 
 def attach_model_cache_pvc(lws: dict, volume_name: str, pvc_name: str) -> None:
