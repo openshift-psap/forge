@@ -615,7 +615,9 @@ def _launch_deployment_recipe(
         or not isinstance(containers, list)
         or not containers
     ):
-        raise ValueError(f"Recipe {recipe_id!r} Deployment needs containers and matching pod labels")
+        raise ValueError(
+            f"Recipe {recipe_id!r} Deployment needs containers and matching pod labels"
+        )
     if any(pod_labels.get(key) != value for key, value in selector.items()):
         raise ValueError(f"Recipe {recipe_id!r} Deployment selector does not match pod labels")
     original_pod_labels = dict(pod_labels)
