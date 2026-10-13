@@ -61,6 +61,34 @@ profile7:
   rampup: 35
   warmup: 75
 
+aiperf-agentx-180s:
+  tool: aiperf
+  ssl_verify: false
+  concurrency: [1, 2]
+  timeout_seconds: 3600
+  aiperf_args:
+    - --scenario
+    - inferencex-agentx-mvp
+    - --public-dataset
+    - semianalysis_cc_traces_weka_062126
+    - --max-context-length
+    - "128000"
+    - --benchmark-duration
+    - "180"
+    - --agentic-cache-warmup-duration
+    - "60"
+    - --warmup-grace-period
+    - "120"
+    - --failed-request-threshold
+    - "0.10"
+    - --use-server-token-count
+    - --tokenizer-trust-remote-code
+    - --num-dataset-entries
+    - "393"
+    - --slice-duration
+    - "1.0"
+    - --unsafe-override
+
 aiperf-agentx-128k:
   tool: aiperf
   ssl_verify: false
@@ -87,8 +115,6 @@ aiperf-agentx-128k:
     - "393"
     - --slice-duration
     - "1.0"
-    - --output-artifact-dir
-    - /results
 
 aiperf-agentx-unlimited:
   tool: aiperf
@@ -114,8 +140,6 @@ aiperf-agentx-unlimited:
     - "393"
     - --slice-duration
     - "1.0"
-    - --output-artifact-dir
-    - /results
 
 # Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
 custom:

@@ -175,10 +175,18 @@ def _load_recipe_metadata(repository_path: Path, recipe_id: str) -> dict:
         if isinstance(deployment, dict)
         else recipe_data.get("model_cache")
     )
+    serving = recipe_data.get("serving")
+    served_model_name = (
+        serving.get("served_model_name") or serving.get("model")
+        if isinstance(serving, dict)
+        else None
+    ) or model_name
+
     return {
         **recipe_data,
         "recipe_path": recipe_path,
         "model_name": model_name,
+        "served_model_name": served_model_name,
         "model_cache": model_cache,
         "hardware_profile_data": hardware_profile_data,
         "platform": platform,
@@ -516,6 +524,12 @@ def _launch_lws_recipe(
             "forge.openshift.io/endpoint": endpoint_label,
         }
 
+    for template_key in ("leaderTemplate", "workerTemplate"):
+        template = templates.get(template_key, {})
+        template_spec = template.get("spec")
+        if isinstance(template_spec, dict):
+            _strip_hardcoded_uid(template_spec)
+
     rdma_resource = config.project.get_config("inference_playbooks.rdma_resource")
     if rdma_resource:
         deploy_lws.replace_resource_name(lws, "rdma/ib", rdma_resource)
@@ -578,6 +592,38 @@ def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
     logger.info("Prepared model cache %s for %s", cache_spec["pvc_name"], model_uri)
 
 
+def _strip_hardcoded_uid(pod_spec: dict) -> None:
+    """Remove hardcoded runAsUser and fix env for OpenShift SCC compatibility.
+
+    OpenShift assigns UIDs from the namespace range. A hardcoded UID like
+    65534 is rejected by the restricted SCC. Removing it lets OpenShift
+    assign a valid UID while preserving runAsNonRoot and container-level
+    security settings.
+
+    The assigned UID has no /etc/passwd entry, so getpass.getuser() and
+    PyTorch cache_dir fail. Setting HOME and USER on each container
+    prevents this.
+    """
+    security_context = pod_spec.get("securityContext")
+    if isinstance(security_context, dict) and "runAsUser" in security_context:
+        logger.info(
+            "Removing hardcoded runAsUser=%s for OpenShift SCC compatibility",
+            security_context["runAsUser"],
+        )
+        del security_context["runAsUser"]
+
+    ocp_env = [
+        {"name": "HOME", "value": "/tmp"},
+        {"name": "USER", "value": "nobody"},
+    ]
+    for container in pod_spec.get("containers", []):
+        env_list = container.setdefault("env", [])
+        existing_names = {e["name"] for e in env_list if isinstance(e, dict)}
+        for entry in ocp_env:
+            if entry["name"] not in existing_names:
+                env_list.append(entry)
+
+
 def _launch_deployment_recipe(
     recipe_id: str,
     recipe: dict,
@@ -630,6 +676,8 @@ def _launch_deployment_recipe(
         raise ValueError(f"Recipe {recipe_id!r} Deployment metadata.labels must be a mapping")
     labels[run_label_key] = run_label
     deployment["metadata"] = {**metadata, "name": deployment_name, "namespace": namespace}
+
+    _strip_hardcoded_uid(pod_spec)
 
     if service_data is None:
         port = _deployment_service_port(recipe, deployment)
@@ -946,7 +994,7 @@ def _deploy_benchmark_finalize(
                 endpoint_url,
                 namespace,
                 run_name,
-                recipe["model_name"],
+                recipe.get("served_model_name", recipe["model_name"]),
                 workload_key,
                 workload,
                 kpi_labels,
