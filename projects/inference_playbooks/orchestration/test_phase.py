@@ -1213,10 +1213,18 @@ def _run_aiperf_workload(
         if len(sweep) > 1:
             phase_name = f"{phase_name}_{label}"
         with env.NextArtifactDir(phase_name):
+            run_labels = {
+                "phase": "benchmark",
+                "benchmark_tool": "aiperf",
+            }
+            run_kpi_labels = {**kpi_labels, "benchmark_tool": "aiperf"}
+            if concurrency is not None:
+                run_labels["concurrency"] = concurrency
+                run_kpi_labels["concurrency"] = str(concurrency)
             create_test_metadata(
                 env.ARTIFACT_DIR,
-                {"phase": "benchmark", "benchmark_tool": "aiperf"},
-                kpi_labels={**kpi_labels, "benchmark_tool": "aiperf"},
+                run_labels,
+                kpi_labels=run_kpi_labels,
             )
             job_name = _unique_name(f"aiperf-{workload_key}-{run_name}")
             if len(sweep) > 1:

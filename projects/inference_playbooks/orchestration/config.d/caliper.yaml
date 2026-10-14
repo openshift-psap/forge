@@ -32,16 +32,15 @@ replot:
 postprocess:
   enabled: true
   artifacts_dir: null
-  plugin_module: projects.rhaiis.postprocess.plugin
+  plugin_module: projects.inference_playbooks.postprocess.plugin
   postprocess_config: null
   parse:
     enabled: true
     no_cache: false
   visualize:
-    enabled: true
+    enabled: false
     output_dir: reports
-    reports:
-      - report_performance_analysis
+    reports: []
     report_group: null
 
   kpi:
