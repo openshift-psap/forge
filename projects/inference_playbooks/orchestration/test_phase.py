@@ -1283,7 +1283,7 @@ def _write_launch_manifest(name: str, manifest: dict) -> Path:
 
 
 def _unique_name(value: str) -> str:
-    return f"{slugify_identifier(value, max_length=54)}-{uuid.uuid4().hex[:8]}"
+    return f"{slugify_identifier(value, max_length=46)}-{uuid.uuid4().hex[:8]}"
 
 
 def fournos_resolve_hardware_request(hardware_spec: dict):
