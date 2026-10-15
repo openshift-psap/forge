@@ -1151,6 +1151,7 @@ def _run_guidellm_workload(
     kpi_labels: dict[str, str],
 ) -> None:
     benchmark = config.Config(RHAIIS_CONFIG).get_config("benchmarks.guidellm")
+    artifact_workload_key = workload_key.replace("/", "-")
 
     def run_phase(phase: str, rates: list[int], max_seconds: int, rampup: int | None) -> None:
         args = {
@@ -1161,7 +1162,7 @@ def _run_guidellm_workload(
         }
         if rampup is not None:
             args["rampup"] = rampup
-        with env.NextArtifactDir(f"{phase}_{workload_key}"):
+        with env.NextArtifactDir(f"{phase}_{artifact_workload_key}"):
             labels = {"phase": phase}
             if phase == "warmup":
                 labels["skip"] = True

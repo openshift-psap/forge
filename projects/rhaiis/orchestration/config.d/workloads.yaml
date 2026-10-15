@@ -39,6 +39,11 @@ profile4:
   warmup: 75
   samples: 50
 
+"IP-8k/1k":
+  data: "prompt_tokens=8000,output_tokens=1000"
+  rates: [1, 4, 16, 32, 64, 128]
+  max_seconds: 300
+
 profile5:
   data: "prompt_tokens=100000,output_tokens=1000"
   rates: [1, 2, 5]
