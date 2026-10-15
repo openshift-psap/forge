@@ -281,6 +281,16 @@ def run_regression_analysis(
                 "current_version": current_version,
                 "compare_version": compare_version,
             }
+        elif not results:
+            # common profiles but nothing comparable (e.g. only concurrency 1 in
+            # common, which is excluded) — a skip, not "no changes detected"
+            analysis = {
+                "status": "skipped",
+                "reason": "No common concurrency levels between current and baseline "
+                "(concurrency 1 is excluded from comparisons)",
+                "current_version": current_version,
+                "compare_version": compare_version,
+            }
         else:
             regressions = [r for r in results if r.is_regression]
             improvements = [r for r in results if r.is_improvement]
@@ -454,61 +464,12 @@ def send_regression_notification(
         True if notification sent successfully
     """
     status = analysis_result.get("status")
-    if status == "skipped":
-        reason = analysis_result.get("reason", "unknown")
-        logger.info("Regression analysis skipped: %s", reason)
-        return True
-
-    if status != "completed":
-        return True
-
-    regressions = analysis_result.get("regressions", [])
-    improvements = analysis_result.get("improvements", [])
-
-    if not regressions and not improvements:
-        logger.info("No regressions or improvements to report")
-        return True
-
     current_version = analysis_result.get("current_version", "")
     compare_version = analysis_result.get("compare_version", "")
 
-    if regressions and improvements:
-        icon = ":warning:"
-        headline = "Performance regressions and improvements detected"
-    elif regressions:
-        icon = ":warning:"
-        headline = "Performance regressions detected"
-    else:
-        icon = ":large_green_circle:"
-        headline = "Performance improvements detected"
-
-    detail_lines = []
-    all_results = analysis_result.get("all_results", [])
-    profiles = sorted(
-        {r["profile"] for r in all_results if r.get("is_regression") or r.get("is_improvement")}
-    )
-
-    for profile in profiles:
-        profile_results = [
-            r
-            for r in all_results
-            if r["profile"] == profile and (r.get("is_regression") or r.get("is_improvement"))
-        ]
-        detail_lines.append(f"\n*{profile}:*")
-        for r in profile_results:
-            if r.get("is_regression"):
-                direction = "dropped" if r["pct_diff"] < 0 else "increased"
-                detail_lines.append(
-                    f"  :red_circle: *{r['metric']}*: {direction} {abs(r['pct_diff']):.1f}% "
-                    f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
-                )
-            else:
-                detail_lines.append(
-                    f"  :large_green_circle: *{r['metric']}*: improved {abs(r['pct_diff']):.1f}% "
-                    f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
-                )
-
-    details = "\n".join(detail_lines)
+    if status == "completed" and not analysis_result.get("total_comparisons"):
+        # nothing was actually compared — report as a skip, not "no changes"
+        status = "skipped"
 
     user_line = _format_slack_user_line(slack_user)
     owner_line = _format_owner_line(owner)
@@ -534,24 +495,21 @@ def send_regression_notification(
             )
     except Exception:
         pass
+    dashboard_line = ""
     if csv_dashboard_enabled:
         dashboard_url = _build_dashboard_url(
             model=model,
             accelerator=accelerator,
             current_version=current_version,
             compare_version=compare_version,
-            profiles=profiles if profiles else None,
             tp=tp,
         )
         dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
-    else:
-        dashboard_line = ""
 
     mlflow_url = _build_mlflow_run_url()
     mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""
 
-    message = (
-        f"{icon} *{headline}*\n"
+    header = (
         f"{user_line}"
         f"{owner_line}"
         f"*Job:* `{job_id}`\n"
@@ -559,11 +517,92 @@ def send_regression_notification(
         f"*Accelerator:* {accelerator}\n"
         f"{parallelism_line}"
         f"*Versions:* {current_version} vs {compare_version} (baseline)\n"
-        f"{report_line}"
-        f"{dashboard_line}"
-        f"{mlflow_line}"
-        f"*Changes:*\n{details}"
     )
+
+    if status == "skipped":
+        reason = analysis_result.get(
+            "reason", "No common concurrency levels between current and baseline"
+        )
+        logger.info("Regression analysis skipped: %s", reason)
+        message = (
+            f":information_source: *Performance comparison skipped*\n"
+            f"{header}"
+            f"*Reason:* {reason}\n"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+        )
+    elif status != "completed":
+        return True
+    elif not analysis_result.get("regressions") and not analysis_result.get("improvements"):
+        logger.info("No regressions or improvements to report")
+        message = (
+            f":large_green_circle: *No performance changes detected*\n"
+            f"{header}"
+            f"All compared metrics within thresholds.\n"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+        )
+    else:
+        regressions = analysis_result.get("regressions", [])
+        improvements = analysis_result.get("improvements", [])
+
+        if regressions and improvements:
+            icon = ":warning:"
+            headline = "Performance regressions and improvements detected"
+        elif regressions:
+            icon = ":warning:"
+            headline = "Performance regressions detected"
+        else:
+            icon = ":large_green_circle:"
+            headline = "Performance improvements detected"
+
+        detail_lines = []
+        all_results = analysis_result.get("all_results", [])
+        profiles = sorted(
+            {r["profile"] for r in all_results if r.get("is_regression") or r.get("is_improvement")}
+        )
+
+        for profile in profiles:
+            profile_results = [
+                r
+                for r in all_results
+                if r["profile"] == profile and (r.get("is_regression") or r.get("is_improvement"))
+            ]
+            detail_lines.append(f"\n*{profile}:*")
+            for r in profile_results:
+                if r.get("is_regression"):
+                    direction = "dropped" if r["pct_diff"] < 0 else "increased"
+                    detail_lines.append(
+                        f"  :red_circle: *{r['metric']}*: {direction} {abs(r['pct_diff']):.1f}% "
+                        f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
+                    )
+                else:
+                    detail_lines.append(
+                        f"  :large_green_circle: *{r['metric']}*: improved {abs(r['pct_diff']):.1f}% "
+                        f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
+                    )
+
+        details = "\n".join(detail_lines)
+
+        if csv_dashboard_enabled:
+            dashboard_url = _build_dashboard_url(
+                model=model,
+                accelerator=accelerator,
+                current_version=current_version,
+                compare_version=compare_version,
+                profiles=profiles if profiles else None,
+                tp=tp,
+            )
+            dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
+
+        message = (
+            f"{icon} *{headline}*\n"
+            f"{header}"
+            f"{report_line}"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+            f"*Changes:*\n{details}"
+        )
 
     if dry_run:
         logger.info("DRY RUN regression notification:\n%s", message)
