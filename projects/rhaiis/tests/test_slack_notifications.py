@@ -47,3 +47,52 @@ def test_regression_notification_includes_owner(monkeypatch) -> None:
 
     assert len(messages) == 1
     assert "*Owner:* nmiriyal\n" in messages[0]
+
+
+def _url_params(url: str) -> dict:
+    from urllib.parse import parse_qs
+
+    return {k: v[0] for k, v in parse_qs(url.split("?", 1)[1]).items()}
+
+
+def test_dashboard_url_splits_labeled_version() -> None:
+    url = regression._build_dashboard_url(
+        model="RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic",
+        accelerator="H200",
+        current_version="vLLM-0.24.0-benchmark",
+        compare_version="vLLM-0.23.0",
+        tp="2",
+    )
+    params = _url_params(url)
+
+    assert params["versions"] == "vLLM-0.24.0,vLLM-0.23.0"
+    assert params["version_labels"] == '[["vLLM-0.23.0","default"],["vLLM-0.24.0","benchmark"]]'
+
+
+def test_dashboard_url_rhaiis_label_suffix() -> None:
+    url = regression._build_dashboard_url(
+        current_version="RHAIIS-3.6-fast1",
+        compare_version="RHAIIS-3.6",
+    )
+    params = _url_params(url)
+
+    assert params["versions"] == "RHAIIS-3.6"
+    assert params["version_labels"] == '[["RHAIIS-3.6","default"],["RHAIIS-3.6","fast1"]]'
+
+
+def test_dashboard_url_omits_version_labels_for_unlabeled_versions() -> None:
+    url = regression._build_dashboard_url(
+        current_version="1.0",
+        compare_version="0.9",
+    )
+    params = _url_params(url)
+
+    assert params["versions"] == "1.0,0.9"
+    assert "version_labels" not in params
+
+
+def test_dashboard_url_preserves_wrapped_release() -> None:
+    release, label = regression.split_dashboard_version("AIC-0.10.0-vLLM-0.24.0-nightly")
+
+    assert release == "AIC-0.10.0-vLLM-0.24.0"
+    assert label == "nightly"

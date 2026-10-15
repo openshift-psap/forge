@@ -363,6 +363,49 @@ METRICS = {
 
 DASHBOARD_BASE_URL = "https://staging-aidash.apps.ocp4.intlab.redhat.com/"
 
+# Mirrors split_legacy_version() in dashboard_taxonomy.py of the
+# performance-dashboard repo: the staging dashboard splits composite version
+# strings (e.g. "vLLM-0.24.0-benchmark") into a canonical release plus a label,
+# and silently drops URL version filters that don't match the canonical value.
+_DASHBOARD_VERSION_PREFIXES = {
+    "rhaiis": "RHAIIS",
+    "vllm": "vLLM",
+    "sglang": "sglang",
+}
+
+_DASHBOARD_RELEASE_RE = re.compile(
+    r"(?P<prefix>RHAIIS|vLLM|sglang)-?"
+    r"(?P<release>\d+(?:\.\d+)+(?:[A-Za-z]+)?(?:-(?:GA|EA\d*|RC\d+))?)",
+    re.IGNORECASE,
+)
+
+
+def split_dashboard_version(version: str) -> tuple[str, str]:
+    """Split a run version into the (canonical release, dashboard label)."""
+    raw_version = str(version).strip()
+    match = _DASHBOARD_RELEASE_RE.search(raw_version)
+    if not match:
+        return raw_version, "default"
+
+    prefix = _DASHBOARD_VERSION_PREFIXES[match.group("prefix").lower()]
+    if match.start() == 0:
+        release = f"{prefix}-{match.group('release')}"
+    else:
+        # Preserve wrappers such as AIC-0.10.0-vLLM-0.24.0 as the release.
+        release = raw_version[: match.end()]
+
+    suffix = raw_version[match.end() :].strip()
+    label = suffix.removeprefix("-").strip() if suffix.startswith("-") else ""
+    return release, label if label else "default"
+
+
+def encode_version_label_pairs(pairs: list[tuple[str, str]]) -> str:
+    """Encode exact version/label selections as the dashboard version_labels param."""
+    return json.dumps(
+        [list(pair) for pair in sorted(set(pairs))],
+        separators=(",", ":"),
+    )
+
 
 def _build_mlflow_run_url() -> str:
     """Construct the MLflow run URL at runtime from vault secrets and config."""
@@ -402,9 +445,22 @@ def _build_dashboard_url(
     if model:
         params["models"] = model
 
-    versions = ",".join(v for v in [current_version, compare_version] if v)
-    if versions:
-        params["versions"] = versions
+    releases: list[str] = []
+    pairs: list[tuple[str, str]] = []
+    for version in (current_version, compare_version):
+        if not version:
+            continue
+        release, label = split_dashboard_version(version)
+        if release not in releases:
+            releases.append(release)
+        pairs.append((release, label))
+
+    if releases:
+        params["versions"] = ",".join(releases)
+    # The dashboard defaults to label=="default" rows when no pairs are
+    # selected, so only send pairs when a run actually carries a label.
+    if any(label != "default" for _, label in pairs):
+        params["version_labels"] = encode_version_label_pairs(pairs)
 
     if profiles:
         display_names = [PROFILE_DISPLAY_NAMES.get(p, p) for p in profiles]
