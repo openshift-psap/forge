@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+#
+# FORGE's Fournos execution-engine entrypoint.
+#
+# This is the single, canonical implementation of the bootstrap sequence that
+# used to be duplicated in Fournos's resolve_job.yaml AND in FORGE's own
+# gitops task-forge-step.yaml. Both of those now simply run this script (via
+# the image's default ENTRYPOINT, with no command/args override) instead of
+# embedding FORGE-specific bash inline.
+#
+# Contract (see fournos/docs/execution-engine-contract.md):
+#   Required env vars (set by the Fournos operator or the calling Task):
+#     FJOB_NAME                  — FournosJob metadata.name
+#     FOURNOS_WORKLOAD_NAMESPACE — namespace where the FournosJob CR lives
+#     FOURNOS_STEP               — logical step name; "resolve-fournos-config"
+#                                   during the Resolving phase, otherwise the
+#                                   FORGE CI step to run (prepare/test/etc.)
+#   Optional env vars:
+#     FOURNOS_STEP_NAME          — artifact subdirectory name (defaults to FOURNOS_STEP)
+#     KUBECONFIG_SECRET_PARAM    — name of the target-cluster kubeconfig secret,
+#                                   or "fournos-clusterless-placeholder"/unset for
+#                                   clusterless jobs and the resolve step (which
+#                                   never gets a target-cluster kubeconfig)
+#     TARGET_KUBECONFIG          — path where that kubeconfig secret is mounted
+#
+# Behavior:
+#   1. Fetches the FournosJob spec via the in-cluster ServiceAccount.
+#   2. Exports every key under spec.env as an environment variable.
+#   3. Switches to the target-cluster kubeconfig if one was mounted, otherwise
+#      runs "clusterless" (matches Fournos's own clusterless semantics).
+#   4. Handles PR/commit checkout (PULL_PULL_SHA / PULL_NUMBER) so the FORGE
+#      image runs the exact code under test.
+#   5. Reads spec.executionEngine.forge.project and execs
+#      `bin/run_ci "$FORGE_PROJECT" ci "$FOURNOS_STEP"`.
+
+set -o pipefail
+set -o errexit
+set -o nounset
+set -o errtrace
+
+: "${FJOB_NAME:?FJOB_NAME must be set}"
+: "${FOURNOS_WORKLOAD_NAMESPACE:?FOURNOS_WORKLOAD_NAMESPACE must be set}"
+: "${FOURNOS_STEP:?FOURNOS_STEP must be set}"
+FOURNOS_STEP_NAME="${FOURNOS_STEP_NAME:-$FOURNOS_STEP}"
+KUBECONFIG_SECRET_PARAM="${KUBECONFIG_SECRET_PARAM:-fournos-clusterless-placeholder}"
+TARGET_KUBECONFIG="${TARGET_KUBECONFIG:-/var/run/secrets/fournos-kubeconfig/kubeconfig}"
+
+export ARTIFACT_BASE_DIR="${ARTIFACT_DIR:-/tmp/artifacts}"
+export ARTIFACT_DIR="${ARTIFACT_BASE_DIR}/${FOURNOS_STEP_NAME}"
+mkdir -p "${ARTIFACT_DIR}"
+
+exec &> >(tee -a "$ARTIFACT_DIR/run.log")
+
+# Fetch FournosJob from the hub cluster (in-cluster SA) before switching
+# KUBECONFIG to the target cluster.
+oc get "fjob/$FJOB_NAME" -n "$FOURNOS_WORKLOAD_NAMESPACE" -oyaml > "$ARTIFACT_DIR/fournos_fjob.yaml"
+
+# Target-cluster kubeconfig vs. clusterless.
+if [[ "$KUBECONFIG_SECRET_PARAM" != "fournos-clusterless-placeholder" && -f "$TARGET_KUBECONFIG" ]]; then
+  echo "Setting up target cluster kubeconfig..."
+  export KUBECONFIG="$TARGET_KUBECONFIG"
+  export CLUSTERLESS_MODE="false"
+else
+  if [[ "$KUBECONFIG_SECRET_PARAM" == "fournos-clusterless-placeholder" ]]; then
+    echo "Running in clusterless mode - no target cluster kubeconfig"
+  else
+    echo "WARNING: Expected kubeconfig not found at: $TARGET_KUBECONFIG"
+    echo "Running in clusterless mode as fallback"
+  fi
+  export CLUSTERLESS_MODE="true"
+fi
+
+# Export every key under spec.env onto the environment.
+export_env_var_from_fjob() {
+  local var_name="$1"
+  local value
+  value=$(yq -r ".spec.env.${var_name}" "$ARTIFACT_DIR/fournos_fjob.yaml")
+  if [[ "$value" != null ]]; then
+    export "$var_name=$value"
+    echo "Exported $var_name=$value"
+  else
+    unset "$var_name" 2>/dev/null || true
+  fi
+}
+
+for var_name in $(yq -r '.spec.env // {} | keys[]' "$ARTIFACT_DIR/fournos_fjob.yaml"); do
+  export_env_var_from_fjob "$var_name"
+done
+
+# PR/commit checkout.
+if [[ "${PULL_PULL_SHA:-}" ]]; then
+  echo
+  echo "Updating to PULL_PULL_SHA=$PULL_PULL_SHA ..."
+  git -C "$FORGE_HOME" fetch --quiet origin "$PULL_PULL_SHA"
+  git -C "$FORGE_HOME" reset --hard FETCH_HEAD
+elif [[ "${PULL_NUMBER:-}" ]]; then
+  echo
+  echo "Updating to the HEAD commit of PR $PULL_NUMBER ..."
+  commit="refs/pull/$PULL_NUMBER/head"
+  git -C "$FORGE_HOME" fetch --quiet origin "$commit"
+  git -C "$FORGE_HOME" reset --hard FETCH_HEAD
+  export PULL_PULL_SHA="$(git -C "$FORGE_HOME" rev-parse HEAD)"
+  echo "Setting PULL_PULL_SHA to '$PULL_PULL_SHA'"
+else
+  echo "No PULL_PULL_SHA nor PULL_NUMBER, using the image commit"
+fi
+git -C "$FORGE_HOME" show --quiet
+
+FORGE_PROJECT=$(yq -r .spec.executionEngine.forge.project "$ARTIFACT_DIR/fournos_fjob.yaml")
+if [[ -z "$FORGE_PROJECT" || "$FORGE_PROJECT" == null ]]; then
+  echo "ERROR: invalid .spec.executionEngine.forge.project='$FORGE_PROJECT' in $FOURNOS_WORKLOAD_NAMESPACE/$FJOB_NAME"
+  exit 1
+fi
+
+export FOURNOS_CI=true
+
+exec bin/run_ci "$FORGE_PROJECT" ci "$FOURNOS_STEP"
