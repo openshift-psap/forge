@@ -21,7 +21,10 @@ from projects.core.library.postprocess import (
 from projects.foreign_testing.library import initialize as foreign_repository
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark import main as run_guidellm_benchmark
-from projects.inference_playbooks.orchestration.recipe_validation import load_recipe_catalog
+from projects.inference_playbooks.orchestration.recipe_validation import (
+    load_recipe_catalog,
+    resolve_model_quantization,
+)
 from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state
 from projects.kserve.toolbox.capture_lws_state import main as capture_lws_state
 from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
@@ -187,6 +190,7 @@ def _load_recipe_metadata(repository_path: Path, recipe_id: str) -> dict:
         "recipe_path": recipe_path,
         "model_name": model_name,
         "served_model_name": served_model_name,
+        "quantization": resolve_model_quantization(recipe_data, model_data),
         "model_cache": model_cache,
         "hardware_profile_data": hardware_profile_data,
         "platform": platform,
@@ -1074,7 +1078,7 @@ def _benchmark_kpi_labels(
         if not gpu_type.upper().startswith(f"{vendor}-"):
             gpu_type = f"{vendor}-{gpu_type}"
 
-    return {
+    labels = {
         "model_name": str(recipe["model_name"]),
         "product_version": str(product_version),
         "deployment_profile": str(recipe.get("deployment_mode") or recipe_id),
@@ -1083,10 +1087,18 @@ def _benchmark_kpi_labels(
         "platform": KPI_PLATFORM,
         "test_harness": KPI_TEST_HARNESS,
         "benchmark_key": workload_key,
-        "benchmark_tool": workload.get("tool", "guidellm")
-        if isinstance(workload, dict)
-        else "guidellm",
+        "benchmark_tool": (
+            workload.get("tool", "guidellm") if isinstance(workload, dict) else "guidellm"
+        ),
     }
+    serving = recipe.get("serving")
+    checkpoint = serving.get("model") if isinstance(serving, dict) else None
+    if isinstance(checkpoint, str) and checkpoint:
+        labels["served_model"] = checkpoint
+    quantization = recipe.get("quantization")
+    if isinstance(quantization, str) and quantization:
+        labels["quantization"] = quantization
+    return labels
 
 
 def _get_workload_configs() -> list[tuple[str, dict]]:

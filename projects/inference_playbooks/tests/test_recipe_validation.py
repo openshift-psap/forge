@@ -50,6 +50,125 @@ def _kpi_recipe_metadata() -> dict:
     }
 
 
+@pytest.mark.parametrize("schema_version", [3, 4])
+@pytest.mark.parametrize("loader", ["catalog", "override"])
+@pytest.mark.parametrize(
+    ("checkpoint", "quantizations", "expected_quantization"),
+    [
+        ("example/base", [], None),
+        (
+            "example/variant",
+            [
+                {"huggingface_id": "example/other", "name": "Other format"},
+                {"huggingface_id": "example/variant", "name": "Declared format"},
+            ],
+            "Declared format",
+        ),
+        ("example/variant", None, None),
+        ("example/variant", [{"huggingface_id": "example/variant-old", "name": "Wrong"}], None),
+        ("example/variant", [{"huggingface_id": "example/variant"}], None),
+        (None, [{"huggingface_id": "request-alias", "name": "Wrong"}], None),
+    ],
+)
+def test_model_identity_labels_from_metadata(
+    tmp_path: Path,
+    schema_version: int,
+    loader: str,
+    checkpoint: str | None,
+    quantizations: list | None,
+    expected_quantization: str | None,
+) -> None:
+    model = {"model_id": "example-model", "huggingface_id": "example/base"}
+    if quantizations is not None:
+        model["quantizations"] = quantizations
+    _write(tmp_path, "models/example-model/model.yaml", yaml.safe_dump(model))
+    _write(
+        tmp_path, "hardware.yaml", yaml.safe_dump(_kpi_recipe_metadata()["hardware_profile_data"])
+    )
+    recipe_dir = (
+        "models/example-model/vllm/version/recipes/gpu/profile/tp1"
+        if schema_version == 3
+        else "models/example-model/recipes/profile"
+    )
+    pod_spec = {
+        "containers": [{"name": "server", "volumeMounts": [{"name": "weights"}]}],
+        "volumes": [{"name": "weights", "emptyDir": {}}],
+    }
+    _write(
+        tmp_path,
+        f"{recipe_dir}/server.yaml",
+        yaml.safe_dump(
+            {
+                "apiVersion": "leaderworkerset.x-k8s.io/v1",
+                "kind": "LeaderWorkerSet",
+                "metadata": {"name": "server"},
+                "spec": {
+                    "leaderWorkerTemplate": {
+                        "leaderTemplate": {"spec": pod_spec},
+                        "workerTemplate": {"spec": pod_spec},
+                    }
+                },
+            }
+        ),
+    )
+    _write(
+        tmp_path,
+        f"{recipe_dir}/service.yaml",
+        yaml.safe_dump(
+            {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {"name": "server"},
+                "spec": {"ports": [{"port": 8000}], "selector": {"app": "server"}},
+            }
+        ),
+    )
+    deployment = {
+        "model_cache": {
+            "volume_name": "weights",
+            "pvc_size": "1Gi",
+            "model_directory_name": "weights",
+        },
+        "components": {"modelserver": {"kind": "LeaderWorkerSet", "source": "server.yaml"}},
+        "auxiliary_sources": [{"kind": "Service", "path": "service.yaml"}],
+        "manifests": [{"path": "server.yaml"}, {"path": "service.yaml"}],
+    }
+    serving = {"served_model_name": "request-alias"}
+    if checkpoint is not None:
+        serving["model"] = checkpoint
+    _write(
+        tmp_path,
+        f"{recipe_dir}/recipe.yaml",
+        yaml.safe_dump(
+            {
+                "schema_version": schema_version,
+                "recipe_id": "synthetic-recipe",
+                "model_id": "example-model",
+                "hardware_profile": "hardware.yaml",
+                "platform": {"version": "v1"},
+                "platforms": [{"version": "v1"}],
+                "serving": serving,
+                "deployment": deployment,
+            }
+        ),
+    )
+    recipe = (
+        load_recipe_catalog(tmp_path)["synthetic-recipe"]
+        if loader == "catalog"
+        else test_phase._load_recipe_metadata(tmp_path, "synthetic-recipe")
+    )
+    labels = test_phase._benchmark_kpi_labels("synthetic-recipe", recipe, "workload")
+    assert labels["model_name"] == "example/base"
+    if checkpoint is None:
+        assert "served_model" not in labels
+    else:
+        assert labels["served_model"] == checkpoint
+    if expected_quantization is None:
+        assert "quantization" not in labels
+    else:
+        assert labels["quantization"] == expected_quantization
+
+
 def test_validate_recipe_catalog_accepts_hf_and_documented_pvc(tmp_path: Path) -> None:
     _write(tmp_path, "models/hf.yaml", _manifest("hf://test/model"))
     _write(tmp_path, "models/pvc.yaml", _manifest("pvc://test-model-pvc"))
@@ -650,7 +769,12 @@ def test_benchmarks_use_checkpoint_for_tokenizer_and_served_name_for_requests(
     from projects.aiperf.toolbox.run_aiperf_benchmark import main as aiperf_main
 
     monkeypatch.setattr(test_phase.env, "NextArtifactDir", lambda _name: nullcontext())
-    monkeypatch.setattr(test_phase, "create_test_metadata", lambda *_args, **_kwargs: None)
+    metadata = []
+    monkeypatch.setattr(
+        test_phase,
+        "create_test_metadata",
+        lambda *_args, **kwargs: metadata.append(kwargs["kpi_labels"]),
+    )
     monkeypatch.setattr(
         test_phase,
         "_get_workload_configs",
@@ -677,6 +801,7 @@ def test_benchmarks_use_checkpoint_for_tokenizer_and_served_name_for_requests(
             "model_name": "THUDM/GLM-5.2",
             "serving": {"model": "zai-org/GLM-5.2-FP8"},
             "served_model_name": "glm-5.2-fp8",
+            "quantization": "Declared format",
             **_kpi_recipe_metadata(),
         },
         "namespace",
@@ -691,6 +816,13 @@ def test_benchmarks_use_checkpoint_for_tokenizer_and_served_name_for_requests(
     assert len(aiperf_calls) == 1
     assert aiperf_calls[0]["model_name"] == "glm-5.2-fp8"
     assert aiperf_calls[0]["tokenizer"] == "zai-org/GLM-5.2-FP8"
+    assert len(metadata) == 2
+    for labels in metadata:
+        assert labels["model_name"] == "THUDM/GLM-5.2"
+        assert labels["served_model"] == "zai-org/GLM-5.2-FP8"
+        assert labels["quantization"] == "Declared format"
+    assert {labels["benchmark_tool"] for labels in metadata} == {"guidellm", "aiperf"}
+    assert {labels["benchmark_key"] for labels in metadata} == {"ci-quick", "aiperf-smoke"}
 
 
 def test_validate_recipe_catalog_rejects_pvc_without_source(tmp_path: Path) -> None:

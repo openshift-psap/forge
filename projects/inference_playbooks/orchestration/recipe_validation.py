@@ -40,6 +40,22 @@ def validate_recipe_catalog(repository_path: Path) -> int:
     return len(load_recipe_catalog(repository_path))
 
 
+def resolve_model_quantization(recipe: dict, model: dict) -> str | None:
+    """Return the declared quantization name for the exact serving checkpoint, if known."""
+    serving = recipe.get("serving")
+    checkpoint = serving.get("model") if isinstance(serving, dict) else None
+    quantizations = model.get("quantizations") if isinstance(model, dict) else None
+    if not isinstance(checkpoint, str) or not checkpoint or not isinstance(quantizations, list):
+        return None
+    for quantization in quantizations:
+        if not isinstance(quantization, dict) or quantization.get("huggingface_id") != checkpoint:
+            continue
+        name = quantization.get("name")
+        if isinstance(name, str) and name:
+            return name
+    return None
+
+
 def _load_legacy_catalog(root: Path, recipes_by_id: dict[str, dict[str, Any]]) -> None:
     catalog_path = _repository_file(root, CATALOG, "recipe catalog")
     catalog = _load_yaml(catalog_path)
@@ -138,6 +154,7 @@ def _load_recipe_v3(
         "manifest_data": manifest,
         "auxiliary_manifests": auxiliary_manifests,
         "model_name": model_name,
+        "quantization": resolve_model_quantization(recipe, model),
         "model_cache": model_cache,
         "hardware_profile_data": hardware_profile,
     }
@@ -194,6 +211,7 @@ def _load_recipe_v4(
         "manifest_data": primary,
         "auxiliary_manifests": auxiliary_manifests,
         "model_name": model_name,
+        "quantization": resolve_model_quantization(recipe, model),
         "model_cache": model_cache,
         "hardware_profile_data": hardware_profile,
         "platform": platform,
