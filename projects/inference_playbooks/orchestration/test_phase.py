@@ -987,6 +987,11 @@ def _deploy_benchmark_finalize(
         logger.info("Launching recipe %s as %s in namespace %s", recipe_id, run_name, namespace)
         endpoint_url = deploy()
         logger.info("Recipe %s reached Ready at %s", recipe_id, endpoint_url)
+        serving = recipe.get("serving")
+        tokenizer_model = (serving.get("model") if isinstance(serving, dict) else None) or recipe[
+            "model_name"
+        ]
+        served_model_name = recipe.get("served_model_name", recipe["model_name"])
         for workload_key, workload in workload_configs:
             kpi_labels = _benchmark_kpi_labels(recipe_id, recipe, workload_key, workload)
             logger.info("Running workload %s (%s)", workload_key, workload.get("tool", "guidellm"))
@@ -994,7 +999,8 @@ def _deploy_benchmark_finalize(
                 endpoint_url,
                 namespace,
                 run_name,
-                recipe.get("served_model_name", recipe["model_name"]),
+                tokenizer_model,
+                served_model_name,
                 workload_key,
                 workload,
                 kpi_labels,
@@ -1123,7 +1129,8 @@ def _run_workload(
     endpoint_url: str,
     namespace: str,
     run_name: str,
-    model_name: str,
+    tokenizer_model: str,
+    served_model_name: str,
     workload_key: str,
     workload: dict,
     kpi_labels: dict[str, str],
@@ -1131,11 +1138,24 @@ def _run_workload(
     tool = workload.get("tool", "guidellm")
     if tool == "guidellm":
         _run_guidellm_workload(
-            endpoint_url, namespace, run_name, model_name, workload_key, workload, kpi_labels
+            endpoint_url,
+            namespace,
+            run_name,
+            tokenizer_model,
+            workload_key,
+            workload,
+            kpi_labels,
         )
     elif tool == "aiperf":
         _run_aiperf_workload(
-            endpoint_url, namespace, run_name, model_name, workload_key, workload, kpi_labels
+            endpoint_url,
+            namespace,
+            run_name,
+            served_model_name,
+            tokenizer_model,
+            workload_key,
+            workload,
+            kpi_labels,
         )
     else:
         raise ValueError(f"Unsupported benchmark tool {tool!r} in workload {workload_key!r}")
@@ -1145,7 +1165,7 @@ def _run_guidellm_workload(
     endpoint_url: str,
     namespace: str,
     run_name: str,
-    model_name: str,
+    tokenizer_model: str,
     workload_key: str,
     workload: dict,
     kpi_labels: dict[str, str],
@@ -1158,7 +1178,7 @@ def _run_guidellm_workload(
             **benchmark["args"],
             "data": workload["data"],
             "max_seconds": max_seconds,
-            "processor": model_name,
+            "processor": tokenizer_model,
         }
         if rampup is not None:
             args["rampup"] = rampup
@@ -1192,7 +1212,8 @@ def _run_aiperf_workload(
     endpoint_url: str,
     namespace: str,
     run_name: str,
-    model_name: str,
+    served_model_name: str,
+    tokenizer_model: str,
     workload_key: str,
     workload: dict,
     kpi_labels: dict[str, str],
@@ -1233,14 +1254,14 @@ def _run_aiperf_workload(
 
             run_aiperf_benchmark.run(
                 endpoint_url=endpoint_url,
-                model_name=model_name,
+                model_name=served_model_name,
                 namespace=namespace,
                 name=job_name,
                 image=aiperf_cfg["image"],
                 timeout=workload.get("timeout_seconds", aiperf_cfg["timeout"]),
                 pvc_size=aiperf_cfg["pvc_size"],
                 pvc_storage_class=aiperf_cfg.get("pvc_storage_class"),
-                tokenizer=workload.get("tokenizer", model_name),
+                tokenizer=workload.get("tokenizer", tokenizer_model),
                 endpoint_type=workload.get("endpoint_type", "chat"),
                 endpoint_path=workload.get("endpoint_path", "/v1/chat/completions"),
                 streaming=workload.get("streaming", True),

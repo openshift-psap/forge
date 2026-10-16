@@ -625,6 +625,7 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
         "namespace",
         "run",
         "moonshotai/Kimi-K3",
+        "moonshotai/Kimi-K3",
         workload_key,
         workload,
         kpi_labels,
@@ -636,10 +637,60 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     assert "--max-seconds=275" in calls[1]["guidellm_args"]
     assert "--rampup=35" in calls[1]["guidellm_args"]
     assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[1]["guidellm_args"]
+    assert "--processor=moonshotai/Kimi-K3" in calls[1]["guidellm_args"]
     assert metadata == [
         ({"phase": "warmup", "skip": True}, kpi_labels),
         ({"phase": "benchmark"}, kpi_labels),
     ]
+
+
+def test_benchmarks_use_checkpoint_for_tokenizer_and_served_name_for_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from projects.aiperf.toolbox.run_aiperf_benchmark import main as aiperf_main
+
+    monkeypatch.setattr(test_phase.env, "NextArtifactDir", lambda _name: nullcontext())
+    monkeypatch.setattr(test_phase, "create_test_metadata", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        test_phase,
+        "_get_workload_configs",
+        lambda: [
+            (
+                "ci-quick",
+                {"data": "prompt_tokens=1,output_tokens=1", "rates": [1], "max_seconds": 1},
+            ),
+            ("aiperf-smoke", {"tool": "aiperf", "concurrency": 1, "request_count": 1}),
+        ],
+    )
+    guidellm_calls = []
+    aiperf_calls = []
+    monkeypatch.setattr(
+        test_phase.run_guidellm_benchmark,
+        "run",
+        lambda **kwargs: guidellm_calls.append(kwargs),
+    )
+    monkeypatch.setattr(aiperf_main, "run", lambda **kwargs: aiperf_calls.append(kwargs))
+
+    test_phase._deploy_benchmark_finalize(
+        "glm-5.2-fp8_h200_agentic",
+        {
+            "model_name": "THUDM/GLM-5.2",
+            "serving": {"model": "zai-org/GLM-5.2-FP8"},
+            "served_model_name": "glm-5.2-fp8",
+            **_kpi_recipe_metadata(),
+        },
+        "namespace",
+        "run",
+        lambda: "http://model:8000",
+        lambda: None,
+        lambda: None,
+    )
+
+    assert len(guidellm_calls) == 1
+    assert "--processor=zai-org/GLM-5.2-FP8" in guidellm_calls[0]["guidellm_args"]
+    assert len(aiperf_calls) == 1
+    assert aiperf_calls[0]["model_name"] == "glm-5.2-fp8"
+    assert aiperf_calls[0]["tokenizer"] == "zai-org/GLM-5.2-FP8"
 
 
 def test_validate_recipe_catalog_rejects_pvc_without_source(tmp_path: Path) -> None:
