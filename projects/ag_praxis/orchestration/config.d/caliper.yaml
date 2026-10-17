@@ -32,7 +32,7 @@ replot:
 postprocess:
   enabled: true
   artifacts_dir: null
-  plugin_module: projects.llm_d.postprocess.llm_d.plugin
+  plugin_module: projects.guidellm.postprocess.guidellm.plugin
   postprocess_config: null
   parse:
     enabled: true
@@ -47,7 +47,7 @@ postprocess:
   kpi:
     enabled: true
     artifacts_to_kpis:
-      enabled: false
+      enabled: true
       output: kpis/kpis.json
     dashboard_csv:
       enabled: false

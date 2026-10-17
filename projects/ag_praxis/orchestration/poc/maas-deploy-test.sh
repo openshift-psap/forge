@@ -5,7 +5,7 @@ MODEL_NS="forge-praxis"
 TENANT_NS="models-as-a-service"
 LLMISVC_NAME="sim-llm"
 MODELREF_NAME="sim-llm"
-MODEL_NAME="simulated-llama-3"
+MODEL_NAME="simulated-model"
 
 CLUSTER_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
 GATEWAY_URL="https://maas.${CLUSTER_DOMAIN}"
@@ -36,8 +36,8 @@ spec:
       - name: maas-default-gateway
         namespace: openshift-ingress
   model:
-    name: simulated-llama-3
-    uri: hf://simulated-llama-3
+    name: simulated-model
+    uri: hf://simulated-model
   storageInitializer:
     enabled: false
   template:
@@ -47,7 +47,7 @@ spec:
         command: ["/app/llm-d-inference-sim"]
         args:
         - "--port=8000"
-        - "--model=simulated-llama-3"
+        - "--model=simulated-model"
         - "--max-num-seqs"
         - "2048"
         - "--max-model-len"

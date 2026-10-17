@@ -1,12 +1,21 @@
 import json
 import logging
+from pathlib import Path
 
 from projects.ag_praxis.toolbox.cleanup_maas import main as cleanup_maas_command
-from projects.ag_praxis.toolbox.deploy_maas import main as deploy_maas_command
+from projects.cluster.toolbox.wait_for_crds import main as wait_for_crds_command
 from projects.core.dsl.utils.k8s import oc, oc_get_json
 from projects.core.library import config
+from projects.rhoai.library.deploy import (
+    prepare_rhoai_operator as rhoai_prepare_rhoai_operator,
+)
+from projects.rhoai.toolbox.apply_datasciencecluster import main as apply_datasciencecluster_command
+from projects.rhoai.toolbox.wait_datasciencecluster_ready import (
+    main as wait_datasciencecluster_ready_command,
+)
 
 logger = logging.getLogger(__name__)
+RHOAI_ICSP_MANIFEST = Path(__file__).resolve().parent / "manifests" / "rhoai-registry-icsp.yaml"
 
 
 def _register_namespace_in_gateway(namespace, gateway_name, gateway_namespace):
@@ -72,10 +81,67 @@ def _register_namespace_in_gateway(namespace, gateway_name, gateway_namespace):
     logger.info(f"Registered namespace {namespace} in gateway {gateway_name}")
 
 
+def apply_rhoai_icsp() -> None:
+    logger.info("Applying RHOAI ICSP manifest: %s", RHOAI_ICSP_MANIFEST)
+    oc("apply", "-f", str(RHOAI_ICSP_MANIFEST))
+
+
+def prepare_rhoai_operator() -> None:
+    platform = config.project.get_config("platform")
+    rhoai_prepare_rhoai_operator(
+        platform=platform,
+        rhoai=platform["rhoai"],
+        icsp_applier=apply_rhoai_icsp,
+    )
+
+
+def apply_datasciencecluster() -> None:
+    platform = config.project.get_config("platform")
+    rhoai = platform["rhoai"]
+    apply_datasciencecluster_command.run(
+        datasciencecluster_name=rhoai["datasciencecluster_name"],
+        namespace=rhoai["namespace"],
+        components=rhoai.get("components", ["kserve"]),
+    )
+
+
+def wait_for_datasciencecluster_ready() -> None:
+    platform = config.project.get_config("platform")
+    rhoai = platform["rhoai"]
+    wait_datasciencecluster_ready_command.run(
+        datasciencecluster_name=rhoai["datasciencecluster_name"],
+        namespace=rhoai["namespace"],
+    )
+
+
+def ensure_required_crds() -> None:
+    platform = config.project.get_config("platform")
+    rhoai = platform["rhoai"]
+    crds = rhoai.get("required_crds_after_dsc", [])
+    if not crds:
+        logger.info("No post-DSC CRDs to wait for")
+        return
+    wait_for_crds_command.run(
+        crd_names=crds,
+        display_name="RHOAI post-DSC CRDs",
+    )
+
+
 def prepare():
     logger.info("=== AG Praxis Project Prepare Phase ===")
 
+    from projects.cluster.library.prom.collection import prepare_user_workload_monitoring
+
+    prepare_user_workload_monitoring(during="prepare")
+
+    prepare_rhoai_operator()
+    apply_datasciencecluster()
+    wait_for_datasciencecluster_ready()
+    ensure_required_crds()
+
     maas_cfg = config.project.get_config("platform.maas")
+
+    from projects.ag_praxis.toolbox.deploy_maas import main as deploy_maas_command
 
     deploy_maas_command.run(
         namespace=maas_cfg["namespace"],
@@ -93,18 +159,6 @@ def prepare():
         gateway_namespace=gateway_cfg["namespace"],
     )
 
-    from projects.llm_d.toolbox.ensure_gateway import main as ensure_gateway_command
-
-    sim_gw = config.project.get_config("platform.sim.gateway")
-    ensure_gateway_command.run(
-        config_dir="",
-        namespace=sim_gw["namespace"],
-        name=sim_gw["name"],
-        gateway_class_name=sim_gw["gateway_class_name"],
-        status_address_name=sim_gw["status_address_name"],
-        create_if_missing=sim_gw["create_if_missing"],
-    )
-
 
 def cleanup():
     logger.info("=== AG Praxis Project Cleanup Phase ===")
@@ -112,5 +166,5 @@ def cleanup():
     maas_cfg = config.project.get_config("platform.maas")
 
     cleanup_maas_command.run(
-        namespace=maas_cfg["namespace"],
+        namespace=maas_cfg.get("namespace", "default"),
     )

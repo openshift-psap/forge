@@ -1,0 +1,27 @@
+prepare:
+  user_workload:
+    during_prepare: true
+    during_test: true
+
+capture:
+  enabled: true
+  db:
+    enabled: true
+    system_metrics:
+      enabled: true
+    user_workload:
+      enabled: true
+      fail_if_not_enabled: false
+  metrics:
+    enabled: true
+    include_dirs:
+      - projects/cluster/metrics
+    params:
+      namespace: "@test.namespace"
+    groups:
+      resources:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, workload]
+        variables:
+          NAMESPACE: "{namespace}"
+          POD_NAME: ".*"

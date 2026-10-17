@@ -28,7 +28,7 @@ def run(
     *,
     namespace: str,
     name: str = "sim-llm",
-    model_name: str = "simulated-llama-3",
+    model_name: str = "simulated-model",
     image: str = SIM_IMAGE,
     gateway_name: str = "",
     gateway_namespace: str = "",
@@ -40,6 +40,8 @@ def run(
     mode: str = "random",
     deploy_monitor: bool = True,
     skip_router: bool = False,
+    maas_gateway_label: str = "",
+    served_model_names: list[str] | None = None,
 ) -> str:
     """Build and deploy an llm-d simulator LLMInferenceService.
 
@@ -58,6 +60,8 @@ def run(
         mode: Simulator response mode.
         deploy_monitor: If True, deploy ServiceMonitor for monitoring.
         skip_router: If True, set spec.router to empty (no scheduler, no gateway routing).
+        maas_gateway_label: MaaS gateway label value. When set, adds MaaS labels and annotations.
+        served_model_names: Additional model names to serve (--served-model-name flags).
     """
     ctx = execute_tasks(locals())
 
@@ -86,6 +90,9 @@ def build_manifest(args, ctx):
                 "inter_token_latency": args.inter_token_latency,
                 "mode": args.mode,
                 "skip_router": args.skip_router,
+                "deploy_monitor": args.deploy_monitor,
+                "maas_gateway_label": args.maas_gateway_label,
+                "served_model_names": args.served_model_names or [],
             },
         )
     )
@@ -111,12 +118,106 @@ def deploy(args, ctx):
     return f"Deployed sim LLMInferenceService, endpoint: {endpoint_url}"
 
 
+@task
+def patch_servicemonitors_plaintext(args, ctx):
+    """Patch operator-created ServiceMonitors to scrape over HTTP when skip_router is set."""
+    if not args.skip_router:
+        return "Router enabled, keeping HTTPS scraping"
+
+    import json
+
+    from projects.core.dsl.utils.k8s import oc
+
+    result = oc(
+        "get",
+        "servicemonitor",
+        "-n",
+        args.namespace,
+        "-l",
+        "app.kubernetes.io/part-of=llminferenceservice",
+        "-o",
+        "jsonpath={.items[*].metadata.name}",
+    )
+    names = result.stdout.strip().split()
+    if not names:
+        return "No operator-created ServiceMonitors found"
+
+    patch = json.dumps(
+        {
+            "spec": {
+                "endpoints": [
+                    {
+                        "interval": "5s",
+                        "path": "/metrics",
+                        "port": "http1",
+                        "scheme": "http",
+                        "scrapeTimeout": "4s",
+                    }
+                ]
+            }
+        }
+    )
+    for name in names:
+        oc("patch", "servicemonitor", name, "-n", args.namespace, "--type=merge", f"-p={patch}")
+        logger.info("Patched ServiceMonitor %s to use scheme: http", name)
+
+    return f"Patched {len(names)} ServiceMonitor(s) to use HTTP"
+
+
+def _get_llmisvc_uid(namespace, name):
+    from projects.core.dsl.utils.k8s import oc
+
+    return oc(
+        "get",
+        "llminferenceservice",
+        name,
+        "-n",
+        namespace,
+        "-o",
+        "jsonpath={.metadata.uid}",
+    ).stdout.strip()
+
+
+def _apply_destination_rule(args, host):
+    llmisvc_uid = _get_llmisvc_uid(args.namespace, args.name)
+
+    dr_manifest = {
+        "apiVersion": "networking.istio.io/v1",
+        "kind": "DestinationRule",
+        "metadata": {
+            "name": f"{args.name}-plaintext",
+            "namespace": args.namespace,
+            "ownerReferences": [
+                {
+                    "apiVersion": "serving.kserve.io/v1alpha1",
+                    "kind": "LLMInferenceService",
+                    "name": args.name,
+                    "uid": llmisvc_uid,
+                },
+            ],
+        },
+        "spec": {
+            "host": host,
+            "trafficPolicy": {
+                "tls": {
+                    "mode": "DISABLE",
+                },
+            },
+        },
+    }
+
+    dest_rule_path = args.artifact_dir / "src" / "destination-rule.yaml"
+    oc_apply(dest_rule_path, dr_manifest)
+
+    return f"Applied DestinationRule {args.name}-plaintext for host {host}"
+
+
 @retry(attempts=18, delay=10, backoff=1.0)
 @task
-def apply_destination_rule(args, ctx):
+def apply_destination_rule_inferencepool(args, ctx):
     """Create a DestinationRule to disable TLS to the InferencePool backend service."""
     if args.skip_router:
-        return "Skipped DestinationRule (no router configured)"
+        return "Skipped (no router configured)"
 
     from projects.core.dsl.utils.k8s import oc
 
@@ -135,47 +236,16 @@ def apply_destination_rule(args, ctx):
         logger.info("InferencePool service not found yet, retrying...")
         return False
 
-    llmisvc_uid = oc(
-        "get",
-        "llminferenceservice",
-        args.name,
-        "-n",
-        args.namespace,
-        "-o",
-        "jsonpath={.metadata.uid}",
-    ).stdout.strip()
-
     pool_host = f"{pool_svc_name}.{args.namespace}.svc.cluster.local"
+    return _apply_destination_rule(args, pool_host)
 
-    dr_manifest = {
-        "apiVersion": "networking.istio.io/v1",
-        "kind": "DestinationRule",
-        "metadata": {
-            "name": f"{args.name}-plaintext",
-            "namespace": args.namespace,
-            "ownerReferences": [
-                {
-                    "apiVersion": "serving.kserve.io/v1alpha1",
-                    "kind": "LLMInferenceService",
-                    "name": args.name,
-                    "uid": llmisvc_uid,
-                },
-            ],
-        },
-        "spec": {
-            "host": pool_host,
-            "trafficPolicy": {
-                "tls": {
-                    "mode": "DISABLE",
-                },
-            },
-        },
-    }
 
-    dest_rule_path = args.artifact_dir / "src" / "destination-rule.yaml"
-    oc_apply(dest_rule_path, dr_manifest)
-
-    return f"Applied DestinationRule {args.name}-plaintext for host {pool_host}"
+@retry(attempts=18, delay=10, backoff=1.0)
+@task
+def apply_destination_rule_workload(args, ctx):
+    """Create a DestinationRule to disable TLS to the workload service."""
+    workload_host = f"{args.name}-kserve-workload-svc.{args.namespace}.svc.cluster.local"
+    return _apply_destination_rule(args, workload_host)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: ExternalModel
+metadata:
+  name: {{ model_ref_name }}
+  namespace: {{ model_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: forge
+  annotations:
+    maas.opendatahub.io/tls: "false"
+    maas.opendatahub.io/port: "{{ external_port }}"
+{% if owner_ref %}
+  ownerReferences:
+  - apiVersion: {{ owner_ref.apiVersion }}
+    kind: {{ owner_ref.kind }}
+    name: {{ owner_ref.name }}
+    uid: {{ owner_ref.uid }}
+{% endif %}
+spec:
+  provider: openai
+  endpoint: {{ external_endpoint }}
+  targetModel: {{ external_target_model }}
+  credentialRef:
+    name: {{ model_ref_name }}-creds

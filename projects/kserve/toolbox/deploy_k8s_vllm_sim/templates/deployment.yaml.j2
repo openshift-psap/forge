@@ -25,6 +25,12 @@ spec:
           args:
             - "--port={{ port }}"
             - "--model={{ model_name }}"
+{% if served_model_names %}
+            - "--served-model-name"
+{% for served_name in served_model_names %}
+            - "{{ served_name }}"
+{% endfor %}
+{% endif %}
             - "--max-num-seqs={{ max_num_seqs }}"
             - "--max-model-len={{ max_model_len }}"
             - "--time-to-first-token={{ time_to_first_token }}"

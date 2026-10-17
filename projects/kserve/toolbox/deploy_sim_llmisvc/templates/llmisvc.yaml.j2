@@ -3,13 +3,21 @@ kind: LLMInferenceService
 metadata:
   name: {{ name }}
   namespace: {{ namespace }}
+{% if maas_gateway_label %}
+  labels:
+    maas.io/gateway-name: {{ maas_gateway_label }}
+{% endif %}
   annotations:
+{% if maas_gateway_label %}
+    security.opendatahub.io/enable-auth: "true"
+    maas.io/enabled: "true"
+    serving.kserve.io/enable-external-route: "true"
+{% else %}
     security.opendatahub.io/enable-auth: "false"
+{% endif %}
 spec:
   runtime: llm-d-sim-runtime
-{% if skip_router %}
-  router: {}
-{% else %}
+{% if not skip_router %}
   router:
     route:
       http: {}
@@ -32,8 +40,10 @@ spec:
         image: {{ image }}
         command: ["/app/llm-d-inference-sim"]
         args:
-        - "--port=8000"
-        - "--model={{ model_name }}"
+        - "--port"
+        - "8000"
+        - "--model"
+        - "{{ model_name }}"
         - "--max-num-seqs"
         - "{{ max_num_seqs }}"
         - "--max-model-len"
@@ -44,28 +54,54 @@ spec:
         - "{{ inter_token_latency }}"
         - "--mode"
         - "{{ mode }}"
-        - "--logtostderr=true"
+        - "--no-mm-encoder-only"
+        - "--ssl-certfile"
+        - "/var/run/kserve/tls/tls.crt"
+        - "--ssl-keyfile"
+        - "/var/run/kserve/tls/tls.key"
+{% if served_model_names %}
+        - "--served-model-name"
+{% for served_name in served_model_names %}
+        - "{{ served_name }}"
+{% endfor %}
+{% endif %}
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
         ports:
         - containerPort: 8000
-          name: http1
+          name: https
           protocol: TCP
         readinessProbe:
           httpGet:
             path: /health
-            port: 8000
-            scheme: HTTP
+            port: https
+            scheme: HTTPS
           initialDelaySeconds: 2
           periodSeconds: 5
         startupProbe:
           failureThreshold: 60
           httpGet:
             path: /health
-            port: 8000
-            scheme: HTTP
+            port: https
+            scheme: HTTPS
         livenessProbe:
           httpGet:
             path: /health
-            port: 8000
-            scheme: HTTP
+            port: https
+            scheme: HTTPS
           initialDelaySeconds: 5
           periodSeconds: 10

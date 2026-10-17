@@ -54,6 +54,21 @@ def delete_maas_resources(args, ctx):
 
 
 @task
+def delete_monitoring(args, ctx):
+    """Delete all Monitoring resources (services.platform.opendatahub.io)."""
+    best_effort_oc(
+        "delete",
+        "monitoring.services.platform.opendatahub.io",
+        "--all",
+        "-A",
+        "--wait=true",
+        "--timeout=120s",
+        description="Delete all Monitoring resources",
+    )
+    return "Deleted Monitoring resources"
+
+
+@task
 def delete_datasciencecluster(args, ctx):
     best_effort_oc(
         "delete",
@@ -238,27 +253,27 @@ def delete_odh_crds(args, ctx):
     result = oc(
         "get",
         "crd",
-        "-l",
-        "app.kubernetes.io/part-of=opendatahub-operator",
         "-o",
         "name",
         check=False,
         log_stdout=True,
     )
-    crd_names = result.stdout.strip()
-    if not crd_names:
-        return "No ODH CRDs found"
+    if result.returncode != 0 or not result.stdout.strip():
+        return "No CRDs found"
 
-    best_effort_oc(
-        "delete",
-        "crd",
-        "-l",
-        "app.kubernetes.io/part-of=opendatahub-operator",
-        "--wait=true",
-        "--timeout=120s",
-        description="Delete ODH CRDs",
-    )
-    return "Deleted ODH CRDs"
+    odh_crds = [name for name in result.stdout.strip().splitlines() if "opendatahub" in name]
+    if not odh_crds:
+        return "No OpenDataHub CRDs found"
+
+    for crd in odh_crds:
+        best_effort_oc(
+            "delete",
+            crd,
+            "--wait=true",
+            "--timeout=60s",
+            description=f"Delete {crd}",
+        )
+    return f"Deleted {len(odh_crds)} OpenDataHub CRDs"
 
 
 if __name__ == "__main__":

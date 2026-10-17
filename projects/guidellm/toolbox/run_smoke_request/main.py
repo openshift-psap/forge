@@ -31,6 +31,7 @@ def run(
     prompt: str = "San Francisco is a",
     max_tokens: int = 50,
     temperature: float = 0.7,
+    api_key_file_path: str | None = None,
 ) -> dict[str, object]:
     """
     Run the llm_d smoke request against a resolved endpoint using a pod.
@@ -46,6 +47,9 @@ def run(
         prompt: Test prompt to send
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature
+        api_key_file_path: Path to a local file containing the API key/token.
+            When set, a K8s Secret is created, mounted into the pod, and
+            passed as a Bearer token in the curl request.
     """
 
     context = execute_tasks(locals())
@@ -84,6 +88,48 @@ def prepare_smoke_request(args, ctx):
     return f"Prepared smoke request for pod {args.pod_name}"
 
 
+_API_KEY_MOUNT_PATH = "/secrets/auth-token/auth_token"
+
+
+@task
+def create_api_key_secret(args, ctx):
+    """Create a K8s Secret from the API key file (if provided)."""
+    if not args.api_key_file_path:
+        ctx.api_key_secret_name = ""
+        return "No API key file provided"
+
+    from pathlib import Path
+
+    token_file = Path(args.api_key_file_path)
+    if not token_file.exists():
+        raise FileNotFoundError(f"API key file does not exist: {args.api_key_file_path}")
+
+    secret_name = f"{args.pod_name}-auth-token"
+
+    oc(
+        "delete",
+        "secret",
+        secret_name,
+        "-n",
+        args.namespace,
+        "--ignore-not-found=true",
+        check=False,
+    )
+
+    oc(
+        "create",
+        "secret",
+        "generic",
+        secret_name,
+        f"--from-file=auth_token={args.api_key_file_path}",
+        "-n",
+        args.namespace,
+    )
+
+    ctx.api_key_secret_name = secret_name
+    return f"API key secret {secret_name} created from file"
+
+
 @task
 def delete_existing_smoke_pod(args, ctx):
     """Delete existing smoke pod"""
@@ -118,15 +164,61 @@ def create_smoke_pod(args, ctx):
     src_dir = args.artifact_dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
 
+    api_key_secret = getattr(ctx, "api_key_secret_name", "") or ""
     oc_apply(
         src_dir / "smoke-pod.yaml",
         render_smoke_request_pod_from_parts(
             namespace=args.namespace,
             pod_name=args.pod_name,
             client_image=args.client_image,
+            api_key_secret=api_key_secret,
         ),
     )
     return f"Created smoke pod {ctx.pod_name}"
+
+
+@task
+def set_secret_owner_ref(args, ctx):
+    """Set ownerReference on the API key secret to the smoke pod for garbage collection."""
+    if not ctx.api_key_secret_name:
+        return "No API key secret, skipping owner ref"
+
+    pod_uid = oc(
+        "get",
+        "pod",
+        ctx.pod_name,
+        "-n",
+        args.namespace,
+        "-o",
+        "jsonpath={.metadata.uid}",
+        log_stdout=True,
+    ).stdout.strip()
+
+    patch = json.dumps(
+        {
+            "metadata": {
+                "ownerReferences": [
+                    {
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "name": ctx.pod_name,
+                        "uid": pod_uid,
+                    }
+                ]
+            }
+        }
+    )
+    oc(
+        "patch",
+        "secret",
+        ctx.api_key_secret_name,
+        "-n",
+        args.namespace,
+        "--type=merge",
+        f"-p={patch}",
+    )
+
+    return f"Set owner ref on {ctx.api_key_secret_name} → pod {ctx.pod_name}"
 
 
 @retry(attempts=12, delay=5, backoff=1.0)
@@ -158,19 +250,35 @@ def wait_smoke_pod_running(args, ctx):
 def execute_smoke_request(args, ctx):
     """Execute the curl command inside the running pod"""
 
-    # Build the curl command
-    curl_cmd = [
-        "curl",
-        "-k",
-        "-sSf",
-        "--max-time",
-        str(args.request_timeout_seconds),
-        f"{args.endpoint_url}{args.endpoint_path}",
-        "-H",
-        "Content-Type: application/json",
-        "-d",
-        json.dumps(ctx.payload),
-    ]
+    api_key_secret = getattr(ctx, "api_key_secret_name", "") or ""
+
+    if api_key_secret:
+        import shlex
+
+        payload_json = shlex.quote(json.dumps(ctx.payload))
+        url = shlex.quote(f"{args.endpoint_url}{args.endpoint_path}")
+        script = (
+            f"curl -k -sS --fail-with-body --max-time {args.request_timeout_seconds}"
+            f" {url}"
+            f" -H 'Content-Type: application/json'"
+            f' -H "Authorization: Bearer $(cat {_API_KEY_MOUNT_PATH})"'
+            f" -d {payload_json}"
+        )
+        exec_cmd = ["sh", "-c", script]
+    else:
+        exec_cmd = [
+            "curl",
+            "-k",
+            "-sS",
+            "--fail-with-body",
+            "--max-time",
+            str(args.request_timeout_seconds),
+            f"{args.endpoint_url}{args.endpoint_path}",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            json.dumps(ctx.payload),
+        ]
 
     # Execute the command in the pod (single attempt)
     result = oc(
@@ -181,15 +289,15 @@ def execute_smoke_request(args, ctx):
         "-c",
         "smoke",
         "--",
-        *curl_cmd,
+        *exec_cmd,
         check=False,
     )
 
     # Save stdout and stderr for debugging
     if result.stdout:
-        write_text(args.artifact_dir / "artifacts" / "smoke.curl.stdout", result.stdout)
+        write_text(args.artifact_dir / "artifacts" / "smoke.curl.stdout.txt", result.stdout)
     if result.stderr:
-        write_text(args.artifact_dir / "artifacts" / "smoke.curl.stderr", result.stderr)
+        write_text(args.artifact_dir / "artifacts" / "smoke.curl.stderr.txt", result.stderr)
 
     if result.returncode != 0 or not result.stdout:
         # Request failed
@@ -232,12 +340,10 @@ def capture_smoke_pod_debug_info(args, ctx):
     if not hasattr(ctx, "pod_name"):
         return "No pod name available for debug capture"
 
-    # Ensure artifacts directory exists
     artifacts_dir = args.artifact_dir / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Capture pod YAML
         oc(
             "get",
             "pod",
@@ -250,7 +356,6 @@ def capture_smoke_pod_debug_info(args, ctx):
             stdout_dest=artifacts_dir / f"{ctx.pod_name}.yaml",
         )
 
-        # Capture pod description
         oc(
             "describe",
             "pod",
@@ -258,7 +363,7 @@ def capture_smoke_pod_debug_info(args, ctx):
             "-n",
             args.namespace,
             check=False,
-            stdout_dest=artifacts_dir / f"{ctx.pod_name}.description.txt",
+            stdout_dest=artifacts_dir / f"{ctx.pod_name}.describe.txt",
         )
 
         return f"Captured debug info for pod {ctx.pod_name}"

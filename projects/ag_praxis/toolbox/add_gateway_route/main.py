@@ -20,6 +20,10 @@ def run(
     backend_service: str,
     backend_port: int = 8080,
     path_prefix: str = "/",
+    owner_api_version: str = "",
+    owner_kind: str = "",
+    owner_name: str = "",
+    owner_uid: str = "",
 ) -> str:
     """Create an HTTPRoute pointing a Gateway to a backend service and wait for it to be accepted.
 
@@ -31,6 +35,10 @@ def run(
         backend_service: Name of the backend Service to route traffic to.
         backend_port: Port on the backend Service.
         path_prefix: URL path prefix to match.
+        owner_api_version: API version of the owner resource for ownerReferences.
+        owner_kind: Kind of the owner resource for ownerReferences.
+        owner_name: Name of the owner resource for ownerReferences.
+        owner_uid: UID of the owner resource for ownerReferences.
 
     Returns:
         The internal gateway endpoint URL.
@@ -46,13 +54,24 @@ def apply_httproute(args, ctx):
     src_dir = args.artifact_dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
 
+    metadata = {
+        "name": args.name,
+        "namespace": args.namespace,
+    }
+    if args.owner_kind and args.owner_name and args.owner_uid:
+        metadata["ownerReferences"] = [
+            {
+                "apiVersion": args.owner_api_version or "serving.kserve.io/v1alpha1",
+                "kind": args.owner_kind,
+                "name": args.owner_name,
+                "uid": args.owner_uid,
+            },
+        ]
+
     manifest = {
         "apiVersion": "gateway.networking.k8s.io/v1",
         "kind": "HTTPRoute",
-        "metadata": {
-            "name": args.name,
-            "namespace": args.namespace,
-        },
+        "metadata": metadata,
         "spec": {
             "parentRefs": [
                 {

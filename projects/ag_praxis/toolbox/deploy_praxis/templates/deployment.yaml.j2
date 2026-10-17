@@ -57,7 +57,13 @@ spec:
             - name: config
               mountPath: /etc/praxis
               readOnly: true
+            - name: trusted-ca
+              mountPath: /etc/praxis-ca
+              readOnly: true
       volumes:
         - name: config
           configMap:
             name: praxis-config
+        - name: trusted-ca
+          configMap:
+            name: praxis-trusted-ca

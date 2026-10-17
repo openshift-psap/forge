@@ -4,8 +4,10 @@ import pytest
 
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
+    _build_multi_run_script,
     expand_guidellm_runs,
     render_guidellm_job_from_parts,
+    render_guidellm_shared_volume_job_from_parts,
 )
 
 
@@ -349,3 +351,208 @@ class TestBuildRunArgs:
         )
         profile_arg = next(a for a in args if a.startswith("--profile="))
         assert "rampup_duration=30" in profile_arg
+
+
+class TestApiKeySecret:
+    def test_render_shared_volume_job_with_api_key_secret(self) -> None:
+        manifest = render_guidellm_shared_volume_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+            api_key_secret="my-api-key-secret",
+        )
+
+        pod_spec = manifest["spec"]["template"]["spec"]
+        containers = pod_spec["containers"]
+        main_container = containers[0]
+
+        # Secret volume should be present
+        volume_names = [v["name"] for v in pod_spec["volumes"]]
+        assert "auth-token" in volume_names
+
+        api_key_volume = next(v for v in pod_spec["volumes"] if v["name"] == "auth-token")
+        assert api_key_volume["secret"]["secretName"] == "my-api-key-secret"
+
+        # Volume mount should be on the main container
+        mount_names = [m["name"] for m in main_container["volumeMounts"]]
+        assert "auth-token" in mount_names
+
+        api_key_mount = next(m for m in main_container["volumeMounts"] if m["name"] == "auth-token")
+        assert api_key_mount["mountPath"] == "/secrets/auth-token"
+        assert api_key_mount["readOnly"] is True
+
+    def test_render_job_with_api_key_secret(self) -> None:
+        manifest = render_guidellm_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+            api_key_secret="my-api-key-secret",
+        )
+
+        pod_spec = manifest["spec"]["template"]["spec"]
+        volume_names = [v["name"] for v in pod_spec["volumes"]]
+        assert "auth-token" in volume_names
+
+    def test_api_key_forces_shell_mode(self) -> None:
+        manifest = render_guidellm_shared_volume_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+            api_key_secret="my-api-key-secret",
+        )
+
+        main_container = manifest["spec"]["template"]["spec"]["containers"][0]
+        assert main_container["command"] == ["/bin/sh", "-c"]
+        script = main_container["args"][0]
+        assert "GUIDELLM_API_KEY" in script
+        assert "set +x" in script
+
+    def test_build_multi_run_script_with_api_key(self) -> None:
+        script = _build_multi_run_script(
+            endpoint_url="https://example.test/llm-d",
+            runs=[
+                expand_guidellm_runs(["--backend-type=openai_http"])[0],
+            ],
+            api_key_file="/secrets/auth-token/auth_token",
+        )
+
+        lines = script.split("\n")
+        assert any("GUIDELLM_API_KEY=$(cat" in line for line in lines)
+        assert any("api_key=$GUIDELLM_API_KEY" in line for line in lines)
+
+        # Tracing must be disabled before reading the key and re-enabled only after the command
+        set_plus_x_idx = lines.index("set +x")
+        cat_idx = next(i for i, line in enumerate(lines) if "GUIDELLM_API_KEY=$(cat" in line)
+        cmd_idx = next(i for i, line in enumerate(lines) if "guidellm" in line)
+        set_minus_x_idx = next(i for i in range(len(lines) - 1, -1, -1) if lines[i] == "set -x")
+        assert set_plus_x_idx < cat_idx < cmd_idx < set_minus_x_idx
+
+    def test_no_api_key_secret_omits_volume(self) -> None:
+        manifest = render_guidellm_shared_volume_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+        )
+
+        pod_spec = manifest["spec"]["template"]["spec"]
+        volume_names = [v["name"] for v in pod_spec["volumes"]]
+        assert "auth-token" not in volume_names
+
+
+class TestReplicaCount:
+    def test_render_shared_volume_job_with_replicas(self) -> None:
+        manifest = render_guidellm_shared_volume_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+            replica_count=4,
+        )
+
+        job_spec = manifest["spec"]
+        assert job_spec["completionMode"] == "Indexed"
+        assert job_spec["completions"] == 4
+        assert job_spec["parallelism"] == 4
+
+    def test_render_job_with_replicas(self) -> None:
+        manifest = render_guidellm_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+            replica_count=3,
+        )
+
+        job_spec = manifest["spec"]
+        assert job_spec["completionMode"] == "Indexed"
+        assert job_spec["completions"] == 3
+        assert job_spec["parallelism"] == 3
+
+    def test_single_replica_omits_indexed_mode(self) -> None:
+        manifest = render_guidellm_shared_volume_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+            replica_count=1,
+        )
+
+        job_spec = manifest["spec"]
+        assert "completionMode" not in job_spec
+        assert "completions" not in job_spec
+        assert "parallelism" not in job_spec
+
+    def test_build_multi_run_script_with_replicas(self) -> None:
+        script = _build_multi_run_script(
+            endpoint_url="https://example.test/llm-d",
+            runs=[
+                expand_guidellm_runs(["--backend-type=openai_http"])[0],
+            ],
+            replica_count=4,
+        )
+
+        assert "$JOB_COMPLETION_INDEX" in script
+        assert "benchmarks-default-$JOB_COMPLETION_INDEX.json" in script
+
+    def test_build_multi_run_script_single_replica_no_index(self) -> None:
+        script = _build_multi_run_script(
+            endpoint_url="https://example.test/llm-d",
+            runs=[
+                expand_guidellm_runs(["--backend-type=openai_http"])[0],
+            ],
+            replica_count=1,
+        )
+
+        assert "JOB_COMPLETION_INDEX" not in script
+        assert "benchmarks-default.json" in script
+
+    def test_replicas_forces_shell_mode(self) -> None:
+        manifest = render_guidellm_shared_volume_job_from_parts(
+            namespace="forge-llm-d",
+            name="guidellm-benchmark",
+            image="ghcr.io/vllm-project/guidellm:v0.8.1",
+            endpoint_url="https://example.test/llm-d",
+            timeout_seconds=3600,
+            guidellm_args=["--backend-type=openai_http"],
+            replica_count=2,
+        )
+
+        main_container = manifest["spec"]["template"]["spec"]["containers"][0]
+        assert main_container["command"] == ["/bin/sh", "-c"]
+        script = main_container["args"][0]
+        assert "$JOB_COMPLETION_INDEX" in script
+
+
+class TestApiKeyAndReplicas:
+    def test_combined_api_key_and_replicas(self) -> None:
+        script = _build_multi_run_script(
+            endpoint_url="https://example.test/llm-d",
+            runs=[
+                expand_guidellm_runs(["--backend-type=openai_http"])[0],
+            ],
+            api_key_file="/secrets/auth-token/auth_token",
+            replica_count=4,
+        )
+
+        assert "GUIDELLM_API_KEY" in script
+        assert "api_key=$GUIDELLM_API_KEY" in script
+        assert "$JOB_COMPLETION_INDEX" in script
+        assert "set +x" in script

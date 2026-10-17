@@ -28,6 +28,7 @@ from projects.core.library.export import (
     caliper_export_list_vaults,
 )
 from projects.core.library.replot import caliper_replot_entrypoint
+from projects.rhoai.library.deploy import list_mandatory_vaults as rhoai_list_mandatory_vaults
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,11 @@ def init(presets=None):
 def init_vaults_for_phase(phase: str):
     """Initialize vaults for a specific CI phase."""
 
-    vault.phase_vault_init(phase)
+    extra_mandatory = []
+    if phase == "prepare":
+        extra_mandatory.extend(rhoai_list_mandatory_vaults())
+
+    vault.phase_vault_init(phase, extra_mandatory=(extra_mandatory or None))
 
 
 def _signal_callback(sig, frame, log_file):

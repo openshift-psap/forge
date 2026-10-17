@@ -14,15 +14,22 @@ filter_chains:
     filters:
       - filter: router
         routes:
-          - path_prefix: "/v1"
+          - path_prefix: "{{ model_path }}/v1"
             cluster: rhoai_model
-          - path_prefix: "/health"
+          - path_prefix: "{{ model_path }}/health"
             cluster: rhoai_model
 
       - filter: load_balancer
         clusters:
           - name: rhoai_model
+{% if use_tls %}
+            tls:
+              sni: "{{ model_host }}"
+              ca:
+                ca_path: "/etc/praxis-ca/ca-bundle.crt"
+{% else %}
             trusted_private_endpoints:
               - "{{ model_host }}"
+{% endif %}
             endpoints:
               - "{{ model_endpoint }}"

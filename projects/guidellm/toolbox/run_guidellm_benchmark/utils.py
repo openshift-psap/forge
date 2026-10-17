@@ -171,7 +171,9 @@ def _convert_data_spec(data_spec: str) -> str:
     return f"kind=synthetic_text,{data_spec}"
 
 
-def _build_run_args(endpoint_url: str, old_args: list[str]) -> list[str]:
+def _build_run_args(
+    endpoint_url: str, old_args: list[str], *, validate_backend: bool = True
+) -> list[str]:
     """Transform config-derived CLI args into ``guidellm run`` arguments."""
     backend_type = "openai_http"
     model = None
@@ -217,7 +219,7 @@ def _build_run_args(endpoint_url: str, old_args: list[str]) -> list[str]:
                     processor_args = _json.loads(val)
                 except (ValueError, TypeError):
                     pass
-        elif key == "--request-type":
+        elif key in ("--request-type", "--request-format"):
             request_format = val
         elif key == "--backend":
             # v0.7.x-style --backend=subkey=subval from presets/workload args.
@@ -249,6 +251,8 @@ def _build_run_args(endpoint_url: str, old_args: list[str]) -> list[str]:
         backend_spec += f",model={model}"
     if request_format:
         backend_spec += f",request_format={request_format}"
+    if not validate_backend:
+        backend_spec += ",validate_backend=false"
     for part in extra_backend_parts:
         backend_spec += f",{part}"
     new_args.append(f"--backend={backend_spec}")
@@ -316,25 +320,52 @@ def _build_config_heredoc(config_content: str) -> str:
     return f"cat > {_CONFIG_FILE_PATH} <<'__CONFIG_EOF__'\n{config_content}__CONFIG_EOF__"
 
 
+def _shell_quote_with_expansion(arg: str) -> str:
+    """Quote a shell argument, using double quotes when variable expansion is needed."""
+    if "$" not in arg:
+        return shlex.quote(arg)
+    escaped = arg.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return f'"{escaped}"'
+
+
 def _build_multi_run_script(
     *,
     endpoint_url: str,
     runs: list[GuideLLMRun],
     config_content: str | None = None,
+    replica_count: int = 1,
+    validate_backend: bool = True,
 ) -> str:
     """Shell script for multiple GuideLLM runs (rate-expression expansion)."""
+    needs_shell_vars = replica_count > 1
+
     lines = ["set -euxo pipefail", "mkdir -p /results"]
+
     if config_content:
         lines.append(_build_config_heredoc(config_content))
+
     for run in runs:
-        run_args = _build_run_args(endpoint_url, run.args)
+        run_args = _build_run_args(endpoint_url, run.args, validate_backend=validate_backend)
         if config_content:
             run_args.append(f"--config={_CONFIG_FILE_PATH}")
-        output_path = f"/results/benchmarks-{run.label}.json"
+
+        if replica_count > 1:
+            output_path = f"/results/benchmarks-{run.label}-$JOB_COMPLETION_INDEX.json"
+        else:
+            output_path = f"/results/benchmarks-{run.label}.json"
+
         filtered = [a for a in run_args if not a.startswith("--output=")]
         filtered.append(f"--output=kind=json,path={output_path}")
+
         command = ["/opt/app-root/bin/guidellm", "run", *filtered]
-        lines.append(shlex.join(command))
+
+        if needs_shell_vars:
+            cmd_str = " ".join(_shell_quote_with_expansion(a) for a in command)
+        else:
+            cmd_str = shlex.join(command)
+
+        lines.append(cmd_str)
+
     return "\n".join(lines)
 
 
@@ -387,6 +418,9 @@ def render_guidellm_job_from_parts(
     hf_token_secret: str = "",
     fs_group: int | None = None,
     config_path: Path | None = None,
+    api_key_secret: str = "",
+    replica_count: int = 1,
+    validate_backend: bool = True,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest from individual components.
 
@@ -404,6 +438,9 @@ def render_guidellm_job_from_parts(
         config_path: Path to a GuideLLM config YAML file on the local filesystem.
             When set, the file is read and embedded in the container via heredoc,
             and GuideLLM is invoked with ``--config`` pointing to it.
+        api_key_secret: Name of the K8s secret containing the API key. Mounted
+            into the pod and injected into the ``--backend`` argument at runtime.
+        replica_count: Number of parallel Job replicas (completions and parallelism).
 
     Returns:
         Job manifest as dict
@@ -418,25 +455,32 @@ def render_guidellm_job_from_parts(
             "image": image,
             "hf_token_secret": hf_token_secret,
             "fs_group": fs_group,
+            "api_key_secret": api_key_secret,
+            "replica_count": replica_count,
         },
     )
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
     container = manifest["spec"]["template"]["spec"]["containers"][0]
 
-    # Config file mode requires a shell script to write the file first.
-    # Plain single runs can invoke guidellm directly.
-    if not config_content and len(runs) == 1 and runs[0].rate is None:
+    needs_shell = config_content or len(runs) > 1 or runs[0].rate is not None or replica_count > 1
+    if not needs_shell:
         container["command"] = ["/opt/app-root/bin/guidellm"]
         container["args"] = [
             "run",
-            *_build_run_args(endpoint_url, runs[0].args),
+            *_build_run_args(endpoint_url, runs[0].args, validate_backend=validate_backend),
         ]
         return manifest
 
     container["command"] = ["/bin/sh", "-lc"]
     container["args"] = [
-        _build_multi_run_script(endpoint_url=endpoint_url, runs=runs, config_content=config_content)
+        _build_multi_run_script(
+            endpoint_url=endpoint_url,
+            runs=runs,
+            config_content=config_content,
+            replica_count=replica_count,
+            validate_backend=validate_backend,
+        )
     ]
     return manifest
 
@@ -452,6 +496,9 @@ def render_guidellm_shared_volume_job_from_parts(
     hf_token_secret: str = "",
     fs_group: int | None = None,
     config_path: Path | None = None,
+    api_key_secret: str = "",
+    replica_count: int = 1,
+    validate_backend: bool = True,
 ) -> dict[str, Any]:
     """Render a GuideLL-M job manifest with shared volume (main + sidecar containers).
 
@@ -467,6 +514,9 @@ def render_guidellm_shared_volume_job_from_parts(
             the shared volume is writable by both containers.
         config_path: Path to a GuideLLM config YAML file on the local filesystem.
             When set, the file is read and embedded in the container via heredoc.
+        api_key_secret: Name of the K8s secret containing the API key. Mounted
+            into the pod and injected into the ``--backend`` argument at runtime.
+        replica_count: Number of parallel Job replicas (completions and parallelism).
 
     Returns:
         Job manifest as dict with main and sidecar containers
@@ -481,14 +531,16 @@ def render_guidellm_shared_volume_job_from_parts(
             "image": image,
             "hf_token_secret": hf_token_secret,
             "fs_group": fs_group,
+            "api_key_secret": api_key_secret,
+            "replica_count": replica_count,
         },
     )
     manifest = yaml.safe_load(rendered_yaml)
     manifest["spec"]["activeDeadlineSeconds"] = timeout_seconds
 
-    # Config file mode always uses a shell script to write the file first.
-    if not config_content and len(runs) == 1 and runs[0].rate is None:
-        run_args = _build_run_args(endpoint_url, runs[0].args)
+    needs_shell = config_content or len(runs) > 1 or runs[0].rate is not None or replica_count > 1
+    if not needs_shell:
+        run_args = _build_run_args(endpoint_url, runs[0].args, validate_backend=validate_backend)
         cmd = shlex.join(["/opt/app-root/bin/guidellm", "run", *run_args])
         main_script = "\n".join(
             [
@@ -499,7 +551,11 @@ def render_guidellm_shared_volume_job_from_parts(
         )
     else:
         main_script = _build_multi_run_script(
-            endpoint_url=endpoint_url, runs=runs, config_content=config_content
+            endpoint_url=endpoint_url,
+            runs=runs,
+            config_content=config_content,
+            replica_count=replica_count,
+            validate_backend=validate_backend,
         )
 
     manifest["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/sh", "-c"]

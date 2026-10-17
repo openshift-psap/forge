@@ -8,10 +8,8 @@ run_warmup: true
 
 skip_cleanup: false
 skip_prepare: false
-continue_on_flavor_failure: true
+skip_finalizers: true
 
-flavors:
-  - direct
-  - direct-gateway
-  - praxis
-  - praxis-gateway
+endpoints:
+- svc
+- maas

@@ -9,6 +9,11 @@ metadata:
     forge.openshift.io/project: llm_d
 spec:
   backoffLimit: 0
+{% if replica_count is defined and replica_count > 1 %}
+  completionMode: Indexed
+  completions: {{ replica_count }}
+  parallelism: {{ replica_count }}
+{% endif %}
   template:
     metadata:
       labels:
@@ -53,6 +58,13 @@ spec:
                   name: {{ hf_token_secret }}
                   key: HF_TOKEN
                   optional: true
+{% endif %}
+{% if api_key_secret %}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ api_key_secret }}
+                  key: auth_token
 {% endif %}
           volumeMounts:
             - name: home

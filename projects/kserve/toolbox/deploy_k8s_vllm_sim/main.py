@@ -12,7 +12,7 @@ from projects.core.dsl import (
     task,
 )
 from projects.core.dsl.template import render_template
-from projects.core.dsl.utils.k8s import oc, oc_apply
+from projects.core.dsl.utils.k8s import best_effort_oc, oc, oc_apply
 
 logger = logging.getLogger("TOOLBOX")
 
@@ -24,7 +24,8 @@ def run(
     *,
     namespace: str,
     name: str = "sim-llm",
-    model_name: str = "simulated-llama-3",
+    model_name: str = "simulated-model",
+    served_model_names: list[str] | None = None,
     image: str = SIM_IMAGE,
     port: int = 8000,
     replicas: int = 1,
@@ -39,7 +40,8 @@ def run(
     Args:
         namespace: Namespace for the deployment.
         name: Name of the Deployment and Service.
-        model_name: Model name advertised by the simulator.
+        model_name: Model name advertised by the simulator (--model flag).
+        served_model_names: Additional model names to serve (--served-model-name flags).
         image: Container image for the simulator.
         port: Port the simulator listens on.
         replicas: Number of replicas.
@@ -55,6 +57,14 @@ def run(
 
 
 @task
+def delete_previous(args, ctx):
+    """Delete any pre-existing Deployment and Service to avoid merge conflicts."""
+    best_effort_oc("delete", "deployment", args.name, "-n", args.namespace)
+    best_effort_oc("delete", "service", args.name, "-n", args.namespace)
+    return f"Cleaned up previous {args.name} resources"
+
+
+@task
 def create_deployment(args, ctx):
     """Render and apply the sim Deployment."""
     src_dir = args.artifact_dir / "src"
@@ -67,6 +77,7 @@ def create_deployment(args, ctx):
                 "name": args.name,
                 "namespace": args.namespace,
                 "model_name": args.model_name,
+                "served_model_names": args.served_model_names or [],
                 "image": args.image,
                 "port": args.port,
                 "replicas": args.replicas,
@@ -85,9 +96,20 @@ def create_deployment(args, ctx):
 
 @task
 def create_service(args, ctx):
-    """Render and apply the sim Service."""
+    """Render and apply the sim Service with ownerReference to the Deployment."""
     src_dir = args.artifact_dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
+
+    deployment_uid = oc(
+        "get",
+        "deployment",
+        args.name,
+        "-n",
+        args.namespace,
+        "-o",
+        "jsonpath={.metadata.uid}",
+        log_stdout=True,
+    ).stdout.strip()
 
     manifest = yaml.safe_load(
         render_template(
@@ -96,6 +118,7 @@ def create_service(args, ctx):
                 "name": args.name,
                 "namespace": args.namespace,
                 "port": args.port,
+                "deployment_uid": deployment_uid,
             },
         )
     )

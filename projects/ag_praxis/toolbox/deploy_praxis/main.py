@@ -73,6 +73,41 @@ def ensure_namespace(args, ctx):
 
 
 @task
+def apply_trusted_ca_configmap(args, ctx):
+    """Fetch the OpenShift ingress CA and create a ConfigMap with it."""
+    from projects.core.dsl.utils.k8s import oc
+
+    ca_b64 = oc(
+        "get",
+        "secret",
+        "router-ca",
+        "-n",
+        "openshift-ingress-operator",
+        "-o",
+        "jsonpath={.data.tls\\.crt}",
+        log_stdout=False,
+    ).stdout.strip()
+
+    import base64
+
+    ca_pem = base64.b64decode(ca_b64).decode("utf-8")
+
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "praxis-trusted-ca",
+            "namespace": args.namespace,
+        },
+        "data": {
+            "ca-bundle.crt": ca_pem,
+        },
+    }
+    oc("apply", "-f", "-", input_text=yaml.safe_dump(manifest, sort_keys=False))
+    return "Applied praxis-trusted-ca ConfigMap with ingress CA bundle"
+
+
+@task
 def apply_deployment(args, ctx):
     """Apply the Praxis Deployment."""
     src_dir = args.artifact_dir / "src"
@@ -108,7 +143,11 @@ def apply_configmap(args, ctx):
     from urllib.parse import urlparse
 
     parsed = urlparse(args.model_endpoint)
-    host_port = f"{parsed.hostname}:{parsed.port or 8000}"
+    default_ports = {"https": 443, "http": 80}
+    port = parsed.port or default_ports.get(parsed.scheme, 8000)
+    host_port = f"{parsed.hostname}:{port}"
+    use_tls = parsed.scheme == "https"
+    model_path = parsed.path.rstrip("/")
 
     deployment_uid = _get_deployment_uid(args.namespace)
 
@@ -117,6 +156,8 @@ def apply_configmap(args, ctx):
         context={
             "model_endpoint": host_port,
             "model_host": parsed.hostname,
+            "model_path": model_path,
+            "use_tls": use_tls,
         },
     )
 
