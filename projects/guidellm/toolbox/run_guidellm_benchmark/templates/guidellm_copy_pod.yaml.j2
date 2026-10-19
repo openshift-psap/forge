@@ -14,7 +14,7 @@ spec:
 {% endif %}
   initContainers:
     - name: permission-fixer
-      image: ghcr.io/vllm-project/guidellm:v0.8.1
+      image: {{ image }}
       command:
         - /bin/sh
         - -c
@@ -27,7 +27,7 @@ spec:
           mountPath: /results
   containers:
     - name: copy-helper
-      image: ghcr.io/vllm-project/guidellm:v0.8.1
+      image: {{ image }}
       command: ["/bin/sleep", "300"]
       securityContext:
         runAsUser: 1001

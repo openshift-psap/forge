@@ -37,6 +37,7 @@ from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
 logger = logging.getLogger(__name__)
 WAIT_POLL_INTERVAL_SECONDS = 10
 JOB_COMPLETION_GRACE_SECONDS = 60
+DEFAULT_GUIDELLM_IMAGE = "ghcr.io/vllm-project/guidellm:v0.8.1"
 
 # Script template for trimming benchmark JSON on remote pod (removes 'requests' field)
 # Use REMOTE_TRIM_SCRIPT.format(file_path=...) to generate the script
@@ -115,7 +116,7 @@ def run(
     endpoint_url: str,
     name: str = "guidellm-benchmark",
     namespace: str = "",
-    image: str = "ghcr.io/vllm-project/guidellm:v0.8.1",
+    image: str | None = DEFAULT_GUIDELLM_IMAGE,
     timeout: int = 900,
     pvc_size: str = "1Gi",
     pvc_storage_class: str | None = None,
@@ -133,7 +134,7 @@ def run(
         endpoint_url: Endpoint URL for the LLM inference service to benchmark
         name: Name of the benchmark job
         namespace: Namespace to run the benchmark job in (empty string auto-detects current namespace)
-        image: Full container image reference for the benchmark
+        image: Full container image reference for the benchmark (None uses the toolbox default)
         timeout: Active deadline for the Job and timeout in seconds to wait for completion
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
         guidellm_args: List of additional guidellm arguments (e.g., ["--profile=kind=concurrent,streams=10"])
@@ -148,6 +149,10 @@ def run(
 
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
+
+    # None means "no image configured": use the toolbox default
+    if not image:
+        image = DEFAULT_GUIDELLM_IMAGE
 
     execute_tasks(locals())
     return 0
@@ -577,11 +582,13 @@ def create_copy_pod(args, ctx):
     if pod_data and pod_data.get("items"):
         node_name = pod_data["items"][0].get("spec", {}).get("nodeName")
 
+    # Helper commands need shell utilities that custom benchmark images may lack.
     oc_apply(
         args.artifact_dir / "src" / "guidellm-copy-pod.yaml",
         render_guidellm_copy_pod_from_parts(
             namespace=ctx.target_namespace,
             name=ctx.benchmark_name,
+            image=args.image,
             pvc_size=args.pvc_size,
             node_name=node_name,
         ),

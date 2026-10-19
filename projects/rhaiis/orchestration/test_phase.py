@@ -12,6 +12,7 @@ from projects.core.library import env
 from projects.core.library.fournos_status import patch_fjob_relevant_deployments
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
 from projects.rhaiis.orchestration import runtime_config
+from projects.rhaiis.postprocess.csv_dashboard import serialize_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +347,7 @@ def _run_test(
                 gpu_type=gpu_type,
                 serving_image=serving_image,
                 engine_args=engine_args,
+                env_vars=env_vars,
                 benchmark_cfg=benchmark_cfg,
                 deployment_name=deployment_name,
                 namespace=namespace,
@@ -407,6 +409,7 @@ def _run_workload_benchmark(
     gpu_type: str,
     serving_image: str,
     engine_args: dict,
+    env_vars: dict[str, object],
     benchmark_cfg: dict,
     deployment_name: str,
     namespace: str,
@@ -450,6 +453,7 @@ def _run_workload_benchmark(
             accelerator_chip=gpu_type.upper(),
             run_uuid=run_uuid,
             trtllm_config=trtllm_config,
+            env_vars=env_vars,
         )
 
         if not run_benchmark:
@@ -470,8 +474,6 @@ def _run_workload_benchmark(
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
-            benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.8.1")
-
             guidellm_args = runtime_config.build_guidellm_args(
                 benchmark_cfg=benchmark_cfg,
                 model_id=model_cfg["hf_model_id"],
@@ -485,7 +487,7 @@ def _run_workload_benchmark(
                 endpoint_url=f"{endpoint_url}/v1",
                 name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
                 namespace=namespace,
-                image=benchmark_image,
+                image=benchmark_cfg.get("image"),
                 timeout=benchmark_timeout,
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,
@@ -507,6 +509,7 @@ def _create_test_labels(
     accelerator_chip: str = "",
     run_uuid: str = "",
     trtllm_config: dict | None = None,
+    env_vars: dict[str, object] | None = None,
 ) -> None:
     _, image_tag = runtime_config.split_image_tag(serving_image) if serving_image else ("", "")
     parts = [f"{k}: {v}" for k, v in engine_args.items()]
@@ -532,6 +535,7 @@ def _create_test_labels(
         "image_tag": image_tag,
         "cluster_tag": cluster_tag,
         "runtime_args": runtime_args,
+        "env_vars": serialize_env_vars(env_vars),
         "run_uuid": run_uuid,
     }
 
@@ -539,7 +543,10 @@ def _create_test_labels(
         env.ARTIFACT_DIR,
         labels,
     )
-    logger.info("Created test labels: %s", labels)
+    logger.info(
+        "Created test labels: %s",
+        {key: value for key, value in labels.items() if key != "env_vars"},
+    )
 
 
 def _set_mlflow_metadata(
@@ -558,7 +565,7 @@ def _set_mlflow_metadata(
     from projects.core.library import config
 
     image_name, image_tag = runtime_config.split_image_tag(serving_image)
-    guidellm_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.8.1")
+    guidellm_image = benchmark_cfg.get("image")
     benchmark_args = benchmark_cfg.get("args", {})
     tp = (
         engine_args.get("tensor-parallel-size")
@@ -720,7 +727,7 @@ def _run_warmup_step(
             endpoint_url=f"{endpoint_url}/v1",
             name=_guidellm_job_name("guidellm-warmup", workload_key, deployment_name),
             namespace=namespace,
-            image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.8.1"),
+            image=benchmark_cfg.get("image"),
             timeout=benchmark_timeout,
             pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
             guidellm_args=guidellm_args,
@@ -787,7 +794,7 @@ def _run_profiler_step(
                 endpoint_url=f"{endpoint_url}/v1",
                 name=_guidellm_job_name("guidellm-profiler", workload_key, deployment_name),
                 namespace=namespace,
-                image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.8.1"),
+                image=benchmark_cfg.get("image"),
                 timeout=benchmark_timeout,
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,

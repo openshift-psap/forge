@@ -511,6 +511,7 @@ def render_guidellm_copy_pod_from_parts(
     *,
     namespace: str,
     name: str,
+    image: str,
     pvc_size: str,
     node_name: str | None = None,
 ) -> dict[str, Any]:
@@ -519,6 +520,7 @@ def render_guidellm_copy_pod_from_parts(
     Args:
         namespace: Target namespace
         name: Name of the benchmark job (used for copy pod naming)
+        image: Container image for GuideLLM
         pvc_size: Size of the PVC (not used directly, but kept for interface consistency)
         node_name: Optional node name to pin the pod to
 
@@ -530,6 +532,7 @@ def render_guidellm_copy_pod_from_parts(
         {
             "namespace": namespace,
             "name": name,
+            "image": image,
             "node_name": node_name,
         },
     )

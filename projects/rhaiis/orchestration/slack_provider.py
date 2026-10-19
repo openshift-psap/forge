@@ -89,14 +89,20 @@ class RhaiisSlackProvider(SlackNotificationProvider):
         cluster_line = f"*Cluster:* {cluster}\n" if cluster else ""
         workloads_line = f"*Workloads:* {', '.join(workload_keys)}\n" if workload_keys else ""
 
-        dashboard_url = _build_dashboard_url(
-            model=model_name,
-            accelerator=accelerator,
-            current_version=version,
-            profiles=workload_keys or None,
-            tp=str(tp) if tp else "",
+        csv_dashboard_enabled = config.project is not None and config.project.get_config(
+            "caliper.postprocess.csv_dashboard.enabled", False
         )
-        dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
+        if csv_dashboard_enabled:
+            dashboard_url = _build_dashboard_url(
+                model=model_name,
+                accelerator=accelerator,
+                current_version=version,
+                profiles=workload_keys or None,
+                tp=str(tp) if tp else "",
+            )
+            dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
+        else:
+            dashboard_line = ""
 
         mlflow_url = _build_mlflow_run_url()
         mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""

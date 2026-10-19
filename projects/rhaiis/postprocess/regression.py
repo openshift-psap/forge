@@ -524,15 +524,28 @@ def send_regression_notification(
     if parallelism_parts:
         parallelism_line = f"*Parallelism:* {', '.join(parallelism_parts)}\n"
 
-    dashboard_url = _build_dashboard_url(
-        model=model,
-        accelerator=accelerator,
-        current_version=current_version,
-        compare_version=compare_version,
-        profiles=profiles if profiles else None,
-        tp=tp,
-    )
-    dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
+    csv_dashboard_enabled = False
+    try:
+        from projects.core.library import config
+
+        if config.project is not None:
+            csv_dashboard_enabled = config.project.get_config(
+                "caliper.postprocess.csv_dashboard.enabled", False
+            )
+    except Exception:
+        pass
+    if csv_dashboard_enabled:
+        dashboard_url = _build_dashboard_url(
+            model=model,
+            accelerator=accelerator,
+            current_version=current_version,
+            compare_version=compare_version,
+            profiles=profiles if profiles else None,
+            tp=tp,
+        )
+        dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
+    else:
+        dashboard_line = ""
 
     mlflow_url = _build_mlflow_run_url()
     mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""

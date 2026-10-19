@@ -102,6 +102,7 @@ class RhaiisPlugin(PostProcessingPlugin):
                 "output toks": labels.get("output_toks", ""),
                 "image_tag": labels.get("image_tag", ""),
                 "runtime_args": labels.get("runtime_args", ""),
+                "env_vars": labels.get("env_vars", ""),
                 "uuid": labels.get("run_uuid", ""),
                 "guidellm_start_time_ms": labels.get("guidellm_start_time_ms", ""),
                 "guidellm_end_time_ms": labels.get("guidellm_end_time_ms", ""),

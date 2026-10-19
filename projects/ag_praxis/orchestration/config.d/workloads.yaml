@@ -1,5 +1,5 @@
 job_name: guidellm-benchmark
-image: ghcr.io/vllm-project/guidellm:v0.8.1
+image: null # use the toolbox default value
 use_pvc: false
 pvc_size: 1Gi
 pvc_storage_class: null

@@ -565,6 +565,7 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
             "runtime_args": str(
                 record.distinguishing_labels.get("runtime_args", "")
             ),  # From test labels
+            "env_vars": str(record.distinguishing_labels.get("env_vars", "")),
             "mlflow_run_id": str(record.metrics.get("mlflow_run_id", "")),
             "mlflow_experiment_id": str(record.metrics.get("mlflow_experiment_id", "")),
         }

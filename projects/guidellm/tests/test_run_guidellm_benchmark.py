@@ -108,7 +108,7 @@ def test_render_guidellm_job_from_parts_uses_shell_for_multi_run_benchmarks() ->
     manifest = render_guidellm_job_from_parts(
         namespace="forge-llm-d",
         name="guidellm-benchmark",
-        image="ghcr.io/vllm-project/guidellm:v0.8.1",
+        image="example/guidellm:test",
         endpoint_url="https://example.test/llm-d",
         timeout_seconds=3600,
         guidellm_args=[
@@ -137,7 +137,7 @@ def test_render_guidellm_job_from_parts_keeps_plain_rates_as_single_guidellm_run
     manifest = render_guidellm_job_from_parts(
         namespace="forge-llm-d",
         name="guidellm-benchmark",
-        image="ghcr.io/vllm-project/guidellm:v0.8.1",
+        image="example/guidellm:test",
         endpoint_url="https://example.test/llm-d",
         timeout_seconds=3600,
         guidellm_args=[
