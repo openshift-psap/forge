@@ -3,6 +3,7 @@
 from projects.core.dsl import (
     entrypoint,
     execute_tasks,
+    retry,
     shell,
     task,
 )
@@ -52,6 +53,7 @@ def list_trace_files(args, context):
     return f"Found {context.trace_count} rank-0 trace files"
 
 
+@retry(attempts=5, delay=30, backoff=2.0, retry_on_exceptions=True)
 @task
 def copy_traces(args, context):
     traces_dir = args.artifact_dir / "artifacts/traces"
@@ -62,6 +64,12 @@ def copy_traces(args, context):
         f' | tar --no-same-owner -xf - -C {traces_dir}"',
     )
     copied = list(traces_dir.glob("trace_rank0_*.json*"))
+    # tar can exit 0 on a truncated stream after extracting complete entries,
+    # so pipefail alone does not guarantee all traces arrived.
+    if len(copied) != context.trace_count:
+        raise RuntimeError(
+            f"Copied {len(copied)} rank-0 trace files, expected {context.trace_count}"
+        )
     return f"Copied {len(copied)} rank-0 trace files to {traces_dir}"
 
 
