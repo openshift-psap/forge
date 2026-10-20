@@ -151,6 +151,116 @@ def test_aiperf_summary_routes_to_tool_specific_kpis(tmp_path: Path) -> None:
     assert by_id["aiperf_time_to_first_token_p95"].unit == "ms"
 
 
+def _full_latency_summary() -> dict:
+    """Synthetic AI Perf 0.12.0 summary with all percentile fields."""
+    return {
+        "request_count": {"unit": "requests", "avg": 202},
+        "error_request_count": {"unit": "requests", "avg": 0},
+        "request_throughput": {"unit": "requests/sec", "avg": 3.18},
+        "output_token_throughput": {"unit": "tokens/sec", "avg": 203.7},
+        "time_to_first_token": {
+            "unit": "ms",
+            "avg": 190382.16,
+            "p50": 201776.20,
+            "p90": 239515.56,
+            "p95": 247717.98,
+            "p99": 259083.68,
+        },
+        "inter_token_latency": {
+            "unit": "ms",
+            "avg": 113.30,
+            "p50": 94.02,
+            "p90": 189.01,
+            "p95": 252.19,
+            "p99": 537.22,
+        },
+        "request_latency": {
+            "unit": "ms",
+            "avg": 250949.13,
+            "p50": 240824.72,
+            "p90": 332346.23,
+            "p95": 385629.02,
+            "p99": 501177.08,
+        },
+    }
+
+
+def _make_aiperf_model(tmp_path: Path, summary: dict) -> UnifiedRunModel:
+    artifact = tmp_path / "profile_export_aiperf.json"
+    artifact.write_text(json.dumps(summary), encoding="utf-8")
+    node = BaseTestNode(
+        directory=tmp_path,
+        test_path=Path("benchmark_aiperf"),
+        artifact_paths=[artifact],
+        test_labels={"labels": {"benchmark_tool": "aiperf"}},
+    )
+    parsed = AIPerfParser().parse([node])
+    return UnifiedRunModel("aiperf", str(tmp_path), [node], parsed.records)
+
+
+def test_all_latency_percentiles_exported(tmp_path: Path) -> None:
+    """All five statistics (avg, p50, p90, p95, p99) export for each latency metric."""
+    model = _make_aiperf_model(tmp_path, _full_latency_summary())
+    rows, status = compute_aiperf_kpis(model)
+    assert status.success
+    by_id = {row.kpi_id: row for row in rows}
+
+    expected_stats = ("avg", "p50", "p90", "p95", "p99")
+    for metric in ("time_to_first_token", "inter_token_latency", "request_latency"):
+        for stat in expected_stats:
+            kpi_id = f"aiperf_{metric}_{stat}"
+            assert kpi_id in by_id, f"Missing KPI: {kpi_id}"
+            assert by_id[kpi_id].unit == "ms"
+            assert by_id[kpi_id].higher_is_better is False
+
+
+def test_latency_kpi_values_match_source(tmp_path: Path) -> None:
+    """Exported values exactly match the source summary."""
+    summary = _full_latency_summary()
+    model = _make_aiperf_model(tmp_path, summary)
+    rows, _ = compute_aiperf_kpis(model)
+    by_id = {row.kpi_id: row for row in rows}
+
+    assert by_id["aiperf_time_to_first_token_avg"].value == 190382.16
+    assert by_id["aiperf_time_to_first_token_p50"].value == 201776.20
+    assert by_id["aiperf_inter_token_latency_p99"].value == 537.22
+    assert by_id["aiperf_request_latency_p90"].value == 332346.23
+
+
+def test_missing_percentiles_skipped(tmp_path: Path) -> None:
+    """Missing/null percentile fields are skipped without error."""
+    summary = _full_latency_summary()
+    del summary["time_to_first_token"]["p90"]
+    summary["inter_token_latency"]["p99"] = None
+    model = _make_aiperf_model(tmp_path, summary)
+    rows, status = compute_aiperf_kpis(model)
+    assert status.success
+    by_id = {row.kpi_id: row for row in rows}
+
+    assert "aiperf_time_to_first_token_p90" not in by_id
+    assert "aiperf_inter_token_latency_p99" not in by_id
+    # Other stats still present
+    assert "aiperf_time_to_first_token_avg" in by_id
+    assert "aiperf_time_to_first_token_p50" in by_id
+    assert "aiperf_inter_token_latency_avg" in by_id
+
+
+def test_count_throughput_exports_unchanged(tmp_path: Path) -> None:
+    """Scalar count/throughput metrics still export only avg."""
+    model = _make_aiperf_model(tmp_path, _full_latency_summary())
+    rows, _ = compute_aiperf_kpis(model)
+    by_id = {row.kpi_id: row for row in rows}
+
+    assert by_id["aiperf_request_count_avg"].value == 202
+    assert by_id["aiperf_request_count_avg"].unit == "requests"
+    assert by_id["aiperf_request_count_avg"].higher_is_better is True
+    assert by_id["aiperf_request_throughput_avg"].value == 3.18
+    assert by_id["aiperf_output_token_throughput_avg"].value == 203.7
+    # No percentile variants for count/throughput
+    assert "aiperf_request_count_p50" not in by_id
+    assert "aiperf_request_throughput_p95" not in by_id
+
+
 def test_missing_summary_and_wrong_units_fail(tmp_path: Path) -> None:
     node = BaseTestNode(
         directory=tmp_path,

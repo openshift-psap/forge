@@ -103,8 +103,11 @@ def compute_aiperf_kpis(model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiCom
     for record in records:
         summary = record.metrics["aiperf_summary"]
         for key, (name, unit) in _METRICS.items():
+            # Latency metrics: export avg and percentiles available in AI Perf reports.
+            # AI Perf's inter_token_latency is per-request (request_latency - TTFT) / (output_len - 1);
+            # it is not a separate TPOT metric.
             fields = (
-                ("avg", "p95")
+                ("avg", "p50", "p90", "p95", "p99")
                 if key in ("time_to_first_token", "inter_token_latency", "request_latency")
                 else ("avg",)
             )
