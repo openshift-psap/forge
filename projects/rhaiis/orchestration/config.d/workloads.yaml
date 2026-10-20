@@ -54,6 +54,12 @@ profile7:
   rampup: 35
   warmup: 75
 
+# Debug profile matching llm-d concurrent-1k-1k without ramp-up or warmup.
+debug-guidellm-1k-1k:
+  data: "prompt_tokens=1000,output_tokens=1000"
+  rates: [300, 200, 100, 50, 1]
+  max_seconds: 600
+
 # Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
 custom:
   data: "prompt_tokens=1000,output_tokens=1000"
