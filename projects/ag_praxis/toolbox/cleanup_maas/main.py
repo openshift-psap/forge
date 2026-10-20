@@ -35,9 +35,12 @@ def run(
 
 @task
 def uninstall_odh(args, ctx):
-    """Uninstall the Open Data Hub operator."""
-    uninstall_odh_command.run()
-    return "Uninstalled ODH"
+    """Uninstall the RHOAI operator."""
+    uninstall_odh_command.run(
+        operator_namespace="redhat-ods-operator",
+        subscription_name="rhods-operator",
+    )
+    return "Uninstalled RHOAI"
 
 
 @task

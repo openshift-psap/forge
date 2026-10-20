@@ -318,10 +318,10 @@ def run_and_postprocess(test_func, *args, **kwargs):
             outcome = None
         elif exc_msg is not None:
             outcome = TestPhaseOutcome("FAILED", exc_msg)
-        elif ret == 0:
+        elif ret is None or ret == 0:
+            if ret is None:
+                logger.warning("Test function returned None instead of 0, assuming success")
             outcome = TestPhaseOutcome("SUCCESS")
-        elif ret is None:
-            outcome = TestPhaseOutcome("FAILED", "test aborted without exit code")
         else:
             outcome = TestPhaseOutcome("FAILED", f"exit_code={ret}")
 

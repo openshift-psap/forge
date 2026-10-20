@@ -53,6 +53,30 @@ def test(ctx):
     sys.exit(exit_code)
 
 
+@main.command()
+@click.option(
+    "--benchmark",
+    type=click.Choice(["svc", "maas"]),
+    default=None,
+    help="Run benchmark against 'svc' (direct LLMInferenceService) or 'maas' (MaaS external gateway)",
+)
+@click.pass_context
+@safe_cli_command
+def deploy(ctx, benchmark):
+    """Deploy the LLMInferenceService and optionally benchmark one endpoint."""
+    config.project.set_config("test.skip_cleanup", True)
+    config.project.set_config("caliper.postprocess.enabled", False)
+
+    if benchmark:
+        config.project.set_config("test.endpoints", [benchmark])
+        config.project.set_config("test.run_benchmark", True)
+    else:
+        config.project.set_config("test.run_benchmark", False)
+
+    exit_code = test_phase.test()
+    sys.exit(exit_code)
+
+
 main.add_command(postprocess_command)
 
 

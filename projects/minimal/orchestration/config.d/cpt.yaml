@@ -1,6 +1,2 @@
 kpi:
-  labels:
-    platform: OCP
-    test_harness: default
-    product_version: minimal
-    gpu_type: null
+  labels: {}

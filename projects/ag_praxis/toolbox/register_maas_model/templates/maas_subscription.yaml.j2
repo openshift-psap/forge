@@ -1,0 +1,17 @@
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: {{ model_namespace }}-{{ model_ref_name }}-subscription
+  namespace: {{ tenant_namespace }}
+spec:
+  owner:
+    groups:
+    - name: system:authenticated
+    users: []
+  modelRefs:
+  - name: {{ model_ref_name }}
+    namespace: {{ model_namespace }}
+    tokenRateLimits:
+    - limit: 1000000000
+      window: 1m
+  priority: 10

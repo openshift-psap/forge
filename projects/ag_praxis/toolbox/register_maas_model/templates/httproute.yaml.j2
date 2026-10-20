@@ -1,0 +1,45 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ model_ref_name }}-route
+  namespace: {{ model_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: forge
+{% if owner_ref %}
+  ownerReferences:
+  - apiVersion: {{ owner_ref.apiVersion }}
+    kind: {{ owner_ref.kind }}
+    name: {{ owner_ref.name }}
+    uid: {{ owner_ref.uid }}
+{% endif %}
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {{ gateway_name }}
+    namespace: {{ gateway_namespace }}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /{{ model_namespace }}/{{ model_ref_name }}/
+    backendRefs:
+    - name: {{ external_service_name }}
+      port: {{ external_port }}
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  - matches:
+    - headers:
+      - name: X-Gateway-Model-Name
+        type: Exact
+        value: {{ model_ref_name }}
+      path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: {{ external_service_name }}
+      port: {{ external_port }}

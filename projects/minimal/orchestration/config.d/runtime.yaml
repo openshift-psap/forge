@@ -1,4 +1,4 @@
-model_name: simulated-llama-3
+model_name: simulated-model
 benchmark_key: short
 namespace: forge-minimal
 

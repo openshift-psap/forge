@@ -251,6 +251,7 @@ def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> None:
                 guidellm_args=guidellm_args,
                 config_path=config_path,
                 use_pvc=benchmark.get("use_pvc"),
+                validate_backend=config.project.get_config("workloads.validate_backend"),
             )
     finally:
         update_test_labels_with_timing(test_dir, "benchmark", "end")

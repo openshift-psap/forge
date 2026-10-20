@@ -1,0 +1,22 @@
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: {{ model_ref_name }}
+  namespace: {{ model_namespace }}
+{% if owner_ref %}
+  ownerReferences:
+  - apiVersion: {{ owner_ref.apiVersion }}
+    kind: {{ owner_ref.kind }}
+    name: {{ owner_ref.name }}
+    uid: {{ owner_ref.uid }}
+{% elif not is_external %}
+  ownerReferences:
+  - apiVersion: serving.kserve.io/v1alpha1
+    kind: LLMInferenceService
+    name: {{ llmisvc_name }}
+    uid: {{ llmisvc_uid }}
+{% endif %}
+spec:
+  modelRef:
+    kind: {{ model_ref_kind }}
+    name: {{ llmisvc_name }}

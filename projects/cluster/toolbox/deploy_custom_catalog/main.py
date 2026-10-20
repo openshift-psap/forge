@@ -59,6 +59,15 @@ def validate_parameters(args, ctx):
 
 
 @task
+def ensure_namespace(args, ctx):
+    """Create the catalog namespace if it does not exist."""
+    shell.run(
+        f"oc create namespace {args.catalog_namespace} --dry-run=client -o yaml | oc apply -f -",
+    )
+    return f"Ensured namespace {args.catalog_namespace}"
+
+
+@task
 def render_catalog_source_manifest(args, ctx):
     """Render the CatalogSource manifest"""
 

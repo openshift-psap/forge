@@ -24,7 +24,8 @@ def run(
     *,
     namespace: str,
     name: str = "sim-llm",
-    model_name: str = "simulated-llama-3",
+    model_name: str = "simulated-model",
+    served_model_names: list[str] | None = None,
     image: str = SIM_IMAGE,
     port: int = 8000,
     replicas: int = 1,
@@ -39,7 +40,8 @@ def run(
     Args:
         namespace: Namespace for the deployment.
         name: Name of the Deployment and Service.
-        model_name: Model name advertised by the simulator.
+        model_name: Model name advertised by the simulator (--model flag).
+        served_model_names: Additional model names to serve (--served-model-name flags).
         image: Container image for the simulator.
         port: Port the simulator listens on.
         replicas: Number of replicas.
@@ -55,6 +57,39 @@ def run(
 
 
 @task
+def delete_existing(args, ctx):
+    """Delete existing Deployment and Service before redeploying."""
+    oc("delete", "deployment", args.name, "-n", args.namespace, "--ignore-not-found=true")
+    oc("delete", "service", args.name, "-n", args.namespace, "--ignore-not-found=true")
+    return f"Deleted existing deployment/service {args.name}"
+
+
+@retry(attempts=30, delay=5, backoff=1.0)
+@task
+def wait_old_resources_gone(args, ctx):
+    """Wait for existing Deployment and Service to be fully removed."""
+    for kind in ("deployment", "service"):
+        result = oc(
+            "get",
+            kind,
+            args.name,
+            "-n",
+            args.namespace,
+            "--ignore-not-found",
+            "-oname",
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "Failed to check %s %s (rc=%d), retrying...", kind, args.name, result.returncode
+            )
+            return False
+        if result.stdout.strip():
+            return False
+    return f"Deployment and Service {args.name} are gone"
+
+
+@task
 def create_deployment(args, ctx):
     """Render and apply the sim Deployment."""
     src_dir = args.artifact_dir / "src"
@@ -67,6 +102,7 @@ def create_deployment(args, ctx):
                 "name": args.name,
                 "namespace": args.namespace,
                 "model_name": args.model_name,
+                "served_model_names": args.served_model_names or [],
                 "image": args.image,
                 "port": args.port,
                 "replicas": args.replicas,
@@ -85,9 +121,20 @@ def create_deployment(args, ctx):
 
 @task
 def create_service(args, ctx):
-    """Render and apply the sim Service."""
+    """Render and apply the sim Service with ownerReference to the Deployment."""
     src_dir = args.artifact_dir / "src"
     src_dir.mkdir(parents=True, exist_ok=True)
+
+    deployment_uid = oc(
+        "get",
+        "deployment",
+        args.name,
+        "-n",
+        args.namespace,
+        "-o",
+        "jsonpath={.metadata.uid}",
+        log_stdout=True,
+    ).stdout.strip()
 
     manifest = yaml.safe_load(
         render_template(
@@ -96,6 +143,7 @@ def create_service(args, ctx):
                 "name": args.name,
                 "namespace": args.namespace,
                 "port": args.port,
+                "deployment_uid": deployment_uid,
             },
         )
     )

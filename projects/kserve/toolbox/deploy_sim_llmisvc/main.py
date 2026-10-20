@@ -9,13 +9,10 @@ import yaml
 from projects.core.dsl import (  # noqa: F401
     entrypoint,
     execute_tasks,
-    retry,
     task,
 )
 from projects.core.dsl.template import render_template
-from projects.core.dsl.utils.k8s import (
-    oc_apply,
-)
+from projects.core.dsl.utils.k8s import oc
 from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
 
 logger = logging.getLogger("DSL")
@@ -28,7 +25,7 @@ def run(
     *,
     namespace: str,
     name: str = "sim-llm",
-    model_name: str = "simulated-llama-3",
+    model_name: str = "simulated-model",
     image: str = SIM_IMAGE,
     gateway_name: str = "",
     gateway_namespace: str = "",
@@ -40,6 +37,8 @@ def run(
     mode: str = "random",
     deploy_monitor: bool = True,
     skip_router: bool = False,
+    maas_gateway_label: str = "",
+    served_model_names: list[str] | None = None,
 ) -> str:
     """Build and deploy an llm-d simulator LLMInferenceService.
 
@@ -58,6 +57,8 @@ def run(
         mode: Simulator response mode.
         deploy_monitor: If True, deploy ServiceMonitor for monitoring.
         skip_router: If True, set spec.router to empty (no scheduler, no gateway routing).
+        maas_gateway_label: MaaS gateway label value. When set, adds MaaS labels and annotations.
+        served_model_names: Additional model names to serve (--served-model-name flags).
     """
     ctx = execute_tasks(locals())
 
@@ -86,6 +87,9 @@ def build_manifest(args, ctx):
                 "inter_token_latency": args.inter_token_latency,
                 "mode": args.mode,
                 "skip_router": args.skip_router,
+                "deploy_monitor": args.deploy_monitor,
+                "maas_gateway_label": args.maas_gateway_label,
+                "served_model_names": args.served_model_names or [],
             },
         )
     )
@@ -111,71 +115,21 @@ def deploy(args, ctx):
     return f"Deployed sim LLMInferenceService, endpoint: {endpoint_url}"
 
 
-@retry(attempts=18, delay=10, backoff=1.0)
 @task
-def apply_destination_rule(args, ctx):
-    """Create a DestinationRule to disable TLS to the InferencePool backend service."""
-    if args.skip_router:
-        return "Skipped DestinationRule (no router configured)"
+def cleanup_router_servicemonitor(args, ctx):
+    """Remove the router ServiceMonitor when skip_router is enabled."""
+    if not args.skip_router:
+        return "Router enabled, keeping epp ServiceMonitor"
 
-    from projects.core.dsl.utils.k8s import oc
-
-    pool_svc_result = oc(
-        "get",
-        "svc",
+    oc(
+        "delete",
+        "servicemonitor",
+        f"{args.name}-epp",
         "-n",
         args.namespace,
-        "-l",
-        "internal.istio.io/service-semantics=inferencepool",
-        "-o",
-        "jsonpath={.items[*].metadata.name}",
+        "--ignore-not-found=true",
     )
-    pool_svc_name = pool_svc_result.stdout.strip()
-    if not pool_svc_name:
-        logger.info("InferencePool service not found yet, retrying...")
-        return False
-
-    llmisvc_uid = oc(
-        "get",
-        "llminferenceservice",
-        args.name,
-        "-n",
-        args.namespace,
-        "-o",
-        "jsonpath={.metadata.uid}",
-    ).stdout.strip()
-
-    pool_host = f"{pool_svc_name}.{args.namespace}.svc.cluster.local"
-
-    dr_manifest = {
-        "apiVersion": "networking.istio.io/v1",
-        "kind": "DestinationRule",
-        "metadata": {
-            "name": f"{args.name}-plaintext",
-            "namespace": args.namespace,
-            "ownerReferences": [
-                {
-                    "apiVersion": "serving.kserve.io/v1alpha1",
-                    "kind": "LLMInferenceService",
-                    "name": args.name,
-                    "uid": llmisvc_uid,
-                },
-            ],
-        },
-        "spec": {
-            "host": pool_host,
-            "trafficPolicy": {
-                "tls": {
-                    "mode": "DISABLE",
-                },
-            },
-        },
-    }
-
-    dest_rule_path = args.artifact_dir / "src" / "destination-rule.yaml"
-    oc_apply(dest_rule_path, dr_manifest)
-
-    return f"Applied DestinationRule {args.name}-plaintext for host {pool_host}"
+    return f"Deleted router ServiceMonitor {args.name}-epp (skip_router=True)"
 
 
 if __name__ == "__main__":

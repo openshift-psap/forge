@@ -1,4 +1,5 @@
 job_name: guidellm-benchmark
+validate_backend: false
 image: null # use the toolbox default value
 use_pvc: false
 pvc_size: 1Gi
