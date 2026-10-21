@@ -992,9 +992,24 @@ def _deploy_benchmark_finalize(
         endpoint_url = deploy()
         logger.info("Recipe %s reached Ready at %s", recipe_id, endpoint_url)
         serving = recipe.get("serving")
-        tokenizer_model = (serving.get("model") if isinstance(serving, dict) else None) or recipe[
-            "model_name"
-        ]
+        serving_model = serving.get("model") if isinstance(serving, dict) else None
+        tokenizer_model = (
+            serving_model
+            if isinstance(serving_model, str) and not Path(serving_model).is_absolute()
+            else recipe["model_name"]
+        )
+        serving_args = serving.get("args", []) if isinstance(serving, dict) else []
+        tokenizer_args = (
+            {"trust_remote_code": True}
+            if isinstance(serving_args, list)
+            and any(
+                isinstance(arg, dict)
+                and arg.get("flag") == "--trust-remote-code"
+                and arg.get("required") is True
+                for arg in serving_args
+            )
+            else {}
+        )
         served_model_name = recipe.get("served_model_name", recipe["model_name"])
         for workload_key, workload in workload_configs:
             kpi_labels = _benchmark_kpi_labels(recipe_id, recipe, workload_key, workload)
@@ -1008,6 +1023,7 @@ def _deploy_benchmark_finalize(
                 workload_key,
                 workload,
                 kpi_labels,
+                tokenizer_args=tokenizer_args,
             )
     except Exception:
         primary_exc = sys.exc_info()
@@ -1146,6 +1162,7 @@ def _run_workload(
     workload_key: str,
     workload: dict,
     kpi_labels: dict[str, str],
+    tokenizer_args: dict[str, bool] | None = None,
 ) -> None:
     tool = workload.get("tool", "guidellm")
     if tool == "guidellm":
@@ -1157,6 +1174,7 @@ def _run_workload(
             workload_key,
             workload,
             kpi_labels,
+            tokenizer_args=tokenizer_args,
         )
     elif tool == "aiperf":
         _run_aiperf_workload(
@@ -1181,6 +1199,7 @@ def _run_guidellm_workload(
     workload_key: str,
     workload: dict,
     kpi_labels: dict[str, str],
+    tokenizer_args: dict[str, bool] | None = None,
 ) -> None:
     benchmark = config.Config(RHAIIS_CONFIG).get_config("benchmarks.guidellm")
     artifact_workload_key = workload_key.replace("/", "-")
@@ -1192,6 +1211,8 @@ def _run_guidellm_workload(
             "max_seconds": max_seconds,
             "processor": tokenizer_model,
         }
+        if tokenizer_args:
+            args["processor_args"] = json.dumps(tokenizer_args)
         if rampup is not None:
             args["rampup"] = rampup
         with env.NextArtifactDir(f"{phase}_{artifact_workload_key}"):
