@@ -322,6 +322,9 @@ def run_and_postprocess(test_func, *args, **kwargs):
             if ret is None:
                 logger.warning("Test function returned None instead of 0, assuming success")
             outcome = TestPhaseOutcome("SUCCESS")
+        elif isinstance(ret, tuple) and len(ret) == 3:
+            phase = "SUCCESS" if ret[1] == ExitCategory.SUCCESS else "FAILED"
+            outcome = TestPhaseOutcome(phase, ret[2], exit_category=ret[1])
         else:
             outcome = TestPhaseOutcome("FAILED", f"exit_code={ret}")
 

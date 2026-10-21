@@ -29,9 +29,9 @@ def run(
     repo_url: str,
     repo_ref: str,
     operator_type: str,
+    applications_namespace: str = "redhat-ods-applications",
     keep_pod: bool = True,
     skip_conflicting_ns_check: bool = True,
-    verbose: bool = True,
     force_reinstall: bool = False,
 ):
     """Deploy MaaS by cloning the upstream repo and running deploy.sh inside a Pod.
@@ -41,9 +41,9 @@ def run(
         repo_url: URL of the models-as-a-service git repository.
         repo_ref: Git branch, tag, or SHA to checkout.
         operator_type: Operator type passed to deploy.sh (e.g. 'odh').
+        applications_namespace: RHOAI applications namespace for setup-database.sh.
         keep_pod: If True, keep the Pod after deployment and reuse it if it already exists.
         skip_conflicting_ns_check: If True, skip the check for conflicting namespaces.
-        verbose: If True, show command output live instead of redirecting to log files.
         force_reinstall: If True, reinstall MaaS even if already available
     """
     return execute_tasks(locals())
@@ -247,11 +247,11 @@ def install_dependencies(args, ctx):
 
     dnf_log = None
     kustomize_log = None
-    if not args.verbose:
-        logs_dir = args.artifact_dir / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        dnf_log = logs_dir / "dnf-install.log"
-        kustomize_log = logs_dir / "kustomize-install.log"
+
+    logs_dir = args.artifact_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    dnf_log = logs_dir / "dnf-install.log"
+    kustomize_log = logs_dir / "kustomize-install.log"
 
     oc_exec(
         "sh",
@@ -295,8 +295,38 @@ def clone_repository(args, ctx):
 
 
 @task
+def setup_database(args, ctx):
+    """Run setup-database.sh to create the PostgreSQL database for MaaS."""
+    logs_dir = args.artifact_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    setup_cmd = (
+        f"cd {CLONE_DIR} && "
+        f"KUBECONFIG={KUBECONFIG_POD_PATH} "
+        f"NAMESPACE={args.applications_namespace} "
+        f"./scripts/setup-database.sh"
+    )
+    oc_exec(
+        "sh",
+        "-c",
+        setup_cmd,
+        namespace=args.namespace,
+        pod=POD_NAME,
+        timeout_seconds=300,
+        stdout_dest=logs_dir / "setup-database.log",
+    )
+    return "setup-database.sh completed"
+
+
+@task
 def run_deploy_script(args, ctx):
     """Run deploy.sh inside the deployer Pod."""
+    deploy_log = None
+
+    logs_dir = args.artifact_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    deploy_log = logs_dir / "deploy.log"
+
     deploy_cmd = (
         f"cd {CLONE_DIR} && "
         f"KUBECONFIG={KUBECONFIG_POD_PATH} "
@@ -309,6 +339,7 @@ def run_deploy_script(args, ctx):
         namespace=args.namespace,
         pod=POD_NAME,
         timeout_seconds=1800,
+        stdout_dest=deploy_log,
     )
     return "deploy.sh completed"
 

@@ -255,6 +255,16 @@ def _run_ci_function(command_func, args, kwargs):
         return 1, category, str(e)
 
 
+def _is_phase_skipped(phase_name: str) -> bool:
+    """Check if a CI phase should be skipped based on config."""
+    from projects.core.library import config
+
+    if config.project is None:
+        return False
+
+    return config.project.get_config(f"skip.{phase_name}", False, warn=False, print=False)
+
+
 def safe_ci_entrypoint(command_func):
     """
     Decorator for CI phase entrypoints (prepare, test, cleanup, ...).
@@ -264,6 +274,16 @@ def safe_ci_entrypoint(command_func):
 
     @functools.wraps(command_func)
     def wrapper(*args, **kwargs):
+        if _is_phase_skipped(command_func.__name__):
+            logger.info("### ")
+            logger.info(
+                f"### Skipping phase '{command_func.__name__}' (skip.{command_func.__name__} is set)"
+            )
+            logger.info("### ")
+
+            save_exit_status(0, ExitCategory.SUCCESS, None)
+            sys.exit(0)
+
         exit_code, category, reason = _run_ci_function(command_func, args, kwargs)
         logger.info(
             f"[safe_ci_entrypoint] {command_func.__name__}: "

@@ -160,6 +160,7 @@ main.add_command(
     create_fournos_resolve_entrypoint(
         vault_list_funcs=[
             vault.phase_vault_list_all,
+            rhoai_list_mandatory_vaults,
             caliper_export_list_vaults,
             caliper_export_list_optional_vaults,
             caliper_agentic_list_vaults,

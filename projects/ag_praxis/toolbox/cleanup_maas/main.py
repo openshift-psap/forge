@@ -12,6 +12,7 @@ logger = logging.getLogger("DSL")
 
 SA_NAME = "maas-deployer"
 CRB_NAME = "maas-deployer-cluster-admin"
+MAAS_INFRA_NAMESPACE = "redhat-ai-gateway-infra"
 MAAS_NAMESPACES = [
     "models-as-a-service",
     "ai-tenants",
@@ -76,6 +77,45 @@ def delete_maas_namespaces(args, ctx):
             "delete", "namespace", ns, "--ignore-not-found", description=f"Delete namespace {ns}"
         )
     return f"Deleted namespaces: {', '.join(MAAS_NAMESPACES)}"
+
+
+@task
+def delete_postgres(args, ctx):
+    """Delete the PostgreSQL deployment and MaaS DB config secret."""
+    best_effort_oc(
+        "delete",
+        "deployment",
+        "postgres",
+        "-n",
+        MAAS_INFRA_NAMESPACE,
+        "--ignore-not-found",
+        description="Delete postgres deployment",
+    )
+    best_effort_oc(
+        "delete",
+        "secret",
+        "maas-db-config",
+        "-n",
+        MAAS_INFRA_NAMESPACE,
+        "--ignore-not-found",
+        description="Delete maas-db-config secret",
+    )
+    return "Deleted postgres deployment and maas-db-config secret"
+
+
+@task
+def delete_maas_gateway(args, ctx):
+    """Delete the MaaS default gateway."""
+    best_effort_oc(
+        "delete",
+        "gateway",
+        "maas-default-gateway",
+        "-n",
+        "openshift-ingress",
+        "--ignore-not-found",
+        description="Delete MaaS default gateway",
+    )
+    return "Deleted MaaS default gateway"
 
 
 @task

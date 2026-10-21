@@ -1,8 +1,9 @@
-"""KPI handlers for LLM_D."""
+"""KPI handler for GuideLLM benchmarks."""
 
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,22 +23,11 @@ logger = logging.getLogger(__name__)
 class GuideLLMKpiHandler:
     """Handles KPI catalog and computation for GuideLLM benchmarks."""
 
-    # Define required labels that must be present in the final label set
     REQUIRED_LABELS = {
         "model_name",
-        "product_version",
         "guidellm_loadshape",
-        "platform",
-        "test_harness",
-        "benchmark_key",
     }
 
-    LLM_D_REQUIRED_LABELS = REQUIRED_LABELS | {
-        "deployment_profile",
-        "gpu_type",
-    }
-
-    # Define custom label extractor for GuideLLM with fallbacks for missing kpi_labels
     @staticmethod
     def _extract_labels(record) -> dict[str, Any]:
         """Extract labels from record with fallbacks for missing kpi_labels."""
@@ -46,7 +36,6 @@ class GuideLLMKpiHandler:
 
         labels = {}
 
-        # Extract artifact-based labels (graceful handling)
         artifact_fields = {
             "product_version": "metrics.product_version",
             "cluster": "metrics.cluster",
@@ -72,7 +61,6 @@ class GuideLLMKpiHandler:
 
     LABEL_EXTRACTOR = type("TestLabelExtractor", (), {"extract": _extract_labels})()
 
-    # Metadata fields to include in KPI records but not as labels
     @staticmethod
     def extract_metadata(record) -> dict[str, Any]:
         """Extract metadata fields for KPI records."""
@@ -84,13 +72,7 @@ class GuideLLMKpiHandler:
 
     @staticmethod
     def get_catalog() -> list[KpiCatalogEntry]:
-        """
-        Return the KPI catalog for GuideLLM metrics using dataclasses.
-
-        Returns:
-            List of KPI catalog entries as KpiCatalogEntry dataclasses
-        """
-        # Import the module containing the KPI functions
+        """Return the KPI catalog for GuideLLM metrics using dataclasses."""
         from projects.guidellm.postprocess.guidellm.parsing import kpis as guidellm_kpis
 
         return build_catalog_from_functions(guidellm_kpis)
@@ -99,24 +81,14 @@ class GuideLLMKpiHandler:
         self,
         model: UnifiedRunModel,
     ) -> tuple[list[KpiRecord], KpiComputationStatus]:
-        """
-        Compute KPI values from the unified model.
-
-        Args:
-            model: Unified model containing parsed test results
-
-        Returns:
-            List of KPI records, or tuple of (KPI records, status details) if warnings present
-        """
+        """Compute KPI values from the unified model."""
         ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         out: list[KpiRecord] = []
 
-        # Import the module containing the KPI functions
         from projects.guidellm.postprocess.guidellm.parsing import kpis as guidellm_kpis
 
         kpi_functions = get_kpi_functions(guidellm_kpis)
 
-        # Filter valid records
         valid_records = [
             r
             for r in model.unified_result_records
@@ -127,7 +99,6 @@ class GuideLLMKpiHandler:
             status = KpiComputationStatus.success_status(0, len(model.unified_result_records))
             return out, status
 
-        # Check for unknown gpu_type in records
         unknown_gpu_records = []
         for r in valid_records:
             test_condition_labels = GuideLLMKpiHandler.LABEL_EXTRACTOR.extract(r)
@@ -135,7 +106,6 @@ class GuideLLMKpiHandler:
             if gpu_type and gpu_type.lower() == "unknown":
                 unknown_gpu_records.append(r.test_base_path)
 
-        # If unknown GPU types found, return failure status
         if unknown_gpu_records:
             error_msg = (
                 f"Found gpu_type='unknown' in {len(unknown_gpu_records)} test paths: "
@@ -146,7 +116,6 @@ class GuideLLMKpiHandler:
             status = KpiComputationStatus.failure_status(error_msg)
             return [], status
 
-        # Check for missing required labels in records
         invalid_label_records = []
         logger.info(f"🔍 Validating required labels for {len(valid_records)} records...")
         logger.info(f"   Required labels: {sorted(self._required_labels)}")
@@ -171,102 +140,80 @@ class GuideLLMKpiHandler:
 
         logger.info(f"   Validation complete: {len(invalid_label_records)} invalid records found")
 
-        # Group records by test path for curve KPIs (same test, different rates)
-        from collections import defaultdict
-
         records_by_test = defaultdict(list)
         for r in valid_records:
             records_by_test[r.test_base_path].append(r)
 
-        # Track which records actually produced KPIs
         processed_records = set()
 
-        # Generate scalar KPIs for each record
         for r in valid_records:
             test_condition_labels = GuideLLMKpiHandler.LABEL_EXTRACTOR.extract(r)
 
-            # Skip records with missing required labels
             missing_labels = self._validate_required_labels(test_condition_labels)
             if missing_labels:
                 continue
 
             metadata_fields = GuideLLMKpiHandler.extract_metadata(r)
 
-            # Compute scalar KPIs only
             for kpi_id, kpi_func in kpi_functions.items():
-                # Skip curve KPIs for individual records - they'll be handled separately
                 if is_curve_kpi(kpi_func):
                     continue
 
                 try:
                     value = kpi_func(r)
                 except (TypeError, ValueError, KeyError):
-                    value = None  # None for missing/failed scalar KPIs
+                    value = None
 
-                # Skip KPIs with null values
                 if value is None:
                     continue
 
-                # Use only extracted KPI labels, not test labels
                 all_labels = {
                     **test_condition_labels,
                 }
 
-                # Create structured KPI record using core dataclass
                 kpi_record = KpiRecord(
                     kpi_id=kpi_id,
-                    value=value,  # Core enforces int|float only
+                    value=value,
                     unit=kpi_func._kpi_unit,
                     run_id=r.test_base_path,
                     timestamp=ts,
                     labels=all_labels,
                     metadata=metadata_fields,
-                    is_curve=False,  # Scalar KPI
+                    is_curve=False,
                 )
 
                 out.append(kpi_record)
-                processed_records.add(r.test_base_path)  # Track that this record produced a KPI
+                processed_records.add(r.test_base_path)
 
-        # Generate curve KPIs for records that have performance curves
         for r in valid_records:
-            # Check if this record has performance curves (indicating it's aggregated data)
             curves = r.metrics.get("performance_curves", {})
             request_rates = r.metrics.get("request_rate", [])
 
-            # Only generate curve KPIs if we have performance curves with data
             if not curves or not request_rates:
                 continue
 
             kpi_labels = GuideLLMKpiHandler.LABEL_EXTRACTOR.extract(r)
 
-            # Skip records with missing required labels
             missing_labels = self._validate_required_labels(kpi_labels)
             if missing_labels:
                 continue
 
             metadata_fields = GuideLLMKpiHandler.extract_metadata(r)
 
-            # Generate curve KPIs from performance curves
             for kpi_id, kpi_func in kpi_functions.items():
                 if not is_curve_kpi(kpi_func):
                     continue
 
-                # Pass the single record with performance curves to the curve KPI function
                 raw_values = kpi_func(r)
-                # Convert list of tuples to list of lists for schema compatibility and sort by X value
-                # Preserve original numeric types (int/float) instead of forcing conversion to float
                 if raw_values:
                     coordinate_pairs = [[x, y] for x, y in raw_values]
-                    # Sort by X value (first element of each coordinate pair)
                     values = sorted(coordinate_pairs, key=lambda point: point[0])
                 else:
                     values = []
 
-                # Skip curve KPIs with empty or null values
                 if not values or values is None:
                     continue
 
-                # Create structured curve KPI record using core dataclass
                 kpi_record = KpiRecord(
                     schema_version="1",
                     kpi_id=kpi_id,
@@ -276,7 +223,7 @@ class GuideLLMKpiHandler:
                     timestamp=ts,
                     labels=kpi_labels,
                     metadata=metadata_fields,
-                    is_curve=True,  # curve KPI
+                    is_curve=True,
                     x_unit=kpi_func._kpi_x_unit,
                     x_help=kpi_func._kpi_x_help,
                     y_unit=kpi_func._kpi_y_unit,
@@ -284,9 +231,8 @@ class GuideLLMKpiHandler:
                 )
 
                 out.append(kpi_record)
-                processed_records.add(r.test_base_path)  # Track that this record produced a KPI
+                processed_records.add(r.test_base_path)
 
-        # Check if any records had missing required labels
         if invalid_label_records:
             error_msg = (
                 f"Found missing required labels in {len(invalid_label_records)} test paths:\n"
@@ -304,7 +250,6 @@ class GuideLLMKpiHandler:
             logger.error(f"   Generated {len(out)} KPIs before failing")
             return out, status
 
-        # Create success status
         status = KpiComputationStatus.success_status(len(processed_records), len(valid_records))
         logger.info(
             f"✅ KPI computation successful: {len(out)} KPIs generated from {len(processed_records)} records"

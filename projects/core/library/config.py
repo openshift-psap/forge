@@ -95,6 +95,12 @@ class Config:
                     "repo": {"name": None, "owner": None},
                 },
             },
+            "skip": {
+                "pre_cleanup": False,
+                "prepare": False,
+                "test": False,
+                "post_cleanup": False,
+            },
         }
 
         # Apply the mandatory field structure

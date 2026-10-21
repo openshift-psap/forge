@@ -9,6 +9,11 @@ metadata:
     forge.openshift.io/project: llm_d
 spec:
   backoffLimit: 0
+{% if replica_count is defined and replica_count > 1 %}
+  completionMode: Indexed
+  completions: {{ replica_count }}
+  parallelism: {{ replica_count }}
+{% endif %}
   template:
     metadata:
       labels:
@@ -59,9 +64,19 @@ spec:
               mountPath: /home/guidellm
             - name: results
               mountPath: /results
+{% if api_key_secret %}
+            - name: auth-token
+              mountPath: /auth-token
+              readOnly: true
+{% endif %}
       volumes:
         - name: home
           emptyDir: {}
         - name: results
           persistentVolumeClaim:
             claimName: {{ name }}
+{% if api_key_secret %}
+        - name: auth-token
+          secret:
+            secretName: {{ api_key_secret }}
+{% endif %}

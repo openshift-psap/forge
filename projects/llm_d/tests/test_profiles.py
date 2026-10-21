@@ -450,6 +450,11 @@ def test_prepare_rhoai_operator_runs_registry_setup_before_custom_catalog_deploy
         "ensure_required_crds_before_dsc",
         lambda rhoai: calls.append("crds"),
     )
+    monkeypatch.setattr(
+        rhoai_deploy,
+        "ensure_dsci",
+        lambda: calls.append("dsci"),
+    )
 
     rhoai_deploy.prepare_rhoai_operator(
         platform=platform,
@@ -464,6 +469,7 @@ def test_prepare_rhoai_operator_runs_registry_setup_before_custom_catalog_deploy
         ("catalog", "RHOAI Development Catalog"),
         ("sub", "rhods-operator"),
         "crds",
+        "dsci",
     ]
 
 

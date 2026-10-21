@@ -71,6 +71,12 @@ def get_supported_fournos_directives() -> dict[str, str]:
         "/external": """Use the external (psap-mgmt) FOURNOS instance instead of intlab.
                        Format: /external
                        Effect: Sets fournos.instance to psap-mgmt.""",
+        "/skip": """Skip one or more CI pipeline phases.
+                   Format: /skip phase1 [phase2 ...]
+                   Example: /skip post_cleanup
+                            /skip pre_cleanup post_cleanup
+                   Valid phases: pre_cleanup, prepare, test, post_cleanup
+                   Effect: Sets skip.<phase> to true in configuration.""",
         "/help": """Show all supported FOURNOS directives.
                    Format: /help
                    Effect: Logs available directive information.""",
@@ -310,6 +316,46 @@ def handle_replot_url_directive(line: str) -> dict[str, str]:
     return {"caliper.replot.url": replot_url}
 
 
+VALID_SKIP_PHASES = {"pre_cleanup", "prepare", "test", "post_cleanup"}
+
+
+def handle_skip_directive(line: str) -> dict[str, str]:
+    """
+    Handle /skip directive for skipping CI pipeline phases.
+
+    Format: /skip phase1 [phase2 ...]
+
+    Args:
+        line: The directive line
+
+    Returns:
+        Dictionary with skip configuration
+
+    Raises:
+        ValueError: If no phases specified or invalid phase name
+    """
+    skip_content = line.removeprefix("/skip ").strip()
+
+    if not skip_content:
+        raise ValueError(
+            f"Invalid /skip directive: at least one phase must be specified in '{line}'"
+        )
+
+    phases = skip_content.split()
+    config = {}
+
+    for phase in phases:
+        normalized = phase.replace("-", "_")
+        if normalized not in VALID_SKIP_PHASES:
+            raise ValueError(
+                f"Invalid /skip directive: unknown phase '{phase}' in '{line}'. "
+                f"Valid phases: {', '.join(sorted(VALID_SKIP_PHASES))}"
+            )
+        config[f"skip.{normalized}"] = True
+
+    return config
+
+
 def handle_help_directive(line: str) -> dict[str, str]:
     """Handle /help directive for FOURNOS directives."""
     # Create help directive handler using the factory
@@ -397,6 +443,7 @@ def get_fournos_directive_handlers() -> dict[str, callable]:
         "/parallel": handle_parallel_directive,
         "/external": handle_external_directive,
         "/replot.url": handle_replot_url_directive,
+        "/skip": handle_skip_directive,
         "/help": handle_help_directive,
     }
 

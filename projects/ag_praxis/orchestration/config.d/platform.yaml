@@ -15,6 +15,7 @@ operators:
     cleanup_crds:
       - ztunnels.sailoperator.io
   rhods-operator:
+    name: null
     display_name: Red Hat OpenShift AI
     namespace: redhat-ods-operator
     channel: stable-3.x
@@ -41,6 +42,7 @@ rhoai:
   datasciencecluster_name: default-dsc
   components:
     - kserve
+    - aigateway.maas
   required_crds_before_dsc:
     - datascienceclusters.datasciencecluster.opendatahub.io
   required_crds_after_dsc: []

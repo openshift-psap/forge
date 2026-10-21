@@ -109,6 +109,23 @@ def delete_subscription(args, ctx):
 
 
 @task
+def delete_operator_namespace(args, ctx):
+    """Delete the operator namespace."""
+    if not oc_resource_exists("namespace", args.operator_namespace):
+        return f"Namespace {args.operator_namespace} does not exist"
+
+    best_effort_oc(
+        "delete",
+        "namespace",
+        args.operator_namespace,
+        "--wait=true",
+        "--timeout=180s",
+        description=f"Delete namespace {args.operator_namespace}",
+    )
+    return f"Deleted namespace {args.operator_namespace}"
+
+
+@task
 def delete_csv(args, ctx):
     result = oc(
         "get",

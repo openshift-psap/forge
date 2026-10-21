@@ -136,8 +136,6 @@ def prepare():
 
     prepare_rhoai_operator()
     apply_datasciencecluster()
-    wait_for_datasciencecluster_ready()
-    ensure_required_crds()
 
     maas_cfg = config.project.get_config("platform.maas")
 
@@ -149,6 +147,9 @@ def prepare():
         repo_ref=maas_cfg["repo_ref"],
         operator_type=maas_cfg["operator_type"],
     )
+
+    wait_for_datasciencecluster_ready()
+    ensure_required_crds()
 
     test_namespace = config.project.get_config("test.namespace")
 
