@@ -2,4 +2,4 @@ enabled: true
 custom_version:
   enabled: true
   repo: git+https://github.com/tosokin/benchconf
-  version: toskin-llm-d-profiles-align-with-rhaiis
+  version: tosokin-llm-d-profiles-align-with-rhaiis
