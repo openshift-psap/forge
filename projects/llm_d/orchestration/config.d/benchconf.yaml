@@ -1,5 +1,5 @@
 enabled: true
 custom_version:
   enabled: true
-  repo: git+https://github.com/tosokin/benchconf
+  repo: git+https://github.com/openshift-psap/benchconf
   version: tosokin-llm-d-profiles-align-with-rhaiis
