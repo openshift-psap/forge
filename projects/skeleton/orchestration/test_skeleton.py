@@ -100,32 +100,41 @@ def test():
 
 
 def skeleton_take_time():
-    # Get test duration configuration
     test_duration = config.project.get_config("skeleton.test.duration_seconds")
     logger.info(f"Test duration: {test_duration} seconds")
 
     start_time = time.time()
-    test_iteration = 0
+    minute_count = 0
 
     logger.info(f"Starting {test_duration}s test loop...")
 
-    # Run timed test loop
-    while time.time() - start_time < test_duration:
-        test_iteration += 1
+    while True:
+        remaining = test_duration - (time.time() - start_time)
+        wait_time = min(60.0, remaining)
+        if wait_time <= 0:
+            break
+        time.sleep(wait_time)
+
+        minute_count += 1
         elapsed = time.time() - start_time
         remaining = test_duration - elapsed
 
-        logger.info(
-            f"Test iteration {test_iteration} - Elapsed: {elapsed:.1f}s, Remaining: {remaining:.1f}s"
-        )
-
-        # Simulate some test work with explicit waiting message
-        wait_time = min(30.0, remaining)
-        logger.info(f"⏳ Waiting {wait_time:.1f}s before next iteration...")
-        time.sleep(wait_time)
+        if minute_count % 60 == 0:
+            elapsed_h = int(elapsed // 3600)
+            elapsed_m = int((elapsed % 3600) // 60)
+            remaining_h = int(max(0, remaining) // 3600)
+            remaining_m = int((max(0, remaining) % 3600) // 60)
+            timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+            logger.info(
+                f"Elapsed: {elapsed_h}h{elapsed_m:02d}m, "
+                f"Remaining: {remaining_h}h{remaining_m:02d}m, "
+                f"Timestamp: {timestamp}"
+            )
+        else:
+            logger.info(".")
 
     elapsed_total = time.time() - start_time
-    logger.info(f"✅ Completed {test_iteration} test iterations in {elapsed_total:.1f}s")
+    logger.info(f"Completed test loop in {elapsed_total:.1f}s ({minute_count} minutes)")
 
 
 def do_test():

@@ -11,6 +11,8 @@ from datetime import UTC
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+import markdown as md_lib
+
 logger = logging.getLogger(__name__)
 
 AGENT_TIMEOUT_SECONDS = 600
@@ -32,12 +34,12 @@ def check_agent_connectivity(agent_url: str) -> tuple[bool, str]:
         resp = urlopen(req, timeout=AGENT_HEALTH_TIMEOUT)  # noqa: S310
         status = resp.getcode()
         if status and status < 400:
-            return True, f"Agent reachable at {health_url} (HTTP {status})"
-        return False, f"Agent returned HTTP {status} at {health_url}"
+            return True, f"Agent reachable (HTTP {status})"
+        return False, f"Agent returned HTTP {status}"
     except (URLError, OSError) as e:
-        return False, f"Cannot reach agent at {health_url}: {e}"
+        return False, f"Cannot reach agent ({type(e).__name__})"
     except Exception as e:
-        return False, f"Unexpected error checking agent at {health_url}: {e}"
+        return False, f"Unexpected health-check error ({type(e).__name__})"
 
 
 def _build_prompt(
@@ -101,6 +103,7 @@ def build_pr_followup_prompt(
 
 def request_agent_analysis(
     model: str,
+    agent_model: str,
     accelerator: str,
     current_version: str,
     compare_version: str,
@@ -133,7 +136,7 @@ def request_agent_analysis(
         "session_id": session_key,
         "user_id": "forge-rhaiis",
         "stream_tokens": False,
-        "model": "claude-opus-4-6",
+        "model": agent_model,
     }
 
     logger.info("Requesting agent analysis for job %s", job_id)
@@ -158,14 +161,21 @@ def request_agent_analysis(
         return ai_content
 
     except (URLError, OSError) as e:
-        logger.error("Agent request failed for job %s: %s", job_id, e)
+        logger.error("Agent request failed for job %s (%s)", job_id, type(e).__name__)
         return None
     except Exception as e:
-        logger.error("Unexpected error during agent analysis for job %s: %s", job_id, e)
+        logger.error(
+            "Unexpected error during agent analysis for job %s (%s)", job_id, type(e).__name__
+        )
         return None
 
 
-def send_followup(message: str, job_id: str, agent_url: str) -> str | None:
+def send_followup(
+    message: str,
+    job_id: str,
+    agent_url: str,
+    agent_model: str,
+) -> str | None:
     """Send a followup message to the agent on an existing session.
 
     Reuses the same thread_id/session_id as request_agent_analysis so the
@@ -182,7 +192,7 @@ def send_followup(message: str, job_id: str, agent_url: str) -> str | None:
         "session_id": session_key,
         "user_id": "forge-rhaiis",
         "stream_tokens": False,
-        "model": "claude-opus-4-6",
+        "model": agent_model,
     }
 
     logger.info("Sending agent followup for job %s", job_id)
@@ -207,10 +217,12 @@ def send_followup(message: str, job_id: str, agent_url: str) -> str | None:
         return ai_content
 
     except (URLError, OSError) as e:
-        logger.error("Agent followup request failed for job %s: %s", job_id, e)
+        logger.error("Agent followup request failed for job %s (%s)", job_id, type(e).__name__)
         return None
     except Exception as e:
-        logger.error("Unexpected error during agent followup for job %s: %s", job_id, e)
+        logger.error(
+            "Unexpected error during agent followup for job %s (%s)", job_id, type(e).__name__
+        )
         return None
 
 
@@ -256,14 +268,7 @@ def markdown_to_html(
     compare_version: str,
 ) -> str:
     """Convert markdown analysis to a self-contained HTML page."""
-    try:
-        import markdown as md_lib
-
-        body = md_lib.markdown(md_text, extensions=["tables", "fenced_code"])
-    except ImportError:
-        import html as html_lib
-
-        body = f"<pre>{html_lib.escape(md_text)}</pre>"
+    body = md_lib.markdown(md_text, extensions=["tables", "fenced_code"])
 
     from datetime import datetime
 

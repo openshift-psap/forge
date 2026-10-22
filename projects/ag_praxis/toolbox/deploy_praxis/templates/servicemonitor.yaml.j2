@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: praxis
+  namespace: {{ namespace }}
+  ownerReferences:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: praxis
+      uid: {{ deployment_uid }}
+spec:
+  selector:
+    matchLabels:
+      app: praxis
+  endpoints:
+    - port: admin
+      path: /metrics

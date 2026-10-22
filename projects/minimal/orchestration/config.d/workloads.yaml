@@ -1,0 +1,29 @@
+job_name: guidellm-benchmark
+validate_backend: false
+image: null # use the toolbox default value
+use_pvc: false
+pvc_size: 1Gi
+pvc_storage_class: null
+fs_group: null
+timeout_seconds: 3600
+args:
+  processor: gpt2
+
+smoke_requests:
+  default:
+    prompt: San Francisco is a
+    max_tokens: 50
+    temperature: 0.7
+
+benchmarks:
+  short:
+    timeout_seconds: 3600
+    args:
+      profile: "kind=concurrent,streams={rate}"
+      data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
+      constraint: kind=max_duration,seconds=120
+    rate: [1, 4, 8]
+
+  smoke:
+    timeout_seconds: 300
+    benchconf: llm-d/smoke

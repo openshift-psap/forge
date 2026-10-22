@@ -69,6 +69,7 @@ Key sections:
 | `rhaiis.engines.trtllm.trtllm_config` | TRT-LLM server config (KV cache, CUDA graphs, MoE) |
 | `rhaiis.deploy` | Deploy settings (replicas, CPU/memory, image_pull_secrets list, storage) |
 | `rhaiis.s3` | S3 bucket, vault, and credentials for dashboard CSV and profiler trace uploads |
+| `rhaiis.agent_analysis` | Optional regression analysis using the PSAP agent, including its selected model |
 | `rhaiis.warmup` | Warmup benchmark settings applied before each selected workload |
 | `rhaiis.profiler` | PyTorch profiler settings (enable, S3 prefix, rates, labels) |
 | `models` | Model definitions (hf_model_id, per-model `vllm_args` overrides) |
@@ -117,6 +118,11 @@ bin/run_ci rhaiis ci export-artifacts         # Caliper export to MLflow
 ```
 
 ### FournosJob YAML (vLLM)
+
+When `rhaiis.agent_analysis.enabled` is true, the Fournos config resolver adds the
+`psap-forge-rhaiis-agent-analysis` secret reference automatically. Its
+`agent-url` content is mounted from the `psap-secrets` namespace and read through
+Forge's vault module; do not put the endpoint URL in `configOverrides`.
 
 ```yaml
 apiVersion: fournos.dev/v1

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from projects.core.library.ci import ExitCategory
+
 # Ordered worst-first for documentation; see compute_final_postprocess_status().
 FINAL_TEST_FAILED = "test_failed"
 FINAL_PARSE_VISUALIZE_FAILED = "parse_visualize_failed"
@@ -29,6 +31,7 @@ class TestPhaseOutcome:
 
     phase: Literal["SUCCESS", "FAILED", "NOT_AVAILABLE"]
     message: str | None = None
+    exit_category: ExitCategory | None = None
 
 
 def compute_final_postprocess_status(

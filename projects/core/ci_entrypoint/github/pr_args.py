@@ -140,28 +140,13 @@ def handle_test_directive(line: str) -> dict[str, Any]:
 
     args = parts  # allowed to be empty
     result = {}
-    # Special handling for jump CI - extract cluster and target project info
-    if test_name.endswith("jump-ci"):
-        # Format: /test jump-ci target_project [additional_args...]
-        target_project = project_name
 
-        result.update(
-            {
-                "project.name": target_project,
-                "project.args": args,
-            }
-        )
-
-        logger.info(f"Jump CI configuration: target_project={target_project}, args={args}")
-    else:
-        # Build result with test info and PR positional arguments
-        result.update(
-            {
-                "ci_job.display_name": test_name,
-                "ci_job.project": project_name,
-                "ci_job.args": args,
-            }
-        )
+    # Build result with test info and PR positional arguments
+    result = {
+        "ci_job.display_name": test_name,
+        "ci_job.project": project_name,
+        "ci_job.args": args,
+    }
 
     return result
 
@@ -501,20 +486,16 @@ def parse_pr_arguments(
     if not last_user_test_comment_author:
         raise ValueError(f"Selected authorized comment containing '{test_anchor}' has no author")
 
-    # Parse all directives from PR body and last comment
-    combined_text = (pr_data.get("body", "") or "") + "\n" + last_user_test_comment
-
-    # Parse directives using the modular parser
+    # Parse directives only from the selected trigger comment, not PR description examples.
     config, found_directives = parse_directives(
-        combined_text,
+        last_user_test_comment,
         artifact_path,
         last_user_test_comment,
     )
 
     # The Fournos launcher consumes this existing config value when setting
     # spec.owner on the submitted job.
-    if test_name == "fournos":
-        config["fournos.job.owner"] = last_user_test_comment_author
+    config["fournos.job.owner"] = last_user_test_comment_author
 
     return config, found_directives
 
@@ -560,7 +541,7 @@ def main():
             sys.exit(1)
 
         # Optional parameters
-        test_name = os.environ.get("TEST_NAME") or "jump-ci"
+        test_name = os.environ.get("TEST_NAME")
         artifact_dir_str = os.environ.get("ARTIFACT_DIR")
         artifact_path = Path(artifact_dir_str) if artifact_dir_str else None
 

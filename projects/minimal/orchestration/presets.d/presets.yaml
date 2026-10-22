@@ -1,4 +1,7 @@
 __multiple: true
 
-no_dummy:
-  placeholder.dummy: false
+smoke:
+  runtime.benchmark_key: smoke
+
+benchmark-short:
+  runtime.benchmark_key: short

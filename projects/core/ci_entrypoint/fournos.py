@@ -100,16 +100,23 @@ def _capture_resolver_pod_logs(job_name: str, namespace: str, pod_name: str) -> 
 
     resolver_logs = result.stdout or ""
 
-    # Save to metadata dir
+    # Save to a dedicated resolver directory under the current artifact dir
     artifact_dir = os.environ.get("ARTIFACT_DIR")
     if artifact_dir:
-        from .prepare_ci import CI_METADATA_DIRNAME
-
-        metadata_dir = Path(artifact_dir) / CI_METADATA_DIRNAME
-        metadata_dir.mkdir(parents=True, exist_ok=True)
-        log_file = metadata_dir / "resolver_pod.log"
+        resolver_dir = Path(artifact_dir) / "resolver_pod"
+        resolver_dir.mkdir(parents=True, exist_ok=True)
+        log_file = resolver_dir / "resolver_pod.log"
         log_file.write_text(resolver_logs)
         logger.info(f"Saved resolver pod logs to {log_file}")
+
+    # Save a copy at the top level (next to BASE_ARTIFACT_DIR)
+    from projects.core.library import env
+
+    if env.BASE_ARTIFACT_DIR is not None:
+        top_resolver_dir = env.BASE_ARTIFACT_DIR.parent
+        top_log_file = top_resolver_dir / "resolver_pod.log"
+        top_log_file.write_text(resolver_logs)
+        logger.info(f"Saved resolver pod logs copy to {top_log_file}")
 
     # Mark logs as captured on the fjob status
     patch_data = {

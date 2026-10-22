@@ -319,6 +319,32 @@ answered by a human. Consider writing the reply yourself. Proceed with
 an agent-generated reply?"
 ```
 
+## Code Style: Early Returns Over Nesting
+
+Keep indentation levels low. Use early returns (guard clauses) instead of nested `if` blocks.
+
+```python
+# BAD: Unnecessary nesting
+def get_title(context):
+    if context.pr_number:
+        title = fetch_title(context.pr_number)
+        if title:
+            return f"PR #{context.pr_number}: {title}"
+    return ""
+
+
+# GOOD: Early returns, flat structure
+def get_title(context):
+    if not context.pr_number:
+        return ""
+
+    title = fetch_title(context.pr_number)
+    if not title:
+        return ""
+
+    return f"PR #{context.pr_number}: {title}"
+```
+
 ## Legacy support
 
 Overall, we do not want legacy support. Do not implement legacy fallback, unless explicitly requested by the user.

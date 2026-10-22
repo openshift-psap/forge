@@ -2,6 +2,7 @@ import logging
 
 from projects.cluster.library.prom.collection import prepare_user_workload_monitoring
 from projects.core.library import config, env
+from projects.core.library.ci import ExitCategory
 from projects.gpu_operator.toolbox.validate_gpu_operator_dcgm import (
     main as validate_gpu_operator_dcgm,
 )
@@ -40,5 +41,7 @@ def run_prepare_sequence() -> int:
                 if not skip_gpu:
                     prepare_phase.verify_gpu_nodes()
                 prepare_phase.capture_prepare_state()
-    logger.info("Prepare sequence completed successfully - all phases executed without errors")
-    return 0
+
+    exit_msg = "Prepare sequence completed successfully - all phases executed without errors"
+    logger.info(exit_msg)
+    return 0, ExitCategory.SUCCESS, exit_msg

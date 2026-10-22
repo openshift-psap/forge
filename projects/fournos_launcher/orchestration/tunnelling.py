@@ -1,6 +1,7 @@
 import atexit
 import logging
 import os
+import signal
 import subprocess
 import tempfile
 import time
@@ -14,6 +15,28 @@ logger = logging.getLogger(__name__)
 PROBE_RETRIES = 30
 PROBE_DELAY = 5
 RECREATE_TUNNEL_INTERVAL = 5
+
+_tunnel_proc = None
+
+
+def _kill_tunnel_proc(proc):
+    """Terminate the SSH process group and wait for it to exit."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
+def close_tunnel():
+    global _tunnel_proc
+
+    if _tunnel_proc is None:
+        return
+
+    logger.info("Closing SSH tunnel ...")
+    _kill_tunnel_proc(_tunnel_proc)
+    _tunnel_proc = None
 
 
 def open_tunnel():
@@ -38,8 +61,8 @@ def open_tunnel():
         f" -N"
     )
 
-    proc = _create_and_probe_tunnel(cmd, local_port)
-    atexit.register(proc.kill)
+    atexit.register(close_tunnel)
+    _create_and_probe_tunnel(cmd, local_port)
 
     local_kubeconfig = _setup_kubeconfig(kubeconfig_path, local_port)
     os.environ["KUBECONFIG"] = local_kubeconfig
@@ -52,10 +75,12 @@ def _create_and_probe_tunnel(cmd, local_port):
     recreate_countdown = RECREATE_TUNNEL_INTERVAL
 
     def _start():
+        global _tunnel_proc
+
         logger.info("Starting SSH tunnel ...")
-        proc = subprocess.Popen(cmd, shell=True)
+        _tunnel_proc = subprocess.Popen(cmd, shell=True, start_new_session=True)
         time.sleep(PROBE_DELAY)
-        return proc
+        return _tunnel_proc
 
     proc = _start()
 
@@ -69,12 +94,12 @@ def _create_and_probe_tunnel(cmd, local_port):
         logger.info(f"Probe attempt {i + 1}/{PROBE_RETRIES} failed ...")
 
         if i == PROBE_RETRIES - 1:
-            proc.kill()
+            _kill_tunnel_proc(proc)
             raise RuntimeError(f"SSH tunnel probe failed after {PROBE_RETRIES} attempts")
 
         if recreate_countdown == 0:
             logger.info("Recreating SSH tunnel ...")
-            proc.kill()
+            _kill_tunnel_proc(proc)
             proc = _start()
             recreate_countdown = RECREATE_TUNNEL_INTERVAL
 

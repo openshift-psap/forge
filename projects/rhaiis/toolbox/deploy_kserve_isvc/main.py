@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import yaml
 
 from projects.core.dsl import (
@@ -30,6 +33,20 @@ def run(
 
 
 @task
+def capture_source_files(args, context):
+    src_dir = args.artifact_dir / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    context.servingruntime_src = src_dir / Path(args.servingruntime_file).name
+    shutil.copy2(args.servingruntime_file, context.servingruntime_src)
+
+    context.inferenceservice_src = src_dir / Path(args.inferenceservice_file).name
+    shutil.copy2(args.inferenceservice_file, context.inferenceservice_src)
+
+    return f"Copied source files to {src_dir}"
+
+
+@task
 def ensure_namespace(args, context):
     if oc_resource_exists("namespace", args.namespace):
         return f"Namespace {args.namespace} exists"
@@ -38,19 +55,19 @@ def ensure_namespace(args, context):
 
 
 @task
-def apply_servingruntime(args, context):
-    oc("apply", "-f", args.servingruntime_file)
-    with open(args.servingruntime_file) as f:
+def create_servingruntime(args, context):
+    oc("create", "-f", str(context.servingruntime_src))
+    with open(context.servingruntime_src) as f:
         name = yaml.safe_load(f).get("metadata", {}).get("name", "")
-    return f"Applied ServingRuntime {name}"
+    return f"Created ServingRuntime {name}"
 
 
 @task
-def apply_inferenceservice(args, context):
-    oc("apply", "-f", args.inferenceservice_file)
-    with open(args.inferenceservice_file) as f:
+def create_inferenceservice(args, context):
+    oc("create", "-f", str(context.inferenceservice_src))
+    with open(context.inferenceservice_src) as f:
         name = yaml.safe_load(f).get("metadata", {}).get("name", "")
-    return f"Applied InferenceService {name}"
+    return f"Created InferenceService {name}"
 
 
 if __name__ == "__main__":

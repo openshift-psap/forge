@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from projects.caliper.engine.model import UnifiedRunModel
-from projects.llm_d.postprocess.llm_d.parsing.kpis import GuideLLMKpiHandler
+from projects.guidellm.postprocess.guidellm.kpi_handler import GuideLLMKpiHandler
 
 
 class TestGuideLLMKpiHandler(unittest.TestCase):
@@ -24,8 +24,8 @@ class TestGuideLLMKpiHandler(unittest.TestCase):
             "request_rate": [100, 200, 300],
             "product_version": "v1.0",
             "cluster": "test-cluster",
-            "model_name": "test-model",
             "benchmark_key": "test",
+            "kpi_labels": {"model_name": "test-model"},
         }
 
         # Create a mock curve KPI function that returns various numeric types
@@ -54,16 +54,16 @@ class TestGuideLLMKpiHandler(unittest.TestCase):
         mock_kpi_functions = {"test_latency": mock_curve_kpi_func}
 
         with patch(
-            "projects.llm_d.postprocess.llm_d.parsing.kpis.get_kpi_functions"
+            "projects.guidellm.postprocess.guidellm.kpi_handler.get_kpi_functions"
         ) as mock_get_kpi_functions:
             with patch(
-                "projects.llm_d.postprocess.llm_d.parsing.kpis.is_curve_kpi"
+                "projects.guidellm.postprocess.guidellm.kpi_handler.is_curve_kpi"
             ) as mock_is_curve_kpi:
                 mock_get_kpi_functions.return_value = mock_kpi_functions
                 mock_is_curve_kpi.return_value = True
 
                 # Call the compute_kpis method
-                kpi_records, status = GuideLLMKpiHandler.compute_kpis(model)
+                kpi_records, status = GuideLLMKpiHandler().compute_kpis(model)
 
         # Verify we got a KPI record
         assert len(kpi_records) == 1
@@ -121,8 +121,8 @@ class TestGuideLLMKpiHandler(unittest.TestCase):
             "request_rate": [100],
             "product_version": "v1.0",
             "cluster": "test-cluster",
-            "model_name": "test-model",
             "benchmark_key": "test",
+            "kpi_labels": {"model_name": "test-model"},
         }
 
         def mock_empty_kpi_func(record):
@@ -141,15 +141,15 @@ class TestGuideLLMKpiHandler(unittest.TestCase):
         mock_kpi_functions = {"test_empty": mock_empty_kpi_func}
 
         with patch(
-            "projects.llm_d.postprocess.llm_d.parsing.kpis.get_kpi_functions"
+            "projects.guidellm.postprocess.guidellm.kpi_handler.get_kpi_functions"
         ) as mock_get_kpi_functions:
             with patch(
-                "projects.llm_d.postprocess.llm_d.parsing.kpis.is_curve_kpi"
+                "projects.guidellm.postprocess.guidellm.kpi_handler.is_curve_kpi"
             ) as mock_is_curve_kpi:
                 mock_get_kpi_functions.return_value = mock_kpi_functions
                 mock_is_curve_kpi.return_value = True
 
-                kpi_records, status = GuideLLMKpiHandler.compute_kpis(model)
+                kpi_records, status = GuideLLMKpiHandler().compute_kpis(model)
 
         # Empty values should result in no KPI records being created
         assert len(kpi_records) == 0
@@ -164,8 +164,8 @@ class TestGuideLLMKpiHandler(unittest.TestCase):
             "request_rate": [100],
             "product_version": "v1.0",
             "cluster": "test-cluster",
-            "model_name": "test-model",
             "benchmark_key": "test",
+            "kpi_labels": {"model_name": "test-model"},
         }
 
         def mock_unsorted_kpi_func(record):
@@ -189,15 +189,15 @@ class TestGuideLLMKpiHandler(unittest.TestCase):
         mock_kpi_functions = {"test_sort": mock_unsorted_kpi_func}
 
         with patch(
-            "projects.llm_d.postprocess.llm_d.parsing.kpis.get_kpi_functions"
+            "projects.guidellm.postprocess.guidellm.kpi_handler.get_kpi_functions"
         ) as mock_get_kpi_functions:
             with patch(
-                "projects.llm_d.postprocess.llm_d.parsing.kpis.is_curve_kpi"
+                "projects.guidellm.postprocess.guidellm.kpi_handler.is_curve_kpi"
             ) as mock_is_curve_kpi:
                 mock_get_kpi_functions.return_value = mock_kpi_functions
                 mock_is_curve_kpi.return_value = True
 
-                kpi_records, status = GuideLLMKpiHandler.compute_kpis(model)
+                kpi_records, status = GuideLLMKpiHandler().compute_kpis(model)
 
         assert len(kpi_records) == 1
         values = kpi_records[0].values

@@ -715,7 +715,7 @@ class GuideLLMParser:
                 ]
 
                 for field_name in extracted_label_fields:
-                    if field_name in metrics:
+                    if field_name in metrics and field_name not in distinguishing_labels:
                         distinguishing_labels[field_name] = metrics[field_name]
                         logger.debug(
                             f"Merged {field_name}='{metrics[field_name]}' into distinguishing_labels"

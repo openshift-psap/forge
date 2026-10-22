@@ -20,6 +20,8 @@ from projects.core.library.config import requires
 
 logger = logging.getLogger(__name__)
 
+DSCI_MANIFEST = Path(__file__).resolve().parent / "manifests" / "dsci.yaml"
+
 RHOAI_CUSTOM_CATALOG_VAULTS = [
     "psap-rhoai-rc",
     "psap-forge-staging-image-pull",
@@ -108,7 +110,9 @@ def operator_spec_by_package(platform: dict[str, Any], package: str) -> dict[str
     operators = platform["operators"]
     if isinstance(operators, dict):
         if package in operators:
-            return {"package": package, **operators[package]}
+            spec = dict(operators[package])
+            spec["package"] = spec.pop("name", None) or package
+            return spec
         raise KeyError(f"Unknown operator package: {package}")
 
     for operator_spec in operators:
@@ -118,6 +122,10 @@ def operator_spec_by_package(platform: dict[str, Any], package: str) -> dict[str
 
 
 def ensure_operator_subscription(operator_spec: dict[str, str]) -> dict[str, object]:
+    if not operator_spec.get("enabled", True):
+        logger.info(f"Operator {operator_spec['package']} is disabled, skipping subscription")
+        return {}
+
     return cluster_deploy_operator.run(
         package_name=operator_spec["package"],
         target_namespace=operator_spec["namespace"],
@@ -378,6 +386,19 @@ def ensure_required_crds_before_dsc(rhoai: RhoaiOperatorConfig) -> None:
     )
 
 
+def ensure_dsci() -> None:
+    result = oc("get", "dscinitialization", "default-dsci", check=False, log_stdout=False)
+    if result.returncode == 0:
+        logger.info("DSCInitialization already exists, skipping creation")
+        return
+
+    if "(NotFound)" not in result.stderr:
+        raise RuntimeError(f"Failed to check DSCInitialization: {result.stderr.strip()}")
+
+    logger.info("Creating DSCInitialization from default manifest")
+    oc("apply", "-f", str(DSCI_MANIFEST))
+
+
 def prepare_rhoai_operator(
     *,
     platform: dict[str, Any],
@@ -398,3 +419,4 @@ def prepare_rhoai_operator(
     )
     ensure_operator_subscription(operator_spec)
     ensure_required_crds_before_dsc(rhoai_config)
+    ensure_dsci()

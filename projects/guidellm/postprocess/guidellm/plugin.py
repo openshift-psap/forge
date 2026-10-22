@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +14,16 @@ from projects.caliper.engine.model import (
     PostProcessingPlugin,
     UnifiedRunModel,
 )
-from projects.llm_d.postprocess.llm_d.parsing.kpis import GuideLLMKpiHandler
 
 from .ai_eval import GuideLLMAIEvaluator
-from .parsing import GuideLLMParser
+from .dashboard import enrich_guidellm_parse_result
+from .kpi_handler import GuideLLMKpiHandler
+from .parsing.parsers import GuideLLMParser
 
 logger = logging.getLogger(__name__)
+
+# Compare matching GuideLLM workloads across product releases.
+analysis_config = {"comparison_labels": ["product_version"]}
 
 
 class _PlotRegistry:
@@ -99,7 +104,7 @@ class GuideLLMPlugin(PostProcessingPlugin):
 
     def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         """Parse test nodes using the GuideLLM parser."""
-        return self.parser.parse(nodes)
+        return enrich_guidellm_parse_result(self.parser.parse(nodes), nodes)
 
     def get_available_reports(self) -> dict[str, dict[str, str]]:
         """Get a structured dictionary of available reports and plots with their types and descriptions."""
@@ -238,22 +243,38 @@ class GuideLLMPlugin(PostProcessingPlugin):
         from projects.guidellm.postprocess.guidellm.csv_dashboard import BASIC_GUIDELLM_FIELDNAMES
         from projects.guidellm.postprocess.guidellm.dashboard import DashboardCsvExporter
 
+        run_uuids_by_path = {
+            record.test_base_path: record.metrics.get("run_uuids", {})
+            for record in model.unified_result_records
+        }
+
         def metadata_row_mapper(labels: dict[str, Any]) -> dict[str, Any]:
             """Extract GuideLLM metadata for CSV row from dashboard KPI labels."""
             accelerator = labels.get("gpu_type") or labels.get("accelerator", "")
             model_id = labels.get("hf_model_id") or labels.get("model_name", "")
             run_model = model_id.replace("/", "-")
             tp = labels.get("tensor_parallel_size", "")
+            if not tp:
+                profile = str(labels.get("deployment_profile", ""))
+                match = re.fullmatch(r"tp(\d+)", profile, re.IGNORECASE)
+                tp = match.group(1) if match else ""
+            concurrency = labels.get("intended_concurrency")
+            run_uuids = run_uuids_by_path.get(labels.get("run_path"), {})
+            run_uuid = (
+                run_uuids.get(int(float(concurrency)), labels.get("run_uuid", ""))
+                if concurrency is not None
+                else labels.get("run_uuid", "")
+            )
 
             return {
                 "run": "-".join(str(value) for value in (accelerator, run_model, tp) if value),
                 "accelerator": accelerator,
                 "model": model_id,
-                "version": labels.get("version", ""),
+                "version": labels.get("version") or labels.get("product_version", ""),
                 "prompt toks": labels.get("prompt_toks", ""),
                 "output toks": labels.get("output_toks", ""),
                 "TP": tp,
-                "uuid": labels.get("run_uuid", ""),
+                "uuid": run_uuid,
                 "runtime_args": labels.get("runtime_args", ""),
                 "guidellm_start_time_ms": labels.get("guidellm_start_time_ms", ""),
                 "guidellm_end_time_ms": labels.get("guidellm_end_time_ms", ""),
@@ -261,6 +282,8 @@ class GuideLLMPlugin(PostProcessingPlugin):
                 "guidellm_version": labels.get("guidellm_version", ""),
                 "mlflow_run_id": labels.get("mlflow_run_id", ""),
                 "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+                "turns": labels.get("turns", ""),
+                "turn_index": labels.get("turn", ""),
                 "notes": labels.get("notes", ""),
             }
 
@@ -312,7 +335,7 @@ class GuideLLMPlugin(PostProcessingPlugin):
                 logger.debug(f"No matches found in {test_dir} for pattern: {pattern}")
 
         # GuideLLM benchmark results - search within this test directory only
-        benchmark_pattern = "**/*__run_guidellm_benchmark/artifacts/results/benchmarks*.json"
+        benchmark_pattern = "**/*__run_guidellm_benchmark/results/benchmarks*.json"
         benchmark_matches = list(test_dir.glob(benchmark_pattern))
 
         if benchmark_matches:

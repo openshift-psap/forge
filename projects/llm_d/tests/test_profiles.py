@@ -110,7 +110,7 @@ def test_benchmark_workloads_are_available() -> None:
     assert multi_turn["rate"] == [32, 64, 128, 256, 512]
     assert "turns=5" in multi_turn["args"]["data"]
     assert "prefix_count={2*rate}" in multi_turn["args"]["data"]
-    assert "kind=max_requests,value={10*rate}" == multi_turn["args"]["constraint"]
+    assert "kind=max_requests,count={10*rate}" == multi_turn["args"]["constraint"]
 
 
 def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overrides() -> None:
@@ -120,7 +120,7 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     concurrent = runtime_config.get_benchmark_config()
     assert concurrent is not None
     assert concurrent["job_name"] == "guidellm-benchmark"
-    assert concurrent["image"] == "ghcr.io/vllm-project/guidellm:v0.7.4"
+    assert concurrent["image"] == "ghcr.io/vllm-project/guidellm:v0.8.1"
     assert concurrent["pvc_size"] == "1Gi"
     assert concurrent["timeout_seconds"] == 3600
 
@@ -128,7 +128,7 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     multi_turn = runtime_config.get_benchmark_config()
     assert multi_turn is not None
     assert multi_turn["job_name"] == "guidellm-benchmark"
-    assert multi_turn["image"] == "ghcr.io/vllm-project/guidellm:v0.7.4"
+    assert multi_turn["image"] == "ghcr.io/vllm-project/guidellm:v0.8.1"
     assert multi_turn["pvc_size"] == "1Gi"
     assert multi_turn["timeout_seconds"] == 7200
 
@@ -450,6 +450,11 @@ def test_prepare_rhoai_operator_runs_registry_setup_before_custom_catalog_deploy
         "ensure_required_crds_before_dsc",
         lambda rhoai: calls.append("crds"),
     )
+    monkeypatch.setattr(
+        rhoai_deploy,
+        "ensure_dsci",
+        lambda: calls.append("dsci"),
+    )
 
     rhoai_deploy.prepare_rhoai_operator(
         platform=platform,
@@ -464,6 +469,7 @@ def test_prepare_rhoai_operator_runs_registry_setup_before_custom_catalog_deploy
         ("catalog", "RHOAI Development Catalog"),
         ("sub", "rhods-operator"),
         "crds",
+        "dsci",
     ]
 
 

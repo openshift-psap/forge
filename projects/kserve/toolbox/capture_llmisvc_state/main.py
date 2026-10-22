@@ -18,6 +18,9 @@ def run(llmisvc_name: str, *, namespace: str = ""):
         namespace: Namespace of the LLMInferenceService (empty string auto-detects current namespace)
     """
 
+    if not llmisvc_name:
+        raise ValueError("llmisvc_name must not be empty")
+
     return execute_tasks(locals())
 
 

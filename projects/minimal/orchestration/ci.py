@@ -13,11 +13,13 @@ import click
 import prepare_phase
 import test_phase
 
+from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
 from projects.core.agentic.config_review import trigger_config_review_for_ci
 from projects.core.agentic.on_failure import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
+from projects.core.library.ci import ensure_kubeconfig_works
 from projects.core.library.export import (
     caliper_agentic_list_vaults,
     caliper_export_entrypoint,
@@ -70,6 +72,10 @@ def main(ctx):
         return
 
     vault.phase_vault_init(ctx.invoked_subcommand)
+    ensure_mlflow_destination_marker()
+
+    if ctx.invoked_subcommand != "export-artifacts":
+        ensure_kubeconfig_works()
 
 
 @main.command()

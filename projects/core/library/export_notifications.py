@@ -21,6 +21,7 @@ from projects.caliper.orchestration.postprocess import POSTPROCESS_STATUS_FILENA
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
+from projects.core.library.ci import ExitStatus
 from projects.core.library.step_status import StepStatus
 from projects.core.notifications.provider import NotificationContext
 from projects.core.notifications.send import send_notification
@@ -389,7 +390,9 @@ def _send_slack_provider_notification(
             status=censored_status,
             finish_reason=str(finish_reason),
             project_name=project or "unknown",
-            pr_number=os.environ.get("PULL_NUMBER"),
+            pr_number=str(pr_num)
+            if (pr_num := config.project.get_config("ci_job.gh.pr.num", None, print=False))
+            else None,
             job_type=os.environ.get("JOB_TYPE"),
             artifact_dir=artifact_dir,
         )
@@ -545,6 +548,32 @@ def _extract_finish_reason_from_status(
         return "completed"
 
 
+def _collect_step_exit_reasons(artifact_dir: Path) -> list[str]:
+    """Collect bullet-point exit reasons from each step's exit_status.yaml."""
+    bullets = []
+    for step_dir in sorted(artifact_dir.glob("*")):
+        if not step_dir.is_dir() or step_dir.name.startswith(".") or step_dir.name == "lost+found":
+            continue
+        if step_dir.name == CI_METADATA_DIRNAME:
+            continue
+
+        try:
+            exit_status = ExitStatus.load(step_dir / CI_METADATA_DIRNAME)
+        except Exception:
+            continue
+
+        if not exit_status.records:
+            continue
+
+        primary = exit_status.primary
+        msg = f"* **{step_dir.name}** — `{primary.category}`"
+        if primary.reason:
+            msg += f" → *{primary.reason}*"
+        bullets.append(msg)
+
+    return bullets
+
+
 def _build_enhanced_notification(
     artifact_dir: Path | None,
     project: str,
@@ -599,10 +628,9 @@ def _build_enhanced_notification(
     duration_suffix = f" `{total_duration}`" if total_duration else ""
 
     # Format the execution line with project and args separated
+    execution_text = f"Execution of `{fjob_project}`"
     if fjob_args_str:
-        execution_text = f"Execution of `{fjob_project}` | `{fjob_args_str}`"
-    else:
-        execution_text = f"Execution of `{fjob_project}`"
+        execution_text += f" | `{fjob_args_str}`"
 
     status_reason_str = f" (`{status_reason}`)" if status_reason else ""
     base_status = f"{status_emoji} {execution_text} {status_what}{status_reason_str} after {duration_suffix} {status_emoji}"
@@ -611,6 +639,12 @@ def _build_enhanced_notification(
     # Add job info line (name and displayName) if available
     if job_info_line:
         notification_parts.append(job_info_line)
+
+    if artifact_dir:
+        step_bullets = _collect_step_exit_reasons(artifact_dir)
+        if step_bullets:
+            notification_parts.append("")
+            notification_parts.extend(step_bullets)
 
     # Add job abort message right below overall status if applicable
     shutdown_status = status.job_shutdown
@@ -835,23 +869,25 @@ def _get_step_status_section(artifact_dir: Path | None, mlflow_run_url: str | No
         if step_name == CI_METADATA_DIRNAME:
             continue
 
-        exit_status_file = step_dir / CI_METADATA_DIRNAME / "exit_status.yaml"
-        exit_status_emoji = "❓"
+        try:
+            exit_status = ExitStatus.load(step_dir / CI_METADATA_DIRNAME)
+        except Exception:
+            exit_status = ExitStatus()
 
-        if exit_status_file.exists():
-            try:
-                with open(exit_status_file, encoding="utf-8") as f:
-                    exit_data = yaml.safe_load(f)
-                exit_code = exit_data.get("return_code", 999)
-                if exit_code == 0:
-                    exit_status_emoji = "✅"
-                else:
-                    exit_status_emoji = "❌"
-            except Exception:
-                exit_status_emoji = "❓"
+        if not exit_status.records:
+            exit_status_emoji = "❓"
+        elif exit_status.is_success:
+            exit_status_emoji = "✅"
+        else:
+            exit_status_emoji = "❌"
 
         if step_dir.name.endswith("__export-artifacts"):
             exit_status_emoji = "📤"
+
+        exit_reason_suffix = ""
+        if exit_status.primary and not exit_status.is_success:
+            primary = exit_status.primary
+            exit_reason_suffix = f" — `{primary.category}`: {primary.reason}"
 
         # Count ERROR and WARNING messages in run.log
         log_counts = _count_log_messages(step_dir)
@@ -861,10 +897,8 @@ def _get_step_status_section(artifact_dir: Path | None, mlflow_run_url: str | No
         duration_str = _read_step_duration(step_dir)
         duration_suffix = f" `{duration_str}`" if duration_str else ""
 
-        # Create step title - linked if MLflow URL available, plain-text otherwise
-
         mlflow_log_link = _create_mlflow_file_link(step_name, mlflow_run_url, step_dir / "run.log")
-        step_title = f"#### {exit_status_emoji} {mlflow_log_link}{duration_suffix}{log_summary}"
+        step_title = f"#### {exit_status_emoji} {mlflow_log_link}{duration_suffix}{exit_reason_suffix}{log_summary}"
 
         step_status.append(step_title)
 
@@ -1348,31 +1382,26 @@ def _check_job_shutdown_status(artifact_dir: Path | None = None) -> dict[str, An
 
 def _read_step_exit_status(
     step_dir: Path, current_step_name: str | None = None
-) -> tuple[str, StepStatus]:
-    """Read exit status from step directory and return emoji and status enum."""
+) -> tuple[str, StepStatus, ExitStatus]:
+    """Read exit status from step directory and return emoji, status enum, and ExitStatus."""
 
     try:
-        exit_status_file = step_dir / CI_METADATA_DIRNAME / "exit_status.yaml"
-        if not exit_status_file.exists():
-            # Check if this is the current ongoing step
+        exit_status = ExitStatus.load(step_dir / CI_METADATA_DIRNAME)
+
+        if not exit_status.records:
             if current_step_name and step_dir.name == current_step_name:
-                return "🔄", StepStatus.ONGOING  # Ongoing step
-            return "❓", StepStatus.UNKNOWN  # Unknown status if file doesn't exist
+                return "🔄", StepStatus.ONGOING, exit_status
+            return "❓", StepStatus.UNKNOWN, exit_status
 
-        with open(exit_status_file, encoding="utf-8") as f:
-            exit_data = yaml.safe_load(f)
-
-        return_code = exit_data.get("return_code")
-        if return_code is None or return_code == 0:
-            return "✅", StepStatus.SUCCESS
+        if exit_status.is_success:
+            return "✅", StepStatus.SUCCESS, exit_status
         else:
-            return "❌", StepStatus.FAILURE
+            return "❌", StepStatus.FAILURE, exit_status
     except Exception as e:
         logger.warning(f"Failed to read exit status from {step_dir}: {e}")
-        # Check if this is the current ongoing step even on error
         if current_step_name and step_dir.name == current_step_name:
-            return "🔄", StepStatus.ONGOING  # Ongoing step
-        return "❓", StepStatus.UNKNOWN  # Unknown status on error
+            return "🔄", StepStatus.ONGOING, ExitStatus()
+        return "❓", StepStatus.UNKNOWN, ExitStatus()
 
 
 def _check_postprocess_warnings(step_dir: Path) -> StepStatus:
@@ -1425,7 +1454,7 @@ def _get_overall_status_from_steps(artifact_dir: Path) -> str:
             if not run_log.exists():
                 continue
 
-            _emoji, status = _read_step_exit_status(step_dir, current_step_name)
+            _emoji, status, _exit_status = _read_step_exit_status(step_dir, current_step_name)
 
             step_statuses.append(status)
 
@@ -1469,7 +1498,7 @@ def _get_overall_step_status(artifact_dir: Path) -> StepStatus:
             if not run_log.exists():
                 continue
 
-            _emoji, status = _read_step_exit_status(step_dir, current_step_name)
+            _emoji, status, _exit_status = _read_step_exit_status(step_dir, current_step_name)
             step_statuses.append(status)
 
             # Check for postprocess warnings in this step (always check, regardless of exit status)
@@ -1584,13 +1613,22 @@ def _process_step_status(artifact_dir: Path, mlflow_run_url: str) -> list[str]:
         mlflow_log_link = _create_mlflow_url(step_name, mlflow_run_url, run_log)
 
         duration_str = _read_step_duration(step_dir)
-        exit_status_emoji, exit_status = _read_step_exit_status(step_dir, current_step_name)
+        exit_status_emoji, _step_status_enum, step_exit_status = _read_step_exit_status(
+            step_dir, current_step_name
+        )
+
+        exit_reason_suffix = ""
+        if step_exit_status.primary and not step_exit_status.is_success:
+            primary = step_exit_status.primary
+            exit_reason_suffix = f" — `{primary.category}`: {primary.reason}"
 
         step_status.append("")
         if duration_str:
-            step_status.append(f"#### {exit_status_emoji} {mlflow_log_link} `{duration_str}`")
+            step_status.append(
+                f"#### {exit_status_emoji} {mlflow_log_link} `{duration_str}`{exit_reason_suffix}"
+            )
         else:
-            step_status.append(f"#### {exit_status_emoji} {mlflow_log_link}")
+            step_status.append(f"#### {exit_status_emoji} {mlflow_log_link}{exit_reason_suffix}")
 
         step_status.extend(_process_notification_files(step_dir))
 

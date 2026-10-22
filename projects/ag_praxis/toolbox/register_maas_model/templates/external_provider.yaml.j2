@@ -1,0 +1,21 @@
+apiVersion: inference.opendatahub.io/v1alpha1
+kind: ExternalProvider
+metadata:
+  name: {{ model_ref_name }}-provider
+  namespace: {{ model_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: forge
+{% if owner_ref %}
+  ownerReferences:
+  - apiVersion: {{ owner_ref.apiVersion }}
+    kind: {{ owner_ref.kind }}
+    name: {{ owner_ref.name }}
+    uid: {{ owner_ref.uid }}
+{% endif %}
+spec:
+  endpoint: {{ external_endpoint }}
+  provider: openai
+  auth:
+    secretRef:
+      name: {{ model_ref_name }}-creds
+    type: apikey

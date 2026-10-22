@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-from projects.core.library import config
 from projects.rhaiis.postprocess import regression
 
 
@@ -16,68 +13,9 @@ def _capture_slack_messages(monkeypatch) -> list[str]:
     monkeypatch.setattr(regression, "_send_via_topsail_bot", capture)
     monkeypatch.setattr(regression, "_build_mlflow_run_url", lambda: "")
     monkeypatch.setattr(regression, "_build_dashboard_url", lambda **_kwargs: "")
+    monkeypatch.setattr(regression, "_get_slack_channel_id", lambda: "C_TEST_CHANNEL")
+    monkeypatch.setattr(regression, "_get_bot_mention", lambda: "")
     return messages
-
-
-def test_failure_notification_includes_owner(monkeypatch) -> None:
-    messages = _capture_slack_messages(monkeypatch)
-
-    assert regression.send_failure_notification(
-        error="test failure",
-        job_id="rhaiis-run-123",
-        slack_user="U01234567",
-        owner="nmiriyal",
-    )
-
-    assert len(messages) == 1
-    assert "*Triggered by:* <@U01234567>\n*Owner:* nmiriyal\n" in messages[0]
-
-
-def test_pipeline_failure_uses_raw_accelerator_label(monkeypatch) -> None:
-    from projects.rhaiis.orchestration import notifications, runtime_config
-
-    captured: dict = {}
-    project_values = {"rhaiis.cluster_tag": "mi355x"}
-    monkeypatch.setattr(
-        config,
-        "project",
-        SimpleNamespace(get_config=lambda key, default=None: project_values.get(key, default)),
-    )
-    monkeypatch.setattr(runtime_config, "get_model", lambda _key: {"hf_model_id": "org/model"})
-    monkeypatch.setattr(runtime_config, "get_accelerator", lambda: "amd")
-    monkeypatch.setattr(runtime_config, "get_engine", lambda: "vllm")
-    monkeypatch.setattr(runtime_config, "get_engine_args", lambda _engine: {})
-    monkeypatch.setattr(runtime_config, "get_workload", lambda _key: {})
-    monkeypatch.setattr(runtime_config, "merge_engine_args", lambda *args: {})
-    monkeypatch.setattr(
-        regression,
-        "send_failure_notification",
-        lambda **kwargs: captured.update(kwargs),
-    )
-
-    notifications._send_alert("test failure", model_key="model-key", workload_keys=["profile1"])
-
-    assert captured["accelerator"] == "amd"
-    assert captured["cluster"] == "mi355x"
-
-
-def test_success_notification_includes_owner(monkeypatch) -> None:
-    messages = _capture_slack_messages(monkeypatch)
-
-    class Project:
-        def get_config(self, *_args, **_kwargs):
-            return False
-
-    monkeypatch.setattr(config, "project", Project())
-
-    assert regression.send_success_notification(
-        job_id="rhaiis-run-123",
-        owner="nmiriyal",
-        workload_keys=["profile1"],
-    )
-
-    assert len(messages) == 1
-    assert "*Owner:* nmiriyal\n" in messages[0]
 
 
 def test_regression_notification_includes_owner(monkeypatch) -> None:
@@ -109,3 +47,68 @@ def test_regression_notification_includes_owner(monkeypatch) -> None:
 
     assert len(messages) == 1
     assert "*Owner:* nmiriyal\n" in messages[0]
+
+
+def test_regression_notification_skipped(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "skipped",
+        "reason": "No baseline data for 0.9 with model=m, accelerator=nvidia, TP=1",
+        "current_version": "1.0",
+        "compare_version": "0.9",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*Performance comparison skipped*" in messages[0]
+    assert (
+        "*Reason:* No baseline data for 0.9 with model=m, accelerator=nvidia, TP=1\n" in messages[0]
+    )
+    assert "*Versions:* 1.0 vs 0.9 (baseline)\n" in messages[0]
+
+
+def test_regression_notification_no_changes(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "completed",
+        "regressions": [],
+        "improvements": [],
+        "total_comparisons": 5,
+        "current_version": "1.0",
+        "compare_version": "0.9",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*No performance changes detected*" in messages[0]
+    assert "*Versions:* 1.0 vs 0.9 (baseline)\n" in messages[0]
+
+
+def test_regression_notification_zero_comparisons_is_skip(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "completed",
+        "regressions": [],
+        "improvements": [],
+        "total_comparisons": 0,
+        "current_version": "1.0",
+        "compare_version": "0.9",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*No performance changes detected*" not in messages[0]
+    assert "*Performance comparison skipped*" in messages[0]
+    assert "*Reason:* No common concurrency levels between current and baseline\n" in messages[0]

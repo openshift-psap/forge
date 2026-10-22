@@ -1,0 +1,15 @@
+namespace: forge-praxis
+
+payload: default
+sweep: small
+
+run_benchmark: false
+run_warmup: true
+
+skip_cleanup: false
+skip_prepare: false
+skip_finalizers: true
+
+endpoints:
+- svc
+- maas

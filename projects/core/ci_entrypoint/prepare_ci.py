@@ -186,6 +186,51 @@ def shutdown_dual_output():
 
 
 # PR arguments
+def _add_gh_overrides() -> None:
+    """Append ci_job.gh.* keys to variable_overrides.yaml from env vars and PR data."""
+    artifact_dir = os.environ.get("ARTIFACT_DIR")
+    if not artifact_dir:
+        return
+
+    repo_owner = os.environ.get("REPO_OWNER", "")
+    repo_name = os.environ.get("REPO_NAME", "")
+    pull_number = os.environ.get("PULL_NUMBER", "")
+
+    if not any([repo_owner, repo_name, pull_number]):
+        logger.info("add_gh_overrides: GH env var not found, nothing to do")
+        return
+
+    overrides_path = Path(artifact_dir) / CI_METADATA_DIRNAME / "variable_overrides.yaml"
+    if overrides_path.exists():
+        with open(overrides_path) as f:
+            overrides = yaml.safe_load(f) or {}
+    else:
+        overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        overrides = {}
+
+    overrides["ci_job.gh.from_gh"] = True
+    overrides["ci_job.gh.repo.owner"] = repo_owner
+    overrides["ci_job.gh.repo.name"] = repo_name
+
+    if pull_number:
+        overrides["ci_job.gh.pr.num"] = int(pull_number)
+
+        pr_json_path = Path(artifact_dir) / CI_METADATA_DIRNAME / "pull_request.json"
+        if pr_json_path.exists():
+            import json
+
+            try:
+                pr_data = json.loads(pr_json_path.read_text())
+                overrides["ci_job.gh.pr.title"] = pr_data.get("title", "")
+            except Exception:
+                logger.warning("Could not read PR title from %s", pr_json_path)
+
+    with open(overrides_path, "w") as f:
+        yaml.dump(overrides, f, default_flow_style=False, sort_keys=True)
+
+    logger.info("Added ci_job.gh.* overrides to %s", overrides_path)
+
+
 def parse_and_save_pr_arguments() -> Path | None:
     """
     Parse GitHub PR arguments and save to variable overrides file.
@@ -202,6 +247,8 @@ def parse_and_save_pr_arguments() -> Path | None:
         fournos.parse_and_save_pr_arguments_fournos()
     else:
         parse_and_save_pr_arguments_ocpci()
+
+    _add_gh_overrides()
 
 
 def parse_and_save_pr_arguments_ocpci() -> Path | None:
@@ -340,13 +387,10 @@ def ci_banner(project: str, operation: str, args: list[str]):
     try:
         run.run("git fetch --quiet origin main --deepen=20", check=False, timeout=30)
 
-        result = run.run(
-            f"git show --quiet --oneline {base_sha}..{pull_sha} | head -20",
-            check=False,
+        run.run(
+            f"git show --quiet --oneline {base_sha}..{pull_sha} -n 20",
             timeout=30,
         )
-        if result.returncode != 0:
-            logger.warning("Could not access git history (main..) ...")
     except subprocess.TimeoutExpired:
         logger.warning("Git banner commands timed out after 30s, continuing CI setup")
     except Exception as e:

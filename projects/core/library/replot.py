@@ -14,6 +14,7 @@ import click
 from projects.caliper.orchestration.replot import run_replot_from_orchestration_config
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
+from projects.core.library.ci import ExitCategory
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +122,6 @@ def caliper_replot_entrypoint(
     except Exception:
         pass
 
-    # Check if replot was successful
     replot_status = status.get("replot", {}).get("status", "unknown")
     if replot_status != "success":
-        return 1
-
-    return 0
+        return 1, ExitCategory.INTERNAL_ERROR, f"Replot failed with status: {replot_status}"

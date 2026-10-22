@@ -33,6 +33,7 @@ from projects.caliper.orchestration.postprocess_config import (
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
+from projects.core.library.ci import ExitCategory
 from projects.core.library.reports_index import generate_caliper_reports_index
 from projects.core.library.status_to_html import convert_status_yaml_to_html
 
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 def create_test_metadata(
     directory: Path,
-    labels: dict[str, str],
+    labels: dict[str, str | int | float | bool],
     *,
     version: str = "1",
     dump_config: bool = True,
@@ -79,9 +80,28 @@ def create_test_metadata(
             }
         )
     """
+    normalized_labels: dict[str, str | bool] = {}
+    for key, value in labels.items():
+        if key == "skip" and value is True:
+            # Caliper uses boolean true as the reserved skip marker.
+            normalized_labels[key] = True
+        elif key == "skip" and value is False:
+            continue
+        elif isinstance(value, bool):
+            raise TypeError(
+                f"Boolean Caliper label {key!r} is only valid for the reserved 'skip' key"
+            )
+        elif isinstance(value, (int, float)):
+            logger.info("Converting numeric Caliper label %s to a string", key)
+            normalized_labels[key] = str(value)
+        elif isinstance(value, str):
+            normalized_labels[key] = value
+        else:
+            raise TypeError(f"Caliper label {key!r} must be a string or number")
+
     # Create typed metadata structure
     metadata = CaliperTestMetadata(
-        labels=labels,
+        labels=normalized_labels,
         version=version,
         kpi_labels=kpi_labels,
         mlflow_destination=mlflow_destination,
@@ -298,10 +318,13 @@ def run_and_postprocess(test_func, *args, **kwargs):
             outcome = None
         elif exc_msg is not None:
             outcome = TestPhaseOutcome("FAILED", exc_msg)
-        elif ret == 0:
+        elif ret is None or ret == 0:
+            if ret is None:
+                logger.warning("Test function returned None instead of 0, assuming success")
             outcome = TestPhaseOutcome("SUCCESS")
-        elif ret is None:
-            outcome = TestPhaseOutcome("FAILED", "test aborted without exit code")
+        elif isinstance(ret, tuple) and len(ret) == 3:
+            phase = "SUCCESS" if ret[1] == ExitCategory.SUCCESS else "FAILED"
+            outcome = TestPhaseOutcome(phase, ret[2], exit_category=ret[1])
         else:
             outcome = TestPhaseOutcome("FAILED", f"exit_code={ret}")
 
@@ -329,19 +352,17 @@ def run_and_postprocess(test_func, *args, **kwargs):
         except Exception as postprocess_exc:
             logger.exception("Caliper postprocess after test failed with exception")
             if original_exc is not None:
-                # Both test and postprocess failed: chain so both are visible in the traceback
                 raise postprocess_exc from original_exc
 
-            # Only postprocess failed: return failure code instead of raising
             logger.error(
                 "Test succeeded but postprocessing failed with exception - returning exit code 1"
             )
-            return 1
+            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing exception: {postprocess_exc}"
 
 
 def _handle_postprocess_failure(
     status: dict, original_exc: BaseException | None, final_status: str
-) -> int | None:
+) -> tuple[int, ExitCategory, str] | None:
     """Handle postprocessing failure logic.
 
     Args:
@@ -350,37 +371,31 @@ def _handle_postprocess_failure(
         final_status: Final status from postprocessing
 
     Returns:
-        Exit code to return, or None to re-raise original exception
+        (return_code, ExitCategory, reason) tuple, or None to re-raise original exception
     """
-    # Check if failure is only due to warnings
     if _is_warnings_only_failure(status):
         if original_exc is not None:
-            # Test failed, postprocess has warnings: still fail due to test
             logger.error(
                 "Test failed and postprocessing completed with warnings (final_status: %s)",
                 final_status,
             )
-            return None  # Signal to re-raise original exception
+            return None
         else:
-            # Test succeeded, postprocess has warnings only: treat as success
             logger.warning(
                 "Test succeeded and postprocessing completed with warnings (final_status: %s) - returning exit code 0",
                 final_status,
             )
-            return 0
+            return 0, ExitCategory.SUCCESS, ""
     else:
-        # Actual postprocessing failures (not just warnings)
         if original_exc is not None:
-            # Both test and postprocess failed: log both issues
             logger.error("Both test and postprocessing failed (final_status: %s)", final_status)
-            return None  # Signal to re-raise original exception
+            return None
         else:
-            # Only postprocess failed: return failure code
             logger.error(
                 "Test succeeded but postprocessing failed (final_status: %s) - returning exit code 1",
                 final_status,
             )
-            return 1
+            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing failed: {final_status}"
 
 
 def _is_warnings_only_failure(status: dict) -> bool:
@@ -567,10 +582,9 @@ def postprocess_command(_ctx, artifact_dir: Path, output_dir: Path):
     # Check success flag and return appropriate exit code
     success = status.get("success", False)
     if not success:
+        final_status = status.get("final_status", "unknown")
         logger.error(
             "Postprocessing failed (final_status: %s) - returning exit code 1",
-            status.get("final_status", "unknown"),
+            final_status,
         )
-        return 1
-
-    return 0
+        return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing failed: {final_status}"

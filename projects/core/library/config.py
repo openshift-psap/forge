@@ -85,9 +85,22 @@ class Config:
         mandatory_fields = {
             "presets": {},  # Special case: always create as empty dict
             "project": dict.fromkeys(["name", "args"]),
-            "ci_job": dict.fromkeys(
-                ["display_name", "fjob_name", "cluster", "exclusive", "hardware", "owner"]
-            ),
+            "ci_job": {
+                **dict.fromkeys(
+                    ["display_name", "fjob_name", "cluster", "exclusive", "hardware", "owner"]
+                ),
+                "gh": {
+                    "from_gh": False,
+                    "pr": {"num": None, "title": None},
+                    "repo": {"name": None, "owner": None},
+                },
+            },
+            "skip": {
+                "pre_cleanup": False,
+                "prepare": False,
+                "test": False,
+                "post_cleanup": False,
+            },
         }
 
         # Apply the mandatory field structure

@@ -1,0 +1,50 @@
+job_name: guidellm-benchmark
+image: null # use the toolbox default value
+use_pvc: false
+pvc_size: 1Gi
+pvc_storage_class: null
+fs_group: null
+replica_count: 2
+timeout_seconds: 3600
+validate_backend: false
+args:
+  processor: gpt2
+  request_format: /v1/responses
+
+smoke_request:
+  prompt: San Francisco is a
+  max_tokens: 50
+  temperature: 0.7
+
+warmup_benchmark_key: null
+
+duration: 180
+
+payloads:
+  default:
+    prompt_tokens: 256
+    output_tokens: 128
+  L:
+    prompt_tokens: 1000
+    output_tokens: 500
+  XL:
+    prompt_tokens: 4000
+    output_tokens: 4000
+
+sweeps:
+  small: [2, 4]
+  medium: [1, 4, 16, 32, 64]
+  full: [1, 4, 16, 32, 64, 128, 256, 512, 1024, 10000]
+
+benchmarks:
+  warmup:
+    job_name: guidellm-warmup
+    timeout_seconds: 300
+    args:
+      profile: "kind=concurrent,streams=4"
+      data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
+      constraint: kind=max_duration,seconds=60
+
+  smoke:
+    timeout_seconds: 300
+    benchconf: llm-d/smoke

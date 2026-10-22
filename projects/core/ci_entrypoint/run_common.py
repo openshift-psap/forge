@@ -52,16 +52,25 @@ def _write_signal_file(sig_name, exit_code):
     with sig_file.open("a") as f:
         f.write(f"{datetime.now()}: {__name__}._forward_signal_and_exit {sig_name} handler\n")
 
-    # Write exit_status.yaml to the current step's ci_metadata
+    # Write exit_status.yaml only if the child process didn't already write one
     metadata_dir = Path(artifact_dir) / "000__ci_metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
     exit_status_file = metadata_dir / "exit_status.yaml"
+    if exit_status_file.exists():
+        logger.info(f"exit_status.yaml already exists at {exit_status_file}, not overwriting")
+        return
+
     exit_status_data = {
-        "return_code": exit_code,
-        "reason": f"Aborted by signal {sig_name}",
+        "records": [
+            {
+                "return_code": exit_code,
+                "category": "signal_abort",
+                "reason": f"Aborted by signal {sig_name}",
+            }
+        ]
     }
     with open(exit_status_file, "w", encoding="utf-8") as f:
-        yaml.dump(exit_status_data, f, default_flow_style=False)
+        yaml.dump(exit_status_data, f, default_flow_style=False, sort_keys=False)
     logger.info(f"Wrote abort exit status to {exit_status_file}")
 
 

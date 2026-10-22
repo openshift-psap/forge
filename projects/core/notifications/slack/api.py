@@ -55,7 +55,9 @@ def search_channel_message(client, message_anchor: str, not_before=None, channel
     return None, None
 
 
-def send_message(client, message: str, main_ts: str = None, channel_id=None):
+def send_message(
+    client, message: str, main_ts: str = None, channel_id=None, reply_broadcast: bool = False
+):
     """Sends a message. Optionally to a thread."""
     if channel_id is None:
         channel_id = CHANNEL_ID
@@ -65,6 +67,7 @@ def send_message(client, message: str, main_ts: str = None, channel_id=None):
             channel=channel_id,
             text=message,
             thread_ts=main_ts,
+            reply_broadcast=reply_broadcast and main_ts is not None,
         )
 
     except SlackApiError as e:

@@ -97,4 +97,4 @@ profiler:
 agent_analysis:
   enabled: false
   severity_threshold: 10
-  url: ""
+  model: gemini-4-argon

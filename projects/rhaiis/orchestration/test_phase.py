@@ -13,6 +13,7 @@ from projects.core.library.fournos_status import patch_fjob_relevant_deployments
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
 from projects.guidellm.library import benchconf as benchconf_lib
 from projects.rhaiis.orchestration import runtime_config
+from projects.rhaiis.postprocess.csv_dashboard import serialize_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +64,6 @@ def run(
         logger.exception("Dashboard CSV S3 sync after postprocessing failed")
         ret = 1
 
-    if ret == 0:
-        _maybe_send_success_notification(model_key, workload_keys)
-
     return ret
 
 
@@ -76,20 +74,14 @@ def do_test(
     namespace: str,
     deployment_name: str | None = None,
 ) -> int:
-    try:
-        dir_name = f"test_{model_key}_{'_'.join(workload_keys)}"
-        with env.NextArtifactDir(dir_name):
-            return _run_test(
-                model_key=model_key,
-                workload_keys=workload_keys,
-                namespace=namespace,
-                deployment_name=deployment_name,
-            )
-    except Exception as exc:
-        from projects.rhaiis.orchestration.notifications import send_pipeline_failure_alert
-
-        send_pipeline_failure_alert(exc, model_key=model_key, workload_keys=workload_keys)
-        raise
+    dir_name = f"test_{model_key}_{'_'.join(workload_keys)}"
+    with env.NextArtifactDir(dir_name):
+        return _run_test(
+            model_key=model_key,
+            workload_keys=workload_keys,
+            namespace=namespace,
+            deployment_name=deployment_name,
+        )
 
 
 def _run_test(
@@ -139,6 +131,7 @@ def _run_test(
     run_uuid = _cfg.project.get_config("tests.rhaiis.run_uuid", "", warn=False) or str(
         _uuid_mod.uuid4()
     )
+    _cfg.project.set_config("tests.rhaiis.run_uuid", run_uuid)
     logger.info("Run UUID for this job: %s", run_uuid)
 
     import subprocess
@@ -210,7 +203,7 @@ def _run_test(
                 model_cfg,
                 accelerator_key,
                 engine_args,
-                run_uuid=run_uuid,
+                run_uuid=_cfg.project.get_config("ci_job.fjob_name", ""),
                 restrict_profiles=workload_keys or None,
             )
         except Exception:
@@ -355,6 +348,7 @@ def _run_test(
                 gpu_type=gpu_type,
                 serving_image=serving_image,
                 engine_args=engine_args,
+                env_vars=env_vars,
                 benchmark_cfg=benchmark_cfg,
                 deployment_name=deployment_name,
                 namespace=namespace,
@@ -400,13 +394,6 @@ def _run_test(
         logger.warning(
             "Test completed with %d warning(s): %s", len(_warnings), "; ".join(_warnings)
         )
-        from projects.rhaiis.orchestration.notifications import send_pipeline_warning
-
-        send_pipeline_warning(
-            warnings=list(_warnings),
-            model_key=model_key,
-            workload_keys=workload_keys,
-        )
         _warnings.clear()
         return 1
 
@@ -423,6 +410,7 @@ def _run_workload_benchmark(
     gpu_type: str,
     serving_image: str,
     engine_args: dict,
+    env_vars: dict[str, object],
     benchmark_cfg: dict,
     deployment_name: str,
     namespace: str,
@@ -466,6 +454,7 @@ def _run_workload_benchmark(
             accelerator_chip=gpu_type.upper(),
             run_uuid=run_uuid,
             trtllm_config=trtllm_config,
+            env_vars=env_vars,
         )
 
         if not run_benchmark:
@@ -477,7 +466,7 @@ def _run_workload_benchmark(
                     model_cfg,
                     accelerator_key,
                     engine_args,
-                    run_uuid=run_uuid,
+                    run_uuid=config.project.get_config("ci_job.fjob_name", ""),
                     restrict_profiles=[workload_key],
                 )
             except Exception:
@@ -511,7 +500,7 @@ def _run_workload_benchmark(
                 endpoint_url=f"{endpoint_url}/v1",
                 name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
                 namespace=namespace,
-                image=benchmark_image,
+                image=benchmark_cfg.get("image"),
                 timeout=benchmark_timeout,
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,
@@ -534,6 +523,7 @@ def _create_test_labels(
     accelerator_chip: str = "",
     run_uuid: str = "",
     trtllm_config: dict | None = None,
+    env_vars: dict[str, object] | None = None,
 ) -> None:
     _, image_tag = runtime_config.split_image_tag(serving_image) if serving_image else ("", "")
     parts = [f"{k}: {v}" for k, v in engine_args.items()]
@@ -559,6 +549,7 @@ def _create_test_labels(
         "image_tag": image_tag,
         "cluster_tag": cluster_tag,
         "runtime_args": runtime_args,
+        "env_vars": serialize_env_vars(env_vars),
         "run_uuid": run_uuid,
     }
 
@@ -566,7 +557,10 @@ def _create_test_labels(
         env.ARTIFACT_DIR,
         labels,
     )
-    logger.info("Created test labels: %s", labels)
+    logger.info(
+        "Created test labels: %s",
+        {key: value for key, value in labels.items() if key != "env_vars"},
+    )
 
 
 def _set_mlflow_metadata(
@@ -585,7 +579,7 @@ def _set_mlflow_metadata(
     from projects.core.library import config
 
     image_name, image_tag = runtime_config.split_image_tag(serving_image)
-    guidellm_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
+    guidellm_image = benchmark_cfg.get("image")
     benchmark_args = benchmark_cfg.get("args", {})
     tp = (
         engine_args.get("tensor-parallel-size")
@@ -617,20 +611,17 @@ def _set_mlflow_metadata(
 
 
 def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) -> None:
-    """Find the dashboard CSV generated by Caliper dashboard_csv and sync to S3."""
+    """Find the dashboard CSV generated by Caliper dashboard_csv, sync to S3 if enabled, and run regression check."""
     from pathlib import Path
 
     from projects.core.library import config
 
-    csv_dashboard_cfg = config.project.get_config("caliper.postprocess.csv_dashboard", {})
-    if not csv_dashboard_cfg or not csv_dashboard_cfg.get("enabled", False):
-        logger.info("Dashboard CSV S3 sync not enabled")
-        return
-
-    # Find the CSV produced by the dashboard_csv step in the postprocessing directory
+    # Always locate the CSV — Caliper generates it regardless of S3 sync setting.
     postprocess_dirs = sorted(Path(env.ARTIFACT_DIR).glob("*__postprocessing"))
     if not postprocess_dirs:
-        logger.info("No postprocessing directory found, skipping dashboard CSV sync")
+        logger.info(
+            "No postprocessing directory found, skipping dashboard CSV sync and regression check"
+        )
         return
 
     dashboard_csv_output = config.project.get_config(
@@ -638,30 +629,37 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
     )
     csv_path = postprocess_dirs[-1] / dashboard_csv_output
     if not csv_path.exists():
-        logger.info("Dashboard CSV not found at %s, skipping sync", csv_path)
+        logger.info("Dashboard CSV not found at %s, skipping", csv_path)
         return
 
-    logger.info("Found postprocessed dashboard CSV: %s", csv_path)
+    # S3 sync — only when csv_dashboard.enabled is true.
+    csv_dashboard_cfg = config.project.get_config("caliper.postprocess.csv_dashboard", {})
+    if csv_dashboard_cfg and csv_dashboard_cfg.get("enabled", False):
+        logger.info("Found postprocessed dashboard CSV: %s", csv_path)
 
-    from projects.rhaiis.postprocess.s3_dashboard import sync_csv_to_s3
+        from projects.rhaiis.postprocess.s3_dashboard import sync_csv_to_s3
 
-    s3_cfg = config.project.get_config("rhaiis.s3", {})
-    sync_result = sync_csv_to_s3(
-        csv_path,
-        s3_bucket=s3_cfg.get("bucket", ""),
-        s3_key=csv_dashboard_cfg.get("s3_key", ""),
-        vault_name=s3_cfg.get("vault", ""),
-        credentials_file=s3_cfg.get("credentials_file", "aws.credentials"),
-        dry_run=config.project.get_config("caliper.export.dry_run", False),
-    )
-    logger.info("Dashboard CSV sync result: %s", sync_result)
+        s3_cfg = config.project.get_config("rhaiis.s3", {})
+        sync_result = sync_csv_to_s3(
+            csv_path,
+            s3_bucket=s3_cfg.get("bucket", ""),
+            s3_key=csv_dashboard_cfg.get("s3_key", ""),
+            vault_name=s3_cfg.get("vault", ""),
+            credentials_file=s3_cfg.get("credentials_file", "aws.credentials"),
+            dry_run=config.project.get_config("caliper.export.dry_run", False),
+        )
+        logger.info("Dashboard CSV sync result: %s", sync_result)
+    else:
+        logger.info("Dashboard CSV S3 sync not enabled")
 
+    # Regression check — runs regardless of csv_dashboard.enabled.
     version = config.project.get_config("tests.rhaiis.version", "")
     compare_version = config.project.get_config("tests.rhaiis.compare_version", "")
 
     if compare_version and version:
         model_cfg = runtime_config.get_model(model_key)
         accelerator = runtime_config.get_accelerator()
+        gpu_type = runtime_config.get_gpu_type(accelerator) or accelerator
         engine = runtime_config.get_engine()
         engine_defaults = runtime_config.get_engine_args(engine)
         first_workload = runtime_config.get_workload(workload_keys[0])
@@ -674,50 +672,10 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
             compare_version,
             version,
             model_cfg,
-            accelerator,
-            run_uuid="",
+            gpu_type.upper(),
+            run_uuid=config.project.get_config("ci_job.fjob_name", ""),
             engine_args=ea,
         )
-        return
-
-
-def _maybe_send_success_notification(model_key: str, workload_keys: list[str]) -> None:
-    """Send a Slack success notification if slack_notify_always is set and no regression check."""
-    from projects.core.library import config
-
-    compare_version = config.project.get_config("tests.rhaiis.compare_version", "")
-    if compare_version:
-        return
-
-    if not config.project.get_config("tests.rhaiis.slack_notify_always", False):
-        return
-
-    from projects.rhaiis.postprocess.regression import send_success_notification
-
-    model_cfg = runtime_config.get_model(model_key)
-    accelerator = runtime_config.get_accelerator()
-    engine = runtime_config.get_engine()
-    engine_defaults = runtime_config.get_engine_args(engine)
-    first_workload = runtime_config.get_workload(workload_keys[0])
-    ea = runtime_config.merge_engine_args(engine_defaults, model_cfg, first_workload, engine)
-    tp = ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or ""
-    dp = ea.get("data-parallel-size") or ea.get("dp-size") or ""
-    version = config.project.get_config("tests.rhaiis.version", "")
-
-    send_success_notification(
-        model=model_cfg.get("hf_model_id", ""),
-        accelerator=accelerator,
-        job_id=os.environ.get("FJOB_NAME", ""),
-        slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
-        owner=config.project.get_config("ci_job.owner", "") or "",
-        notification_vault="psap-forge-notifications",
-        tp=str(tp),
-        dp=str(dp),
-        version=version,
-        workload_keys=workload_keys,
-        cluster=config.project.get_config("rhaiis.cluster_tag", ""),
-        engine=engine,
-    )
 
 
 def _upload_predictor_log(run_uuid: str) -> None:
@@ -783,7 +741,7 @@ def _run_warmup_step(
             endpoint_url=f"{endpoint_url}/v1",
             name=_guidellm_job_name("guidellm-warmup", workload_key, deployment_name),
             namespace=namespace,
-            image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4"),
+            image=benchmark_cfg.get("image"),
             timeout=benchmark_timeout,
             pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
             guidellm_args=guidellm_args,
@@ -850,7 +808,7 @@ def _run_profiler_step(
                 endpoint_url=f"{endpoint_url}/v1",
                 name=_guidellm_job_name("guidellm-profiler", workload_key, deployment_name),
                 namespace=namespace,
-                image=benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4"),
+                image=benchmark_cfg.get("image"),
                 timeout=benchmark_timeout,
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,

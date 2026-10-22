@@ -24,11 +24,6 @@ def run_standalone_analysis(
     from projects.caliper.cli.s3_export import create_s3_client, get_aws_credentials
     from projects.core.library import config
 
-    agent_cfg = config.project.get_config("rhaiis.agent_analysis", {})
-    if not agent_cfg.get("enabled", False):
-        logger.info("Standalone analysis skipped: agent_analysis not enabled")
-        return
-
     version = config.project.get_config("tests.rhaiis.version", "")
     compare_version = config.project.get_config("tests.rhaiis.compare_version", "")
     if not version or not compare_version:
@@ -88,6 +83,26 @@ def run_standalone_analysis(
                 model_id,
                 accelerator,
                 tp,
+            )
+            from projects.rhaiis.postprocess.regression import send_regression_notification
+
+            dp = str(engine_args.get("data-parallel-size") or engine_args.get("dp-size") or "")
+            send_regression_notification(
+                {
+                    "status": "skipped",
+                    "reason": f"No data in consolidated CSV for version={version}, "
+                    f"model={model_id}, accelerator={accelerator}, TP={tp}",
+                    "current_version": version,
+                    "compare_version": compare_version,
+                },
+                model=model_id,
+                accelerator=accelerator,
+                job_id=run_uuid,
+                slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
+                owner=config.project.get_config("ci_job.owner", "") or "",
+                notification_vault="psap-forge-notifications",
+                tp=tp,
+                dp=dp,
             )
             return
 
@@ -172,8 +187,8 @@ def run_regression_check(
         dp = _ea.get("data-parallel-size") or _ea.get("dp-size") or ""
         slack_user = config.project.get_config("tests.rhaiis.slack_user", "")
 
+        report_url = ""
         if analysis.get("regression_count", 0) > 0 or analysis.get("improvement_count", 0) > 0:
-            report_url = ""
             agent_cfg = config.project.get_config("rhaiis.agent_analysis", {})
             if agent_cfg.get("enabled", False):
                 report_url = run_agent_analysis(
@@ -217,6 +232,20 @@ def run_regression_check(
                 workload_keys=runtime_config.get_test_workload_keys(),
                 cluster=config.project.get_config("rhaiis.cluster_tag", ""),
             )
+        from projects.rhaiis.postprocess.regression import send_regression_notification
+
+        send_regression_notification(
+            analysis,
+            model=model_cfg.get("hf_model_id", ""),
+            accelerator=accelerator,
+            job_id=run_uuid,
+            slack_user=slack_user,
+            owner=owner,
+            notification_vault="psap-forge-notifications",
+            report_url=report_url,
+            tp=str(tp),
+            dp=str(dp),
+        )
     except Exception:
         logger.warning("Regression analysis failed; continuing", exc_info=True)
     finally:
@@ -236,7 +265,7 @@ def run_agent_analysis(
     engine_args: dict | None = None,
 ) -> str:
     """Request AI agent analysis for severe regressions. Returns report URL or empty string."""
-    from projects.core.library import config
+    from projects.core.library import ci, config, vault
     from projects.rhaiis.postprocess.agent import (
         AGENT_SEVERITY_THRESHOLD,
         build_pr_followup_prompt,
@@ -246,30 +275,47 @@ def run_agent_analysis(
         send_followup,
     )
 
-    agent_cfg = config.project.get_config("rhaiis.agent_analysis", {})
-    agent_url = agent_cfg.get("url", "")
-    if not agent_url:
-        logger.warning("Agent analysis enabled but no URL configured (rhaiis.agent_analysis.url)")
-        return ""
-
     threshold = severity_threshold or AGENT_SEVERITY_THRESHOLD
     severe = [r for r in analysis.get("regressions", []) if abs(r["pct_diff"]) > threshold]
     if not severe:
         logger.info("No severe regressions (>%d%%), skipping agent analysis", threshold)
         return ""
 
+    endpoint_path = vault.get_vault_content_path("psap-forge-rhaiis-agent-analysis", "agent-url")
+    try:
+        if endpoint_path is None or not endpoint_path.is_file():
+            raise FileNotFoundError("agent endpoint secret content is unavailable")
+        agent_url = endpoint_path.read_text(encoding="utf-8").strip()
+        if not agent_url:
+            raise ValueError("agent endpoint secret content is empty")
+    except (OSError, ValueError):
+        logger.error("Agent analysis endpoint is missing or unreadable in its configured vault")
+        ci.add_notification_file(
+            "rhaiis-agent-endpoint-unavailable",
+            "RHAIIS agent analysis is enabled, but its endpoint URL could not be read "
+            "from the configured secret.",
+        )
+        return ""
+
     ok, detail = check_agent_connectivity(agent_url)
     if not ok:
-        logger.warning("Agent not reachable, skipping analysis: %s", detail)
+        logger.warning("Agent health check failed, skipping analysis: %s", detail)
+        ci.add_notification_file(
+            "rhaiis-agent-unreachable",
+            "RHAIIS agent analysis was skipped because the configured endpoint "
+            "health check failed.",
+        )
         return ""
 
     ea = engine_args or {}
     tp = str(ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or 1)
     model = model_cfg.get("hf_model_id", "")
+    agent_model = config.project.get_config("rhaiis.agent_analysis.model")
     improvements = analysis.get("improvements", [])
 
     agent_response = request_agent_analysis(
         model=model,
+        agent_model=agent_model,
         accelerator=accelerator,
         current_version=current_version,
         compare_version=compare_version,
@@ -280,10 +326,19 @@ def run_agent_analysis(
         agent_url=agent_url,
     )
     if not agent_response:
+        ci.add_notification_file(
+            "rhaiis-agent-analysis-empty",
+            "RHAIIS agent analysis did not return a usable response; see the job logs.",
+        )
         return ""
 
     pr_prompt = build_pr_followup_prompt(current_version, compare_version)
-    pr_analysis = send_followup(message=pr_prompt, job_id=run_uuid, agent_url=agent_url)
+    pr_analysis = send_followup(
+        message=pr_prompt,
+        job_id=run_uuid,
+        agent_url=agent_url,
+        agent_model=agent_model,
+    )
     if pr_analysis:
         agent_response = f"{agent_response}\n\n---\n\n## Related Pull Requests\n\n{pr_analysis}"
 

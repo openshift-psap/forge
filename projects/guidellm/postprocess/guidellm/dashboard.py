@@ -317,12 +317,13 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
         "guidellm_end_time_ms": int(max(ends) * 1000) if ends else "",
     }
     curves = {curve_key: [] for _, curve_key, _, _, _ in DASHBOARD_METRICS}
-    run_uuids: list[str] = []
+    run_uuids: dict[int, str] = {}
     for benchmark in benchmarks:
         metrics = benchmark.get("metrics", {})
         strategy = benchmark.get("config", {}).get("strategy", {}) or benchmark.get(
             "scheduler", {}
         ).get("strategy", {})
+        intended_concurrency = strategy.get("streams", strategy.get("max_concurrency"))
 
         totals = (
             benchmark.get("scheduler_metrics", {}).get("requests_made", {})
@@ -330,17 +331,16 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
             or benchmark.get("run_stats", {}).get("requests_made", {})
             or metrics.get("request_totals", {})
         )
-        run_uuids.append(
-            str(benchmark.get("config", {}).get("run_id") or benchmark.get("run_id") or "")
-        )
+        if intended_concurrency is not None:
+            run_uuids[int(float(intended_concurrency))] = str(
+                benchmark.get("config", {}).get("run_id") or benchmark.get("run_id") or ""
+            )
         values = {
-            "output_tok_per_sec": metrics.get("output_tokens_per_second", {})
-            .get("total", {})
-            .get("mean"),
-            "total_tok_per_sec": metrics.get("tokens_per_second", {}).get("total", {}).get("mean"),
+            "output_tok_per_sec": _successful_stat(metrics, "output_tokens_per_second", "mean"),
+            "total_tok_per_sec": _successful_stat(metrics, "tokens_per_second", "mean"),
             "request_concurrency": _successful_stat(metrics, "request_concurrency", "mean"),
             "measured_rps": _successful_stat(metrics, "requests_per_second", "mean"),
-            "intended_concurrency": strategy.get("streams", strategy.get("max_concurrency")),
+            "intended_concurrency": intended_concurrency,
             "successful_requests": totals.get("successful", 0),
             "errored_requests": totals.get("errored", 0),
             "ttft_median": _milliseconds_to_seconds(
@@ -405,7 +405,137 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
         for key in curves:
             curves[key].append(values.get(key))
     extra["run_uuids"] = run_uuids
+
+    per_turn = _extract_per_turn_curves(benchmarks)
+    if per_turn:
+        extra["per_turn_curves"] = per_turn
+
     return extra, curves
+
+
+def _percentile(sorted_vals: list[float], p: float) -> float | None:
+    if not sorted_vals:
+        return None
+    k = (len(sorted_vals) - 1) * p / 100.0
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    return sorted_vals[f] + (k - f) * (sorted_vals[c] - sorted_vals[f])
+
+
+def _extract_per_turn_curves(
+    benchmarks: list[dict[str, Any]],
+) -> dict[str, dict[str, list]]:
+    """Compute per-turn metric curves from individual request records.
+
+    Returns ``{"0": {curve_key: [value_per_benchmark_point]}, ...}``
+    when multiple turns exist, otherwise an empty dict.  Keys are
+    stringified integers so they survive JSON round-trips through the
+    caliper cache.
+    """
+    all_turns: set[int] = set()
+    for bench in benchmarks:
+        for bucket in ("successful", "errored"):
+            for req in bench.get("requests", {}).get(bucket, []):
+                ti = req.get("info", {}).get("turn_index")
+                if ti is not None:
+                    all_turns.add(ti)
+
+    if len(all_turns) <= 1:
+        return {}
+
+    per_turn: dict[str, dict[str, list]] = {}
+    for turn_idx in sorted(all_turns):
+        curves: dict[str, list] = {curve_key: [] for _, curve_key, _, _, _ in DASHBOARD_METRICS}
+        for bench in benchmarks:
+            reqs = [
+                r
+                for r in bench.get("requests", {}).get("successful", [])
+                if r.get("info", {}).get("turn_index") == turn_idx
+            ]
+            errored = len(
+                [
+                    r
+                    for r in bench.get("requests", {}).get("errored", [])
+                    if r.get("info", {}).get("turn_index") == turn_idx
+                ]
+            )
+            strategy = bench.get("config", {}).get("strategy", {}) or bench.get(
+                "scheduler", {}
+            ).get("strategy", {})
+
+            if not reqs and not errored:
+                for key in curves:
+                    curves[key].append(None)
+                continue
+
+            values = _turn_metric_values(reqs, strategy, errored_count=errored)
+            for key in curves:
+                curves[key].append(values.get(key))
+
+        per_turn[str(turn_idx)] = curves
+
+    return per_turn
+
+
+def _turn_metric_values(
+    reqs: list[dict[str, Any]], strategy: dict, *, errored_count: int = 0
+) -> dict[str, Any]:
+    """Compute dashboard metric values from individual requests for one turn."""
+
+    def _sorted_field(field: str) -> list[float]:
+        return sorted(r[field] for r in reqs if r.get(field) is not None)
+
+    def _mean(vals: list[float]) -> float | None:
+        return sum(vals) / len(vals) if vals else None
+
+    def _median(vals: list[float]) -> float | None:
+        n = len(vals)
+        if not n:
+            return None
+        return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+
+    ttft = _sorted_field("time_to_first_token_ms")
+    itl = _sorted_field("inter_token_latency_ms")
+    tpot = _sorted_field("time_per_output_token_ms")
+    lat = _sorted_field("request_latency")
+    ptoks = _sorted_field("prompt_tokens")
+    otoks = _sorted_field("output_tokens")
+    otps = _sorted_field("output_tokens_per_second")
+    tps = _sorted_field("tokens_per_second")
+
+    return {
+        "output_tok_per_sec": _mean(otps),
+        "total_tok_per_sec": _mean(tps),
+        "request_concurrency": None,
+        "measured_rps": None,
+        "intended_concurrency": strategy.get("streams", strategy.get("max_concurrency")),
+        "successful_requests": len(reqs),
+        "errored_requests": errored_count,
+        "ttft_median": _milliseconds_to_seconds(_median(ttft)),
+        "ttft_p95": _milliseconds_to_seconds(_percentile(ttft, 95)),
+        "ttft_p99": _milliseconds_to_seconds(_percentile(ttft, 99)),
+        "ttft_p1": _milliseconds_to_seconds(_percentile(ttft, 1)),
+        "ttft_p999": _milliseconds_to_seconds(_percentile(ttft, 99.9)),
+        "ttft_mean": _milliseconds_to_seconds(_mean(ttft)),
+        "tpot_median": _milliseconds_to_seconds(_median(tpot)),
+        "tpot_p95": _milliseconds_to_seconds(_percentile(tpot, 95)),
+        "tpot_p99": _milliseconds_to_seconds(_percentile(tpot, 99)),
+        "tpot_p1": _milliseconds_to_seconds(_percentile(tpot, 1)),
+        "tpot_p999": _milliseconds_to_seconds(_percentile(tpot, 99.9)),
+        "itl_median": _milliseconds_to_seconds(_median(itl)),
+        "itl_p95": _milliseconds_to_seconds(_percentile(itl, 95)),
+        "itl_p99": _milliseconds_to_seconds(_percentile(itl, 99)),
+        "itl_p1": _milliseconds_to_seconds(_percentile(itl, 1)),
+        "itl_p999": _milliseconds_to_seconds(_percentile(itl, 99.9)),
+        "itl_mean": _milliseconds_to_seconds(_mean(itl)),
+        "request_latency_median": _median(lat),
+        "request_latency_min": min(lat) if lat else None,
+        "request_latency_max": max(lat) if lat else None,
+        "prompt_token_count_mean": _mean(ptoks),
+        "prompt_token_count_p99": _percentile(ptoks, 99),
+        "output_token_count_mean": _mean(otoks),
+        "output_token_count_p99": _percentile(otoks, 99),
+    }
 
 
 def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRecord]:
@@ -435,6 +565,7 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
             "runtime_args": str(
                 record.distinguishing_labels.get("runtime_args", "")
             ),  # From test labels
+            "env_vars": str(record.distinguishing_labels.get("env_vars", "")),
             "mlflow_run_id": str(record.metrics.get("mlflow_run_id", "")),
             "mlflow_experiment_id": str(record.metrics.get("mlflow_experiment_id", "")),
         }
@@ -505,6 +636,54 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
                 higher_is_better=higher_is_better if higher_is_better is not None else True,
             )
             output.append(kpi_record)
+
+        per_turn_data = record.metrics.get("per_turn_curves", {})
+        if per_turn_data:
+            for turn_idx, turn_curves in sorted(per_turn_data.items(), key=lambda x: int(x[0])):
+                turn_labels = {**labels}
+                turn_labels.update(metadata_labels)
+                turn_labels["turn"] = str(turn_idx)
+
+                turn_metadata = {
+                    "run_path": record.test_base_path,
+                }
+                turn_run_id = f"{record.test_base_path}__turn_{turn_idx}"
+                turn_ic = turn_curves.get("intended_concurrency", [])
+
+                for suffix, curve_key, _, unit, higher_is_better in DASHBOARD_METRICS:
+                    vals = turn_curves.get(curve_key, [])
+                    if not vals or all(v is None for v in vals):
+                        continue
+
+                    curve_data = []
+                    for i, value in enumerate(vals):
+                        if value is None:
+                            continue
+                        if i < len(turn_ic) and turn_ic[i] is not None:
+                            curve_data.append([float(turn_ic[i]), float(value)])
+
+                    if not curve_data:
+                        continue
+
+                    output.append(
+                        KpiRecord(
+                            schema_version="1",
+                            kpi_id=f"{prefix}_{suffix}",
+                            values=curve_data,
+                            x_unit="rps",
+                            y_unit=unit,
+                            x_help="Request rate (concurrency)",
+                            y_help=f"Dashboard metric: {suffix}",
+                            run_id=turn_run_id,
+                            timestamp=timestamp,
+                            labels=turn_labels,
+                            metadata=turn_metadata,
+                            is_curve=True,
+                            higher_is_better=(
+                                higher_is_better if higher_is_better is not None else True
+                            ),
+                        )
+                    )
 
     return output
 
@@ -625,7 +804,7 @@ def write_dashboard_csv(
         # Create one row per concurrency level
         for concurrency, _ in values:
             row: dict[str, Any] = dict.fromkeys(fieldnames, "")
-            row.update(metadata_row(combined_labels))
+            row.update(metadata_row({**combined_labels, "intended_concurrency": concurrency}))
 
             # Set intended concurrency from the x-value (concurrency level)
             if "intended concurrency" in fieldnames:

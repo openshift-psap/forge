@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 # RHAIIS fieldnames with RHAIIS-specific fields
 RHAIIS_FIELDNAMES = [
     "run",
@@ -10,6 +13,8 @@ RHAIIS_FIELDNAMES = [
     "version",
     "prompt toks",
     "output toks",
+    "turn_index",
+    "turns",
     "TP",
     "measured concurrency",
     "intended concurrency",
@@ -44,6 +49,7 @@ RHAIIS_FIELDNAMES = [
     "itl_mean",
     "itl_p99",
     "runtime_args",
+    "env_vars",
     "guidellm_start_time_ms",
     "guidellm_end_time_ms",
     "image_tag",
@@ -52,10 +58,27 @@ RHAIIS_FIELDNAMES = [
     "dataset",
     "spec_decoding",
     "prefix_caching",
-    "turns",
     "prefix_tokens",
     "prefix_count",
     "request_type",
     "mlflow_run_id",
     "mlflow_experiment_id",
 ]
+
+_SENSITIVE_ENV_VAR_NAME = re.compile(
+    r"(?:^|_)(?:ACCESS_KEY|API_KEY|AUTH|AUTHORIZATION|BEARER|CREDENTIALS?|"
+    r"PASSWORD|PASSWD|PRIVATE_KEY|SECRET|TOKEN)(?:_|$)",
+    re.IGNORECASE,
+)
+
+
+def serialize_env_vars(env_vars: dict[str, object] | None) -> str:
+    """Serialize configured serving env vars, redacting secret-looking names."""
+    if not env_vars:
+        return ""
+
+    safe_env_vars = {
+        name: "<redacted>" if _SENSITIVE_ENV_VAR_NAME.search(name) else str(value)
+        for name, value in env_vars.items()
+    }
+    return json.dumps(safe_env_vars, sort_keys=True, separators=(",", ":"))

@@ -518,7 +518,8 @@ def try_resolve_endpoint_url(
                 # When gateway_status_address_name is None, append port 8000 if needed
                 if gateway_status_address_name is None:
                     logger.info("Mode: No gateway (will append port 8000 if needed)")
-                    if ":" not in url.split("/")[-1]:  # Check if no port in the hostname part
+                    url = url.rstrip("/")
+                    if ":" not in url.split("/")[-1]:
                         url = f"{url}:8000"
                         logger.info(f"✓ Appended port 8000: '{url}'")
                     else:
@@ -556,10 +557,9 @@ def try_resolve_endpoint_url(
         if gateway_status_address_name is None:
             logger.info("  Mode: No gateway filter (looking for any URL)")
             if address.get("url"):
-                url = address["url"]
+                url = address["url"].rstrip("/")
                 logger.info(f"  ✓ Found URL in address[{i}]: '{url}'")
-                # Append port 8000 when not using gateway if no port is already specified
-                if ":" not in url.split("/")[-1]:  # Check if no port in the hostname part
+                if ":" not in url.split("/")[-1]:
                     url = f"{url}:8000"
                     logger.info(f"  ✓ Appended port 8000: '{url}'")
                 else:

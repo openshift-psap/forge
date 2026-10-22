@@ -19,8 +19,20 @@ from projects.core.library import vault
 logger = logging.getLogger(__name__)
 
 
-RHAIIS_SLACK_CHANNEL_ID = "C0B9T6JUW74"
-CHAI_BOT_USER_ID = "U0AKNPBBVT7"  # Chai Bot — automated failure triage
+def _get_slack_channel_id() -> str:
+    from projects.core.library import config
+
+    return config.project.get_config("tests.rhaiis.slack_channel_id", "")
+
+
+def _get_bot_mention() -> str:
+    from projects.core.library import config
+
+    bot_user_id = config.project.get_config("tests.rhaiis.slack_bot_user_id", "", print=False)
+    if not bot_user_id:
+        return ""
+    return f"\n<@{bot_user_id}>"
+
 
 _SLACK_USER_RE = re.compile(r"^[UW][A-Z0-9]+$")
 _SLACK_GROUP_RE = re.compile(r"^S[A-Z0-9]+$")
@@ -269,6 +281,16 @@ def run_regression_analysis(
                 "current_version": current_version,
                 "compare_version": compare_version,
             }
+        elif not results:
+            # common profiles but nothing comparable (e.g. only concurrency 1 in
+            # common, which is excluded) — a skip, not "no changes detected"
+            analysis = {
+                "status": "skipped",
+                "reason": "No common concurrency levels between current and baseline "
+                "(concurrency 1 is excluded from comparisons)",
+                "current_version": current_version,
+                "compare_version": compare_version,
+            }
         else:
             regressions = [r for r in results if r.is_regression]
             improvements = [r for r in results if r.is_improvement]
@@ -442,61 +464,12 @@ def send_regression_notification(
         True if notification sent successfully
     """
     status = analysis_result.get("status")
-    if status == "skipped":
-        reason = analysis_result.get("reason", "unknown")
-        logger.info("Regression analysis skipped: %s", reason)
-        return True
-
-    if status != "completed":
-        return True
-
-    regressions = analysis_result.get("regressions", [])
-    improvements = analysis_result.get("improvements", [])
-
-    if not regressions and not improvements:
-        logger.info("No regressions or improvements to report")
-        return True
-
     current_version = analysis_result.get("current_version", "")
     compare_version = analysis_result.get("compare_version", "")
 
-    if regressions and improvements:
-        icon = ":warning:"
-        headline = "Performance regressions and improvements detected"
-    elif regressions:
-        icon = ":warning:"
-        headline = "Performance regressions detected"
-    else:
-        icon = ":large_green_circle:"
-        headline = "Performance improvements detected"
-
-    detail_lines = []
-    all_results = analysis_result.get("all_results", [])
-    profiles = sorted(
-        {r["profile"] for r in all_results if r.get("is_regression") or r.get("is_improvement")}
-    )
-
-    for profile in profiles:
-        profile_results = [
-            r
-            for r in all_results
-            if r["profile"] == profile and (r.get("is_regression") or r.get("is_improvement"))
-        ]
-        detail_lines.append(f"\n*{profile}:*")
-        for r in profile_results:
-            if r.get("is_regression"):
-                direction = "dropped" if r["pct_diff"] < 0 else "increased"
-                detail_lines.append(
-                    f"  :red_circle: *{r['metric']}*: {direction} {abs(r['pct_diff']):.1f}% "
-                    f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
-                )
-            else:
-                detail_lines.append(
-                    f"  :large_green_circle: *{r['metric']}*: improved {abs(r['pct_diff']):.1f}% "
-                    f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
-                )
-
-    details = "\n".join(detail_lines)
+    if status == "completed" and not analysis_result.get("total_comparisons"):
+        # nothing was actually compared — report as a skip, not "no changes"
+        status = "skipped"
 
     user_line = _format_slack_user_line(slack_user)
     owner_line = _format_owner_line(owner)
@@ -512,21 +485,31 @@ def send_regression_notification(
     if parallelism_parts:
         parallelism_line = f"*Parallelism:* {', '.join(parallelism_parts)}\n"
 
-    dashboard_url = _build_dashboard_url(
-        model=model,
-        accelerator=accelerator,
-        current_version=current_version,
-        compare_version=compare_version,
-        profiles=profiles if profiles else None,
-        tp=tp,
-    )
-    dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
+    csv_dashboard_enabled = False
+    try:
+        from projects.core.library import config
+
+        if config.project is not None:
+            csv_dashboard_enabled = config.project.get_config(
+                "caliper.postprocess.csv_dashboard.enabled", False
+            )
+    except Exception:
+        pass
+    dashboard_line = ""
+    if csv_dashboard_enabled:
+        dashboard_url = _build_dashboard_url(
+            model=model,
+            accelerator=accelerator,
+            current_version=current_version,
+            compare_version=compare_version,
+            tp=tp,
+        )
+        dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
 
     mlflow_url = _build_mlflow_run_url()
     mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""
 
-    message = (
-        f"{icon} *{headline}*\n"
+    header = (
         f"{user_line}"
         f"{owner_line}"
         f"*Job:* `{job_id}`\n"
@@ -534,193 +517,97 @@ def send_regression_notification(
         f"*Accelerator:* {accelerator}\n"
         f"{parallelism_line}"
         f"*Versions:* {current_version} vs {compare_version} (baseline)\n"
-        f"{report_line}"
-        f"{dashboard_line}"
-        f"{mlflow_line}"
-        f"*Changes:*\n{details}"
-        f"\n<@{CHAI_BOT_USER_ID}>"
     )
+
+    if status == "skipped":
+        reason = analysis_result.get(
+            "reason", "No common concurrency levels between current and baseline"
+        )
+        logger.info("Regression analysis skipped: %s", reason)
+        message = (
+            f":information_source: *Performance comparison skipped*\n"
+            f"{header}"
+            f"*Reason:* {reason}\n"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+        )
+    elif status != "completed":
+        return True
+    elif not analysis_result.get("regressions") and not analysis_result.get("improvements"):
+        logger.info("No regressions or improvements to report")
+        message = (
+            f":large_green_circle: *No performance changes detected*\n"
+            f"{header}"
+            f"All compared metrics within thresholds.\n"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+        )
+    else:
+        regressions = analysis_result.get("regressions", [])
+        improvements = analysis_result.get("improvements", [])
+
+        if regressions and improvements:
+            icon = ":warning:"
+            headline = "Performance regressions and improvements detected"
+        elif regressions:
+            icon = ":warning:"
+            headline = "Performance regressions detected"
+        else:
+            icon = ":large_green_circle:"
+            headline = "Performance improvements detected"
+
+        detail_lines = []
+        all_results = analysis_result.get("all_results", [])
+        profiles = sorted(
+            {r["profile"] for r in all_results if r.get("is_regression") or r.get("is_improvement")}
+        )
+
+        for profile in profiles:
+            profile_results = [
+                r
+                for r in all_results
+                if r["profile"] == profile and (r.get("is_regression") or r.get("is_improvement"))
+            ]
+            detail_lines.append(f"\n*{profile}:*")
+            for r in profile_results:
+                if r.get("is_regression"):
+                    direction = "dropped" if r["pct_diff"] < 0 else "increased"
+                    detail_lines.append(
+                        f"  :red_circle: *{r['metric']}*: {direction} {abs(r['pct_diff']):.1f}% "
+                        f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
+                    )
+                else:
+                    detail_lines.append(
+                        f"  :large_green_circle: *{r['metric']}*: improved {abs(r['pct_diff']):.1f}% "
+                        f"({r['baseline']:.2f} \u2192 {r['current']:.2f})"
+                    )
+
+        details = "\n".join(detail_lines)
+
+        if csv_dashboard_enabled:
+            dashboard_url = _build_dashboard_url(
+                model=model,
+                accelerator=accelerator,
+                current_version=current_version,
+                compare_version=compare_version,
+                profiles=profiles if profiles else None,
+                tp=tp,
+            )
+            dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
+
+        message = (
+            f"{icon} *{headline}*\n"
+            f"{header}"
+            f"{report_line}"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+            f"*Changes:*\n{details}"
+        )
 
     if dry_run:
         logger.info("DRY RUN regression notification:\n%s", message)
         return True
 
     return _send_via_topsail_bot(
-        message, notification_vault=notification_vault, channel_id=RHAIIS_SLACK_CHANNEL_ID
-    )
-
-
-def send_success_notification(
-    *,
-    model: str = "",
-    accelerator: str = "",
-    job_id: str = "",
-    slack_user: str = "",
-    owner: str = "",
-    notification_vault: str | None = None,
-    dry_run: bool = False,
-    tp: str = "",
-    dp: str = "",
-    version: str = "",
-    workload_keys: list[str] | None = None,
-    cluster: str = "",
-    engine: str = "",
-) -> bool:
-    """Send a Slack notification when the RHAIIS pipeline succeeds with no regressions.
-
-    Args:
-        owner: Fournos job owner
-
-    Returns:
-        True if notification sent successfully
-    """
-    user_line = _format_slack_user_line(slack_user)
-    owner_line = _format_owner_line(owner)
-
-    parallelism_parts = []
-    if tp:
-        parallelism_parts.append(f"TP={tp}")
-    if dp:
-        parallelism_parts.append(f"DP={dp}")
-    parallelism_line = (
-        f"*Parallelism:* {', '.join(parallelism_parts)}\n" if parallelism_parts else ""
-    )
-
-    profiles_line = ""
-    if workload_keys:
-        profiles_line = f"*Workloads:* {', '.join(workload_keys)}\n"
-
-    cluster_line = f"*Cluster:* {cluster}\n" if cluster else ""
-    version_line = f"*Version:* {version}\n" if version else ""
-    engine_line = f"*Engine:* {engine}\n" if engine else ""
-
-    dashboard_line = ""
-    try:
-        from projects.core.library import config
-
-        if config.project.get_config("caliper.postprocess.csv_dashboard.enabled", False):
-            dashboard_url = _build_dashboard_url(
-                model=model,
-                accelerator=accelerator,
-                current_version=version,
-                profiles=workload_keys,
-                tp=tp,
-            )
-            dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
-    except Exception:
-        logger.warning("Failed to build dashboard URL for notification", exc_info=True)
-
-    mlflow_url = _build_mlflow_run_url()
-    mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""
-
-    message = (
-        f":white_check_mark: *RHAIIS Pipeline Succeeded*\n"
-        f"{user_line}"
-        f"{owner_line}"
-        f"*Job:* `{job_id}`\n"
-        f"*Model:* {model}\n"
-        f"*Accelerator:* {accelerator}\n"
-        f"{parallelism_line}"
-        f"{engine_line}"
-        f"{version_line}"
-        f"{cluster_line}"
-        f"{profiles_line}"
-        f"{dashboard_line}"
-        f"{mlflow_line}"
-    )
-
-    if dry_run:
-        logger.info("DRY RUN success notification:\n%s", message)
-        return True
-
-    return _send_via_topsail_bot(
-        message, notification_vault=notification_vault, channel_id=RHAIIS_SLACK_CHANNEL_ID
-    )
-
-
-def send_failure_notification(
-    *,
-    error: str,
-    model: str = "",
-    accelerator: str = "",
-    job_id: str = "",
-    slack_user: str = "",
-    owner: str = "",
-    notification_vault: str | None = None,
-    dry_run: bool = False,
-    tp: str = "",
-    dp: str = "",
-    version: str = "",
-    workload_keys: list[str] | None = None,
-    cluster: str = "",
-    engine: str = "",
-) -> bool:
-    """Send a Slack alert when the RHAIIS pipeline fails.
-
-    Args:
-        error: Error message or traceback summary
-        model: Model name for display
-        accelerator: Accelerator name for display
-        job_id: FournosJob name
-        slack_user: Slack user ID to @-mention
-        owner: Fournos job owner
-        notification_vault: Vault containing topsail-bot.slack-token
-        dry_run: Log only, don't send
-        tp: Tensor parallelism size
-        dp: Data parallelism size
-        version: vLLM / RHAIIS version string
-        workload_keys: List of workload profile keys
-        cluster: Cluster name the job ran on
-
-    Returns:
-        True if notification sent successfully
-    """
-    user_line = _format_slack_user_line(slack_user)
-    owner_line = _format_owner_line(owner)
-
-    parallelism_parts = []
-    if tp:
-        parallelism_parts.append(f"TP={tp}")
-    if dp:
-        parallelism_parts.append(f"DP={dp}")
-    parallelism_line = (
-        f"*Parallelism:* {', '.join(parallelism_parts)}\n" if parallelism_parts else ""
-    )
-
-    profiles_line = ""
-    if workload_keys:
-        profiles_line = f"*Workloads:* {', '.join(workload_keys)}\n"
-
-    cluster_line = f"*Cluster:* {cluster}\n" if cluster else ""
-    version_line = f"*Version:* {version}\n" if version else ""
-    engine_line = f"*Engine:* {engine}\n" if engine else ""
-
-    error_text = error if len(error) <= 500 else error[:500] + "..."
-
-    mlflow_url = _build_mlflow_run_url()
-    mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""
-
-    message = (
-        f":x: *RHAIIS Pipeline Failed*\n"
-        f"{user_line}"
-        f"{owner_line}"
-        f"*Job:* `{job_id}`\n"
-        f"*Model:* {model}\n"
-        f"*Accelerator:* {accelerator}\n"
-        f"{parallelism_line}"
-        f"{engine_line}"
-        f"{version_line}"
-        f"{cluster_line}"
-        f"{profiles_line}"
-        f"{mlflow_line}"
-        f"*Error:*\n```{error_text}```"
-        f"\n<@{CHAI_BOT_USER_ID}>"
-    )
-
-    if dry_run:
-        logger.info("DRY RUN failure notification:\n%s", message)
-        return True
-
-    return _send_via_topsail_bot(
-        message, notification_vault=notification_vault, channel_id=RHAIIS_SLACK_CHANNEL_ID
+        message, notification_vault=notification_vault, channel_id=_get_slack_channel_id()
     )

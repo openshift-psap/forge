@@ -35,3 +35,9 @@ spec:
       managementState: Removed
 {% endif %}
 {% endfor %}
+{% if "aigateway.maas" in components %}
+    aigateway:
+      managementState: Managed
+      modelsAsAService:
+        managementState: Managed
+{% endif %}

@@ -9,6 +9,11 @@ metadata:
     forge.openshift.io/project: llm_d
 spec:
   backoffLimit: 0
+{% if replica_count is defined and replica_count > 1 %}
+  completionMode: Indexed
+  completions: {{ replica_count }}
+  parallelism: {{ replica_count }}
+{% endif %}
   template:
     metadata:
       labels:
@@ -59,12 +64,17 @@ spec:
               mountPath: /home/guidellm
             - name: results
               mountPath: /results
+{% if api_key_secret %}
+            - name: auth-token
+              mountPath: /auth-token
+              readOnly: true
+{% endif %}
         - name: guidellm-sidecar
           image: {{ image }}
           command: ["/bin/sh", "-c"]
           args:
             - |
-              set -euxo pipefail
+              set -euo pipefail
               echo "Sidecar waiting for done file..."
               while [ ! -f /results/done ]; do
                   sleep 5
@@ -91,3 +101,8 @@ spec:
           emptyDir: {}
         - name: results
           emptyDir: {}
+{% if api_key_secret %}
+        - name: auth-token
+          secret:
+            secretName: {{ api_key_secret }}
+{% endif %}

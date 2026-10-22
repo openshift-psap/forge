@@ -20,6 +20,7 @@ from projects.guidellm.postprocess.guidellm.dashboard import (
     deployment_metadata_from_profile,
     enrich_guidellm_parse_result,
 )
+from projects.guidellm.postprocess.guidellm.kpi_handler import GuideLLMKpiHandler
 from projects.guidellm.postprocess.guidellm.plugin import GuideLLMPlugin
 from projects.llm_d.orchestration.render_inference_service import _build_vllm_args
 from projects.llm_d.orchestration.runtime_config import deep_merge
@@ -42,11 +43,24 @@ analysis_config = AnalysisConfig(
 )
 
 
+LLM_D_REQUIRED_LABELS = GuideLLMKpiHandler.REQUIRED_LABELS | {
+    "product_version",
+    "benchmark_key",
+    "deployment_profile",
+    "gpu_type",
+    "platform",
+    "test_harness",
+}
+
+
 class LlmDGuideLLMPlugin(GuideLLMPlugin):
     """Keep generic GuideLLM outputs and add the llm-d dashboard projection."""
 
     def __init__(self):
         super().__init__()
+        self.kpi_handler = GuideLLMKpiHandler(
+            required_labels=LLM_D_REQUIRED_LABELS,
+        )
 
     def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         parsed = enrich_guidellm_parse_result(super().parse(nodes), nodes)
@@ -126,6 +140,8 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
                 "guidellm_version": labels.get("guidellm_version", ""),
                 "mlflow_run_id": labels.get("mlflow_run_id", ""),
                 "mlflow_experiment_id": labels.get("mlflow_experiment_id", ""),
+                "turns": labels.get("turns", ""),
+                "turn_index": labels.get("turn", ""),
                 "notes": labels.get("notes", ""),
             }
 

@@ -27,6 +27,7 @@ dependencies = [
     "dash>=2.14.0",
     "dash-bootstrap-components>=1.5.0",
     "jinja2",
+    "markdown>=3.6",
     "pyyaml>=6.0",
     "jsonschema>=4.19.0",
     "structlog>=23.1.0",
@@ -135,6 +136,7 @@ testpaths = [
     "projects/fournos_launcher/tests",
     "projects/rhaiis/tests",
     "projects/cluster/tests",
+    "projects/inference_playbooks/tests",
 ]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

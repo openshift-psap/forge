@@ -2,6 +2,7 @@ import logging
 import pathlib
 
 from projects.core.library import config
+from projects.core.library.ci import ExitCategory
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,9 @@ def prepare():
         return 0
 
     except Exception as e:
-        logger.error(f"❌ Error during prepare phase: {e}")
-        return 1
+        msg = f"❌ Error during prepare phase: {e}"
+        logger.error(msg)
+        return 1, ExitCategory.INTERNAL_ERROR, msg
 
 
 def cleanup():
@@ -29,5 +31,6 @@ def cleanup():
         logger.info("✅ Cleanup phase completed successfully")
         return 0
     except Exception as e:
-        logger.error(f"❌ Error during cleanup phase: {e}")
-        return 1
+        msg = f"❌ Error during cleanup phase: {e}"
+        logger.error(msg)
+        return 1, ExitCategory.INTERNAL_ERROR, msg

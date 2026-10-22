@@ -12,7 +12,14 @@ from pathlib import Path
 
 import yaml
 
-from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
+from projects.core.dsl import (  # noqa: F401
+    always,
+    entrypoint,
+    execute_tasks,
+    on_failure,
+    retry,
+    task,
+)
 from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
     oc,
@@ -30,21 +37,75 @@ from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
 logger = logging.getLogger(__name__)
 WAIT_POLL_INTERVAL_SECONDS = 10
 JOB_COMPLETION_GRACE_SECONDS = 60
+DEFAULT_GUIDELLM_IMAGE = "ghcr.io/vllm-project/guidellm:v0.8.1"
+
+# Script template for trimming benchmark JSON on remote pod (removes 'requests' field)
+# Use REMOTE_TRIM_SCRIPT.format(file_path=...) to generate the script
+# Removes bulky text fields (request_args, output, reasoning_output) from request
+# entries while preserving per-request metrics like token counts, latencies, etc.
+REMOTE_TRIM_SCRIPT = """
+import json
+import os
+
+BULK_FIELDS = {{"request_args", "output", "reasoning_output"}}
+
+def trim_entry(obj):
+    if isinstance(obj, dict):
+        return {{k: trim_entry(v) for k, v in obj.items() if k not in BULK_FIELDS}}
+    if isinstance(obj, list):
+        return [trim_entry(i) for i in obj]
+    return obj
+
+def trim(obj):
+    if isinstance(obj, dict):
+        return {{k: trim_entry(v) if k == "requests" else trim(v) for k, v in obj.items()}}
+    if isinstance(obj, list):
+        return [trim(i) for i in obj]
+    return obj
+
+tmp_path = '{file_path}.trimtmp'
+with open('{file_path}') as f:
+    data = json.load(f)
+try:
+    with open(tmp_path, 'w') as f:
+        json.dump(trim(data), f, separators=(',', ':'))
+    os.replace(tmp_path, '{file_path}')
+except Exception:
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+    raise
+""".strip()
+
+
+_REQUEST_BULK_FIELDS = {"request_args", "output", "reasoning_output"}
 
 
 def trim_benchmark_json(obj):
-    """Remove 'requests' field recursively from JSON data"""
+    """Trim bulky text from request entries while keeping per-turn metrics.
+
+    Strips ``request_args`` (full message history), ``output``, and
+    ``reasoning_output`` from each request entry. Small fields like
+    ``info`` (conversation_id, turn_index, timings), token counts, and
+    computed metrics (TTFT, ITL, latency, tokens/sec) are preserved so
+    that per-turn analysis is possible from the trimmed file.
+    """
     if isinstance(obj, dict):
         return {
-            k: trim_benchmark_json(v)
+            k: _trim_request_entry(v) if k == "requests" else trim_benchmark_json(v)
             for k, v in obj.items()
-            if k
-            not in [
-                "requests",
-            ]
         }
     elif isinstance(obj, list):
         return [trim_benchmark_json(item) for item in obj]
+    else:
+        return obj
+
+
+def _trim_request_entry(obj):
+    """Recursively trim bulky text fields from request entries."""
+    if isinstance(obj, dict):
+        return {k: _trim_request_entry(v) for k, v in obj.items() if k not in _REQUEST_BULK_FIELDS}
+    elif isinstance(obj, list):
+        return [_trim_request_entry(item) for item in obj]
     else:
         return obj
 
@@ -55,7 +116,7 @@ def run(
     endpoint_url: str,
     name: str = "guidellm-benchmark",
     namespace: str = "",
-    image: str = "ghcr.io/vllm-project/guidellm:v0.7.4",
+    image: str | None = DEFAULT_GUIDELLM_IMAGE,
     timeout: int = 900,
     pvc_size: str = "1Gi",
     pvc_storage_class: str | None = None,
@@ -65,6 +126,9 @@ def run(
     fs_group: int | None = None,
     keep_full_benchmark_file: bool = False,
     use_pvc: bool = False,
+    api_key_file_path: str | None = None,
+    replica_count: int = 1,
+    validate_backend: bool = True,
 ) -> int:
     """
     Run the GuideLLM benchmark against a resolved endpoint.
@@ -73,7 +137,7 @@ def run(
         endpoint_url: Endpoint URL for the LLM inference service to benchmark
         name: Name of the benchmark job
         namespace: Namespace to run the benchmark job in (empty string auto-detects current namespace)
-        image: Full container image reference for the benchmark
+        image: Full container image reference for the benchmark (None uses the toolbox default)
         timeout: Active deadline for the Job and timeout in seconds to wait for completion
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
         guidellm_args: List of additional guidellm arguments (e.g., ["--profile=kind=concurrent,streams=10"])
@@ -84,10 +148,22 @@ def run(
         fs_group: If set, adds securityContext.fsGroup to the GuideLLM job pod.
         keep_full_benchmark_file: Whether to keep the full untrimmed benchmark JSON files alongside trimmed ones (default: False)
         use_pvc: Use PVC with copy pod instead of shared emptyDir volume with sidecar (default: False)
+        api_key_file_path: Path to a local file containing the API key for the
+            backend. When set, a K8s Secret is created, mounted into the pod, and
+            injected into the ``--backend`` argument. The secret is owned by the
+            Job for automatic cleanup.
+        replica_count: Number of parallel Job replicas. Each replica writes to its
+            own output file using ``JOB_COMPLETION_INDEX``.
+        validate_backend: Whether GuideLLM should validate the backend before
+            benchmarking. Set to False for endpoints that don't support /v1/models.
     """
 
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
+
+    # None means "no image configured": use the toolbox default
+    if not image:
+        image = DEFAULT_GUIDELLM_IMAGE
 
     execute_tasks(locals())
     return 0
@@ -111,7 +187,10 @@ def validate_parameters(args, ctx):
     else:
         ctx.target_namespace = args.namespace
 
-    ctx.benchmark_name = args.name
+    benchmark_name = args.name
+    if args.artifact_dirname_suffix:
+        benchmark_name = f"{benchmark_name}-{args.artifact_dirname_suffix.replace('_', '-')}"
+    ctx.benchmark_name = benchmark_name
     ctx.image = args.image
 
     return f"Validated parameters for benchmark {ctx.benchmark_name} in namespace {ctx.target_namespace}"
@@ -155,11 +234,72 @@ def cleanup_previous_guidellm_resources_task(args, ctx):
     return f"Deleted previous GuideLLM resources for {ctx.benchmark_name} ({mode} mode)"
 
 
+@retry(attempts=60, delay=10, backoff=1.0)
+@task
+def wait_old_pods_gone(args, ctx):
+    """Wait for old GuideLLM benchmark pods to disappear."""
+    result = oc(
+        "get",
+        "pods",
+        "-n",
+        ctx.target_namespace,
+        "-l",
+        f"job-name={ctx.benchmark_name}",
+        "--ignore-not-found=true",
+        "--no-headers",
+        check=False,
+    )
+
+    if result.stdout.strip():
+        return False
+
+    return f"Old pods gone for {ctx.benchmark_name}"
+
+
 def _best_effort_delete(description: str, *oc_args: str) -> None:
     try:
         oc(*oc_args, check=False, timeout_seconds=60)
     except subprocess.TimeoutExpired:
         logger.warning("Timed out deleting %s: oc %s", description, " ".join(oc_args))
+
+
+@task
+def create_api_key_secret(args, ctx):
+    """Create a K8s Secret from the API key file (if provided)"""
+
+    if not args.api_key_file_path:
+        ctx.api_key_secret_name = ""
+        return "No API key file provided"
+
+    token_file = Path(args.api_key_file_path)
+    if not token_file.exists():
+        raise FileNotFoundError(f"API key file does not exist: {args.api_key_file_path}")
+
+    secret_name = f"{ctx.benchmark_name}-auth-token"
+
+    oc(
+        "delete",
+        "secret",
+        secret_name,
+        "-n",
+        ctx.target_namespace,
+        "--ignore-not-found=true",
+        check=False,
+    )
+
+    # secret is safe here (using --from-file)
+    oc(
+        "create",
+        "secret",
+        "generic",
+        secret_name,
+        f"--from-file=auth_token={args.api_key_file_path}",
+        "-n",
+        ctx.target_namespace,
+    )
+
+    ctx.api_key_secret_name = secret_name
+    return f"API key secret {secret_name} created from file"
 
 
 @task
@@ -179,8 +319,16 @@ def create_guidellm_resources_task(args, ctx):
         yaml.safe_load(dest.read_text())
         ctx.config_path = dest
 
+    api_key_secret = getattr(ctx, "api_key_secret_name", "") or ""
+
     # Create the job based on mode
     if args.use_pvc:
+        if args.replica_count > 1:
+            raise ValueError(
+                f"PVC mode does not support replica_count > 1 (got {args.replica_count}). "
+                "Use shared-volume mode (use_pvc=False) for multi-replica benchmarks."
+            )
+
         # PVC mode - traditional single container job + PVC
         oc_apply(
             src_dir / "guidellm-job.yaml",
@@ -194,6 +342,9 @@ def create_guidellm_resources_task(args, ctx):
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
+                api_key_secret=api_key_secret,
+                replica_count=args.replica_count,
+                validate_backend=args.validate_backend,
             ),
         )
 
@@ -222,6 +373,10 @@ def create_guidellm_resources_task(args, ctx):
             ),
         )
 
+        # Set ownerReference on the API key secret
+        if api_key_secret:
+            _set_secret_owner_reference(ctx, owner_reference)
+
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS
         return f"GuideLLM benchmark {ctx.benchmark_name} created with job as PVC owner"
     else:
@@ -238,29 +393,109 @@ def create_guidellm_resources_task(args, ctx):
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
+                api_key_secret=api_key_secret,
+                replica_count=args.replica_count,
+                validate_backend=args.validate_backend,
             ),
         )
+
+        # Set ownerReference on the API key secret
+        if api_key_secret:
+            job_data = oc_get_json("job", name=ctx.benchmark_name, namespace=ctx.target_namespace)
+            owner_reference = {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "name": job_data["metadata"]["name"],
+                "uid": job_data["metadata"]["uid"],
+                "controller": True,
+                "blockOwnerDeletion": True,
+            }
+            _set_secret_owner_reference(ctx, owner_reference)
+
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS
         return (
             f"GuideLLM benchmark {ctx.benchmark_name} created with shared volume (main + sidecar)"
         )
 
 
+def _set_secret_owner_reference(ctx, owner_reference):
+    """Patch the API key secret with an ownerReference pointing to the Job."""
+    oc(
+        "patch",
+        "secret",
+        ctx.api_key_secret_name,
+        "-n",
+        ctx.target_namespace,
+        "--type=merge",
+        "-p",
+        json.dumps({"metadata": {"ownerReferences": [owner_reference]}}),
+    )
+    logger.info(
+        "Set ownerReference on secret %s -> job %s",
+        ctx.api_key_secret_name,
+        owner_reference["name"],
+    )
+
+
+def _handle_benchmark_wait_failure(args, ctx, exception):
+    """Generate AGENT.md file for post-mortem analysis of benchmark failure."""
+    benchmark_name = getattr(ctx, "benchmark_name", args.name)
+    namespace = getattr(ctx, "target_namespace", args.namespace)
+
+    agent_md_path = args.artifact_dir / "AGENT.md"
+    with open(agent_md_path, "w", encoding="utf-8") as f:
+        f.write(f"""# Post-Mortem: GuideLLM Benchmark Failure
+
+## Failure Details
+- **Benchmark**: {benchmark_name}
+- **Namespace**: {namespace}
+- **Failed Task**: wait_guidellm_benchmark_task
+- **Exception**: {exception.__class__.__name__}: {exception}
+
+## Available Files for Analysis
+- **Pod logs**: `artifacts/logs/guidellm_benchmark_<pod_name>.log` (one per pod)
+- **Pod YAML**: `artifacts/guidellm_benchmark_job.pods.yaml`
+- **Job YAML**: `artifacts/guidellm_benchmark_job.yaml`
+- **Pod descriptions**: `artifacts/describe/guidellm_benchmark_<pod_name>.describe.txt` (one per pod)
+
+## Analysis Instructions
+1. **Review pod logs** in `artifacts/logs/guidellm_benchmark_<pod_name>.log` for GuideLLM errors or crashes
+2. **Check pod status** in `guidellm_benchmark_job.pods.yaml` for OOM kills, image pull errors, or scheduling failures
+3. **Examine job YAML** for timeout or backoff limit issues
+4. **Check pod descriptions** in `artifacts/describe/` for K8s events (resource limits, node affinity, etc.)
+""")
+
+
 # An upper safety bound only; ctx.wait_deadline enforces the per-run timeout.
+@on_failure(_handle_benchmark_wait_failure)
 @retry(attempts=1080, delay=WAIT_POLL_INTERVAL_SECONDS, backoff=1.0)
 @task
 def wait_guidellm_benchmark_task(args, ctx):
-    """Wait for the GuideLLM benchmark to complete"""
+    """Wait for the GuideLLM benchmark to finish running"""
 
     if args.use_pvc:
-        return wait_job_completion(args, ctx)
+        return _poll_job_active(args, ctx)
     else:
-        return wait_main_container_completion(args, ctx)
+        return _poll_main_container_running(args, ctx)
 
 
-def wait_job_completion(args, ctx):
-    """Wait for the entire job to complete (PVC mode)"""
-    # Check if job is still active first
+@task
+def check_guidellm_benchmark_result(args, ctx):
+    """Check whether the completed benchmark succeeded or failed"""
+
+    if args.use_pvc:
+        return _check_job_outcome(args, ctx)
+    else:
+        return _check_main_container_outcome(args, ctx)
+
+
+def _poll_job_active(args, ctx):
+    """Poll until the job is no longer active (PVC mode)."""
+    if time.monotonic() >= ctx.wait_deadline:
+        raise TimeoutError(
+            f"GuideLLM benchmark {ctx.benchmark_name} did not complete within {args.timeout}s"
+        )
+
     active_result = oc(
         "get",
         "job",
@@ -272,30 +507,27 @@ def wait_job_completion(args, ctx):
         check=False,
     )
 
-    active = active_result.stdout.strip() == "1" if active_result.returncode == 0 else False
+    active_str = active_result.stdout.strip() if active_result.returncode == 0 else ""
+    if active_str in ("", "0"):
+        return f"Job {ctx.benchmark_name} is no longer active"
 
-    if active:
-        if time.monotonic() >= ctx.wait_deadline:
-            raise TimeoutError(
-                f"GuideLLM benchmark {ctx.benchmark_name} did not complete within {args.timeout}s"
-            )
+    oc(
+        "get",
+        "pods",
+        "-n",
+        ctx.target_namespace,
+        "-l",
+        f"job-name={ctx.benchmark_name}",
+        "-o",
+        "wide",
+    )
 
-        # Show pod status while waiting
-        oc(
-            "get",
-            "pods",
-            "-n",
-            ctx.target_namespace,
-            "-l",
-            f"job-name={ctx.benchmark_name}",
-            "-o",
-            "wide",
-        )
+    logger.info("Job %s is still active, retrying...", ctx.benchmark_name)
+    return False
 
-        logger.info("Job %s is still active, retrying...", ctx.benchmark_name)
-        return False  # Retry immediately
 
-    # Job is not active, check final status
+def _check_job_outcome(args, ctx):
+    """Inspect the final status of a completed job (PVC mode)."""
     succeeded_result = oc(
         "get",
         "job",
@@ -305,6 +537,7 @@ def wait_job_completion(args, ctx):
         "-o",
         "jsonpath={.status.succeeded}",
         check=False,
+        log_stdout=True,
     )
     failed_result = oc(
         "get",
@@ -315,119 +548,138 @@ def wait_job_completion(args, ctx):
         "-o",
         "jsonpath={.status.failed}",
         check=False,
+        log_stdout=True,
     )
 
-    succeeded = (
-        succeeded_result.stdout.strip() == "1" if succeeded_result.returncode == 0 else False
-    )
-    failed = failed_result.stdout.strip() == "1" if failed_result.returncode == 0 else False
+    succeeded_str = succeeded_result.stdout.strip() if succeeded_result.returncode == 0 else ""
+    succeeded_count = int(succeeded_str) if succeeded_str else 0
+    failed_str = failed_result.stdout.strip() if failed_result.returncode == 0 else ""
+    failed_count = int(failed_str) if failed_str else 0
 
     logger.info(
-        "Job %s final status - succeeded: %s, failed: %s", ctx.benchmark_name, succeeded, failed
+        "Job %s final status - succeeded: %d, failed: %d, expected: %d",
+        ctx.benchmark_name,
+        succeeded_count,
+        failed_count,
+        args.replica_count,
     )
 
-    if succeeded:
-        return f"GuideLLM benchmark {ctx.benchmark_name} completed"
-    if failed:
-        # Write failure file
-        failure_file = args.artifact_dir / "FAILURE.txt"
+    failure_file = args.artifact_dir / "FAILURE.txt"
+    if failed_count:
         failure_message = f"""GuideLLM benchmark job '{ctx.benchmark_name}' failed.
 
-Check the job logs for detailed error information:
-  artifacts/guidellm_benchmark_job.log
+Check the per-pod log files for detailed error information:
+  artifacts/logs/guidellm_benchmark_<pod_name>.log
 """
         write_text(failure_file, failure_message)
-        logger.error(
-            "GuideLLM job %s failed. Failure details written to %s",
-            ctx.benchmark_name,
-            failure_file,
-        )
-
         raise RuntimeError(f"GuideLLM job {ctx.benchmark_name} failed")
-    if time.monotonic() >= ctx.wait_deadline:
-        raise TimeoutError(
-            f"GuideLLM benchmark {ctx.benchmark_name} did not complete within {args.timeout}s"
-        )
-    return False  # Retry
+
+    if succeeded_count == args.replica_count:
+        return f"GuideLLM benchmark {ctx.benchmark_name} succeeded ({succeeded_count}/{args.replica_count} replicas)"
+
+    failure_message = f"""GuideLLM benchmark job '{ctx.benchmark_name}' ended with unexpected replica counts (succeeded={succeeded_count}, expected={args.replica_count}).
+
+Check the per-pod log files for detailed error information:
+  artifacts/logs/guidellm_benchmark_<pod_name>.log
+"""
+    write_text(failure_file, failure_message)
+    raise RuntimeError(
+        f"GuideLLM job {ctx.benchmark_name} ended with unexpected replica counts"
+        f" (succeeded={succeeded_count}, expected={args.replica_count})"
+    )
 
 
-def wait_main_container_completion(args, ctx):
-    """Wait for the main container to complete (shared volume mode)"""
-    if time.monotonic() >= ctx.wait_deadline:
-        raise TimeoutError(
-            f"GuideLLM benchmark {ctx.benchmark_name} did not complete within {args.timeout}s"
-        )
-
-    # Get pod information
+def _get_job_pod_names(namespace: str, benchmark_name: str) -> list[str]:
+    """Get all pod names for a job, sorted for determinism."""
     pod_result = oc(
         "get",
         "pods",
         "-n",
-        ctx.target_namespace,
+        namespace,
         "-l",
-        f"job-name={ctx.benchmark_name}",
+        f"job-name={benchmark_name}",
         "-o",
-        "jsonpath={.items[0].metadata.name}",
+        "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
         check=False,
     )
-
     if pod_result.returncode != 0 or not pod_result.stdout.strip():
-        logger.info("Pod for job %s not ready yet, retrying...", ctx.benchmark_name)
-        return False  # Retry
+        return []
+    return sorted(line for line in pod_result.stdout.strip().splitlines() if line)
 
-    pod_name = pod_result.stdout.strip()
 
-    # Check main container status
-    main_status_result = oc(
-        "get",
-        "pod",
-        pod_name,
-        "-n",
-        ctx.target_namespace,
-        "-o",
-        "jsonpath={.status.containerStatuses[?(@.name=='guidellm-main')].state}",
-        check=False,
+def _poll_main_container_running(args, ctx):
+    """Poll until all main containers terminate (shared volume mode)."""
+    if time.monotonic() >= ctx.wait_deadline:
+        raise TimeoutError(
+            f"GuideLLM benchmark {ctx.benchmark_name} did not complete within {args.timeout}s"
+        )
+
+    pod_names = _get_job_pod_names(ctx.target_namespace, ctx.benchmark_name)
+    if not pod_names:
+        logger.info("No pods for job %s yet, retrying...", ctx.benchmark_name)
+        return False
+
+    expected = args.replica_count
+    if len(pod_names) < expected:
+        logger.info(
+            "Only %d/%d pods for job %s, retrying...",
+            len(pod_names),
+            expected,
+            ctx.benchmark_name,
+        )
+        return False
+
+    exit_codes: dict[str, int] = {}
+    for pod_name in pod_names:
+        main_status_result = oc(
+            "get",
+            "pod",
+            pod_name,
+            "-n",
+            ctx.target_namespace,
+            "-o",
+            "jsonpath={.status.containerStatuses[?(@.name=='guidellm-main')].state}",
+            check=False,
+        )
+
+        if main_status_result.returncode != 0:
+            logger.info("Could not get main container status for %s, retrying...", pod_name)
+            return False
+
+        try:
+            container_state = json.loads(main_status_result.stdout.strip())
+        except (json.JSONDecodeError, AttributeError):
+            logger.info("Main container state not available for %s, retrying...", pod_name)
+            return False
+
+        if "terminated" not in container_state:
+            logger.info("Main container for pod %s still running, retrying...", pod_name)
+            return False
+
+        exit_codes[pod_name] = container_state["terminated"].get("exitCode", 0)
+
+    ctx.main_container_exit_codes = exit_codes
+    summary = ", ".join(f"{p}={c}" for p, c in exit_codes.items())
+    return f"All main containers for {ctx.benchmark_name} terminated (exit codes: {summary})"
+
+
+def _check_main_container_outcome(args, ctx):
+    """Inspect the exit codes of terminated main containers (shared volume mode)."""
+    exit_codes = ctx.main_container_exit_codes
+    failed_pods = {pod: code for pod, code in exit_codes.items() if code != 0}
+
+    if not failed_pods:
+        return f"GuideLLM benchmark main containers {ctx.benchmark_name} all succeeded"
+
+    failure_file = args.artifact_dir / "FAILURE.txt"
+    details = ", ".join(f"{pod} (exit {code})" for pod, code in failed_pods.items())
+    failure_message = (
+        f"GuideLLM benchmark main container(s) '{ctx.benchmark_name}' failed: {details}.\n\n"
+        "Check the job logs for detailed error information:\n"
+        "  artifacts/logs/guidellm_benchmark_<pod_name>.log\n"
     )
-
-    if main_status_result.returncode != 0:
-        logger.info("Could not get main container status, retrying...")
-        return False  # Retry
-
-    try:
-        import json
-
-        container_state = json.loads(main_status_result.stdout.strip())
-    except (json.JSONDecodeError, AttributeError):
-        logger.info("Main container state not available yet, retrying...")
-        return False  # Retry
-
-    # Check if main container has terminated
-    if "terminated" in container_state:
-        terminated_info = container_state["terminated"]
-        exit_code = terminated_info.get("exitCode", 0)
-
-        if exit_code == 0:
-            logger.info("Main container completed successfully")
-            return f"GuideLLM benchmark main container {ctx.benchmark_name} completed successfully"
-        else:
-            # Main container failed
-            failure_file = args.artifact_dir / "FAILURE.txt"
-            failure_message = f"""GuideLLM benchmark main container '{ctx.benchmark_name}' failed with exit code {exit_code}.
-
-Check the job logs for detailed error information:
-  artifacts/guidellm_benchmark_job.log
-"""
-            write_text(failure_file, failure_message)
-            logger.error(
-                "GuideLLM main container %s failed with exit code %s",
-                ctx.benchmark_name,
-                exit_code,
-            )
-            raise RuntimeError(f"GuideLLM main container {ctx.benchmark_name} failed")
-
-    # Main container still running
-    logger.info("Main container for job %s still running, retrying...", ctx.benchmark_name)
-    return False  # Retry
+    write_text(failure_file, failure_message)
+    raise RuntimeError(f"GuideLLM main container(s) {ctx.benchmark_name} failed: {details}")
 
 
 @always
@@ -460,11 +712,13 @@ def create_copy_pod(args, ctx):
     if pod_data and pod_data.get("items"):
         node_name = pod_data["items"][0].get("spec", {}).get("nodeName")
 
+    # Helper commands need shell utilities that custom benchmark images may lack.
     oc_apply(
         args.artifact_dir / "src" / "guidellm-copy-pod.yaml",
         render_guidellm_copy_pod_from_parts(
             namespace=ctx.target_namespace,
             name=ctx.benchmark_name,
+            image=args.image,
             pvc_size=args.pvc_size,
             node_name=node_name,
         ),
@@ -498,7 +752,7 @@ def wait_copy_pod_ready(args, ctx):
 def extract_results(args, ctx):
     """Extract GuideLLM results from copy pod (PVC mode) or sidecar (shared volume mode)"""
 
-    results_dir = args.artifact_dir / "artifacts" / "results"
+    results_dir = args.artifact_dir / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
     if args.use_pvc:
@@ -507,72 +761,131 @@ def extract_results(args, ctx):
         return extract_results_from_sidecar(args, ctx, results_dir)
 
 
-def extract_results_from_copy_pod(args, ctx, results_dir: Path):
-    """Extract results from copy pod (PVC mode)"""
-    extracted_files: list[dict[str, str | None]] = []
-    for run in ctx.guidellm_runs:
-        remote_path = f"/results/benchmarks-{run.label}.json"
-        local_path = results_dir / f"benchmarks-{run.label}.json"
+def _extract_from_copy_pod_file(
+    args,
+    ctx,
+    results_dir: Path,
+    run,
+    replica_suffix: str,
+) -> dict[str, str | None]:
+    """Extract a single benchmark result file from the copy pod."""
+    copy_pod = f"{ctx.benchmark_name}-copy"
+    remote_path = f"/results/benchmarks-{run.label}{replica_suffix}.json"
+    local_path = results_dir / f"benchmarks-{run.label}{replica_suffix}.json"
 
-        logger.info(f"Retrieving the compressed benchmark file for {run.label}...")
+    logger.info(
+        "Retrieving the compressed benchmark file for %s%s...",
+        run.label,
+        replica_suffix,
+    )
 
-        # Save compressed version to temp file first
-        temp_gz_path = local_path.with_suffix(".json.gz")
+    temp_gz_path = local_path.with_suffix(".json.gz")
+    remote_gz_path = f"{remote_path}.gz"
 
-        result = oc(
+    if not args.keep_full_benchmark_file:
+        logger.info("Trimming benchmark file on copy pod for %s%s...", run.label, replica_suffix)
+        trim_result = oc(
             "exec",
             "-n",
             ctx.target_namespace,
-            f"{ctx.benchmark_name}-copy",
+            copy_pod,
             "--",
-            "gzip",
+            "python3",
             "-c",
-            remote_path,
+            REMOTE_TRIM_SCRIPT.format(file_path=remote_path),
             check=False,
-            log_stdout=False,
-            stdout_dest=temp_gz_path,
-            text=False,
+            timeout_seconds=1800,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"No results found for {ctx.benchmark_name} run {run.label}")
+        if trim_result.returncode != 0:
+            logger.warning(
+                "Failed to trim on copy pod for %s%s, will trim locally: %s",
+                run.label,
+                replica_suffix,
+                trim_result.stderr,
+            )
 
-        # Extract and parse JSON from local compressed file
-        logger.info(f"Extracting compressed benchmark file for {run.label}...")
-        try:
-            with gzip.open(temp_gz_path, "rt", encoding="utf-8") as f:
-                json_content = f.read()
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to extract compressed results for run {run.label}: {e}"
-            ) from e
-
-        # Always create trimmed version
-        logger.info(f"Trimming the benchmark.json file for {run.label}...")
-        try:
-            raw_data = json.loads(json_content)
-            cleaned_data = trim_benchmark_json(raw_data)
-            with open(local_path, "w") as f:
-                json.dump(cleaned_data, f, separators=(",", ":"))
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse JSON for {run.label}, writing raw data")
-            write_text(local_path, json_content)
-
-        # Manage full benchmark file based on flag
-        if not args.keep_full_benchmark_file:
-            # Remove the compressed full file
-            if temp_gz_path.exists():
-                temp_gz_path.unlink()
-                logger.info(f"Removed full benchmark file {temp_gz_path.name}")
-        else:
-            logger.info(f"Keeping full benchmark file {temp_gz_path.name}")
-        extracted_files.append(
-            {
-                "label": run.label,
-                "rate": run.rate,
-                "remote_path": remote_path,
-                "local_path": str(local_path.relative_to(args.artifact_dir)),
-            }
+    compress_result = oc(
+        "exec",
+        "-n",
+        ctx.target_namespace,
+        copy_pod,
+        "--",
+        "gzip",
+        "-kf",
+        remote_path,
+        check=False,
+        timeout_seconds=1800,
+    )
+    if compress_result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to create compressed results for {ctx.benchmark_name} run {run.label}{replica_suffix}"
         )
+
+    result = oc(
+        "cp",
+        "-n",
+        ctx.target_namespace,
+        f"{copy_pod}:{remote_gz_path}",
+        str(temp_gz_path),
+        check=False,
+        timeout_seconds=1800,
+    )
+    if result.returncode != 0 or not temp_gz_path.exists() or temp_gz_path.stat().st_size == 0:
+        raise RuntimeError(
+            f"Failed to copy compressed results for {ctx.benchmark_name} run {run.label}{replica_suffix}"
+        )
+
+    logger.info("Extracting compressed benchmark file for %s%s...", run.label, replica_suffix)
+    try:
+        with gzip.open(temp_gz_path, "rt", encoding="utf-8") as f:
+            json_content = f.read()
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to extract compressed results for run {run.label}{replica_suffix}: {e}"
+        ) from e
+
+    logger.info("Trimming the benchmark.json file for %s%s...", run.label, replica_suffix)
+    try:
+        raw_data = json.loads(json_content)
+        cleaned_data = trim_benchmark_json(raw_data)
+        with open(local_path, "w") as f:
+            json.dump(cleaned_data, f, separators=(",", ":"))
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse JSON for %s%s, writing raw data", run.label, replica_suffix)
+        write_text(local_path, json_content)
+
+    if not args.keep_full_benchmark_file:
+        if temp_gz_path.exists():
+            temp_gz_path.unlink()
+            logger.info("Removed full benchmark file %s", temp_gz_path.name)
+    else:
+        logger.info("Keeping full benchmark file %s", temp_gz_path.name)
+
+    entry: dict[str, str | None] = {
+        "label": run.label,
+        "rate": run.rate,
+        "remote_path": remote_path,
+        "local_path": str(local_path.relative_to(args.artifact_dir)),
+    }
+    if replica_suffix:
+        entry["replica"] = replica_suffix.lstrip("-")
+    return entry
+
+
+def extract_results_from_copy_pod(args, ctx, results_dir: Path):
+    """Extract results from copy pod (PVC mode)"""
+    extracted_files: list[dict[str, str | None]] = []
+
+    if args.replica_count > 1:
+        replica_suffixes = [f"-{i}" for i in range(args.replica_count)]
+    else:
+        replica_suffixes = [""]
+
+    for run in ctx.guidellm_runs:
+        for replica_suffix in replica_suffixes:
+            extracted_files.append(
+                _extract_from_copy_pod_file(args, ctx, results_dir, run, replica_suffix)
+            )
 
     write_json(
         results_dir / "index.json",
@@ -582,40 +895,74 @@ def extract_results_from_copy_pod(args, ctx, results_dir: Path):
         },
     )
 
-    return f"Extracted results for {ctx.benchmark_name} from copy pod"
+    return f"Extracted results for {ctx.benchmark_name} from copy pod ({len(replica_suffixes)} replica(s))"
 
 
-def extract_results_from_sidecar(args, ctx, results_dir: Path):
-    """Extract results from sidecar container (shared volume mode)"""
-    # Get pod name
-    pod_result = oc(
+def _get_pod_completion_index(namespace: str, pod_name: str) -> str:
+    """Get the JOB_COMPLETION_INDEX label from a pod."""
+    result = oc(
         "get",
-        "pods",
+        "pod",
+        pod_name,
         "-n",
-        ctx.target_namespace,
-        "-l",
-        f"job-name={ctx.benchmark_name}",
+        namespace,
         "-o",
-        "jsonpath={.items[0].metadata.name}",
+        "jsonpath={.metadata.labels.batch\\.kubernetes\\.io/job-completion-index}",
         check=False,
+        log_stdout=True,
     )
+    return result.stdout.strip() if result.returncode == 0 else ""
 
-    if pod_result.returncode != 0 or not pod_result.stdout.strip():
-        raise RuntimeError(f"Could not find pod for job {ctx.benchmark_name}")
 
-    pod_name = pod_result.stdout.strip()
-
+def _extract_from_sidecar_pod(
+    args,
+    ctx,
+    pod_name: str,
+    results_dir: Path,
+    replica_suffix: str,
+) -> list[dict[str, str | None]]:
+    """Extract benchmark results from a single pod's sidecar container."""
     extracted_files: list[dict[str, str | None]] = []
+
     for run in ctx.guidellm_runs:
-        remote_path = f"/results/benchmarks-{run.label}.json"
-        local_path = results_dir / f"benchmarks-{run.label}.json"
+        remote_path = f"/results/benchmarks-{run.label}{replica_suffix}.json"
+        local_path = results_dir / f"benchmarks-{run.label}{replica_suffix}.json"
 
-        logger.info(f"Retrieving the compressed benchmark file for {run.label} from sidecar...")
+        logger.info(
+            "Retrieving the compressed benchmark file for %s%s from sidecar %s...",
+            run.label,
+            replica_suffix,
+            pod_name,
+        )
 
-        # Save compressed version to temp file first
         temp_gz_path = local_path.with_suffix(".json.gz")
+        remote_gz_path = f"{remote_path}.gz"
 
-        result = oc(
+        if not args.keep_full_benchmark_file:
+            logger.info("Trimming benchmark file on sidecar for %s%s...", run.label, replica_suffix)
+            trim_result = oc(
+                "exec",
+                "-n",
+                ctx.target_namespace,
+                pod_name,
+                "-c",
+                "guidellm-sidecar",
+                "--",
+                "python3",
+                "-c",
+                REMOTE_TRIM_SCRIPT.format(file_path=remote_path),
+                check=False,
+                timeout_seconds=1800,
+            )
+            if trim_result.returncode != 0:
+                logger.warning(
+                    "Failed to trim on sidecar for %s%s, will trim locally: %s",
+                    run.label,
+                    replica_suffix,
+                    trim_result.stderr,
+                )
+
+        compress_result = oc(
             "exec",
             "-n",
             ctx.target_namespace,
@@ -624,56 +971,72 @@ def extract_results_from_sidecar(args, ctx, results_dir: Path):
             "guidellm-sidecar",
             "--",
             "gzip",
-            "-c",
+            "-kf",
             remote_path,
             check=False,
-            log_stdout=False,
-            stdout_dest=temp_gz_path,
-            text=False,
+            timeout_seconds=1800,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"No results found for {ctx.benchmark_name} run {run.label}")
+        if compress_result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to create compressed results for {ctx.benchmark_name} run {run.label}{replica_suffix}"
+            )
 
-        # Extract and parse JSON from local compressed file
-        logger.info(f"Extracting compressed benchmark file for {run.label}...")
+        result = oc(
+            "cp",
+            "-n",
+            ctx.target_namespace,
+            "-c",
+            "guidellm-sidecar",
+            f"{pod_name}:{remote_gz_path}",
+            str(temp_gz_path),
+            check=False,
+            timeout_seconds=1800,
+        )
+        if result.returncode != 0 or not temp_gz_path.exists() or temp_gz_path.stat().st_size == 0:
+            raise RuntimeError(
+                f"Failed to copy compressed results for {ctx.benchmark_name} run {run.label}{replica_suffix}"
+            )
+
+        logger.info("Extracting compressed benchmark file for %s%s...", run.label, replica_suffix)
         try:
             with gzip.open(temp_gz_path, "rt", encoding="utf-8") as f:
                 json_content = f.read()
         except Exception as e:
             raise RuntimeError(
-                f"Failed to extract compressed results for run {run.label}: {e}"
+                f"Failed to extract compressed results for run {run.label}{replica_suffix}: {e}"
             ) from e
 
-        # Always create trimmed version
-        logger.info(f"Trimming the benchmark.json file for {run.label}...")
+        logger.info("Trimming the benchmark.json file for %s%s...", run.label, replica_suffix)
         try:
             raw_data = json.loads(json_content)
             cleaned_data = trim_benchmark_json(raw_data)
             with open(local_path, "w") as f:
                 json.dump(cleaned_data, f, separators=(",", ":"))
         except json.JSONDecodeError:
-            logger.warning(f"Failed to parse JSON for {run.label}, writing raw data")
+            logger.warning(
+                "Failed to parse JSON for %s%s, writing raw data", run.label, replica_suffix
+            )
             write_text(local_path, json_content)
 
-        # Manage full benchmark file based on flag
         if not args.keep_full_benchmark_file:
-            # Remove the compressed full file
             if temp_gz_path.exists():
                 temp_gz_path.unlink()
-                logger.info(f"Removed full benchmark file {temp_gz_path.name}")
+                logger.info("Removed full benchmark file %s", temp_gz_path.name)
         else:
-            logger.info(f"Keeping full benchmark file {temp_gz_path.name}")
-        extracted_files.append(
-            {
-                "label": run.label,
-                "rate": run.rate,
-                "remote_path": remote_path,
-                "local_path": str(local_path.relative_to(args.artifact_dir)),
-            }
-        )
+            logger.info("Keeping full benchmark file %s", temp_gz_path.name)
 
-    # Create done file to signal sidecar to exit
-    logger.info("Creating done file to signal sidecar to exit...")
+        entry: dict[str, str | None] = {
+            "label": run.label,
+            "rate": run.rate,
+            "remote_path": remote_path,
+            "local_path": str(local_path.relative_to(args.artifact_dir)),
+        }
+        if replica_suffix:
+            entry["replica"] = replica_suffix.lstrip("-")
+        extracted_files.append(entry)
+
+    # Signal sidecar to exit
+    logger.info("Creating done file to signal sidecar to exit on %s...", pod_name)
     oc(
         "exec",
         "-n",
@@ -687,6 +1050,30 @@ def extract_results_from_sidecar(args, ctx, results_dir: Path):
         check=True,
     )
 
+    return extracted_files
+
+
+def extract_results_from_sidecar(args, ctx, results_dir: Path):
+    """Extract results from sidecar container(s) (shared volume mode)"""
+
+    pod_names = _get_job_pod_names(ctx.target_namespace, ctx.benchmark_name)
+    if not pod_names:
+        raise RuntimeError(f"Could not find pods for job {ctx.benchmark_name}")
+
+    extracted_files: list[dict[str, str | None]] = []
+
+    if args.replica_count <= 1:
+        extracted_files.extend(_extract_from_sidecar_pod(args, ctx, pod_names[0], results_dir, ""))
+    else:
+        for pod_name in pod_names:
+            index = _get_pod_completion_index(ctx.target_namespace, pod_name)
+            if not index:
+                raise RuntimeError(f"Could not get completion index for pod {pod_name}")
+            replica_suffix = f"-{index}"
+            extracted_files.extend(
+                _extract_from_sidecar_pod(args, ctx, pod_name, results_dir, replica_suffix)
+            )
+
     write_json(
         results_dir / "index.json",
         {
@@ -695,7 +1082,7 @@ def extract_results_from_sidecar(args, ctx, results_dir: Path):
         },
     )
 
-    return f"Extracted results for {ctx.benchmark_name} from sidecar and signaled completion"
+    return f"Extracted results for {ctx.benchmark_name} from {len(pod_names)} sidecar pod(s)"
 
 
 def _copy_result_file(
@@ -805,6 +1192,28 @@ def cleanup_copy_pod(args, ctx):
     return f"Cleaned up copy pod {ctx.benchmark_name}-copy"
 
 
+@always
+@task
+def cleanup_api_key_secret(args, ctx):
+    """Delete the API key secret if it was created (safety net for ownerReference failures)"""
+
+    secret_name = getattr(ctx, "api_key_secret_name", "")
+    if not secret_name:
+        return "No API key secret to clean up"
+
+    _best_effort_delete(
+        "API key secret",
+        "delete",
+        "secret",
+        secret_name,
+        "-n",
+        ctx.target_namespace,
+        "--ignore-not-found=true",
+    )
+    return f"Cleaned up API key secret {secret_name}"
+
+
+@always
 @task
 def cleanup_guidellm_resources(args, ctx):
     """Delete the GuideLLM benchmark job and optionally PVC at the end"""
@@ -853,29 +1262,33 @@ def capture_guidellm_state(*, artifact_dir: Path, namespace: str, benchmark_name
         selector=f"job-name={benchmark_name}",
     )
 
-    # Capture job logs
-    oc(
-        "logs",
-        f"job/{benchmark_name}",
-        "-n",
-        namespace,
-        check=False,
-        log_stdout=False,
-        stdout_dest=artifacts_dir / "guidellm_benchmark_job.log",
-    )
+    logs_dir = artifacts_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    describe_dir = artifacts_dir / "describe"
+    describe_dir.mkdir(parents=True, exist_ok=True)
 
-    # Capture pod descriptions for debugging
-    oc(
-        "describe",
-        "pods",
-        "-n",
-        namespace,
-        "-l",
-        f"job-name={benchmark_name}",
-        check=False,
-        log_stdout=False,
-        stdout_dest=artifacts_dir / "guidellm_benchmark_pod_description.txt",
-    )
+    pod_names = _get_job_pod_names(namespace, benchmark_name)
+    for pod_name in pod_names:
+        oc(
+            "logs",
+            pod_name,
+            "--all-containers",
+            "-n",
+            namespace,
+            check=False,
+            log_stdout=False,
+            stdout_dest=logs_dir / f"guidellm_benchmark_{pod_name}.log",
+        )
+        oc(
+            "describe",
+            "pod",
+            pod_name,
+            "-n",
+            namespace,
+            check=False,
+            log_stdout=False,
+            stdout_dest=describe_dir / f"guidellm_benchmark_{pod_name}.describe.txt",
+        )
 
 
 def capture_get(

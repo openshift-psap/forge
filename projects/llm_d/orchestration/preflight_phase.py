@@ -4,6 +4,7 @@ import logging
 
 from projects.core.dsl.utils.k8s import oc_resource_exists
 from projects.core.library import ci as ci_lib
+from projects.core.library.ci import ExitCategory
 from projects.llm_d.orchestration import runtime_config
 
 logger = logging.getLogger(__name__)
@@ -74,8 +75,10 @@ def run() -> int:
     #         all_checks_passed = False
 
     if all_checks_passed:
-        logger.info("Preflight checks completed successfully")
-        return 0
+        msg = "Preflight checks completed successfully"
+        logger.info(msg)
+        return 0, ExitCategory.SUCCESS, msg
     else:
-        logger.error("One or more preflight checks failed")
-        return 1
+        msg = "One or more preflight checks failed"
+        logger.error(msg)
+        return 1, ExitCategory.INTERNAL_ERROR, msg

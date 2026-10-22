@@ -18,6 +18,10 @@ REFERENCE_DIR = Path(__file__).resolve().parent / "reference_deployments"
 DEPLOYMENT_PRESETS = [
     "cpt-reference-flavors",
 ]
+SAVE_DEPLOYMENTS_HINT = (
+    "\n\n💡 To save generated deployments as references, use:\n"
+    f"   SAVE_DEPLOYMENTS=true python -m pytest {__name__} -v -s"
+)
 CONFIG_OVERRIDES = {
     "runtime.kserve.dry_run": True,
     "caliper.postprocess.enabled": False,
@@ -69,6 +73,7 @@ def _test_preset_generates_expected_llmisvc(preset: str, tmp_path: Path):
     env_vars = os.environ.copy()
     env_vars["ARTIFACT_DIR"] = str(artifact_dir)
     env_vars.pop("KUBECONFIG", None)
+    env_vars["FORGE_SKIP_CLUSTER_CHECK"] = "1"
 
     # Run the CI script with the preset
     ci_script = PROJECT_ROOT / "projects" / "llm_d" / "orchestration" / "ci.py"
@@ -97,9 +102,8 @@ def _test_preset_generates_expected_llmisvc(preset: str, tmp_path: Path):
     # Check that the command succeeded
     if result.returncode != 0:
         pytest.fail(
-            f"CI command failed for preset {preset}:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}\n\n"
-            f"💡 To save generated deployments as references, use:\n"
-            f"   SAVE_DEPLOYMENTS=true python -m pytest {__name__} -v -s"
+            f"CI command failed for preset {preset}:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+            + SAVE_DEPLOYMENTS_HINT
         )
 
     # Find all generated LLMISVC manifests
@@ -107,9 +111,7 @@ def _test_preset_generates_expected_llmisvc(preset: str, tmp_path: Path):
 
     if not deployments:
         pytest.fail(
-            f"No generated LLMISVC manifests found in {artifact_dir}\n\n"
-            f"💡 To save generated deployments as references, use:\n"
-            f"   SAVE_DEPLOYMENTS=true python -m pytest {__name__} -v -s"
+            f"No generated LLMISVC manifests found in {artifact_dir}" + SAVE_DEPLOYMENTS_HINT
         )
 
     # If saving deployments, save them and skip comparison
@@ -127,9 +129,8 @@ def _test_preset_generates_expected_llmisvc(preset: str, tmp_path: Path):
 
         if not generated_manifest.exists():
             pytest.fail(
-                f"Generated LLMISVC manifest not found at {generated_manifest}\n\n"
-                f"💡 To save generated deployments as references, use:\n"
-                f"   SAVE_DEPLOYMENTS=true python -m pytest {__name__} -v -s"
+                f"Generated LLMISVC manifest not found at {generated_manifest}"
+                + SAVE_DEPLOYMENTS_HINT
             )
 
         # Load the generated manifest
@@ -144,9 +145,7 @@ def _test_preset_generates_expected_llmisvc(preset: str, tmp_path: Path):
 
         if not reference_manifest.exists():
             pytest.fail(
-                f"Reference manifest not found at {reference_manifest}\n\n"
-                f"💡 To save generated deployments as references, use:\n"
-                f"   SAVE_DEPLOYMENTS=true python -m pytest {__name__} -v -s"
+                f"Reference manifest not found at {reference_manifest}" + SAVE_DEPLOYMENTS_HINT
             )
 
         with reference_manifest.open("r", encoding="utf-8") as f:
@@ -171,9 +170,8 @@ def _test_preset_generates_expected_llmisvc(preset: str, tmp_path: Path):
             )
 
             pytest.fail(
-                f"Generated LLMISVC does not match reference for profile {profile_name} in preset {preset}:\n{''.join(diff)}\n\n"
-                f"💡 To update reference deployments with new output, use:\n"
-                f"   SAVE_DEPLOYMENTS=true python -m pytest {__name__} -v -s"
+                f"Generated LLMISVC does not match reference for profile {profile_name} in preset {preset}:\n{''.join(diff)}"
+                + SAVE_DEPLOYMENTS_HINT
             )
 
 
