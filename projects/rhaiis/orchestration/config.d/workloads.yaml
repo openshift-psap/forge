@@ -5,11 +5,13 @@ ci-quick:
 
 # Standard benchmark profiles live in BenchConf. Keep local data and warmup for
 # Forge's separate warmup/profiler passes, and rates/duration for MLflow metadata.
+# inference_playbooks also reads local profile rampup values directly.
 profile1:
   benchconf: rhaiis-regression/concurrent-1k-1k-equal
   data: "prompt_tokens=1000,output_tokens=1000"
   rates: [1,50,100,200,300]
   max_seconds: 275
+  rampup: 35
   warmup: 75
 
 profile2:
@@ -17,6 +19,7 @@ profile2:
   data: "prompt_tokens=512,prompt_tokens_stdev=128,prompt_tokens_min=1,prompt_tokens_max=1024,output_tokens=2048,output_tokens_stdev=512,output_tokens_min=1,output_tokens_max=4096"
   rates: [1,50,100,200,300]
   max_seconds: 275
+  rampup: 35
   warmup: 75
 
 profile3:
@@ -24,6 +27,7 @@ profile3:
   data: "prompt_tokens=2048,output_tokens=128"
   rates: [1, 50, 100, 200, 300]
   max_seconds: 275
+  rampup: 35
   warmup: 75
 
 profile4:
@@ -31,6 +35,7 @@ profile4:
   data: "prompt_tokens=8000,output_tokens=1000"
   rates: [1,25,50,75,100]
   max_seconds: 275
+  rampup: 35
   warmup: 75
   samples: 50
 
@@ -39,6 +44,7 @@ profile5:
   data: "prompt_tokens=100000,output_tokens=1000"
   rates: [1, 2, 5]
   max_seconds: 275
+  rampup: 35
   warmup: 75
   samples: 10
 
@@ -47,6 +53,7 @@ profile6:
   data: "prompt_tokens=128,output_tokens=128,turns=5,prefix_buckets[0].prefix_count=10000,prefix_buckets[0].prefix_tokens=512"
   rates: [1, 32, 64, 128, 256, 512]
   max_seconds: 275
+  rampup: 35
   warmup: 75
 
 profile7:
@@ -54,6 +61,7 @@ profile7:
   data: "prompt_tokens=8000,prompt_tokens_stdev=8500,prompt_tokens_min=50,prompt_tokens_max=30000,output_tokens=800,output_tokens_stdev=1500,output_tokens_min=20,output_tokens_max=8000"
   rates: [1, 50, 100, 200, 300]
   max_seconds: 275
+  rampup: 35
   warmup: 75
 
 # Public selectors for /var runtime.benchmark_key, matching LLM_D's interface.

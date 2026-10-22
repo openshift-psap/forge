@@ -475,7 +475,6 @@ def _run_workload_benchmark(
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
-            benchmark_image = benchmark_cfg.get("image", "ghcr.io/vllm-project/guidellm:v0.7.4")
             benchconf_ref = workload.get("benchconf")
             config_path = None
             if benchconf_ref:
