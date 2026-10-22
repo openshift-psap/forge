@@ -91,7 +91,7 @@ def do_test():
         _require_manifest_path(manifest_path)
         if recipe_selector is None:
             raise ValueError(
-                "A <model>/<recipe-folder> selector is required when inference_playbooks.manifest_path is set"
+                "A <model>/recipes/<recipe-folder> selector is required when inference_playbooks.manifest_path is set"
             )
     if recipe_selector is not None:
         recipe = _load_recipe_metadata(repository_path, recipe_selector)
@@ -126,15 +126,12 @@ def do_test():
 def _load_recipe_metadata(repository_path: Path, selector: str) -> dict:
     root = repository_path.resolve(strict=True)
     if not isinstance(selector, str) or not re.fullmatch(
-        r"[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*", selector
+        r"[a-z0-9][a-z0-9._-]*/recipes/[a-z0-9][a-z0-9._-]*", selector
     ):
         raise ValueError(
-            "inference_playbooks.recipe must be a canonical <model>/<recipe-folder> selector"
+            "inference_playbooks.recipe must be a canonical <model>/recipes/<recipe-folder> selector"
         )
-    model_folder, recipe_folder = selector.split("/")
-    recipe_path = _repository_file(
-        root, f"models/{model_folder}/recipes/{recipe_folder}/recipe.yaml", "selected recipe"
-    )
+    recipe_path = _repository_file(root, f"models/{selector}/recipe.yaml", "selected recipe")
     recipe_data = _load_yaml_document(recipe_path)
     if not isinstance(recipe_data.get("recipe_id"), str) or not re.fullmatch(
         r"[a-z0-9][a-z0-9._-]*", recipe_data["recipe_id"]

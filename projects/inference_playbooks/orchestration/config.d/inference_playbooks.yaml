@@ -1,5 +1,5 @@
-# Direct <model>/<recipe-folder> locator, not recipe_id; null validates the catalog only.
-# Example: kimi-k3/h200-x8-pp2-tp8-8k1k
+# Direct path beneath models/: <model>/recipes/<recipe-folder>, not recipe_id.
+# Null validates the catalog only. Example: kimi-k3/recipes/h200-x8-pp2-tp8-8k1k
 recipe: null
 # Mandatory for a launch; canonical path relative to the selected recipe folder.
 # Example: manifests/vllm-v0.29.0/leaderworkerset.yaml

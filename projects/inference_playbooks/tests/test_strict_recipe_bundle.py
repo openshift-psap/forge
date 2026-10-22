@@ -403,7 +403,7 @@ def launch(checkout, monkeypatch, tmp_path):
     namespace = "target"
     artifact_dir = tmp_path / "run"
     values = {
-        "inference_playbooks.recipe": "model/recipe",
+        "inference_playbooks.recipe": "model/recipes/recipe",
         "inference_playbooks.manifest_path": checkout.path.relative_to(
             checkout.recipe["recipe_path"].parent
         ).as_posix(),
@@ -991,7 +991,7 @@ def test_every_selected_launch_requires_explicit_canonical_manifest_path(launch,
 
 @pytest.mark.parametrize("value", ["__missing__", None, "", "  ", 123])
 def test_selected_recipe_without_explicit_path_fails_at_entrypoint(checkout, monkeypatch, value):
-    values = {"inference_playbooks.recipe": "model/recipe"}
+    values = {"inference_playbooks.recipe": "model/recipes/recipe"}
     if value != "__missing__":
         values["inference_playbooks.manifest_path"] = value
     monkeypatch.setattr(test_phase.foreign_repository, "initialize", lambda: checkout.root)
@@ -1103,7 +1103,7 @@ def test_direct_selection_reads_only_selected_recipe_and_dependencies(checkout, 
     monkeypatch.setattr(
         Path, "rglob", lambda *args, **kwargs: pytest.fail("recursive discovery is forbidden")
     )
-    recipe = test_phase._load_recipe_metadata(checkout.root, "model/recipe")
+    recipe = test_phase._load_recipe_metadata(checkout.root, "model/recipes/recipe")
     bundle = test_phase._load_manifest_override(
         checkout.root, "manifests/vllm-v1/b-server.yaml", recipe
     )
@@ -1128,14 +1128,18 @@ def test_direct_selection_reads_only_selected_recipe_and_dependencies(checkout, 
         [],
         "synthetic",
         "model",
-        "model/recipe/extra",
-        "/model/recipe",
-        "model/../recipe",
-        "./model/recipe",
-        "model//recipe",
-        "model/recipe/",
+        "model/recipe",
+        "model/recipes/recipe/extra",
+        "/model/recipes/recipe",
+        "model/recipes/../recipe",
+        "./model/recipes/recipe",
+        "model//recipes/recipe",
+        "model/recipes//recipe",
+        "model/recipes/./recipe",
+        "model/recipes/recipe/",
+        "model/not-recipes/recipe",
         "models/model/recipes/recipe",
-        "model/missing",
+        "model/recipes/missing",
     ],
 )
 def test_invalid_selector_has_no_scan_or_opaque_id_fallback(checkout, monkeypatch, selector):
@@ -1157,7 +1161,7 @@ def test_selected_metadata_still_rejects_duplicate_keys(checkout, target):
     with paths[target].open("a") as handle:
         handle.write("metadata_date: 2026-09-28\nmetadata_date: 2026-10-22\n")
     with pytest.raises(ValueError, match="Invalid metadata YAML"):
-        test_phase._load_recipe_metadata(checkout.root, "model/recipe")
+        test_phase._load_recipe_metadata(checkout.root, "model/recipes/recipe")
 
 
 @pytest.mark.parametrize(
@@ -1185,7 +1189,7 @@ def test_selector_and_dependency_symlinks_are_rejected(checkout, tmp_path, targe
     if target == "recipe-folder":
         alias = recipe_path.parent.parent / "alias"
         alias.symlink_to(recipe_path.parent, target_is_directory=True)
-        selector = "model/alias"
+        selector = "model/recipes/alias"
     else:
         paths = {
             "recipe-file": recipe_path,
@@ -1197,7 +1201,7 @@ def test_selector_and_dependency_symlinks_are_rejected(checkout, tmp_path, targe
         outside.write_bytes(path.read_bytes())
         path.unlink()
         path.symlink_to(outside)
-        selector = "model/recipe"
+        selector = "model/recipes/recipe"
     with pytest.raises(ValueError, match="without symlinks"):
         test_phase._load_recipe_metadata(checkout.root, selector)
 
@@ -1237,7 +1241,7 @@ def test_recipe_relative_manifest_path_is_canonical_and_selected(checkout, tmp_p
 
 def test_selected_labels_use_authored_id_without_rewriting_config(checkout, monkeypatch, tmp_path):
     values = {
-        "inference_playbooks.recipe": "model/recipe",
+        "inference_playbooks.recipe": "model/recipes/recipe",
         "inference_playbooks.manifest_path": "manifests/vllm-v1/b-server.yaml",
     }
     unchanged = copy.deepcopy(values)

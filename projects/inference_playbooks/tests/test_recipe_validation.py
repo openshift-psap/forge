@@ -154,7 +154,7 @@ def test_model_identity_labels_from_metadata(
     recipe = (
         load_recipe_catalog(tmp_path)["synthetic-recipe"]
         if loader == "catalog"
-        else test_phase._load_recipe_metadata(tmp_path, "example-model/profile")
+        else test_phase._load_recipe_metadata(tmp_path, "example-model/recipes/profile")
     )
     labels = test_phase._benchmark_kpi_labels("synthetic-recipe", recipe, "workload")
     assert labels["model_name"] == "example/base"
