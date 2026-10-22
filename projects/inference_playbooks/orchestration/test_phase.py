@@ -1,17 +1,16 @@
-import copy
 import json
 import logging
 import os
 import sys
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
-from urllib.parse import urlparse
 
 import yaml
 
 from projects.core.dsl.utils import slugify_identifier
 from projects.core.dsl.utils.k8s import oc, oc_get_json
-from projects.core.library import config, env, vault
+from projects.core.library import config, env
 from projects.core.library.postprocess import (
     create_test_metadata,
     run_and_postprocess,
@@ -21,16 +20,20 @@ from projects.core.library.postprocess import (
 from projects.foreign_testing.library import initialize as foreign_repository
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
 from projects.guidellm.toolbox.run_guidellm_benchmark import main as run_guidellm_benchmark
+from projects.inference_playbooks.orchestration.manifest_bundle import (
+    RESOURCE_TYPES,
+    checked_submission,
+    classify_documents,
+    load_documents,
+    load_source_bundle,
+    normalized_documents,
+    write_bundle_artifacts,
+)
 from projects.inference_playbooks.orchestration.recipe_validation import (
     load_recipe_catalog,
     resolve_model_quantization,
 )
-from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state
-from projects.kserve.toolbox.capture_lws_state import main as capture_lws_state
-from projects.kserve.toolbox.deploy_llmisvc import main as deploy_llmisvc
-from projects.kserve.toolbox.deploy_lws import main as deploy_lws
-from projects.kserve.toolbox.prepare_hf_model_cache import main as prepare_hf_model_cache
-from projects.kserve.toolbox.prepare_hf_model_cache.utils import build_model_cache_spec
+from projects.inference_playbooks.toolbox.wait_recipe import main as wait_recipe
 
 logger = logging.getLogger(__name__)
 PROJECTS_DIR = Path(__file__).resolve().parents[2]
@@ -86,24 +89,18 @@ def do_test():
         raise ValueError("inference_playbooks.recipe must be a recipe ID string")
 
     manifest_path = config.project.get_config("inference_playbooks.manifest_path")
-    if manifest_path is not None:
-        if not isinstance(manifest_path, str) or not manifest_path.strip():
-            raise ValueError("inference_playbooks.manifest_path must be a non-empty path")
+    if recipe_id is not None or manifest_path is not None:
+        _require_manifest_path(manifest_path)
         if recipe_id is None:
             raise ValueError(
                 "A recipe ID is required when inference_playbooks.manifest_path is set"
             )
+    if recipe_id is not None:
         recipes = {recipe_id: _load_recipe_metadata(repository_path, recipe_id)}
-        manifest_bundle = _load_manifest_override(
-            repository_path, manifest_path, recipes[recipe_id]
-        )
     else:
         recipes = load_recipe_catalog(repository_path)
-        manifest_bundle = None
 
     logger.info("Loaded metadata for %d Inference Playbooks recipe(s)", len(recipes))
-    if manifest_bundle is not None:
-        logger.info("Using manifest override %s", manifest_bundle["manifest_path"])
 
     with env.NextArtifactDir("inference_playbooks_test_dir"):
         test_dir = create_custom_test_metadata(recipe_id)
@@ -115,7 +112,7 @@ def do_test():
                 available = ", ".join(sorted(recipes))
                 raise ValueError(f"Unknown recipe ID {recipe_id!r}; available recipes: {available}")
             else:
-                _launch_recipe(recipe_id, recipes[recipe_id], manifest_bundle)
+                _launch_recipe(recipe_id, recipes[recipe_id])
         except Exception as exc:
             logger.exception("Test failed with exception")
             update_test_labels_with_status(test_dir, False, f"Test failed: {exc}")
@@ -188,6 +185,7 @@ def _load_recipe_metadata(repository_path: Path, recipe_id: str) -> dict:
     return {
         **recipe_data,
         "recipe_path": recipe_path,
+        "repository_path": root,
         "model_name": model_name,
         "served_model_name": served_model_name,
         "quantization": resolve_model_quantization(recipe_data, model_data),
@@ -225,11 +223,10 @@ def _repository_file(
 
 
 def _load_yaml_document(path: Path):
-    try:
-        with path.open(encoding="utf-8") as stream:
-            return yaml.safe_load(stream)
-    except yaml.YAMLError as exc:
-        raise ValueError(f"Invalid YAML in {path}") from exc
+    documents = load_documents(path.read_bytes())
+    if len(documents) != 1:
+        raise ValueError(f"Expected one YAML document in {path}")
+    return documents[0]
 
 
 def _load_manifest_override(
@@ -238,81 +235,58 @@ def _load_manifest_override(
     recipe: dict,
 ) -> dict:
     root = repository_path.resolve(strict=True)
-    manifest_path = _repository_file(
-        root,
-        manifest_path,
-        "inference_playbooks.manifest_path",
-        recipe.get("recipe_path"),
-    )
+    _require_manifest_path(manifest_path)
+    relative = Path(manifest_path)
+    if relative.is_absolute() or ".." in relative.parts or relative.as_posix() != manifest_path:
+        raise ValueError(
+            "inference_playbooks.manifest_path must be a canonical repository-relative path"
+        )
+    selected = root / relative
     try:
-        with manifest_path.open(encoding="utf-8") as stream:
-            documents = [doc for doc in yaml.safe_load_all(stream) if doc is not None]
-    except yaml.YAMLError as exc:
-        raise ValueError(f"Invalid manifest override YAML in {manifest_path}") from exc
-    bundle = _classify_manifest_documents(documents)
-    bundle["manifest_path"] = manifest_path
-    return bundle
+        canonical = selected.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ValueError(
+            "inference_playbooks.manifest_path does not identify an existing artifact"
+        ) from None
+    if selected != canonical or not selected.is_file() or not canonical.is_relative_to(root):
+        raise ValueError(
+            "inference_playbooks.manifest_path must be a canonical contained artifact file"
+        )
+    return load_source_bundle(root, recipe, selected)
+
+
+def _require_manifest_path(value) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "Every recipe launch requires an explicit nonempty inference_playbooks.manifest_path"
+        )
 
 
 def _classify_manifest_documents(documents: list[dict]) -> dict:
-    primary_kinds = {"Deployment", "InferenceService", "LeaderWorkerSet", "LLMInferenceService"}
-    companion_kinds = {"Service", "ServingRuntime"}
-    primary = []
-    companions = {}
-    for document in documents:
-        if (
-            not isinstance(document, dict)
-            or not isinstance(document.get("apiVersion"), str)
-            or not isinstance(document.get("kind"), str)
-        ):
-            raise ValueError("Every manifest override document must define apiVersion and kind")
-        metadata = document.get("metadata")
-        if not isinstance(metadata, dict) or not isinstance(metadata.get("name"), str):
-            raise ValueError("Every manifest override document must define metadata.name")
-        if not metadata["name"]:
-            raise ValueError("Every manifest override document must define metadata.name")
-        kind = document["kind"]
-        if kind in primary_kinds:
-            primary.append(document)
-        elif kind in companion_kinds:
-            if kind in companions:
-                raise ValueError(f"Manifest override contains more than one {kind}")
-            companions[kind] = document
-        else:
-            raise ValueError(f"Unsupported manifest override kind {kind!r}")
-
-    if len(primary) != 1:
-        if len(primary) > 1 and all(doc["kind"] == "Deployment" for doc in primary):
-            raise ValueError(
-                "Manifest override contains multiple Deployments; P/D recipes need an llm-d "
-                "router and are not supported by this single-endpoint launch flow"
-            )
-        raise ValueError("Manifest override must contain exactly one primary resource")
-
-    return {
-        "primary": primary[0],
-        "service": companions.get("Service"),
-        "servingruntime": companions.get("ServingRuntime"),
-    }
+    return classify_documents(documents)
 
 
 def _manifest_bundle_from_recipe(recipe: dict) -> dict:
-    documents = [recipe["manifest_data"]]
-    documents.extend(source["data"] for source in recipe.get("auxiliary_manifests", []))
-    return _classify_manifest_documents(documents)
+    selection = config.project.get_config("inference_playbooks.manifest_path")
+    _require_manifest_path(selection)
+    if "repository_path" not in recipe or "recipe_path" not in recipe:
+        raise ValueError("Strict certification requires a canonical v4 recipe checkout")
+    return _load_manifest_override(recipe["repository_path"], selection, recipe)
 
 
-def _launch_recipe(recipe_id: str, recipe: dict, manifest_bundle: dict | None = None) -> None:
+def _launch_recipe(recipe_id: str, recipe: dict) -> None:
+    bundle = _manifest_bundle_from_recipe(recipe)
     if _clusterless_mode():
         raise RuntimeError(
             "A recipe launch needs a target cluster; rerun the PR test with /cluster <registered-target>"
         )
 
-    bundle = manifest_bundle or _manifest_bundle_from_recipe(recipe)
+    if bundle["recipe_id"] != recipe_id:
+        raise ValueError("Bundle recipe identity does not match the selected recipe")
+    recipe["platform"] = bundle["platform"]
+    logger.info("Using complete explicitly selected platform %s", bundle["platform"])
     manifest = bundle["primary"]
-    namespace = config.project.get_config("inference_playbooks.namespace") or manifest.get(
-        "metadata", {}
-    ).get("namespace")
+    namespace = config.project.get_config("inference_playbooks.namespace")
     if not isinstance(namespace, str) or not namespace:
         raise ValueError(
             "Recipe launch needs a namespace; set /var inference_playbooks.namespace: <namespace>"
@@ -320,658 +294,53 @@ def _launch_recipe(recipe_id: str, recipe: dict, manifest_bundle: dict | None = 
     if slugify_identifier(namespace) != namespace:
         raise ValueError(f"Invalid Kubernetes namespace: {namespace!r}")
 
-    kind = manifest.get("kind")
-    if kind == "LLMInferenceService":
-        if bundle["service"] or bundle["servingruntime"]:
-            raise ValueError("LLMInferenceService overrides do not accept companion resources")
-        _launch_llmisvc_recipe(recipe_id, recipe, manifest, namespace)
-    elif kind == "LeaderWorkerSet":
-        if bundle["servingruntime"]:
-            raise ValueError("LeaderWorkerSet overrides do not accept a ServingRuntime")
-        _launch_lws_recipe(recipe_id, recipe, manifest, bundle["service"], namespace)
-    elif kind == "Deployment":
-        if bundle["servingruntime"]:
-            raise ValueError("Deployment overrides do not accept a ServingRuntime")
-        _launch_deployment_recipe(recipe_id, recipe, manifest, bundle["service"], namespace)
-    elif kind == "InferenceService":
-        _launch_isvc_recipe(
-            recipe_id, recipe, manifest, bundle["servingruntime"], bundle["service"], namespace
-        )
-    else:
-        raise ValueError(f"Recipe {recipe_id!r} has unsupported manifest kind {kind!r}")
-
-
-def _launch_llmisvc_recipe(
-    recipe_id: str,
-    recipe: dict,
-    manifest_data: dict,
-    namespace: str,
-) -> None:
-    manifest = copy.deepcopy(manifest_data)
-    metadata = manifest["metadata"]
-    original_name = metadata["name"]
-    if slugify_identifier(original_name) != original_name:
-        raise ValueError(f"Recipe has an invalid Kubernetes service name: {original_name!r}")
-    service_name = _unique_name(original_name)
-    manifest["metadata"] = {**metadata, "name": service_name, "namespace": namespace}
-
-    def deploy() -> str:
-        _prepare_llmisvc_model(recipe_id, recipe, manifest, namespace)
-        manifest_path = _write_launch_manifest(service_name, manifest)
-        return deploy_llmisvc.run(
-            namespace=namespace,
-            inference_service_manifest_path=str(manifest_path),
-            gateway_status_address_name=None,
-            deploy_monitor=False,
-        )
-
-    def capture() -> None:
-        capture_llmisvc_state.run(llmisvc_name=service_name, namespace=namespace)
-
-    def cleanup() -> None:
-        _delete_resources(namespace, [("llminferenceservice", service_name)])
-
-    _deploy_benchmark_finalize(recipe_id, recipe, namespace, service_name, deploy, capture, cleanup)
-
-
-def _prepare_llmisvc_model(recipe_id: str, recipe: dict, manifest: dict, namespace: str) -> None:
-    model = manifest.get("spec", {}).get("model")
-    model_uri = model.get("uri") if isinstance(model, dict) else None
-    if not isinstance(model_uri, str) or not model_uri:
-        raise ValueError("LLMInferenceService override must define spec.model.uri")
-    if model_uri.startswith("hf://"):
-        cache_spec = _prepare_hf_model_cache(recipe_id, model_uri, namespace)
-        manifest["spec"]["model"]["uri"] = cache_spec["model_uri"]
-        manifest["spec"]["storageInitializer"] = {"enabled": False}
-        logger.info("Prepared model cache %s for %s", cache_spec["pvc_name"], model_uri)
-        return
-
-    if not model_uri.startswith("pvc://"):
-        raise ValueError(f"Unsupported LLMInferenceService model URI: {model_uri!r}")
-    model_source = recipe.get("model_source", {})
-    pvc_name = model_uri.removeprefix("pvc://").split("/", maxsplit=1)[0]
-    if not pvc_name:
-        raise ValueError("LLMInferenceService PVC model URI must name a PVC")
-    result = oc(
-        "get", "pvc", pvc_name, "-n", namespace, "-o", "json", check=False, log_stdout=False
+    if config.project.get_config("inference_playbooks.rdma_resource"):
+        raise ValueError("RDMA resource overrides are forbidden; update the canonical recipe")
+    submitted = normalized_documents(bundle["documents"], namespace)
+    kind = manifest["kind"]
+    port = (
+        _recipe_http_port(recipe, manifest) if kind in {"Deployment", "LeaderWorkerSet"} else None
     )
-    if result.returncode != 0:
-        source_uri = model_source.get("source_uri")
-        source_note = f" from {source_uri}" if source_uri else ""
-        raise RuntimeError(
-            f"Recipe model URI {model_uri!r} requires an existing populated PVC in "
-            f"namespace {namespace!r}{source_note}"
-        )
-    pvc = json.loads(result.stdout)
-    if pvc.get("status", {}).get("phase") != "Bound":
-        raise RuntimeError(f"Recipe PVC {pvc_name!r} in namespace {namespace!r} is not Bound")
-
-
-def _prepare_hf_model_cache(
-    model_key: str,
-    model_uri: str,
-    namespace: str,
-    *,
-    model_cache: dict | None = None,
-) -> dict:
-    cache = config.project.get_config("model_cache")
-    pvc = cache["pvc"]
-    download = cache["download"]
-    overrides = model_cache or {}
-    pvc_size = overrides.get("pvc_size", pvc["size"])
-    model_directory_name = overrides.get("model_directory_name", pvc["model_directory_name"])
-    wait_timeout_seconds = overrides.get("wait_timeout_seconds", download["wait_timeout_seconds"])
-    cache_spec = build_model_cache_spec(
-        namespace=namespace,
-        model_key=model_key,
-        model_uri=model_uri,
-        pvc_size=pvc_size,
-        access_mode=pvc["access_mode"],
-        storage_class_name=pvc["storage_class_name"],
-        pvc_name_prefix=pvc["name_prefix"],
-        model_directory_name=model_directory_name,
-        marker_filename=cache["marker_filename"],
+    timeout_key = (
+        "lws_ready_timeout_seconds" if kind == "LeaderWorkerSet" else "readiness_timeout_seconds"
     )
-    hf_token_file = vault.get_vault_content_path("psap-forge-hf", "hf_token")
-    if hf_token_file is None:
-        logger.warning("HF vault is unavailable; attempting the public model download")
-    prepare_hf_model_cache.run(
-        namespace=namespace,
-        model_key=model_key,
-        model_uri=model_uri,
-        pvc_size=pvc_size,
-        access_mode=pvc["access_mode"],
-        storage_class_name=pvc["storage_class_name"],
-        pvc_name_prefix=pvc["name_prefix"],
-        model_directory_name=model_directory_name,
-        marker_filename=cache["marker_filename"],
-        wait_timeout_seconds=wait_timeout_seconds,
-        poll_interval_seconds=download["poll_interval_seconds"],
-        downloader_image=cache["hf"]["downloader_image"],
-        hf_token_file_path=hf_token_file,
-        pod_image_pull_policy=download["pod_image_pull_policy"],
-    )
-    return cache_spec
-
-
-def _launch_lws_recipe(
-    recipe_id: str,
-    recipe: dict,
-    manifest_data: dict,
-    service_data: dict | None,
-    namespace: str,
-) -> None:
-    lws = copy.deepcopy(manifest_data)
-    service = copy.deepcopy(service_data) if service_data is not None else None
-    original_name = lws["metadata"]["name"]
-    if slugify_identifier(original_name) != original_name:
-        raise ValueError(f"Recipe has an invalid LeaderWorkerSet name: {original_name!r}")
-    lws_name = _unique_name(original_name)
-    service_name = None
-    run_label = lws_name
-    endpoint_label = "leader"
-    lws_metadata = lws["metadata"]
-    lws_labels = lws_metadata.get("labels") or {}
-    if not isinstance(lws_labels, dict):
-        raise ValueError(f"Recipe {recipe_id!r} LeaderWorkerSet metadata.labels must be a mapping")
-    lws["metadata"] = {
-        **lws_metadata,
-        "name": lws_name,
-        "namespace": namespace,
-        "labels": {**lws_labels, "forge.openshift.io/run": run_label},
+    timeout = config.project.get_config(f"inference_playbooks.{timeout_key}")
+    if type(timeout) is not int or timeout <= 0:
+        raise ValueError("Recipe readiness timeout must be a positive integer")
+    src = env.ARTIFACT_DIR / "src"
+    metadata = write_bundle_artifacts(bundle, submitted, namespace, src, env.FORGE_HOME)
+    # Keep existing primary launch files as attribution inputs, but never submit from them.
+    suffixes = {
+        "LeaderWorkerSet": "-lws",
+        "Deployment": "-deployment",
+        "InferenceService": "-inferenceservice",
+        "ServingRuntime": "-servingruntime",
+        "LLMInferenceService": "",
     }
-    spec = lws.get("spec")
-    templates = spec.get("leaderWorkerTemplate") if isinstance(spec, dict) else None
-    if not isinstance(templates, dict):
-        raise ValueError(f"Recipe {recipe_id!r} must define spec.leaderWorkerTemplate")
-    leader_template = templates.get("leaderTemplate")
-    if not isinstance(leader_template, dict):
-        raise ValueError(f"Recipe {recipe_id!r} must define an explicit leaderTemplate")
-    leader_metadata = leader_template.setdefault("metadata", {})
-    if not isinstance(leader_metadata, dict):
-        raise ValueError(f"Recipe {recipe_id!r} leaderTemplate metadata must be a mapping")
-    leader_labels = leader_metadata.setdefault("labels", {})
-    if not isinstance(leader_labels, dict):
-        raise ValueError(f"Recipe {recipe_id!r} leaderTemplate metadata.labels must be a mapping")
-    leader_labels.update(
-        {"forge.openshift.io/run": run_label, "forge.openshift.io/endpoint": endpoint_label}
-    )
-    worker_template = templates.get("workerTemplate")
-    if not isinstance(worker_template, dict):
-        raise ValueError(f"Recipe {recipe_id!r} must define an explicit workerTemplate")
-    worker_metadata = worker_template.setdefault("metadata", {})
-    if not isinstance(worker_metadata, dict):
-        raise ValueError(f"Recipe {recipe_id!r} workerTemplate metadata must be a mapping")
-    worker_labels = worker_metadata.setdefault("labels", {})
-    if not isinstance(worker_labels, dict):
-        raise ValueError(f"Recipe {recipe_id!r} workerTemplate metadata.labels must be a mapping")
-    worker_labels["forge.openshift.io/run"] = run_label
+    for document in submitted:
+        _write_launch_manifest(document["metadata"]["name"] + suffixes[document["kind"]], document)
+    created = []
+    name = manifest["metadata"]["name"]
 
-    if service is not None:
-        service_metadata = service["metadata"]
-        original_service_name = service_metadata["name"]
-        service_name = _unique_name(original_service_name)
-        service_labels = service_metadata.get("labels") or {}
-        if not isinstance(service_labels, dict):
-            raise ValueError(f"Recipe {recipe_id!r} Service metadata.labels must be a mapping")
-        service["metadata"] = {
-            **service_metadata,
-            "name": service_name,
-            "namespace": namespace,
-            "labels": {**service_labels, "forge.openshift.io/run": run_label},
-        }
-        service_spec = service.get("spec")
-        if not isinstance(service_spec, dict):
-            raise ValueError(f"Recipe {recipe_id!r} Service must define spec")
-        service_spec["selector"] = {
-            "forge.openshift.io/run": run_label,
-            "forge.openshift.io/endpoint": endpoint_label,
-        }
-
-    for template_key in ("leaderTemplate", "workerTemplate"):
-        template = templates.get(template_key, {})
-        template_spec = template.get("spec")
-        if isinstance(template_spec, dict):
-            _strip_hardcoded_uid(template_spec)
-
-    rdma_resource = config.project.get_config("inference_playbooks.rdma_resource")
-    if rdma_resource:
-        deploy_lws.replace_resource_name(lws, "rdma/ib", rdma_resource)
-    lws_ready_timeout_seconds = config.project.get_config(
-        "inference_playbooks.lws_ready_timeout_seconds"
-    )
-    pod_selector = f"forge.openshift.io/run={run_label}"
-
-    def deploy() -> str:
-        nonlocal service_name
-        if recipe.get("model_cache"):
-            _prepare_lws_model_cache(recipe, lws, namespace)
-        service_path = (
-            _write_launch_manifest(f"{service_name}-service", service)
-            if service is not None
-            else None
-        )
-        lws_path = _write_launch_manifest(f"{lws_name}-lws", lws)
-        endpoint_url = deploy_lws.run(
+    def deploy():
+        _create_checked_bundle(src, namespace, metadata, created)
+        primary = next(resource for resource in created if resource["kind"] == kind)
+        return wait_recipe.run(
             namespace=namespace,
-            service_manifest_path=str(service_path) if service_path else None,
-            leader_worker_set_manifest_path=str(lws_path),
-            pod_selector=pod_selector,
-            timeout_seconds=lws_ready_timeout_seconds,
-        )
-        if service_name is None:
-            hostname = urlparse(endpoint_url).hostname
-            if not hostname:
-                raise RuntimeError("LeaderWorkerSet endpoint discovery returned an invalid URL")
-            service_name = hostname.split(".", maxsplit=1)[0]
-        return endpoint_url
-
-    def capture() -> None:
-        capture_lws_state.run(
-            namespace=namespace,
-            lws_name=lws_name,
-            service_name=service_name,
-            pod_selector=pod_selector,
+            kind=kind,
+            name=name,
+            uid=primary["metadata"]["uid"],
+            timeout_seconds=timeout,
+            port=port,
         )
 
-    def cleanup() -> None:
-        resources = [("leaderworkerset", lws_name)]
-        if service_name:
-            resources.append(("service", service_name))
-        _delete_resources(namespace, resources)
+    def capture():
+        _capture_created_recipe(namespace, created)
 
-    _deploy_benchmark_finalize(recipe_id, recipe, namespace, lws_name, deploy, capture, cleanup)
+    def cleanup():
+        _delete_created_resources(namespace, created)
 
-
-def _prepare_lws_model_cache(recipe: dict, lws: dict, namespace: str) -> None:
-    model_cache = recipe["model_cache"]
-    model_uri = f"hf://{recipe['model_name']}"
-    cache_spec = _prepare_hf_model_cache(
-        recipe["model_id"],
-        model_uri,
-        namespace,
-        model_cache=model_cache,
-    )
-    deploy_lws.attach_model_cache_pvc(lws, model_cache["volume_name"], cache_spec["pvc_name"])
-    logger.info("Prepared model cache %s for %s", cache_spec["pvc_name"], model_uri)
-
-
-def _strip_hardcoded_uid(pod_spec: dict) -> None:
-    """Remove hardcoded runAsUser and fix env for OpenShift SCC compatibility.
-
-    OpenShift assigns UIDs from the namespace range. A hardcoded UID like
-    65534 is rejected by the restricted SCC. Removing it lets OpenShift
-    assign a valid UID while preserving runAsNonRoot and container-level
-    security settings.
-
-    The assigned UID has no /etc/passwd entry, so getpass.getuser() and
-    PyTorch cache_dir fail. Setting HOME and USER on each container
-    prevents this.
-    """
-    security_context = pod_spec.get("securityContext")
-    if isinstance(security_context, dict) and "runAsUser" in security_context:
-        logger.info(
-            "Removing hardcoded runAsUser=%s for OpenShift SCC compatibility",
-            security_context["runAsUser"],
-        )
-        del security_context["runAsUser"]
-
-    ocp_env = [
-        {"name": "HOME", "value": "/tmp"},
-        {"name": "USER", "value": "nobody"},
-    ]
-    for container in pod_spec.get("containers", []):
-        env_list = container.setdefault("env", [])
-        existing_names = {e["name"] for e in env_list if isinstance(e, dict)}
-        for entry in ocp_env:
-            if entry["name"] not in existing_names:
-                env_list.append(entry)
-
-
-def _launch_deployment_recipe(
-    recipe_id: str,
-    recipe: dict,
-    manifest_data: dict,
-    service_data: dict | None,
-    namespace: str,
-) -> None:
-    deployment = copy.deepcopy(manifest_data)
-    metadata = deployment["metadata"]
-    original_name = metadata["name"]
-    if slugify_identifier(original_name) != original_name:
-        raise ValueError(f"Recipe has an invalid Deployment name: {original_name!r}")
-
-    deployment_name = _unique_name(original_name)
-    run_label = deployment_name
-    run_label_key = "forge.openshift.io/run"
-    spec = deployment.get("spec")
-    if not isinstance(spec, dict):
-        raise ValueError(f"Recipe {recipe_id!r} Deployment must define spec")
-    selector_spec = spec.get("selector")
-    selector = selector_spec.get("matchLabels") if isinstance(selector_spec, dict) else None
-    pod_template = spec.get("template")
-    if not isinstance(pod_template, dict):
-        raise ValueError(f"Recipe {recipe_id!r} Deployment must define spec.template")
-    pod_metadata = pod_template.setdefault("metadata", {})
-    if not isinstance(pod_metadata, dict):
-        raise ValueError(f"Recipe {recipe_id!r} Deployment pod metadata must be a mapping")
-    pod_labels = pod_metadata.setdefault("labels", {})
-    pod_spec = pod_template.get("spec")
-    containers = pod_spec.get("containers") if isinstance(pod_spec, dict) else None
-    if (
-        not isinstance(selector, dict)
-        or not selector
-        or not isinstance(pod_labels, dict)
-        or not isinstance(containers, list)
-        or not containers
-    ):
-        raise ValueError(
-            f"Recipe {recipe_id!r} Deployment needs containers and matching pod labels"
-        )
-    if any(pod_labels.get(key) != value for key, value in selector.items()):
-        raise ValueError(f"Recipe {recipe_id!r} Deployment selector does not match pod labels")
-    original_pod_labels = dict(pod_labels)
-    if run_label_key in selector and selector[run_label_key] != run_label:
-        raise ValueError(f"Recipe {recipe_id!r} Deployment uses a conflicting Forge run label")
-    selector[run_label_key] = run_label
-    pod_labels[run_label_key] = run_label
-    labels = metadata.setdefault("labels", {})
-    if not isinstance(labels, dict):
-        raise ValueError(f"Recipe {recipe_id!r} Deployment metadata.labels must be a mapping")
-    labels[run_label_key] = run_label
-    deployment["metadata"] = {**metadata, "name": deployment_name, "namespace": namespace}
-
-    _strip_hardcoded_uid(pod_spec)
-
-    if service_data is None:
-        port = _deployment_service_port(recipe, deployment)
-        service_name = _unique_name(f"{original_name}-service")
-        service = {
-            "apiVersion": "v1",
-            "kind": "Service",
-            "metadata": {
-                "name": service_name,
-                "namespace": namespace,
-                "labels": {run_label_key: run_label},
-            },
-            "spec": {
-                "type": "ClusterIP",
-                "selector": {run_label_key: run_label},
-                "ports": [{"name": "http", "port": port, "targetPort": port}],
-            },
-        }
-    else:
-        service = copy.deepcopy(service_data)
-        service_metadata = service["metadata"]
-        original_service_name = service_metadata["name"]
-        if slugify_identifier(original_service_name) != original_service_name:
-            raise ValueError(f"Recipe has an invalid Service name: {original_service_name!r}")
-        service_name = _unique_name(original_service_name)
-        service_spec = service.get("spec")
-        service_selector = service_spec.get("selector") if isinstance(service_spec, dict) else None
-        if not isinstance(service_selector, dict) or not service_selector:
-            raise ValueError(f"Recipe {recipe_id!r} Service must define spec.selector")
-        if any(original_pod_labels.get(key) != value for key, value in service_selector.items()):
-            raise ValueError(
-                f"Recipe {recipe_id!r} Service selector does not match Deployment pod labels"
-            )
-        if run_label_key in service_selector and service_selector[run_label_key] != run_label:
-            raise ValueError(f"Recipe {recipe_id!r} Service uses a conflicting Forge run label")
-        service_spec["selector"] = {**service_selector, run_label_key: run_label}
-        port = _service_manifest_port(service)
-        service_labels = service_metadata.get("labels") or {}
-        if not isinstance(service_labels, dict):
-            raise ValueError(f"Recipe {recipe_id!r} Service metadata.labels must be a mapping")
-        service["metadata"] = {
-            **service_metadata,
-            "name": service_name,
-            "namespace": namespace,
-            "labels": {**service_labels, run_label_key: run_label},
-        }
-
-    readiness_timeout = config.project.get_config("inference_playbooks.readiness_timeout_seconds")
-    if type(readiness_timeout) is not int or readiness_timeout <= 0:
-        raise ValueError("inference_playbooks.readiness_timeout_seconds must be a positive integer")
-
-    service_path = _write_launch_manifest(f"{service_name}-service", service)
-    deployment_path = _write_launch_manifest(f"{deployment_name}-deployment", deployment)
-
-    def deploy() -> str:
-        oc("apply", "-f", str(service_path))
-        oc("apply", "-f", str(deployment_path))
-        result = oc(
-            "rollout",
-            "status",
-            f"deployment/{deployment_name}",
-            "-n",
-            namespace,
-            f"--timeout={readiness_timeout}s",
-            timeout_seconds=readiness_timeout + 15,
-            check=False,
-            log_stdout=False,
-            log_stderr=False,
-        )
-        if result.returncode:
-            raise RuntimeError(
-                f"Deployment {deployment_name} did not become ready within "
-                f"{readiness_timeout}s: {(result.stderr or '').strip()}"
-            )
-        return f"http://{service_name}.{namespace}.svc.cluster.local:{port}"
-
-    def capture() -> None:
-        for kind, name in (("deployment", deployment_name), ("service", service_name)):
-            oc("get", kind, name, "-n", namespace, "-o", "yaml", check=False)
-        oc(
-            "get",
-            "pods",
-            "-n",
-            namespace,
-            "-l",
-            f"{run_label_key}={run_label}",
-            "-o",
-            "yaml",
-            check=False,
-        )
-
-    def cleanup() -> None:
-        _delete_resources(namespace, [("deployment", deployment_name), ("service", service_name)])
-
-    _deploy_benchmark_finalize(
-        recipe_id, recipe, namespace, deployment_name, deploy, capture, cleanup
-    )
-
-
-def _service_manifest_port(service: dict) -> int:
-    spec = service.get("spec")
-    ports = spec.get("ports") if isinstance(spec, dict) else None
-    if not isinstance(ports, list) or not ports:
-        raise ValueError("Service manifest must define spec.ports")
-    http_ports = [
-        item for item in ports if isinstance(item, dict) and item.get("name") in {"http", "https"}
-    ]
-    candidates = http_ports or ports
-    if len(candidates) != 1:
-        raise ValueError("Service manifest must define one HTTP port for the GuideLLM endpoint")
-    port = candidates[0].get("port")
-    if type(port) is not int or not 1 <= port <= 65535:
-        raise ValueError("Service manifest must define a valid spec.ports[].port")
-    return port
-
-
-def _deployment_service_port(recipe: dict, deployment: dict) -> int:
-    serving = recipe.get("serving")
-    port = serving.get("port") if isinstance(serving, dict) else None
-    if port is not None:
-        if type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError("Recipe serving.port must be between 1 and 65535")
-        return port
-
-    containers = deployment["spec"]["template"]["spec"]["containers"]
-    ports = [
-        port
-        for container in containers
-        if isinstance(container, dict)
-        for port in container.get("ports", [])
-        if isinstance(port, dict) and type(port.get("containerPort")) is int
-    ]
-    http_ports = {port["containerPort"] for port in ports if port.get("name") in {"http", "https"}}
-    container_ports = {port["containerPort"] for port in ports}
-    if len(http_ports) == 1:
-        return next(iter(http_ports))
-    if len(container_ports) == 1:
-        return next(iter(container_ports))
-    if not container_ports:
-        raise ValueError("Deployment must define serving.port or a containerPort")
-    raise ValueError("Deployment has multiple ports; define serving.port for the GuideLLM endpoint")
-
-
-def _launch_isvc_recipe(
-    recipe_id: str,
-    recipe: dict,
-    manifest_data: dict,
-    servingruntime_data: dict | None,
-    service_data: dict | None,
-    namespace: str,
-) -> None:
-    if service_data is not None:
-        raise ValueError(
-            "InferenceService overrides use the KServe predictor endpoint; omit Service"
-        )
-    from projects.rhaiis.toolbox.capture_isvc_state.main import run as capture_isvc_state
-    from projects.rhaiis.toolbox.cleanup_isvc.main import run as cleanup_isvc
-    from projects.rhaiis.toolbox.deploy_kserve_isvc.main import run as deploy_kserve_isvc
-    from projects.rhaiis.toolbox.wait_isvc_ready.main import run as wait_isvc_ready
-
-    manifest = copy.deepcopy(manifest_data)
-    metadata = manifest["metadata"]
-    original_name = metadata["name"]
-    if slugify_identifier(original_name) != original_name:
-        raise ValueError(f"Recipe has an invalid InferenceService name: {original_name!r}")
-    deployment_name = _unique_name(original_name)
-    manifest["metadata"] = {**metadata, "name": deployment_name, "namespace": namespace}
-
-    servingruntime = copy.deepcopy(servingruntime_data) if servingruntime_data else None
-    if servingruntime is not None:
-        if servingruntime.get("kind") != "ServingRuntime":
-            raise ValueError("InferenceService companion must be a namespaced ServingRuntime")
-        runtime_metadata = servingruntime.get("metadata")
-        if not isinstance(runtime_metadata, dict) or not isinstance(
-            runtime_metadata.get("name"), str
-        ):
-            raise ValueError("ServingRuntime companion must define metadata.name")
-        original_runtime_name = runtime_metadata["name"]
-        predictor = manifest.get("spec", {}).get("predictor")
-        model_spec = predictor.get("model") if isinstance(predictor, dict) else None
-        if isinstance(model_spec, dict) and model_spec.get("runtime") == original_runtime_name:
-            model_spec["runtime"] = deployment_name
-        servingruntime["metadata"] = {
-            **runtime_metadata,
-            "name": deployment_name,
-            "namespace": namespace,
-        }
-
-    _prepare_isvc_model(recipe_id, recipe, manifest, namespace)
-    manifest_path = _write_launch_manifest(f"{deployment_name}-inferenceservice", manifest)
-    servingruntime_path = (
-        _write_launch_manifest(f"{deployment_name}-servingruntime", servingruntime)
-        if servingruntime is not None
-        else None
-    )
-
-    readiness_timeout = config.project.get_config("inference_playbooks.readiness_timeout_seconds")
-    if type(readiness_timeout) is not int or readiness_timeout <= 0:
-        raise ValueError("inference_playbooks.readiness_timeout_seconds must be a positive integer")
-
-    def deploy() -> str:
-        if servingruntime_path is not None:
-            deploy_kserve_isvc(
-                namespace=namespace,
-                servingruntime_file=str(servingruntime_path),
-                inferenceservice_file=str(manifest_path),
-            )
-        else:
-            oc("create", "-f", str(manifest_path))
-        wait_isvc_ready(
-            name=deployment_name,
-            namespace=namespace,
-            timeout_seconds=readiness_timeout,
-        )
-        inferenceservice = oc_get_json(
-            "inferenceservice", name=deployment_name, namespace=namespace
-        )
-        status = inferenceservice.get("status")
-        endpoint_url = status.get("url") if isinstance(status, dict) else None
-        parsed_url = urlparse(endpoint_url) if isinstance(endpoint_url, str) else None
-        if parsed_url and parsed_url.scheme in {"http", "https"} and parsed_url.hostname:
-            return endpoint_url
-        port = _isvc_service_port(recipe, manifest)
-        return f"http://{deployment_name}-predictor.{namespace}.svc.cluster.local:{port}"
-
-    def capture() -> None:
-        capture_isvc_state(name=deployment_name, namespace=namespace)
-
-    def cleanup() -> None:
-        cleanup_isvc(name=deployment_name, namespace=namespace)
-
-    _deploy_benchmark_finalize(
-        recipe_id, recipe, namespace, deployment_name, deploy, capture, cleanup
-    )
-
-
-def _prepare_isvc_model(
-    recipe_id: str,
-    recipe: dict,
-    manifest: dict,
-    namespace: str,
-) -> None:
-    spec = manifest.get("spec")
-    predictor = spec.get("predictor") if isinstance(spec, dict) else None
-    model = predictor.get("model") if isinstance(predictor, dict) else None
-    if not isinstance(model, dict):
-        return
-    storage_uri = model.get("storageUri")
-    if not isinstance(storage_uri, str) or not storage_uri.startswith("hf://"):
-        return
-
-    cache_spec = _prepare_hf_model_cache(
-        recipe_id,
-        storage_uri,
-        namespace,
-        model_cache=recipe.get("model_cache"),
-    )
-    model["storageUri"] = cache_spec["model_uri"]
-    metadata = manifest.setdefault("metadata", {})
-    annotations = metadata.setdefault("annotations", {})
-    if not isinstance(annotations, dict):
-        raise ValueError("InferenceService metadata.annotations must be a mapping")
-    annotations["serving.kserve.io/deploymentMode"] = "RawDeployment"
-
-
-def _isvc_service_port(recipe: dict, manifest: dict) -> int:
-    serving = recipe.get("serving")
-    port = serving.get("port") if isinstance(serving, dict) else None
-    if port is not None:
-        if type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError("Recipe serving.port must be between 1 and 65535")
-        return port
-
-    spec = manifest.get("spec")
-    predictor = spec.get("predictor") if isinstance(spec, dict) else None
-    containers = predictor.get("containers", []) if isinstance(predictor, dict) else []
-    ports = {
-        port["containerPort"]
-        for container in containers
-        if isinstance(container, dict)
-        for port in container.get("ports", [])
-        if isinstance(port, dict) and type(port.get("containerPort")) is int
-    }
-    if len(ports) == 1:
-        return next(iter(ports))
-    if not ports:
-        raise ValueError(
-            "InferenceService has no status.url and declares no serving.port or containerPort"
-        )
-    raise ValueError("InferenceService has multiple ports; define serving.port")
+    _deploy_benchmark_finalize(recipe_id, recipe, namespace, name, deploy, capture, cleanup)
 
 
 def _deploy_benchmark_finalize(
@@ -1308,29 +677,247 @@ def _run_aiperf_workload(
             )
 
 
-def _delete_resources(namespace: str, resources: list[tuple[str, str]]) -> None:
-    failures = []
-    for kind, name in resources:
+def _resource_url(document: dict, namespace: str) -> str:
+    version, plural = RESOURCE_TYPES[document["kind"]]
+    return f"/apis/{version}/namespaces/{namespace}/{plural}/{document['metadata']['name']}"
+
+
+def _resource_type(document: dict) -> str:
+    version, plural = RESOURCE_TYPES[document["kind"]]
+    return f"{plural}.{version.split('/')[0]}"
+
+
+def _create_checked_bundle(src: Path, namespace: str, metadata: dict, created: list[dict]) -> None:
+    documents = checked_submission(src, namespace, metadata)
+    # Provisioning and isolation are external prerequisites, not serving repairs.
+    oc_get_json("namespaces", name=namespace)
+    for document in documents:
+        existing = oc_get_json(
+            _resource_type(document),
+            name=document["metadata"]["name"],
+            namespace=namespace,
+            ignore_not_found=True,
+        )
+        if existing is not None:
+            raise RuntimeError(
+                "Recipe resource conflict; refusing to overwrite a preexisting object"
+            )
+        if (
+            document["kind"] == "LeaderWorkerSet"
+            and oc_get_json(
+                "services",
+                name=document["metadata"]["name"],
+                namespace=namespace,
+                ignore_not_found=True,
+            )
+            is not None
+        ):
+            raise RuntimeError("Recipe operator Service name conflicts with a preexisting object")
+    # Companion first is dependency ordering only; document content/order in evidence stays intact.
+    for document in sorted(documents, key=lambda item: item["kind"] != "ServingRuntime"):
+        # Raw POST consumes the checked object directly: no apply annotations, namespace
+        # rewriting, helper manifests, or later toolbox transformations can intervene.
         result = oc(
-            "delete",
-            kind,
-            name,
-            "-n",
-            namespace,
-            "--ignore-not-found=true",
-            "--timeout=120s",
+            "create",
+            f"--raw={_resource_url(document, namespace).rsplit('/', 1)[0]}",
+            "-f",
+            "-",
+            input_text=json.dumps(document),
             check=False,
-            timeout_seconds=180,
+            handled_secretly=True,
         )
         if result.returncode:
-            failures.append(f"{kind}/{name}: {result.stderr.strip()}")
+            raise RuntimeError(
+                "Recipe object creation failed; no overwrite or input repair attempted"
+            )
+        try:
+            admitted = json.loads(result.stdout)
+        except (ValueError, TypeError):
+            raise RuntimeError(
+                "Creation response missing ownership proof; refusing guessed cleanup"
+            ) from None
+        if not isinstance(admitted, dict) or not isinstance(admitted.get("metadata"), dict):
+            raise RuntimeError(
+                "Creation response missing ownership proof; refusing guessed cleanup"
+            )
+        admitted_metadata = admitted["metadata"]
+        if (
+            admitted.get("kind") != document["kind"]
+            or admitted.get("apiVersion") != document["apiVersion"]
+            or admitted_metadata.get("name") != document["metadata"]["name"]
+            or admitted_metadata.get("namespace") != namespace
+            or not isinstance(admitted_metadata.get("uid"), str)
+            or not admitted_metadata["uid"]
+        ):
+            raise RuntimeError(
+                "Creation response missing ownership proof; refusing guessed cleanup"
+            )
+        created.append(admitted)
+
+
+def _delete_created_resources(namespace: str, resources: list[dict]) -> None:
+    failures = []
+    for document in reversed(resources):
+        kind = document["kind"]
+        name = document["metadata"]["name"]
+        uid = document["metadata"]["uid"]
+        current = oc_get_json(
+            _resource_type(document), name=name, namespace=namespace, ignore_not_found=True
+        )
+        if current is None:
+            continue
+        if current.get("metadata", {}).get("uid") != uid:
+            failures.append(f"{kind}/{name}: UID changed; not deleted")
+            continue
+        # Kubernetes enforces the UID precondition atomically even if a replacement
+        # appears after our read. Never delete a discovered Service or delete by selector.
+        result = oc(
+            "delete",
+            f"--raw={_resource_url(document, namespace)}",
+            "-f",
+            "-",
+            input_text=json.dumps(
+                {
+                    "apiVersion": "v1",
+                    "kind": "DeleteOptions",
+                    "preconditions": {"uid": uid},
+                    "propagationPolicy": "Foreground",
+                }
+            ),
+            check=False,
+            log_stdout=False,
+            log_stderr=False,
+            timeout_seconds=180,
+        )
+        if result.returncode and "(NotFound)" not in (result.stderr or ""):
+            failures.append(f"{kind}/{name}: UID-preconditioned deletion failed")
         else:
             logger.info("Removed test %s/%s", kind, name)
     if failures:
         raise RuntimeError("Failed to clean up: " + "; ".join(failures))
 
 
+def _capture_created_recipe(namespace: str, resources: list[dict]) -> None:
+    capture_names = {
+        "LeaderWorkerSet": "capture_lws_state",
+        "LLMInferenceService": "capture_llmisvc_state",
+    }
+    for document in resources:
+        kind = document["kind"]
+        metadata = document["metadata"]
+        current = oc_get_json(
+            _resource_type(document),
+            name=metadata["name"],
+            namespace=namespace,
+            ignore_not_found=True,
+        )
+        if current is None:
+            continue
+        if current.get("metadata", {}).get("uid") != metadata["uid"]:
+            raise RuntimeError(
+                "Recipe capture UID changed; refusing unrelated workload attribution"
+            )
+        # Preserve the established runtime-attribution locations without invoking
+        # shared capture helpers that select pods by broad labels rather than UID.
+        context = (
+            env.NextArtifactDir(capture_names[kind]) if kind in capture_names else nullcontext()
+        )
+        with context:
+            _capture_admitted_state(namespace, document, current)
+
+
+def _capture_admitted_state(namespace: str, document: dict, current: dict) -> None:
+    directory = env.ARTIFACT_DIR / "artifacts"
+    directory.mkdir(parents=True, exist_ok=True)
+    kind = document["kind"]
+    metadata = document["metadata"]
+    stem = kind.lower()
+    (directory / f"{stem}.yaml").write_text(
+        yaml.safe_dump(current, sort_keys=False), encoding="utf-8"
+    )
+    if kind == "ServingRuntime":
+        return
+    pods = wait_recipe.owned_pods(namespace, metadata["uid"])
+    (directory / f"{stem}.pods.yaml").write_text(
+        yaml.safe_dump({"apiVersion": "v1", "kind": "List", "items": pods}, sort_keys=False),
+        encoding="utf-8",
+    )
+    if kind == "Deployment":
+        # The existing consumer reads these observed status fields from run.log.
+        # Log flat mappings with containerID first (its established block delimiter),
+        # never entire Pods, container specs, environment values or Secret objects.
+        fields = ("containerID", "image", "imageID", "name", "ready")
+        for pod in pods:
+            for status in pod.get("status", {}).get("containerStatuses", []):
+                if (
+                    all(isinstance(status.get(key), str) for key in fields[:-1])
+                    and type(status.get("ready")) is bool
+                ):
+                    logger.info(
+                        "Observed run-owned Deployment container status:\n%s",
+                        yaml.safe_dump({key: status[key] for key in fields}, sort_keys=False),
+                    )
+    # Retain controller-expanded runtime evidence separately from submitted objects.
+    deployments = oc_get_json("deployments.apps", namespace=namespace).get("items", [])
+    owned = [item for item in deployments if wait_recipe.owned_by(item, metadata["uid"], namespace)]
+    (directory / f"{stem}.deployments.yaml").write_text(
+        yaml.safe_dump({"apiVersion": "v1", "kind": "List", "items": owned}, sort_keys=False),
+        encoding="utf-8",
+    )
+    for pod in pods:
+        oc(
+            "logs",
+            pod["metadata"]["name"],
+            "-n",
+            namespace,
+            "--all-containers=true",
+            check=False,
+            log_stdout=False,
+            log_stderr=False,
+            stdout_dest=directory / f"{stem}.{pod['metadata']['name']}.log",
+        )
+
+
+def _recipe_http_port(recipe: dict, primary: dict) -> int:
+    serving = recipe.get("serving", {})
+    port = serving.get("port")
+    if port is not None:
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("Recipe serving.port must be between 1 and 65535")
+        return port
+    spec = primary.get("spec", {})
+    template = (
+        spec.get("template", {})
+        if primary["kind"] == "Deployment"
+        else spec.get("leaderWorkerTemplate", {}).get("leaderTemplate", {})
+    )
+    ports = [
+        entry
+        for container in template.get("spec", {}).get("containers", [])
+        for entry in container.get("ports", [])
+        if entry.get("protocol", "TCP") == "TCP"
+    ]
+    http = [entry for entry in ports if entry.get("name") == "http"]
+    candidates = {entry.get("containerPort") for entry in (http or ports)}
+    if len(candidates) != 1:
+        raise ValueError(
+            "Service-free endpoint requires serving.port or one unambiguous source containerPort"
+        )
+    port = candidates.pop()
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("Source containerPort must be between 1 and 65535")
+    return port
+
+
 def _write_launch_manifest(name: str, manifest: dict) -> Path:
+    if manifest.get("kind") not in RESOURCE_TYPES:
+        raise ValueError("Unsupported launch artifact kind")
+    # Artifact names are not workload names. Keep a valid authored name from
+    # overwriting the fixed contract files (notably LLMISVC source-bundle).
+    if name in {"source-bundle", "submitted-bundle", "bundle-metadata"}:
+        name = f"launch-{name}"
+    if len(name + ".yaml") > 255:
+        name = manifest["kind"].lower() + "-launch"
     path = env.ARTIFACT_DIR / "src" / f"{name}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
