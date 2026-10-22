@@ -32,7 +32,7 @@ capture:
         files: [vllm_latency, vllm_throughput]
         variables:
           LLMISVC_NAMESPACE: "{llmisvc_namespace}"
-          POD_NAME: "{llmisvc_name}-kserve-.*"
+          LLMISVC_NAME: "{llmisvc_name}"
       scheduler:
         enabled: true
         files: [scheduler]
