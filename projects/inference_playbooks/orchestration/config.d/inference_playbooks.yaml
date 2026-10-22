@@ -1,4 +1,9 @@
+# Direct <model>/<recipe-folder> locator, not recipe_id; null validates the catalog only.
+# Example: kimi-k3/h200-x8-pp2-tp8-8k1k
 recipe: null
+# Mandatory for a launch; canonical path relative to the selected recipe folder.
+# Example: manifests/vllm-v0.29.0/leaderworkerset.yaml
+# The path selects a platform, not a subset of its published YAML/YML artifacts.
 manifest_path: null
 namespace: kserve-e2e-perf
 workload: profile1

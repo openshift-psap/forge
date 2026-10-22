@@ -138,7 +138,7 @@ def checkout(tmp_path, monkeypatch):
         "project",
         SimpleNamespace(
             get_config=lambda key: (
-                primary_path.relative_to(root).as_posix()
+                primary_path.relative_to(recipe_path.parent).as_posix()
                 if key == "inference_playbooks.manifest_path"
                 else None
             )
@@ -292,7 +292,9 @@ def test_selection_captures_every_platform_file_and_document(checkout):
     (other / "unselected.yaml").write_text("kind: Service")
     checkout.snapshot()
     bundle = test_phase._load_manifest_override(
-        checkout.root, str(checkout.path.relative_to(checkout.root)), checkout.recipe
+        checkout.root,
+        str(checkout.path.relative_to(checkout.recipe["recipe_path"].parent)),
+        checkout.recipe,
     )
     assert [doc["kind"] for doc in bundle["documents"]] == ["ServingRuntime", "InferenceService"]
     assert [Path(item["path"]).name for item in bundle["source_files"]] == [
@@ -319,7 +321,9 @@ def test_all_launch_loaders_reject_unselected_sibling_resources(checkout, loader
     with pytest.raises(ValueError, match="Unsupported"):
         if loader == "override":
             test_phase._load_manifest_override(
-                checkout.root, str(checkout.path.relative_to(checkout.root)), checkout.recipe
+                checkout.root,
+                str(checkout.path.relative_to(checkout.recipe["recipe_path"].parent)),
+                checkout.recipe,
             )
         else:
             test_phase._manifest_bundle_from_recipe(checkout.recipe)
@@ -399,7 +403,10 @@ def launch(checkout, monkeypatch, tmp_path):
     namespace = "target"
     artifact_dir = tmp_path / "run"
     values = {
-        "inference_playbooks.manifest_path": checkout.path.relative_to(checkout.root).as_posix(),
+        "inference_playbooks.recipe": "model/recipe",
+        "inference_playbooks.manifest_path": checkout.path.relative_to(
+            checkout.recipe["recipe_path"].parent
+        ).as_posix(),
         "inference_playbooks.namespace": namespace,
         "inference_playbooks.workload": "profile1",
         "inference_playbooks.lws_ready_timeout_seconds": 90,
@@ -984,7 +991,7 @@ def test_every_selected_launch_requires_explicit_canonical_manifest_path(launch,
 
 @pytest.mark.parametrize("value", ["__missing__", None, "", "  ", 123])
 def test_selected_recipe_without_explicit_path_fails_at_entrypoint(checkout, monkeypatch, value):
-    values = {"inference_playbooks.recipe": "synthetic"}
+    values = {"inference_playbooks.recipe": "model/recipe"}
     if value != "__missing__":
         values["inference_playbooks.manifest_path"] = value
     monkeypatch.setattr(test_phase.foreign_repository, "initialize", lambda: checkout.root)
@@ -1054,3 +1061,215 @@ def test_waiter_entrypoint_runs_real_dsl_with_mocked_cluster(monkeypatch, tmp_pa
     assert (
         next(tmp_path.glob("*__wait_recipe/artifacts/endpoint.url")).read_text().strip() == endpoint
     )
+
+
+def test_direct_selection_reads_only_selected_recipe_and_dependencies(checkout, monkeypatch):
+    recipe_path = checkout.recipe["recipe_path"]
+    with recipe_path.open("a") as handle:
+        handle.write(
+            "image:\n  recommended:\n    status: {date: 2026-09-28}\n  pin_for_disconnected:\n    status: {date: 2026-09-28}\n"
+        )
+    model_path = checkout.root / "models/model/model.yaml"
+    hardware_path = checkout.root / "hardware.yaml"
+    for path in (model_path, hardware_path):
+        with path.open("a") as handle:
+            handle.write("metadata_date: 2026-09-28\n")
+    unrelated = checkout.root / "models/qwen/recipes/unrelated/recipe.yaml"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text(
+        "recipe_id: synthetic\nimage: {recommended: {status: {date: 2026-09-28}}}\n"
+    )
+    broken = unrelated.parent.parent / "broken/recipe.yaml"
+    broken.parent.mkdir()
+    broken.write_text(
+        "recipe_id: same\nrecipe_id: duplicate\nunsupported: !!python/object:do_not_construct {}\n"
+    )
+    checkout.snapshot()
+    allowed = {recipe_path, model_path, hardware_path, checkout.path}
+    seen = set()
+    original_open, original_glob = Path.open, Path.glob
+
+    def guarded_open(path, mode="r", *args, **kwargs):
+        assert path in allowed, f"Read outside selected recipe and dependencies: {path}"
+        seen.add(path)
+        return original_open(path, mode, *args, **kwargs)
+
+    def guarded_glob(path, pattern, *args, **kwargs):
+        assert path == checkout.folder and pattern == "*", "Repository-wide discovery is forbidden"
+        return original_glob(path, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(Path, "glob", guarded_glob)
+    monkeypatch.setattr(
+        Path, "rglob", lambda *args, **kwargs: pytest.fail("recursive discovery is forbidden")
+    )
+    recipe = test_phase._load_recipe_metadata(checkout.root, "model/recipe")
+    bundle = test_phase._load_manifest_override(
+        checkout.root, "manifests/vllm-v1/b-server.yaml", recipe
+    )
+    assert seen == allowed
+    assert recipe["recipe_id"] == bundle["recipe_id"] == "synthetic"
+    assert recipe["image"]["recommended"]["status"]["date"] == "2026-09-28"
+    assert recipe["image"]["pin_for_disconnected"]["status"]["date"] == "2026-09-28"
+    assert recipe["hardware_profile_data"]["metadata_date"] == "2026-09-28"
+    assert bundle["recipe_path"] == "models/model/recipes/recipe/recipe.yaml"
+    assert (
+        bundle["source_files"][0]["path"]
+        == "models/model/recipes/recipe/manifests/vllm-v1/b-server.yaml"
+    )
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        None,
+        "",
+        123,
+        [],
+        "synthetic",
+        "model",
+        "model/recipe/extra",
+        "/model/recipe",
+        "model/../recipe",
+        "./model/recipe",
+        "model//recipe",
+        "model/recipe/",
+        "models/model/recipes/recipe",
+        "model/missing",
+    ],
+)
+def test_invalid_selector_has_no_scan_or_opaque_id_fallback(checkout, monkeypatch, selector):
+    monkeypatch.setattr(Path, "glob", lambda *args, **kwargs: pytest.fail("must not scan"))
+    monkeypatch.setattr(
+        Path, "open", lambda *args, **kwargs: pytest.fail("must not read fallback inputs")
+    )
+    with pytest.raises(ValueError):
+        test_phase._load_recipe_metadata(checkout.root, selector)
+
+
+@pytest.mark.parametrize("target", ["recipe", "model", "hardware"])
+def test_selected_metadata_still_rejects_duplicate_keys(checkout, target):
+    paths = {
+        "recipe": checkout.recipe["recipe_path"],
+        "model": checkout.root / "models/model/model.yaml",
+        "hardware": checkout.root / "hardware.yaml",
+    }
+    with paths[target].open("a") as handle:
+        handle.write("metadata_date: 2026-09-28\nmetadata_date: 2026-10-22\n")
+    with pytest.raises(ValueError, match="Invalid metadata YAML"):
+        test_phase._load_recipe_metadata(checkout.root, "model/recipe")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"x: !!set {a: null}", b"x: !!python/object:unsupported {}", b"x: &cycle {again: *cycle}"],
+)
+def test_metadata_parser_does_not_hide_unsupported_yaml(raw):
+    with pytest.raises(ValueError, match="Invalid metadata YAML"):
+        contract.load_metadata_document(raw)
+
+
+def test_metadata_dates_do_not_relax_workload_yaml():
+    raw = b"date: 2026-09-28\ntimestamp: 2026-09-28T01:02:03Z\n"
+    assert contract.load_metadata_document(raw) == {
+        "date": "2026-09-28",
+        "timestamp": "2026-09-28T01:02:03Z",
+    }
+    with pytest.raises(ValueError, match="Invalid manifest YAML"):
+        contract.load_documents(raw)
+
+
+@pytest.mark.parametrize("target", ["recipe-file", "recipe-folder", "model", "hardware"])
+def test_selector_and_dependency_symlinks_are_rejected(checkout, tmp_path, target):
+    recipe_path = checkout.recipe["recipe_path"]
+    if target == "recipe-folder":
+        alias = recipe_path.parent.parent / "alias"
+        alias.symlink_to(recipe_path.parent, target_is_directory=True)
+        selector = "model/alias"
+    else:
+        paths = {
+            "recipe-file": recipe_path,
+            "model": checkout.root / "models/model/model.yaml",
+            "hardware": checkout.root / "hardware.yaml",
+        }
+        path = paths[target]
+        outside = tmp_path / "outside.yaml"
+        outside.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(outside)
+        selector = "model/recipe"
+    with pytest.raises(ValueError, match="without symlinks"):
+        test_phase._load_recipe_metadata(checkout.root, selector)
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "models/model/recipes/recipe/manifests/vllm-v1/b-server.yaml",
+        "../manifests/vllm-v1/b-server.yaml",
+        "./manifests/vllm-v1/b-server.yaml",
+        "manifests/vllm-v1/../vllm-v1/b-server.yaml",
+        "manifests/vllm-v1//b-server.yaml",
+        "manifests/rhoai-3.5/server.yaml",
+        "absolute",
+        "symlink",
+        "escape",
+    ],
+)
+def test_recipe_relative_manifest_path_is_canonical_and_selected(checkout, tmp_path, selection):
+    if selection == "absolute":
+        selection = str(checkout.path)
+    elif selection in {"symlink", "escape"}:
+        target = checkout.path
+        if selection == "escape":
+            target = tmp_path / "outside.yaml"
+            target.write_bytes(checkout.path.read_bytes())
+        alias = checkout.folder / "alias.yaml"
+        alias.symlink_to(target)
+        selection = "manifests/vllm-v1/alias.yaml"
+    elif "rhoai" in selection:
+        wrong = checkout.recipe["recipe_path"].parent / selection
+        wrong.parent.mkdir()
+        wrong.write_bytes(checkout.path.read_bytes())
+    with pytest.raises(ValueError):
+        test_phase._load_manifest_override(checkout.root, selection, checkout.recipe)
+
+
+def test_selected_labels_use_authored_id_without_rewriting_config(checkout, monkeypatch, tmp_path):
+    values = {
+        "inference_playbooks.recipe": "model/recipe",
+        "inference_playbooks.manifest_path": "manifests/vllm-v1/b-server.yaml",
+    }
+    unchanged = copy.deepcopy(values)
+    labels = []
+    calls = []
+    monkeypatch.setattr(test_phase.foreign_repository, "initialize", lambda: checkout.root)
+    monkeypatch.setattr(
+        test_phase.config,
+        "project",
+        SimpleNamespace(
+            get_config=lambda key: values.get(key),
+            set_config=lambda *args: pytest.fail("must not rewrite selectors"),
+        ),
+    )
+    monkeypatch.setattr(test_phase.env, "NextArtifactDir", lambda name: nullcontext())
+    monkeypatch.setattr(test_phase.env, "ARTIFACT_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(test_phase, "_get_workload_configs", lambda: [("fixture", {})])
+    monkeypatch.setattr(
+        test_phase, "create_test_metadata", lambda directory, data: labels.append(data)
+    )
+    monkeypatch.setattr(test_phase, "update_test_labels_with_timing", lambda *args: None)
+    monkeypatch.setattr(test_phase, "update_test_labels_with_status", lambda *args: None)
+
+    def launch(recipe_id, recipe):
+        bundle = test_phase._manifest_bundle_from_recipe(recipe)
+        assert bundle["recipe_id"] == recipe_id == "synthetic"
+        kpis = test_phase._benchmark_kpi_labels(recipe_id, recipe, "fixture")
+        assert kpis["deployment_profile"] == "synthetic"
+        calls.append(recipe_id)
+
+    monkeypatch.setattr(test_phase, "_launch_recipe", launch)
+    assert test_phase.do_test() == 0
+    assert labels[0]["recipe_id"] == "synthetic"
+    assert calls == ["synthetic"]
+    assert values == unchanged

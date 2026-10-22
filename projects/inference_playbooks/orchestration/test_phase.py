@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from contextlib import nullcontext
@@ -24,7 +25,7 @@ from projects.inference_playbooks.orchestration.manifest_bundle import (
     RESOURCE_TYPES,
     checked_submission,
     classify_documents,
-    load_documents,
+    load_metadata_document,
     load_source_bundle,
     normalized_documents,
     write_bundle_artifacts,
@@ -45,10 +46,10 @@ KPI_TEST_HARNESS = "forge-inference-playbooks"
 
 def test():
     """Run the Inference Playbooks test with outcome postprocessing."""
-    recipe_id = config.project.get_config("inference_playbooks.recipe")
+    recipe_selector = config.project.get_config("inference_playbooks.recipe")
     postprocess_enabled = (
         bool(config.project.get_config("caliper.postprocess.enabled"))
-        and bool(recipe_id)
+        and bool(recipe_selector)
         and not _clusterless_mode()
     )
     if not postprocess_enabled:
@@ -84,35 +85,33 @@ def _clusterless_mode() -> bool:
 def do_test():
     logger.info("=== Inference Playbooks Project Test Phase ===")
     repository_path = foreign_repository.initialize()
-    recipe_id = config.project.get_config("inference_playbooks.recipe")
-    if recipe_id is not None and not isinstance(recipe_id, str):
-        raise ValueError("inference_playbooks.recipe must be a recipe ID string")
-
+    recipe_selector = config.project.get_config("inference_playbooks.recipe")
     manifest_path = config.project.get_config("inference_playbooks.manifest_path")
-    if recipe_id is not None or manifest_path is not None:
+    if recipe_selector is not None or manifest_path is not None:
         _require_manifest_path(manifest_path)
-        if recipe_id is None:
+        if recipe_selector is None:
             raise ValueError(
-                "A recipe ID is required when inference_playbooks.manifest_path is set"
+                "A <model>/<recipe-folder> selector is required when inference_playbooks.manifest_path is set"
             )
-    if recipe_id is not None:
-        recipes = {recipe_id: _load_recipe_metadata(repository_path, recipe_id)}
+    if recipe_selector is not None:
+        recipe = _load_recipe_metadata(repository_path, recipe_selector)
+        recipe_id = recipe["recipe_id"]
+        recipe_count = 1
     else:
-        recipes = load_recipe_catalog(repository_path)
+        recipe_count = len(load_recipe_catalog(repository_path))
+        recipe = None
+        recipe_id = None
 
-    logger.info("Loaded metadata for %d Inference Playbooks recipe(s)", len(recipes))
+    logger.info("Loaded metadata for %d Inference Playbooks recipe(s)", recipe_count)
 
     with env.NextArtifactDir("inference_playbooks_test_dir"):
         test_dir = create_custom_test_metadata(recipe_id)
         try:
             update_test_labels_with_timing(test_dir, "test", "start")
-            if recipe_id is None:
+            if recipe is None:
                 logger.info("No recipe selected; validated recipes without launching a service")
-            elif recipe_id not in recipes:
-                available = ", ".join(sorted(recipes))
-                raise ValueError(f"Unknown recipe ID {recipe_id!r}; available recipes: {available}")
             else:
-                _launch_recipe(recipe_id, recipes[recipe_id])
+                _launch_recipe(recipe_id, recipe)
         except Exception as exc:
             logger.exception("Test failed with exception")
             update_test_labels_with_status(test_dir, False, f"Test failed: {exc}")
@@ -124,26 +123,25 @@ def do_test():
     return 0
 
 
-def _load_recipe_metadata(repository_path: Path, recipe_id: str) -> dict:
+def _load_recipe_metadata(repository_path: Path, selector: str) -> dict:
     root = repository_path.resolve(strict=True)
-    matches = []
-    for path in root.glob("models/**/recipe.yaml"):
-        recipe_data = _load_yaml_document(path)
-        if isinstance(recipe_data, dict) and recipe_data.get("recipe_id") == recipe_id:
-            matches.append((path, recipe_data))
-
-    if not matches:
+    if not isinstance(selector, str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*", selector
+    ):
         raise ValueError(
-            f"Unknown Inference Playbooks recipe ID {recipe_id!r}; no matching recipe.yaml found"
+            "inference_playbooks.recipe must be a canonical <model>/<recipe-folder> selector"
         )
-    if len(matches) != 1:
-        raise ValueError(
-            f"Recipe ID {recipe_id!r} must be unique in the Inference Playbooks checkout"
-        )
-
-    recipe_path, recipe_data = matches[0]
+    model_folder, recipe_folder = selector.split("/")
+    recipe_path = _repository_file(
+        root, f"models/{model_folder}/recipes/{recipe_folder}/recipe.yaml", "selected recipe"
+    )
+    recipe_data = _load_yaml_document(recipe_path)
+    if not isinstance(recipe_data.get("recipe_id"), str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9._-]*", recipe_data["recipe_id"]
+    ):
+        raise ValueError("Selected recipe must define its authoritative recipe_id")
     model_id = recipe_data.get("model_id")
-    if not isinstance(model_id, str) or not model_id:
+    if not isinstance(model_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", model_id):
         raise ValueError(f"{recipe_path} must define model_id")
     model_path = _repository_file(root, f"models/{model_id}/model.yaml", f"{recipe_path} model")
     model_data = _load_yaml_document(model_path)
@@ -199,34 +197,28 @@ def _repository_file(
     root: Path,
     value: str,
     label: str,
-    recipe_path: Path | None = None,
 ) -> Path:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must be a non-empty path")
     relative_path = Path(value)
-    if relative_path.is_absolute() or ".." in relative_path.parts:
-        raise ValueError(f"{label} must stay inside the Inference Playbooks checkout")
-
-    candidates = [root / relative_path]
-    if recipe_path is not None:
-        candidates.append(recipe_path.parent / relative_path)
-    for candidate in candidates:
-        try:
-            resolved = candidate.resolve(strict=True)
-        except (OSError, RuntimeError):
-            continue
-        if not resolved.is_relative_to(root):
-            raise ValueError(f"{label} must stay inside the Inference Playbooks checkout")
-        if resolved.is_file():
-            return resolved
-    raise ValueError(f"{label} does not exist in the Inference Playbooks checkout: {value}")
+    if (
+        relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or relative_path.as_posix() != value
+    ):
+        raise ValueError(f"{label} must be a canonical checkout-relative path")
+    candidate = root / relative_path
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ValueError(f"{label} does not exist in the Inference Playbooks checkout") from None
+    if candidate != resolved or not resolved.is_relative_to(root) or not resolved.is_file():
+        raise ValueError(f"{label} must be a canonical contained file, without symlinks")
+    return resolved
 
 
 def _load_yaml_document(path: Path):
-    documents = load_documents(path.read_bytes())
-    if len(documents) != 1:
-        raise ValueError(f"Expected one YAML document in {path}")
-    return documents[0]
+    return load_metadata_document(path.read_bytes())
 
 
 def _load_manifest_override(
@@ -237,18 +229,31 @@ def _load_manifest_override(
     root = repository_path.resolve(strict=True)
     _require_manifest_path(manifest_path)
     relative = Path(manifest_path)
-    if relative.is_absolute() or ".." in relative.parts or relative.as_posix() != manifest_path:
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or relative.as_posix() != manifest_path
+        or len(relative.parts) != 3
+        or relative.parts[0] != "manifests"
+    ):
         raise ValueError(
-            "inference_playbooks.manifest_path must be a canonical repository-relative path"
+            "inference_playbooks.manifest_path must be canonical recipe-relative manifests/<platform>/<file>.yaml"
         )
-    selected = root / relative
+    recipe_path = Path(recipe["recipe_path"])
+    if not recipe_path.is_relative_to(root) or recipe_path != recipe_path.resolve(strict=True):
+        raise ValueError("Selected recipe must be canonical and contained in the checkout")
+    selected = recipe_path.parent / relative
     try:
         canonical = selected.resolve(strict=True)
     except (OSError, RuntimeError):
         raise ValueError(
             "inference_playbooks.manifest_path does not identify an existing artifact"
         ) from None
-    if selected != canonical or not selected.is_file() or not canonical.is_relative_to(root):
+    if (
+        selected != canonical
+        or not selected.is_file()
+        or not canonical.is_relative_to(recipe_path.parent)
+    ):
         raise ValueError(
             "inference_playbooks.manifest_path must be a canonical contained artifact file"
         )

@@ -31,6 +31,29 @@ class _UniqueLoader(yaml.SafeLoader):
         return mapping
 
 
+class _MetadataLoader(_UniqueLoader):
+    """Recipe/model/hardware dates are strings, as in playbooks' UniqueKeyLoader."""
+
+
+_MetadataLoader.add_constructor(
+    "tag:yaml.org,2002:timestamp", lambda loader, node: loader.construct_scalar(node)
+)
+
+
+def load_metadata_document(raw: bytes) -> dict:
+    """Parse metadata without weakening the separate workload-document boundary."""
+    try:
+        documents = [doc for doc in yaml.load_all(raw, Loader=_MetadataLoader) if doc is not None]
+        _json_value(documents)
+    except (yaml.YAMLError, ValueError, TypeError, RecursionError, UnicodeError):
+        raise ValueError(
+            "Invalid metadata YAML: require unique keys and supported safe values"
+        ) from None
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise ValueError("Metadata YAML must contain exactly one mapping")
+    return documents[0]
+
+
 def load_documents(raw: bytes) -> list[dict]:
     """Never include parser snippets (which can contain credentials) in errors."""
     try:
@@ -189,10 +212,7 @@ def load_source_bundle(root: Path, recipe: dict, selection: Path | None = None) 
     ):
         raise ValueError("Strict certification requires a canonical flat v4 recipe")
     recipe_raw = recipe_path.read_bytes()
-    recipe_documents = load_documents(recipe_raw)
-    if len(recipe_documents) != 1 or not isinstance(recipe_documents[0], dict):
-        raise ValueError("Recipe must contain one mapping")
-    authored = recipe_documents[0]
+    authored = load_metadata_document(recipe_raw)
     if authored.get("schema_version") != 4 or authored.get("recipe_id") != recipe.get("recipe_id"):
         raise ValueError("Strict certification requires the selected v4 recipe identity")
     platforms = authored.get("platforms")

@@ -86,7 +86,7 @@ def test_model_identity_labels_from_metadata(
     )
     recipe_dir = (
         "models/example-model/vllm/version/recipes/gpu/profile/tp1"
-        if schema_version == 3
+        if schema_version == 3 and loader == "catalog"
         else "models/example-model/recipes/profile"
     )
     pod_spec = {
@@ -154,7 +154,7 @@ def test_model_identity_labels_from_metadata(
     recipe = (
         load_recipe_catalog(tmp_path)["synthetic-recipe"]
         if loader == "catalog"
-        else test_phase._load_recipe_metadata(tmp_path, "synthetic-recipe")
+        else test_phase._load_recipe_metadata(tmp_path, "example-model/profile")
     )
     labels = test_phase._benchmark_kpi_labels("synthetic-recipe", recipe, "workload")
     assert labels["model_name"] == "example/base"
