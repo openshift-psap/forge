@@ -4,10 +4,16 @@ import json
 import logging
 import os
 import uuid as _uuid_mod
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
+from projects.cluster.library.prom.collection import (
+    capture_prometheus,
+    prepare_user_workload_monitoring,
+    validate_user_workload_monitoring,
+)
 from projects.core.library import env
 from projects.core.library.fournos_status import patch_fjob_relevant_deployments
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
@@ -191,6 +197,7 @@ def _run_test(
             skipped_optional_phase_workloads,
         )
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
+    benchmark_start: datetime | None = None
 
     # Standalone analysis only — no deployment needed
     if not run_benchmark and not profiler_enabled:
@@ -214,6 +221,9 @@ def _run_test(
     wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
 
     try:
+        validate_user_workload_monitoring()
+        prepare_user_workload_monitoring(during="test")
+
         isvc_labels = {
             "opendatahub.io/dashboard": "true",
             "deployment_uuid": run_uuid,
@@ -337,6 +347,8 @@ def _run_test(
 
         # Phase 2: benchmark + post-processing for ALL workloads
         trtllm_cfg = runtime_config.get_trtllm_config() if engine == "trtllm" else None
+        if run_benchmark:
+            benchmark_start = datetime.now(UTC)
         for wl_key in workload_keys:
             _run_workload_benchmark(
                 model_key=model_key,
@@ -379,6 +391,13 @@ def _run_test(
         except Exception:
             logger.warning("Setting MLflow metadata failed; continuing", exc_info=True)
     finally:
+        if benchmark_start is not None:
+            _capture_prometheus_metrics(
+                deployment_name=deployment_name,
+                namespace=namespace,
+                start_time=benchmark_start,
+                end_time=datetime.now(UTC),
+            )
         _capture_and_cleanup(deployment_name, namespace)
         if fjob_name:
             _update_fjob_inference_reference(fjob_name, fjob_ns, None)
@@ -397,6 +416,34 @@ def _run_test(
         return 1
 
     return 0
+
+
+def _capture_prometheus_metrics(
+    *,
+    deployment_name: str,
+    namespace: str,
+    start_time: datetime,
+    end_time: datetime,
+) -> None:
+    """Capture Prometheus data for the RHAIIS benchmark window before cleanup."""
+    logger.info(
+        "Capturing Prometheus metrics for RHAIIS benchmark window: %s - %s",
+        start_time.isoformat(),
+        end_time.isoformat(),
+    )
+    try:
+        with env.NextArtifactDir("prometheus_metrics"):
+            capture_prometheus(
+                start_time,
+                end_time,
+                runtime_params={
+                    "namespace": namespace,
+                    "pod_name": f"{deployment_name}-predictor-.*",
+                },
+            )
+    except Exception:
+        logger.warning("Prometheus metrics capture failed; continuing cleanup", exc_info=True)
+        _warnings.append("Prometheus metrics capture failed")
 
 
 def _run_workload_benchmark(

@@ -1,0 +1,41 @@
+prepare:
+  user_workload:
+    during_prepare: false
+    during_test: true
+
+capture:
+  enabled: true
+  db:
+    enabled: true
+    system_metrics:
+      enabled: true
+    user_workload:
+      enabled: true
+      fail_if_not_enabled: false
+  metrics:
+    enabled: true
+    include_dirs:
+      - projects/cluster/metrics
+      - projects/kserve/metrics
+    params:
+      namespace: "@rhaiis.namespace"
+      pod_name: set_at_runtime
+    groups:
+      resources:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, workload]
+        variables:
+          NAMESPACE: "{namespace}"
+          POD_NAME: "{pod_name}"
+      vllm:
+        enabled: true
+        files: [vllm_latency, vllm_throughput]
+        variables:
+          LLMISVC_NAMESPACE: "{namespace}"
+          POD_NAME: "{pod_name}"
+      gpu:
+        enabled: true
+        files: [gpu]
+        variables:
+          NAMESPACE: "{namespace}"
+          POD_NAME: "{pod_name}"
