@@ -483,8 +483,8 @@ def _run_workload_benchmark(
                         f"Workload {workload_key} references BenchConf but benchconf is disabled"
                     )
                 benchconf_lib.maybe_install_custom_version()
-                config_path = benchconf_lib.resolve_config_path(benchconf_ref)
                 benchconf_lib.save_version()
+                config_path = benchconf_lib.resolve_config_path(benchconf_ref)
 
             guidellm_args = runtime_config.build_guidellm_args(
                 benchmark_cfg=benchmark_cfg,
