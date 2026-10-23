@@ -40,6 +40,8 @@ def maybe_install_custom_version(_cfg) -> None:
     subprocess.check_call(
         [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall", spec]
     )
+    # pip can replace the package on disk while this process still holds an older module.
+    sys.modules.pop("benchconf", None)
 
 
 def save_version() -> None:
@@ -83,6 +85,7 @@ def resolve_config_path(benchconf_ref: str) -> Path:
             "benchconf package is required for benchconf-based benchmarks. "
             "Install with: pip install 'benchconf @ git+https://github.com/openshift-psap/benchconf'"
         ) from exc
+    logger.info("Loaded benchconf from %s", benchconf.__file__)
 
     parts = benchconf_ref.split("/")
     if len(parts) != 2:
