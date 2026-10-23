@@ -13,7 +13,14 @@ from projects.caliper.engine.model import FileExportBackendResult
 
 
 def apply_redaction_policy(paths: list[Path], policy: dict[str, Any] | None) -> list[Path]:
-    """FR-013 hook: placeholder returns paths unchanged unless policy excludes globs."""
+    """Exclude incomplete profiler traces, then apply configured redaction globs."""
+    # An interrupted profiler transfer can leave a staging file behind. Never
+    # publish it as a trace, even when no explicit redaction policy is configured.
+    paths = [
+        path
+        for path in paths
+        if not (path.name.startswith("trace_rank0_") and path.name.endswith(".partial"))
+    ]
     if not policy:
         return paths
     exclude = policy.get("exclude_globs", [])

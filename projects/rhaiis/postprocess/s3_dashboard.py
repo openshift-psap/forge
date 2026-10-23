@@ -83,11 +83,7 @@ def select_rank0_profiler_traces(trace_files: Iterable[Path]) -> list[Path]:
     selected = []
     for trace_file in trace_files:
         path = Path(trace_file)
-        if (
-            path.is_file()
-            and path.name.startswith("trace_rank0_")
-            and path.suffix in (".json", ".gz")
-        ):
+        if path.is_file() and path.name.startswith("trace_rank0_") and path.suffix == ".json":
             selected.append(path)
     return sorted(selected)
 
@@ -167,7 +163,12 @@ def upload_profiler_traces_to_s3(
             except Exception:
                 pass
 
-            s3.upload_file(str(trace_file), s3_bucket, s3_key)
+            s3.upload_file(
+                str(trace_file),
+                s3_bucket,
+                s3_key,
+                ExtraArgs={"ContentType": "application/json"},
+            )
             logger.info("Uploaded trace to s3://%s/%s", s3_bucket, s3_key)
             uploaded += 1
 

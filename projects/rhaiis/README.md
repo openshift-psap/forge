@@ -290,6 +290,7 @@ Available configOverrides:
 | `rhaiis.engines.trtllm.trtllm_config.*` | TRT-LLM server config (kv_cache, cuda_graph, moe) |
 | `rhaiis.profiler.enabled` | Enable PyTorch profiler |
 | `rhaiis.profiler.ranges` | vLLM forward-pass range to capture (default: `500-503`) |
+| `rhaiis.profiler.transfer_timeout_seconds` | Timeout for each rank-0 trace transfer (default: `300`) |
 | `rhaiis.agent_analysis.enabled` | Enable AI agent regression analysis |
 | `caliper.postprocess.csv_dashboard.enabled` | Enable dashboard CSV S3 sync |
 | `benchmarks.guidellm.timeout` | Benchmark timeout in seconds |
@@ -439,7 +440,7 @@ Pipeline events are reported to Slack via the topsail bot:
   infrastructure errors). Includes error details, model, accelerator, TP, version,
   and job ID.
 - **Warning alerts**: Sent when the pipeline completes with non-critical warnings
-  (e.g. profiler trace upload failed, predictor log upload failed).
+  (e.g. predictor log upload failed).
 - **Regression alerts**: Sent when regression analysis detects performance changes,
   with a link to the dashboard filtered by the relevant configuration.
 
@@ -455,8 +456,15 @@ before the main benchmarks:
 2. Enable the profiler gate with a workload-specific label (e.g. `isl1000_osl1000`)
 3. Run a GuideLLM benchmark at the configured profiler rates
 4. Disable the profiler gate
-5. Copy Chrome trace JSON files from the vLLM pod
-6. Upload traces to S3 organized by accelerator/model/TP/version/profile
+5. Copy only rank-0 Chrome traces as plain JSON, retrying interrupted transfers
+   and checking each trace against the source SHA-256 before publishing it.
+   Already-compressed pod traces are decoded to JSON after verification.
+6. Upload each workload's verified `.json` traces to S3 under
+   accelerator/model/TP/version/profile, then remove the local copies
+
+If profiler collection or upload still fails, Forge records a visible profiler
+failure and continues to the main benchmarks. The final test status remains
+failed; missing profiler data is never treated as a successful run.
 
 Traces are viewable in `chrome://tracing` or Perfetto UI.
 
