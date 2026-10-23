@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import signal
 from datetime import datetime
@@ -90,12 +91,23 @@ def get_workload(workload_key: str) -> dict:
     return dict(config.project.get_config(f"workloads.{workload_key}"))
 
 
-def get_vaults() -> list[str]:
+def get_vaults(*, include_observability: bool = True) -> list[str]:
     vaults = config.project.get_config("vaults")
     agent_analysis_enabled = config.project.get_config("rhaiis.agent_analysis.enabled", False)
     agent_vault = "psap-forge-rhaiis-agent-analysis"
     if agent_analysis_enabled and agent_vault not in vaults:
-        return [*vaults, agent_vault]
+        vaults = [*vaults, agent_vault]
+
+    observability_enabled = config.project.get_config("observability.enabled", False, warn=False)
+    if include_observability and observability_enabled:
+        objstore_vault = config.project.get_config(
+            "observability.receiver.objstore_vault.name", None, warn=False
+        )
+        if not objstore_vault:
+            raise ValueError("observability.receiver.objstore_vault.name must be set")
+        if objstore_vault not in vaults:
+            vaults = [*vaults, objstore_vault]
+
     return vaults
 
 
@@ -238,3 +250,33 @@ def split_image_tag(full_image: str) -> tuple[str, str]:
 def derive_deployment_name(hf_model_id: str) -> str:
     parts = hf_model_id.split("/")
     return (parts[1] if len(parts) > 1 else hf_model_id).lower().replace(".", "-")
+
+
+def derive_run_deployment_name(
+    hf_model_id: str, namespace: str, *, fjob_name: str | None = None
+) -> str:
+    """Use the same KServe name in test and run cleanup."""
+    base_name = derive_deployment_name(hf_model_id)
+    if fjob_name is None:
+        fjob_name = os.environ.get("FJOB_NAME", "")
+    suffix = fjob_name.rsplit("-", 1)[-1] if fjob_name else ""
+    if not suffix:
+        return base_name
+
+    # KServe hostname: {name}-predictor-{namespace} must be <= 63 chars.
+    max_base = 63 - len(f"-predictor-{namespace}") - len(suffix) - 1
+    if max_base < 1:
+        raise ValueError(
+            f"Namespace {namespace} and FJOB suffix {suffix} leave no room "
+            "for the KServe deployment name"
+        )
+    truncated_base = base_name[:max_base].rstrip("-")
+    return f"{truncated_base}-{suffix}"
+
+
+def derive_guidellm_job_name(prefix: str, workload_key: str, deployment_name: str) -> str:
+    """Build the exact GuideLLM Job name used by a test workload."""
+    base = f"{prefix}-{workload_key}-"
+    available = 63 - len(base)
+    model = deployment_name[:available] if available > 0 else ""
+    return f"{base}{model}".rstrip("-")

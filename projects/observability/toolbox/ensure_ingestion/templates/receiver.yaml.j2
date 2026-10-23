@@ -1,0 +1,139 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ name | tojson }}
+  namespace: {{ namespace | tojson }}
+  labels:
+    forge.openshift.io/component: observability
+    forge.openshift.io/run-suffix: {{ run_suffix | tojson }}
+    app.kubernetes.io/name: {{ name | tojson }}
+  annotations:
+    forge.openshift.io/run-id: {{ run_id | tojson }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ name | tojson }}
+    forge.openshift.io/run-suffix: {{ run_suffix | tojson }}
+  ports:
+    - name: remote-write
+      port: 19291
+      targetPort: remote-write
+    - name: grpc
+      port: 10901
+      targetPort: grpc
+    - name: http
+      port: 10902
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ name | tojson }}
+  namespace: {{ namespace | tojson }}
+  labels:
+    forge.openshift.io/component: observability
+    forge.openshift.io/run-suffix: {{ run_suffix | tojson }}
+    app.kubernetes.io/name: {{ name | tojson }}
+  annotations:
+    forge.openshift.io/run-id: {{ run_id | tojson }}
+spec:
+  serviceName: {{ name | tojson }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ name | tojson }}
+      forge.openshift.io/run-suffix: {{ run_suffix | tojson }}
+  template:
+    metadata:
+      labels:
+        forge.openshift.io/component: observability
+        forge.openshift.io/run-suffix: {{ run_suffix | tojson }}
+        app.kubernetes.io/name: {{ name | tojson }}
+      annotations:
+        forge.openshift.io/run-id: {{ run_id | tojson }}
+        forge.openshift.io/objstore-sha256: {{ objstore_digest | tojson }}
+    spec:
+      terminationGracePeriodSeconds: {{ shutdown_grace_seconds }}
+{% if run_as_user is not none or fs_group is not none %}
+      securityContext:
+{% if run_as_user is not none %}
+        runAsUser: {{ run_as_user }}
+{% endif %}
+{% if fs_group is not none %}
+        fsGroup: {{ fs_group }}
+{% endif %}
+{% endif %}
+      initContainers:
+        - name: remove-stale-lock
+          image: {{ image | tojson }}
+          command: ["sh", "-c", "rm -f /var/thanos/receive/default-tenant/lock"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/receive
+      containers:
+        - name: thanos-receiver
+          image: {{ image | tojson }}
+          args:
+            - receive
+            - --grpc-address=0.0.0.0:10901
+            - --http-address=0.0.0.0:10902
+            - --remote-write.address=0.0.0.0:19291
+            - --tsdb.path=/var/thanos/receive
+            - {{ ('--tsdb.retention=' ~ retention) | tojson }}
+{% if out_of_order_window %}
+            - {{ ('--tsdb.out-of-order.time-window=' ~ out_of_order_window) | tojson }}
+{% endif %}
+            - {{ ('--label=cluster="' ~ cluster_label ~ '"') | tojson }}
+            - {{ ('--label=forge_run_id="' ~ run_id ~ '"') | tojson }}
+            - --label=receive="true"
+            - --objstore.config-file=/etc/thanos/objstore.yaml
+            - --receive.default-tenant-id=default-tenant
+            - --receive.replication-factor=1
+            - --receive.local-endpoint=127.0.0.1:10901
+          ports:
+            - name: remote-write
+              containerPort: 19291
+            - name: grpc
+              containerPort: 10901
+            - name: http
+              containerPort: 10902
+          volumeMounts:
+            - name: data
+              mountPath: /var/thanos/receive
+            - name: objstore
+              mountPath: /etc/thanos
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 150
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources: {{ resources | tojson }}
+      volumes:
+        - name: objstore
+          secret:
+            secretName: {{ objstore_secret | tojson }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          forge.openshift.io/component: observability
+          forge.openshift.io/run-suffix: {{ run_suffix | tojson }}
+        annotations:
+          forge.openshift.io/run-id: {{ run_id | tojson }}
+      spec:
+        accessModes: [ReadWriteOnce]
+{% if storage_class is not none %}
+        storageClassName: {{ storage_class | tojson }}
+{% endif %}
+        resources:
+          requests:
+            storage: {{ pvc_size | tojson }}

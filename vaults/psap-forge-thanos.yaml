@@ -1,0 +1,10 @@
+env_key: PSAP_FORGE_THANOS_SECRET_PATH
+description: |
+  Thanos object-store credentials for the Forge observability receiver.
+  The object store must be shared with the central Thanos Store Gateway.
+
+content:
+  objstore.yaml:
+    description: |
+      Complete Thanos object-store configuration for the metrics bucket.
+      This file is sensitive and is mounted into the receiver as a Kubernetes Secret.

@@ -16,7 +16,6 @@ from projects.rhaiis.postprocess.csv_dashboard import serialize_env_vars
 
 logger = logging.getLogger(__name__)
 
-_K8S_NAME_MAX = 63
 _warnings: list[str] = []
 
 
@@ -32,14 +31,6 @@ def _write_manifest(manifest: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
-
-
-def _guidellm_job_name(prefix: str, workload_key: str, deployment_name: str) -> str:
-    """Build a K8s-safe job name: {prefix}-{workload_key}-{model}, trimming model to fit."""
-    base = f"{prefix}-{workload_key}-"
-    available = _K8S_NAME_MAX - len(base)
-    model = deployment_name[:available] if available > 0 else ""
-    return f"{base}{model}".rstrip("-")
 
 
 def run(
@@ -102,17 +93,9 @@ def _run_test(
     benchmark_cfg = runtime_config.get_benchmark_config()
 
     if not deployment_name:
-        base_name = runtime_config.derive_deployment_name(model_cfg["hf_model_id"])
-        fjob = os.environ.get("FJOB_NAME", "")
-        suffix = fjob.rsplit("-", 1)[-1] if fjob else ""
-        if suffix:
-            # KServe hostname: {name}-predictor-{namespace} must be <= 63 chars
-            ns = runtime_config.get_namespace()
-            max_base = 63 - len(f"-predictor-{ns}") - len(suffix) - 1
-            truncated_base = base_name[:max_base].rstrip("-")
-            deployment_name = f"{truncated_base}-{suffix}"
-        else:
-            deployment_name = base_name
+        deployment_name = runtime_config.derive_run_deployment_name(
+            model_cfg["hf_model_id"], runtime_config.get_namespace()
+        )
 
     engine = runtime_config.get_engine()
     serving_image = runtime_config.get_serving_image(accelerator, engine)
@@ -508,7 +491,9 @@ def _run_workload_benchmark(
 
             run_guidellm_benchmark(
                 endpoint_url=f"{endpoint_url}/v1",
-                name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
+                name=runtime_config.derive_guidellm_job_name(
+                    "guidellm-bench", workload_key, deployment_name
+                ),
                 namespace=namespace,
                 image=benchmark_cfg.get("image"),
                 timeout=benchmark_timeout,
@@ -748,7 +733,9 @@ def _run_warmup_step(
     try:
         run_guidellm_benchmark(
             endpoint_url=f"{endpoint_url}/v1",
-            name=_guidellm_job_name("guidellm-warmup", workload_key, deployment_name),
+            name=runtime_config.derive_guidellm_job_name(
+                "guidellm-warmup", workload_key, deployment_name
+            ),
             namespace=namespace,
             image=benchmark_cfg.get("image"),
             timeout=benchmark_timeout,
@@ -815,7 +802,9 @@ def _run_profiler_step(
         try:
             run_guidellm_benchmark(
                 endpoint_url=f"{endpoint_url}/v1",
-                name=_guidellm_job_name("guidellm-profiler", workload_key, deployment_name),
+                name=runtime_config.derive_guidellm_job_name(
+                    "guidellm-profiler", workload_key, deployment_name
+                ),
                 namespace=namespace,
                 image=benchmark_cfg.get("image"),
                 timeout=benchmark_timeout,
