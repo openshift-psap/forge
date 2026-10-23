@@ -11,6 +11,7 @@ import yaml
 from projects.core.library import env
 from projects.core.library.fournos_status import patch_fjob_relevant_deployments
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
+from projects.guidellm.library import benchconf as benchconf_lib
 from projects.rhaiis.orchestration import runtime_config
 from projects.rhaiis.postprocess.csv_dashboard import serialize_env_vars
 
@@ -497,13 +498,24 @@ def _run_workload_benchmark(
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
+            benchconf_ref = workload.get("benchconf")
+            config_path = None
+            if benchconf_ref:
+                if not benchconf_lib._is_enabled():
+                    raise RuntimeError(
+                        f"Workload {workload_key} references BenchConf but benchconf is disabled"
+                    )
+                benchconf_lib.maybe_install_custom_version()
+                benchconf_lib.save_version()
+                config_path = benchconf_lib.resolve_config_path(benchconf_ref)
+
             guidellm_args = runtime_config.build_guidellm_args(
                 benchmark_cfg=benchmark_cfg,
                 model_id=model_cfg["hf_model_id"],
-                data=workload["data"],
-                rates=rates,
-                max_seconds=max_seconds,
-                rampup=rampup,
+                data=None if config_path else workload["data"],
+                rates=None if config_path else rates,
+                max_seconds=None if config_path else max_seconds,
+                rampup=None if config_path else rampup,
             )
 
             run_guidellm_benchmark(
@@ -514,6 +526,7 @@ def _run_workload_benchmark(
                 timeout=benchmark_timeout,
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,
+                config_path=config_path,
                 hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
                 fs_group=benchmark_cfg.get("fs_group"),
             )
