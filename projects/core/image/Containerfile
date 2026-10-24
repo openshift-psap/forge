@@ -41,6 +41,11 @@ RUN curl -LO "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/o
     mv oc /usr/local/bin/ && \
     rm -f openshift-client-linux.tar.gz kubectl
 
+# Install yq (used by bin/fournos_entrypoint to read the FournosJob spec)
+RUN curl -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" \
+    -o /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq
+
 # Optimize uv for container environments
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_SYSTEM_PYTHON=1
@@ -66,6 +71,16 @@ RUN groupadd -g 1001 ${APP_NAME} && \
     chown -R ${APP_NAME}:${APP_NAME} ${APP_HOME}
 
 RUN git config --global --add safe.directory ${APP_HOME}
+
+# Fournos execution-engine contract: every engine image must expose an
+# executable at this fixed, absolute path. Fournos's resolve Job template
+# and FORGE's own Tekton Task (task-forge-step.yaml) invoke it directly via
+# `command: ["/opt/fournos/entrypoint"]`, so no FORGE-specific bash needs to
+# live in Fournos or in gitops-managed Task/Job YAML — it's all here, in the
+# image, as the single source of truth (bin/fournos_entrypoint).
+RUN mkdir -p /opt/fournos && \
+    chmod +x ${APP_HOME}/bin/fournos_entrypoint && \
+    ln -s ${APP_HOME}/bin/fournos_entrypoint /opt/fournos/entrypoint
 
 # Make sure that the home directory can be written by OCP random user ID
 RUN chgrp -R 0 "$HOME" && chmod -R g=u "$HOME"
