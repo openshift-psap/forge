@@ -521,7 +521,9 @@ Full list: `grep "^[a-z]" orchestration/config.d/models.yaml`
 ## Workload profiles
 
 The standard workload profiles run for 275 seconds per rate with a 35-second
-GuideLLM ramp-up and a 75-second warmup pass before each selected workload.
+GuideLLM ramp-up and a 75-second GuideLLM profile warmup. Separately, Forge can
+run a preliminary warmup benchmark for each selected workload, controlled by
+`tests.rhaiis.warmup` and `rhaiis.warmup` (default: 60 seconds at rate 200).
 
 | Key | Prompt tokens | Output tokens | Rates | Max seconds | Rampup | Warmup |
 |-----|--------------|---------------|-------|-------------|---------|--------|
