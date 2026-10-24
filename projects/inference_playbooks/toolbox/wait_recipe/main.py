@@ -7,6 +7,7 @@ from projects.core.dsl import entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc, oc_get_json
 
 CONTROLLERS = {
+    ("v1", "Pod"): "pods",
     ("apps/v1", "ReplicaSet"): "replicasets.apps",
     ("apps/v1", "StatefulSet"): "statefulsets.apps",
     ("apps/v1", "Deployment"): "deployments.apps",
@@ -17,7 +18,7 @@ CONTROLLERS = {
 PRIMARY_RESOURCES = {
     kind: resource
     for (_version, kind), resource in CONTROLLERS.items()
-    if kind not in {"ReplicaSet", "StatefulSet"}
+    if kind not in {"Pod", "ReplicaSet", "StatefulSet"}
 }
 
 

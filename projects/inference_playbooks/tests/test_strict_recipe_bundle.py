@@ -711,6 +711,158 @@ def _runtime_capture_objects(kind):
     return primary, pods
 
 
+@pytest.fixture
+def lws_owner_chain(monkeypatch):
+    primary, pods = _runtime_capture_objects("LeaderWorkerSet")
+    leader, worker = pods
+    leader["metadata"]["name"] = "authored-0"
+    worker["metadata"]["name"] = "authored-0-1"
+    leader_set = _owned("StatefulSet", "authored", "leader-set")
+    leader_set["apiVersion"] = "apps/v1"
+    worker_set = _owned(
+        "StatefulSet", "authored-0", "worker-set", leader["metadata"]["uid"], "Pod", "v1"
+    )
+    worker_set["apiVersion"] = "apps/v1"
+    worker_set["metadata"]["ownerReferences"][0]["name"] = leader["metadata"]["name"]
+    for index, (pod, parent) in enumerate(zip(pods, [leader_set, worker_set], strict=True)):
+        pod["metadata"]["ownerReferences"] = [
+            {
+                "apiVersion": parent["apiVersion"],
+                "kind": parent["kind"],
+                "name": parent["metadata"]["name"],
+                "uid": parent["metadata"]["uid"],
+                "controller": True,
+            }
+        ]
+        pod["metadata"]["labels"] = {"leaderworkerset.sigs.k8s.io/worker-index": str(index)}
+        pod["status"].update(
+            podIP=f"10.0.0.{index + 5}", conditions=[{"type": "Ready", "status": "True"}]
+        )
+    unrelated = copy.deepcopy(worker)
+    unrelated["metadata"].update(name="authored-0-unrelated", uid="unrelated", ownerReferences=[])
+    objects = {
+        ("pods", leader["metadata"]["name"]): copy.deepcopy(leader),
+        ("statefulsets.apps", "authored"): leader_set,
+        ("statefulsets.apps", "authored-0"): worker_set,
+        (waiter.PRIMARY_RESOURCES["LeaderWorkerSet"], "authored"): primary,
+    }
+    calls = []
+
+    def get(resource, *, namespace, name=None, **kwargs):
+        assert namespace == "target"
+        calls.append((resource, name))
+        if name is None:
+            assert resource in {"pods", "deployments.apps"}
+            return {"items": [*pods, unrelated] if resource == "pods" else []}
+        if resource in {"pods", "statefulsets.apps"}:
+            assert kwargs == {"ignore_not_found": True}
+        return objects.get((resource, name))
+
+    monkeypatch.setattr(waiter, "oc_get_json", get)
+    monkeypatch.setattr(test_phase, "oc_get_json", get)
+    return SimpleNamespace(primary=primary, pods=pods, objects=objects, calls=calls)
+
+
+@pytest.mark.parametrize("extra_noncontroller", [False, True])
+def test_owned_pods_follows_complete_lws_chain(lws_owner_chain, extra_noncontroller):
+    chain = lws_owner_chain
+    if extra_noncontroller:
+        chain.objects[("pods", "authored-0")]["metadata"]["ownerReferences"].append(
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "other",
+                "uid": "other",
+                "controller": False,
+            }
+        )
+    assert waiter.owned_pods("target", "root") == chain.pods
+    assert chain.calls == [
+        ("pods", None),
+        ("statefulsets.apps", "authored"),
+        ("statefulsets.apps", "authored-0"),
+        ("pods", "authored-0"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "namespace",
+        "namespace-missing",
+        "uid-missing",
+        "replacement",
+        "missing",
+        "cycle",
+        "controller-missing",
+        "controller-false",
+        "controller-not-bool",
+        "controller-multiple",
+        "owner-uid-missing",
+        "owner-version",
+        "owner-kind",
+    ],
+)
+def test_owned_pods_rejects_invalid_nested_pod_owner(lws_owner_chain, invalid):
+    chain = lws_owner_chain
+    metadata = chain.objects[("pods", "authored-0")]["metadata"]
+    owner = metadata["ownerReferences"][0]
+    if invalid == "namespace":
+        metadata["namespace"] = "elsewhere"
+    elif invalid == "namespace-missing":
+        metadata.pop("namespace")
+    elif invalid == "uid-missing":
+        metadata.pop("uid")
+    elif invalid == "replacement":
+        metadata["uid"] = "replacement-leader"
+    elif invalid == "missing":
+        chain.objects.pop(("pods", "authored-0"))
+    elif invalid == "cycle":
+        owner.update(name="authored-0", uid="worker-set")
+    elif invalid == "controller-missing":
+        owner.pop("controller")
+    elif invalid == "controller-false":
+        owner["controller"] = False
+    elif invalid == "controller-not-bool":
+        owner["controller"] = "true"
+    elif invalid == "controller-multiple":
+        metadata["ownerReferences"].append(dict(owner, uid="other-controller"))
+    elif invalid == "owner-uid-missing":
+        owner.pop("uid")
+    elif invalid == "owner-version":
+        owner["apiVersion"] = "unknown/v1"
+    else:
+        owner["kind"] = "UnknownController"
+    assert waiter.owned_pods("target", "root") == [chain.pods[0]]
+    assert ("pods", "authored-0") in chain.calls
+    assert len(chain.calls) == 4  # Cycles terminate without fetching any owner twice.
+
+
+def test_pod_ownership_does_not_expand_supported_primaries(monkeypatch):
+    assert set(waiter.PRIMARY_RESOURCES) == contract.PRIMARY_KINDS
+    monkeypatch.setattr(
+        waiter, "oc_get_json", lambda *args, **kwargs: pytest.fail("must not fetch a Pod primary")
+    )
+    with pytest.raises(KeyError):
+        waiter.get_primary("target", "Pod", "authored-0", "pod-0")
+
+
+def test_endpoint_with_complete_lws_chain_still_selects_only_leader(lws_owner_chain, tmp_path):
+    args = SimpleNamespace(
+        namespace="target",
+        kind="LeaderWorkerSet",
+        name="authored",
+        uid="root",
+        port=8000,
+        artifact_dir=tmp_path,
+    )
+    ctx = SimpleNamespace()
+    waiter.resolve_endpoint.original_func(args, ctx)
+    assert ctx.endpoint_url == "http://10.0.0.5:8000"
+    assert ("pods", "authored-0") in lws_owner_chain.calls
+    assert (tmp_path / "artifacts/endpoint.url").read_text() == ctx.endpoint_url + "\n"
+
+
 def _capture_environment(monkeypatch, tmp_path):
     test_dir = tmp_path / "01__test" / "001__inference_playbooks_test_dir"
     test_dir.mkdir(parents=True)
@@ -720,6 +872,48 @@ def _capture_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(test_phase.env._tls_artifact_dir, "val", test_dir, raising=False)
     monkeypatch.setenv("ARTIFACT_DIR", str(test_dir))
     return test_dir
+
+
+def test_capture_complete_lws_chain_saves_leader_and_worker(lws_owner_chain, monkeypatch, tmp_path):
+    test_dir = _capture_environment(monkeypatch, tmp_path)
+    chain = lws_owner_chain
+    original = copy.deepcopy(chain.primary)
+    calls = []
+
+    def logs(*args, **kwargs):
+        calls.append((args, kwargs))
+        kwargs["stdout_dest"].write_text(f"logs for {args[1]}\n")
+
+    monkeypatch.setattr(test_phase, "oc", logs)
+    test_phase._capture_created_recipe("target", [chain.primary])
+    captures = list(test_dir.glob("*__capture_lws_state"))
+    assert len(captures) == 1
+    directory = captures[0] / "artifacts"
+    assert {path.name for path in directory.iterdir()} == {
+        "leaderworkerset.yaml",
+        "leaderworkerset.pods.yaml",
+        "leaderworkerset.deployments.yaml",
+        "leaderworkerset.authored-0.log",
+        "leaderworkerset.authored-0-1.log",
+    }
+    assert yaml.safe_load((directory / "leaderworkerset.yaml").read_text()) == original
+    assert yaml.safe_load((directory / "leaderworkerset.pods.yaml").read_text()) == {
+        "apiVersion": "v1",
+        "kind": "List",
+        "items": chain.pods,
+    }
+    for pod, (args, kwargs) in zip(chain.pods, calls, strict=True):
+        name = pod["metadata"]["name"]
+        assert args == ("logs", name, "-n", "target", "--all-containers=true")
+        assert kwargs == {
+            "check": False,
+            "log_stdout": False,
+            "log_stderr": False,
+            "stdout_dest": directory / f"leaderworkerset.{name}.log",
+        }
+        assert kwargs["stdout_dest"].read_text() == f"logs for {name}\n"
+    assert chain.primary == original
+    assert test_phase.env.ARTIFACT_DIR == test_dir
 
 
 @pytest.mark.parametrize("kind", ["LeaderWorkerSet", "LLMInferenceService", "Deployment"])
