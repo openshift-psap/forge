@@ -12,6 +12,7 @@ Configuration layout:
 
 - project config chunk: [`orchestration/config.d/project.yaml`](./orchestration/config.d/project.yaml)
 - config chunks: [`orchestration/config.d`](./orchestration/config.d)
+- optional Thanos config: [`orchestration/config.d/observability.yaml`](./orchestration/config.d/observability.yaml)
 - presets: [`orchestration/presets.d`](./orchestration/presets.d)
 - manifests: [`orchestration/manifests`](./orchestration/manifests)
 
@@ -23,6 +24,38 @@ Main entrypoints:
 - Prepare flow: [`orchestration/prepare_sequence.py`](./orchestration/prepare_sequence.py)
 - Test flow: [`orchestration/test_phase.py`](./orchestration/test_phase.py)
 - Cleanup flow: [`orchestration/cleanup_phase.py`](./orchestration/cleanup_phase.py)
+
+## Optional Thanos metrics
+
+`observability.enabled` is false by default. In a Fournos job, enable it in
+`configOverrides`; Forge uses that job's `FJOB_NAME` as the run ID:
+
+```yaml
+observability.enabled: true
+observability.cluster_label: psap-hera
+```
+
+For local runs, set `observability.run_id` explicitly. The run ID must match
+`FJOB_NAME` in Fournos, and per-run Receiver teardown requires the `forge-full`
+pipeline. Forge uses the configured `runtime.namespace` and claims it for the
+duration of the run; two Forge runs sharing that namespace must run one at a
+time. Presets that select `kpouget-dev` or `kevin-dev` still use those
+namespaces, so any required image pull Secret must already be available there.
+An observability-enabled run must use one workload namespace across all llm_d
+run specifications. `monitoring.namespace_regex: null` selects only that
+namespace.
+
+Prepare creates a run-scoped Receiver and remote-write queues. The system
+container filter is `main`. Keep `deployments.defaults.enable_monitors: true`:
+the llm_d deployment creates its own HTTPS workload and HTTP scheduler
+ServiceMonitors. GPU forwarding remains off by default because DCGM series
+without a matching `exported_namespace` cannot be attributed safely. The
+`psap-forge-thanos` vault must contain `objstore.yaml` with the S3 configuration. Post-cleanup
+stops the run's workload, drains its queues, uploads remaining blocks, then
+removes the Receiver and its PVC. If shipping cannot be confirmed, teardown
+reports an error and preserves the data for a retry. The central Querier reads
+uploaded blocks through its Store Gateway. If workload cleanup fails, Forge
+skips teardown so the Receiver and queues remain available for a retry.
 
 Profile model:
 

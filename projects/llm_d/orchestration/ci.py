@@ -34,6 +34,7 @@ from projects.llm_d.orchestration.cleanup_phase import (
 from projects.llm_d.orchestration.cleanup_phase import (
     run as cleanup_toolbox_run,
 )
+from projects.llm_d.orchestration.observability import get_observability_context
 from projects.llm_d.orchestration.preflight_phase import run as preflight_toolbox_run
 from projects.llm_d.orchestration.prepare_sequence import run_prepare_sequence
 from projects.rhoai.library.deploy import list_mandatory_vaults as rhoai_list_mandatory_vaults
@@ -61,8 +62,22 @@ def init_vaults_for_phase(phase: str):
     extra_mandatory = []
     if phase == "prepare":
         extra_mandatory.extend(rhoai_list_mandatory_vaults())
+        extra_mandatory.extend(list_observability_vaults())
 
     vault.phase_vault_init(phase, extra_mandatory=(extra_mandatory or None))
+
+
+def list_observability_vaults() -> list[str]:
+    """List the object-store vault for an enabled run Receiver."""
+    if not config.project.get_config("observability.enabled", False, warn=False):
+        return []
+
+    vault_name = config.project.get_config(
+        "observability.receiver.objstore_vault.name", None, warn=False
+    )
+    if not vault_name:
+        raise ValueError("observability.receiver.objstore_vault.name must be set")
+    return [vault_name]
 
 
 def _signal_callback(sig, frame, log_file):
@@ -185,8 +200,28 @@ def pre_cleanup(ctx) -> int:
     """Cleanup phase - Clean up resources and finalize."""
     from projects.llm_d.orchestration import runtime_config
 
-    for run_spec in runtime_config.get_run_specs():
+    run_specs = runtime_config.get_run_specs()
+    observability_context = get_observability_context(run_spec.namespace for run_spec in run_specs)
+    if observability_context:
+        from projects.llm_d.orchestration.prepare_phase import ensure_test_namespace
+        from projects.observability.library.runtime import (
+            claim_workload_namespace,
+            get_workload_namespace_owner,
+        )
+
+        _, run_id = observability_context
+        for namespace in {run_spec.namespace for run_spec in run_specs}:
+            owner = get_workload_namespace_owner(namespace)
+            if owner is not None and owner != run_id:
+                raise RuntimeError(
+                    f"Namespace {namespace} is currently owned by another observability run"
+                )
+
+    for run_spec in run_specs:
         with runtime_config.activate_run_spec(run_spec):
+            if observability_context:
+                ensure_test_namespace()
+                claim_workload_namespace(run_spec.namespace, run_id)
             cleanup_toolbox_run(namespace=run_spec.namespace)
     cleanup_operators()
     return 0
@@ -200,10 +235,51 @@ def post_cleanup(ctx) -> int:
     """Cleanup phase - Clean up resources and finalize."""
     from projects.llm_d.orchestration import runtime_config
 
-    for run_spec in runtime_config.get_run_specs():
-        with runtime_config.activate_run_spec(run_spec):
-            cleanup_toolbox_run(namespace=run_spec.namespace)
+    run_specs = runtime_config.get_run_specs()
+    observability_context = get_observability_context(run_spec.namespace for run_spec in run_specs)
+    if not observability_context:
+        for run_spec in run_specs:
+            with runtime_config.activate_run_spec(run_spec):
+                cleanup_toolbox_run(namespace=run_spec.namespace)
+        cleanup_operators()
+        return 0
+
+    from projects.observability.library.runtime import (
+        get_workload_namespace_owner,
+        release_workload_namespace,
+        teardown_observability,
+    )
+
+    workload_errors: list[Exception] = []
+    observability_settings, run_id = observability_context
+    workload_namespace = run_specs[0].namespace
+    owner = get_workload_namespace_owner(workload_namespace)
+    if owner != run_id:
+        raise RuntimeError(
+            f"Namespace {workload_namespace} is not claimed by this observability "
+            "run; refusing post-cleanup"
+        )
+
+    for run_spec in run_specs:
+        try:
+            with runtime_config.activate_run_spec(run_spec):
+                cleanup_toolbox_run(namespace=run_spec.namespace)
+        except Exception as exc:
+            workload_errors.append(exc)
+
+    if workload_errors:
+        logger.error("Workload cleanup failed; retaining the run Receiver for retry")
+        if len(workload_errors) == 1:
+            raise workload_errors[0]
+        raise ExceptionGroup("llm_d workload cleanup failed", workload_errors)
+
+    teardown_observability(
+        observability_settings,
+        workload_namespace=workload_namespace,
+        run_id=run_id,
+    )
     cleanup_operators()
+    release_workload_namespace(workload_namespace, run_id)
     return 0
 
 
@@ -220,6 +296,7 @@ main.add_command(
         vault_list_funcs=[
             vault.phase_vault_list_all,
             rhoai_list_mandatory_vaults,
+            list_observability_vaults,
             vault.phase_vault_list_all,
             caliper_export_list_vaults,
             caliper_export_list_optional_vaults,
