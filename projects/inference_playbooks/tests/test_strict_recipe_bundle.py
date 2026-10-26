@@ -492,6 +492,63 @@ def test_launch_preserves_every_authored_field_and_owns_cleanup(launch, kind):
     assert len(list(launch.src.glob("*.yaml"))) == 3 + len(created)
 
 
+@pytest.mark.parametrize("storage", ["pvc", "hostpath", "mixed"])
+def test_lws_launch_preserves_authored_storage(launch, storage):
+    source = _manifest("LeaderWorkerSet")
+    for template in source["spec"]["leaderWorkerTemplate"].values():
+        if not isinstance(template, dict):
+            continue
+        pod = template["spec"]
+        if storage == "hostpath":
+            pod["volumes"][0] = {
+                "name": "model",
+                "hostPath": {"path": "/var/lib/models/example", "type": "Directory"},
+            }
+            pod["containers"][0]["volumeMounts"][0]["readOnly"] = True
+        elif storage == "mixed":
+            pod["volumes"].append(
+                {"name": "cache", "hostPath": {"path": "/var/lib/vllm", "type": "Directory"}}
+            )
+            pod["containers"][0]["volumeMounts"].append({"name": "cache", "mountPath": "/cache"})
+        pod["nodeSelector"] = {"models.example.com/ready": "true"}
+    launch.checkout.path.write_text(yaml.safe_dump(source))
+    launch.checkout.snapshot()
+
+    test_phase._launch_recipe("synthetic", launch.checkout.recipe)
+
+    submitted = contract.load_documents((launch.src / "submitted-bundle.yaml").read_bytes())
+    assert submitted[0]["spec"] == source["spec"]
+    creates = [
+        json.loads(kwargs["input_text"])
+        for args, kwargs in launch.actions
+        if isinstance(args, tuple) and args[0] == "create"
+    ]
+    assert creates == submitted
+    assert [doc["kind"] for doc in creates] == ["LeaderWorkerSet"]
+    assert any(action[0] == "benchmark" for action in launch.actions)
+
+
+@pytest.mark.parametrize(
+    "location", [("template",), ("worker",), ("prefill", "template"), ("prefill", "worker")]
+)
+@pytest.mark.parametrize("hostpath", [{"path": "/do-not-print", "type": "Directory"}, {}, None])
+def test_llmisvc_hostpath_rejected_before_artifacts_or_cluster_calls(launch, location, hostpath):
+    source = _manifest("LLMInferenceService")
+    pod = source["spec"]
+    for key in location:
+        pod = pod.setdefault(key, {})
+    pod["volumes"] = [{"name": "model", "hostPath": hostpath}]
+    launch.checkout.path.write_text(yaml.safe_dump(source))
+    launch.checkout.snapshot()
+
+    with pytest.raises(ValueError, match="LLMInferenceService.*hostPath") as error:
+        test_phase._launch_recipe("synthetic", launch.checkout.recipe)
+
+    assert "/do-not-print" not in str(error.value)
+    assert launch.actions == []
+    assert not launch.src.exists()
+
+
 def test_conflict_checks_all_objects_before_any_create(launch):
     launch.checkout.path.write_text(yaml.safe_dump(_manifest("InferenceService")))
     (launch.checkout.folder / "a-runtime.yml").write_text(

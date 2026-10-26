@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from projects.inference_playbooks.orchestration.manifest_bundle import validate_manifest_storage
+
 CATALOG = "tests/forge/recipes.yaml"
 RECIPE_GLOB_V3 = "models/*/*/*/recipes/*/*/*/recipe.yaml"
 RECIPE_GLOB_V4 = "models/*/recipes/*/recipe.yaml"
@@ -248,6 +250,7 @@ def _resolve_v4_manifests(
     if len(service_docs) > 1:
         raise ValueError(f"{recipe_path} must define at most one Service")
     primary, primary_path = primary_docs[0]
+    validate_manifest_storage(primary)
     if service_docs:
         service, service_path = service_docs[0]
         _validate_service_manifest(service, str(service_path))
@@ -424,6 +427,7 @@ def _validate_lws_model_cache(recipe_path: Path, manifest: dict[str, Any], value
 
 def _validate_llmisvc_manifest(manifest: Any, path: Path) -> None:
     _validate_kubernetes_manifest(manifest, path, "LLMInferenceService")
+    validate_manifest_storage(manifest)
     if manifest.get("apiVersion") != "serving.kserve.io/v1alpha2":
         raise ValueError(f"{path} must use serving.kserve.io/v1alpha2")
     model = (

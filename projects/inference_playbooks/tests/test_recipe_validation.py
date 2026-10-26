@@ -230,6 +230,38 @@ def test_validate_recipe_catalog_rejects_substring_provenance(tmp_path: Path) ->
         validate_recipe_catalog(tmp_path)
 
 
+@pytest.mark.parametrize("schema_version", [1, 4])
+def test_catalog_rejects_llmisvc_hostpath(tmp_path: Path, schema_version: int) -> None:
+    manifest = yaml.safe_load(_manifest("hf://test/model"))
+    manifest["spec"]["template"]["volumes"] = [
+        {"name": "model", "hostPath": {"path": "/var/lib/models", "type": "Directory"}}
+    ]
+    if schema_version == 1:
+        _write(tmp_path, "models/server.yaml", yaml.safe_dump(manifest))
+        _write(
+            tmp_path,
+            "tests/forge/recipes.yaml",
+            "schema_version: 1\nrecipes:\n  - id: test-model\n    manifest: models/server.yaml\n",
+        )
+    else:
+        recipe_dir = "models/test-model/recipes/hostpath"
+        _write(
+            tmp_path,
+            "models/test-model/model.yaml",
+            "model_id: test-model\nhuggingface_id: test/model\n",
+        )
+        _write(tmp_path, "hardware.yaml", "profile_id: test\n")
+        _write(
+            tmp_path,
+            f"{recipe_dir}/recipe.yaml",
+            "schema_version: 4\nrecipe_id: test-model\nmodel_id: test-model\nhardware_profile: hardware.yaml\n",
+        )
+        _write(tmp_path, f"{recipe_dir}/manifests/vllm-v1/server.yaml", yaml.safe_dump(manifest))
+
+    with pytest.raises(ValueError, match="LLMInferenceService.*hostPath"):
+        validate_recipe_catalog(tmp_path)
+
+
 def test_load_recipe_v3_discovers_lws_and_service(tmp_path: Path) -> None:
     recipe_dir = "models/kimi-k3/vllm/kimi-k3/recipes/h200/profile/pp2-tp8"
     _write(

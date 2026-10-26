@@ -82,6 +82,29 @@ def _json_value(value):
     raise ValueError("Manifest must contain JSON-compatible values")
 
 
+def validate_manifest_storage(manifest: dict) -> None:
+    """Allow authored LWS storage, but reject hostPath in every LLMISVC pod template."""
+    if manifest.get("kind") != "LLMInferenceService":
+        return
+    if _contains_hostpath_volume(manifest.get("spec")):
+        raise ValueError(
+            "LLMInferenceService does not support hostPath volumes; use PVC-backed storage instead"
+        )
+
+
+def _contains_hostpath_volume(value) -> bool:
+    if isinstance(value, dict):
+        volumes = value.get("volumes")
+        if isinstance(volumes, list) and any(
+            isinstance(volume, dict) and "hostPath" in volume for volume in volumes
+        ):
+            return True
+        return any(_contains_hostpath_volume(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_contains_hostpath_volume(child) for child in value)
+    return False
+
+
 def classify_documents(documents: list[dict]) -> dict:
     primary = []
     runtimes = []
@@ -97,6 +120,7 @@ def classify_documents(documents: list[dict]) -> dict:
             )
         if document.get("apiVersion") != RESOURCE_TYPES[kind][0]:
             raise ValueError(f"Unsupported apiVersion for {kind}")
+        validate_manifest_storage(document)
         metadata = document.get("metadata")
         name = metadata.get("name") if isinstance(metadata, dict) else None
         if not isinstance(name, str) or not re.fullmatch(

@@ -28,3 +28,40 @@ network prerequisites remain external.
 
 With no recipe selected, the existing catalog-only validation performs no launch.
 Bundle artifact filenames and repository-relative provenance paths are unchanged.
+
+## LWS model storage
+
+LeaderWorkerSet manifests may use existing PVCs or node-local `hostPath` volumes,
+including both in the same workload. Forge preserves the authored volumes,
+mounts and scheduling constraints; it does not create PVCs, populate host paths,
+or rewrite storage. For a prepopulated host directory, use the following pod-spec
+fragment in both `spec.leaderWorkerTemplate.leaderTemplate.spec` and
+`spec.leaderWorkerTemplate.workerTemplate.spec`, alongside the other container
+settings:
+
+```yaml
+containers:
+  - name: vllm
+    volumeMounts:
+      - name: model
+        mountPath: /models
+        readOnly: true
+volumes:
+  - name: model
+    hostPath:
+      path: /var/lib/models/example
+      type: Directory
+```
+
+Configure the server to load the model from the container's mount path. The host
+directory and identical model weights must already exist on every eligible node;
+use authored node selectors or affinity to constrain scheduling as needed. The
+workload's service account must have an SCC permitting hostPath, and node
+permissions and SELinux labels must allow the container to read the files. Forge
+does not grant these privileges or change node permissions. No additional Forge
+storage setting or `deployment.model_cache` hint is required for a v4 launch.
+
+**LLMInferenceService does not support hostPath.** Catalog validation and selected
+launches reject hostPath volumes in any LLMInferenceService pod template,
+including worker and prefill templates, before writing launch artifacts or
+contacting the cluster. Use PVC-backed storage for that deployment kind.
