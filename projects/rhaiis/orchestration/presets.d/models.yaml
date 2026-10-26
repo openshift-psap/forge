@@ -235,6 +235,10 @@ qwen3-coder:
 infomaniak-translategemma:
   tests.rhaiis.model_key: infomaniak-translategemma-12b
 
+# Google TranslateGemma
+google-translategemma:
+  tests.rhaiis.model_key: google-translategemma-12b
+
 # Kimi-K2.5
 kimi-k2-5:
   tests.rhaiis.model_key: kimi-k2-5-nvfp4
