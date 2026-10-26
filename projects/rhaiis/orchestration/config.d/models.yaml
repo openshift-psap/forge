@@ -527,6 +527,15 @@ infomaniak-translategemma-12b:
   hf_model_id: Infomaniak-AI/vllm-translategemma-12b-it
   vllm_args:
     tensor-parallel-size: 1
+    chat-template-content-format: openai
+
+# Google TranslateGemma
+google-translategemma-12b:
+  name: TranslateGemma-12B
+  hf_model_id: google/translategemma-12b-it
+  vllm_args:
+    tensor-parallel-size: 1
+    chat-template-content-format: openai
 
 # DeepSeek V4 Pro
 deepseek-v4-pro:

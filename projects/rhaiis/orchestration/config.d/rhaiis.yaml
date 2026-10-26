@@ -93,6 +93,7 @@ profiler:
   labels: []
   rates: [200]
   max_seconds: 200
+  transfer_timeout_seconds: 300
 
 agent_analysis:
   enabled: false

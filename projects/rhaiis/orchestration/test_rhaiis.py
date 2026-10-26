@@ -1,6 +1,6 @@
 import logging
 
-from projects.core.library import config
+from projects.core.library import ci, config
 from projects.rhaiis.orchestration import runtime_config, test_phase
 
 logger = logging.getLogger(__name__)
@@ -18,8 +18,15 @@ def test(_cfg):
     if not workload_keys:
         workload_keys = [_cfg.workload_key]
 
-    test_phase.run(
+    result = test_phase.run(
         model_key=_cfg.model_key,
         workload_keys=workload_keys,
         namespace=_cfg.namespace,
     )
+    if result:
+        raise ci.CIError(
+            "RHAIIS test phase failed or completed with warnings; see test logs and notifications",
+            ci.ExitCategory.TEST_FAILURE,
+        )
+
+    return 0

@@ -327,13 +327,36 @@ def _run_test(
             )
             if profiler_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running profiler for workload=%s", wl_key)
-                _run_profiler_step(**step_kwargs)
+                try:
+                    trace_files = _run_profiler_step(**step_kwargs)
+                    upload_result = _upload_profiler_traces(
+                        model_cfg,
+                        gpu_type,
+                        engine_args,
+                        profiler_cfg,
+                        trace_files=trace_files,
+                    )
+                    if not upload_result.get("dry_run"):
+                        for trace_file in trace_files:
+                            trace_file.unlink()
+                        logger.info("Removed local profiler traces after verified S3 upload")
+                except Exception:
+                    logger.exception("Profiler phase failed for workload=%s", wl_key)
+                    _warnings.append(f"Profiler phase failed for {wl_key}")
+                    from projects.core.library.ci import add_notification_file
+
+                    if not add_notification_file(
+                        f"profiler-{wl_key}-failed",
+                        f"Profiler trace collection or upload failed for {wl_key}. "
+                        "The pipeline will continue to the benchmark phase where enabled; "
+                        "see the test logs.",
+                    ):
+                        logger.error(
+                            "Could not create profiler failure notification for %s", wl_key
+                        )
             elif warmup_enabled and wl_key in optional_phase_workload_keys:
                 logger.info("Running warmup for workload=%s", wl_key)
                 _run_warmup_step(**step_kwargs)
-
-        if profiler_enabled:
-            _upload_profiler_traces(model_cfg, gpu_type, engine_args, profiler_cfg)
 
         # Phase 2: benchmark + post-processing for ALL workloads
         trtllm_cfg = runtime_config.get_trtllm_config() if engine == "trtllm" else None
@@ -749,7 +772,7 @@ def _run_profiler_step(
     workload: dict,
     workload_key: str,
     benchmark_timeout: int,
-) -> None:
+) -> list[Path]:
     """Run profiler-gated benchmarks: verify prereqs → enable gate → benchmark → disable gate → copy traces."""
     from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
         run as run_guidellm_benchmark,
@@ -809,7 +832,12 @@ def _run_profiler_step(
             )
 
     logger.info("Copying profiler traces from pod")
-    copy_profiler_traces(name=deployment_name, namespace=namespace)
+    copy_result = copy_profiler_traces(
+        name=deployment_name,
+        namespace=namespace,
+        transfer_timeout_seconds=profiler_cfg.get("transfer_timeout_seconds", 300),
+    )
+    return [Path(path) for path in copy_result.copied_traces]
 
 
 def _derive_profiler_label(workload: dict) -> str:
@@ -845,18 +873,14 @@ def _upload_profiler_traces(
     accelerator: str,
     engine_args: dict,
     profiler_cfg: dict,
-) -> None:
-    from pathlib import Path
-
+    *,
+    trace_files: list[Path],
+) -> dict:
     from projects.core.library import config
     from projects.rhaiis.postprocess.s3_dashboard import (
-        select_rank0_profiler_traces,
         upload_profiler_traces_to_s3,
     )
 
-    trace_files = select_rank0_profiler_traces(
-        Path(env.ARTIFACT_DIR).glob("*__copy_profiler_traces/artifacts/traces/trace_*")
-    )
     if not trace_files:
         raise RuntimeError("No rank-0 profiler traces found to upload")
 
@@ -898,6 +922,7 @@ def _upload_profiler_traces(
             f"Profiler trace upload incomplete: {result.get('uploaded', 0)} "
             f"of {len(trace_files)} files uploaded"
         )
+    return result
 
 
 def _update_fjob_inference_reference(job_name: str, namespace: str, reference: dict | None) -> None:
