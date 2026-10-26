@@ -37,9 +37,7 @@ def maybe_install_custom_version(_cfg) -> None:
 
     spec = f"benchconf @ {custom['repo']}@{custom['version']}"
     logger.info("Installing benchconf: %s", spec)
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", spec]
-    )
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", spec])
 
 
 def save_version() -> None:
