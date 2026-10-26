@@ -76,4 +76,23 @@ Benchmark adaptation notes:
 - rate-dependent benchmarks (args containing `{rate}` / `{N*rate}` / `{rate*N}`) expand into one GuideLLM run per rate
 - plain multi-rate benchmarks (no `{rate}` expressions) stay a single GuideLLM invocation
 - expressions such as `{2*rate}` and `{10*rate}` are resolved in those expanded runs
-- Features such as pre-warmup and env passthrough are not modeled yet
+
+## Burn-in Phase
+
+Before performance benchmarks, a **burn-in phase** runs to prime the KV cache and CUDA kernels.
+This ensures stable, representative benchmark results by warming up the inference engine.
+
+Configuration is in [`orchestration/config.d/burnin.yaml`](./orchestration/config.d/burnin.yaml):
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `burnin.enabled` | `true` | Enable/disable burn-in phase |
+| `burnin.rate` | `200` | Concurrent streams during burn-in |
+| `burnin.max_seconds` | `75` | Duration of burn-in in seconds |
+
+Burn-in automatically skips for `smoke` tests (functional checks don't need warming).
+
+To disable burn-in for a specific run:
+```text
+/var burnin.enabled: false
+```
