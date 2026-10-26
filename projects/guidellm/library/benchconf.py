@@ -32,12 +32,30 @@ def maybe_install_custom_version(_cfg) -> None:
     if not custom.get("enabled"):
         return
 
+    import importlib
+    import site
     import subprocess
     import sys
 
     spec = f"benchconf @ {custom['repo']}@{custom['version']}"
     logger.info("Installing benchconf: %s", spec)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", spec])
+    # --force-reinstall: every git ref reports the same package version, so a
+    # plain install is a no-op when the image already ships benchconf@main.
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--quiet", "--force-reinstall", "--no-deps", spec]
+    )
+
+    # The CI image runs as non-root, so pip falls back to a user install. The
+    # user site is only on sys.path if it existed at interpreter startup, so
+    # put it first to shadow the image's system-wide copy.
+    if site.ENABLE_USER_SITE:
+        user_site = site.getusersitepackages()
+        if user_site in sys.path:
+            sys.path.remove(user_site)
+        sys.path.insert(0, user_site)
+    for module_name in [m for m in sys.modules if m == "benchconf" or m.startswith("benchconf.")]:
+        del sys.modules[module_name]
+    importlib.invalidate_caches()
 
 
 def save_version() -> None:
