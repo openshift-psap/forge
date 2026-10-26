@@ -2,8 +2,7 @@
 # Runs a separate GuideLLM job before the main benchmark to prime KV cache and CUDA kernels.
 # This helps achieve stable, representative benchmark results.
 
-burnin:
-  enabled: true
-  rate: 200           # Concurrent streams during burn-in (high load)
-  max_seconds: 75     # Duration of burn-in phase in seconds
-  job_name_prefix: guidellm-burnin
+enabled: true
+rate: 200           # Concurrent streams during burn-in (high load)
+max_seconds: 75     # Duration of burn-in phase in seconds
+job_name_prefix: guidellm-burnin
