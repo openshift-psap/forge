@@ -42,7 +42,6 @@ tracing:
     storage_class: null
     ready_timeout_seconds: 300
     settle_timeout_seconds: 300
-    drain_timeout_seconds: 120
     max_bundle_bytes: 2147483648
 
 caliper:
@@ -143,6 +142,10 @@ endpoint.
   expires the valid partial data is still published, but the bundle is marked
   `incomplete` with `time.drain_outcome: timeout`, requested tracing fails, a
   notification is written, and the collector is preserved for recovery.
+- A zero-span capture is accepted at low sampling (an expected empty outcome),
+  but at `sample_ratio: 1.0` it fails requested tracing with a
+  `tracing-collection-empty-at-full-sampling` notification and preserves the
+  collector: it means instrumentation or the collector endpoint is misconfigured.
 - `collector.max_bundle_bytes` bounds each published bundle. Exceeding it fails
   the capture before a bundle is written, so reduce `sample_ratio` or raise the
   budget deliberately.

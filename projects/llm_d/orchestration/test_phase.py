@@ -466,18 +466,23 @@ def _capture_traces_finalizer(
         )
         raise RuntimeError("requested trace collection failed") from exc
 
-    if status.value in ("failed", "incomplete"):
+    # An empty capture is expected at low sampling or for a tiny workload, but
+    # at full sampling it means instrumentation or the collector endpoint is
+    # misconfigured and the trace evidence must not pass silently.
+    empty_at_full_sampling = status.value == "empty" and settings.sample_ratio >= 1.0
+    if status.value in ("failed", "incomplete") or empty_at_full_sampling:
         # A drain timeout still yields a valid partial bundle, but requested
         # tracing is not successful and must be reported as such. The collector
         # and spool stay in place for recovery.
         from projects.core.library.ci import add_notification_file
 
+        reason = "empty-at-full-sampling" if empty_at_full_sampling else status.value
         add_notification_file(
-            f"tracing-collection-{status.value}",
+            f"tracing-collection-{reason}",
             "Requested trace collection did not complete successfully; partial "
             "bundles were retained and the collector was preserved for recovery.",
         )
-        raise RuntimeError(f"requested trace collection {status.value}")
+        raise RuntimeError(f"requested trace collection {reason}")
 
     # Only remove the collector and spool after a verified capture; a failed
     # capture preserved them above for recovery.

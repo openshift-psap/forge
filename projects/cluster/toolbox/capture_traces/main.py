@@ -141,6 +141,12 @@ def _collector_pod(namespace: str, capture_id: str) -> str:
 
 
 def _spool_bytes(namespace: str, pod: str) -> int:
+    """Return the spool size in bytes, or 0 when the file does not exist yet.
+
+    The shell falls back to ``echo 0`` for a missing file, so unparsable output
+    means the stat itself failed (unreadable or rotated spool). That must raise
+    rather than look identical to an empty capture.
+    """
     result = oc_exec(
         "sh",
         "-c",
@@ -149,10 +155,14 @@ def _spool_bytes(namespace: str, pod: str) -> int:
         pod=pod,
         container="spool-reader",
     )
+    raw = result.stdout.strip()
     try:
-        return int(result.stdout.strip())
-    except ValueError:
-        return 0
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"could not read collector spool size (got {raw!r}); the spool may be "
+            "unreadable or rotated"
+        ) from exc
 
 
 def _spool_checksum(namespace: str, pod: str) -> str:

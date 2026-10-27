@@ -24,8 +24,8 @@ from typing import Any
 
 from projects.caliper.engine.tracing.analysis import read_archive_records
 from projects.caliper.engine.tracing.bundle import TraceBundle
-from projects.caliper.engine.tracing.otlp import encode_records_to_request
-from projects.caliper.engine.tracing.payload import enrich_records_for_ingestion
+from projects.caliper.engine.tracing.otlp import encode_records_to_request, iter_record_batches
+from projects.caliper.engine.tracing.payload import iter_enriched_records
 
 # Bounded retry policy for transient transport/throttling failures.
 DEFAULT_MAX_ATTEMPTS = 4
@@ -303,10 +303,13 @@ def ingest_bundle(
 
     otlp_trace_ids: list[str] = []
     if not receipt.ingested_trace_ids:
-        records = enrich_records_for_ingestion(list(read_archive_records(bundle.archive_path)))
-        if records:
-            encoded = encode_records_to_request(records)
-            otlp_trace_ids = encoded.trace_ids
+        # Stream the archive and POST bounded batches, so a single malformed
+        # record is rejected only within its batch (MLflow's OTLP endpoint is
+        # all-or-nothing per request) and memory use does not grow with the
+        # capture. Enrichment is lazy for the same reason.
+        streamed = iter_enriched_records(read_archive_records(bundle.archive_path))
+        for batch in iter_record_batches(streamed):
+            encoded = encode_records_to_request(batch)
             _post_traces(
                 tracking_uri=tracking_uri,
                 experiment_id=experiment_id,
@@ -318,7 +321,11 @@ def ingest_bundle(
                 insecure_tls=bool(connection.get("insecure_tls")),
                 server_cert_path=connection.get("server_cert_path"),
             )
-            receipt.ingested_trace_ids = derive_mlflow_trace_ids(otlp_trace_ids)
+            otlp_trace_ids.extend(encoded.trace_ids)
+        if otlp_trace_ids:
+            receipt.ingested_trace_ids = derive_mlflow_trace_ids(
+                list(dict.fromkeys(otlp_trace_ids))
+            )
         receipt.status = "ingested"
         write_receipt(receipt_path, receipt)
     else:

@@ -125,15 +125,22 @@ def _finalize_trace_capture(capture_session) -> None:
         logger.exception("Trace collection failed; preserving collector for recovery")
         return
 
-    if status.value in ("failed", "incomplete"):
+    # An empty capture is expected at low sampling or for a tiny workload, but
+    # at full sampling it means instrumentation or the collector endpoint is
+    # misconfigured and the trace evidence must not pass silently.
+    empty_at_full_sampling = (
+        status.value == "empty" and capture_session.settings.sample_ratio >= 1.0
+    )
+    if status.value in ("failed", "incomplete") or empty_at_full_sampling:
         from projects.core.library.ci import add_notification_file
 
+        reason = "empty-at-full-sampling" if empty_at_full_sampling else status.value
         add_notification_file(
-            f"tracing-collection-{status.value}",
+            f"tracing-collection-{reason}",
             "Requested trace collection did not complete successfully; partial "
             "bundles were retained and the collector was preserved for recovery.",
         )
-        _warnings.append(f"Trace collection {status.value}")
+        _warnings.append(f"Trace collection {reason}")
         return
 
     try:

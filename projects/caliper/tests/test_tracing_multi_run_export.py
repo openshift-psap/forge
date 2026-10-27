@@ -147,11 +147,7 @@ def test_two_workloads_get_separate_children_and_traces(mlflow_server: str, tmp_
     parent_run = client.create_run(experiment_id)
     parent_run_id = parent_run.info.run_id
 
-    context = TraceExportContext(
-        tracking_uri=mlflow_server,
-        workspace="",
-        connection=None,
-    )
+    context = TraceExportContext()
 
     # Run export once (creates children + ingests traces).
     _detail, meta = mlflow_backend.log_multi_run_artifacts(
@@ -222,7 +218,7 @@ def test_resume_against_different_parent_is_rejected(mlflow_server: str, tmp_pat
     _test_node(root, "workload-a", "cccccccccccccccccccccccccccccccc", "forge-a")
 
     first_parent = client.create_run(experiment_id).info.run_id
-    context = TraceExportContext(tracking_uri=mlflow_server, workspace="", connection=None)
+    context = TraceExportContext()
     _run_export(root, mlflow_server, "multi-trace-rescope", context, first_parent)
 
     # Re-export against a different parent run must refuse to reuse the map.

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,8 +95,18 @@ class EncodedBatch:
     trace_ids: list[str] = field(default_factory=list)
 
 
+# Records per POST. The collector spool holds one export request per flush, so
+# a capture can be many records; batching bounds request size and keeps a single
+# malformed record from discarding the whole archive.
+MAX_RECORDS_PER_REQUEST = 500
+
+
 def encode_records_to_request(records: list[dict[str, Any]]) -> EncodedBatch:
     """Encode one or more OTLP JSON records into a single protobuf request.
+
+    Each record is parsed into its own message and merged, because protobuf's
+    ``json_format.Parse`` clears the target message before populating it: parsing
+    every record into the same request would keep only the last record.
 
     Returns the serialized ``ExportTraceServiceRequest`` plus the distinct
     OTLP trace IDs (lowercase hex) contained in the records so callers can
@@ -106,20 +116,42 @@ def encode_records_to_request(records: list[dict[str, Any]]) -> EncodedBatch:
     from google.protobuf.json_format import Parse as ParseJsonProto
 
     request = ExportTraceServiceRequest()
-    trace_ids: list[str] = []
     for record in records:
         converted = _convert_hex_ids_to_base64(record)
+        record_request = ExportTraceServiceRequest()
         try:
-            ParseJsonProto(json.dumps(converted), request, ignore_unknown_fields=True)
+            ParseJsonProto(json.dumps(converted), record_request, ignore_unknown_fields=True)
         except Exception as exc:  # protobuf json errors are not one type
             raise OtlpEncodingError(f"invalid OTLP JSON record: {type(exc).__name__}") from exc
+        request.MergeFrom(record_request)
 
+    trace_ids: list[str] = []
     for resource_span in request.resource_spans:
         for scope_span in resource_span.scope_spans:
             for span in scope_span.spans:
                 trace_ids.append(span.trace_id.hex())
     # Preserve order but drop duplicates.
     return EncodedBatch(body=request.SerializeToString(), trace_ids=list(dict.fromkeys(trace_ids)))
+
+
+def iter_record_batches(
+    records: Iterable[dict[str, Any]], *, max_records: int | None = None
+) -> Iterator[list[dict[str, Any]]]:
+    """Split records into bounded batches for separate POSTs.
+
+    Accepts any iterable so a caller can stream a large archive instead of
+    materializing it: each batch is consumed and released in turn.
+    """
+    if max_records is None:
+        max_records = MAX_RECORDS_PER_REQUEST
+    batch: list[dict[str, Any]] = []
+    for record in records:
+        batch.append(record)
+        if len(batch) >= max_records:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def iter_jsonl_records(text: str) -> Iterator[dict[str, Any]]:

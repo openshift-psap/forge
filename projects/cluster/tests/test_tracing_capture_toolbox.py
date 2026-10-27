@@ -518,3 +518,27 @@ def test_transfer_accepts_matching_checksum(tmp_path: Path, monkeypatch):
     capture_main.transfer_spool.__wrapped__(ctx, ctx)
 
     assert ctx.local_spool.read_text(encoding="utf-8") == "payload"
+
+
+def test_spool_bytes_raises_on_unparsable_output(monkeypatch):
+    """An unreadable or rotated spool must not look like an empty capture."""
+    import pytest
+
+    class _Result:
+        stdout = "stat: cannot stat: No such file\n"
+
+    monkeypatch.setattr(capture_main, "oc_exec", lambda *_a, **_k: _Result())
+
+    with pytest.raises(RuntimeError, match="could not read collector spool size"):
+        capture_main._spool_bytes("ns", "collector-0")
+
+
+def test_spool_bytes_returns_zero_for_missing_file(monkeypatch):
+    """The documented missing-file fallback stays 0, not a parse failure."""
+
+    class _Result:
+        stdout = "0\n"
+
+    monkeypatch.setattr(capture_main, "oc_exec", lambda *_a, **_k: _Result())
+
+    assert capture_main._spool_bytes("ns", "collector-0") == 0

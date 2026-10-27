@@ -153,3 +153,26 @@ def test_reports_for_artifact_root_generates_per_bundle(tmp_path: Path):
     written = tracing_report.reports_for_artifact_root(tmp_path)
     assert len(written) == 1
     assert written[0].name == tracing_report.REPORT_HTML_FILENAME
+
+
+def test_orchestrator_scans_artifact_tree_not_output_dir(tmp_path: Path, monkeypatch):
+    """Postprocess runs in NNN__postprocessing; bundles live in the artifact tree.
+
+    A report must be generated from ``artifacts_dir`` even when the current
+    output directory is somewhere else entirely.
+    """
+    from projects.caliper.orchestration.postprocess import CaliperPostprocessOrchestrator
+
+    artifacts_dir = tmp_path / "artifacts"
+    _write_bundle(artifacts_dir)
+
+    postprocessing_dir = tmp_path / "05__postprocessing"
+    postprocessing_dir.mkdir()
+
+    orchestrator = CaliperPostprocessOrchestrator(
+        {}, artifacts_dir=artifacts_dir, output_dir=postprocessing_dir
+    )
+    orchestrator._generate_trace_reports()
+
+    report = artifacts_dir / "000__workload" / "reports" / tracing_report.REPORT_HTML_FILENAME
+    assert report.is_file()

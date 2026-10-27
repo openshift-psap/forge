@@ -109,7 +109,11 @@ def build_collector_resources(
             "template": {
                 "metadata": {"labels": pod_labels},
                 "spec": {
-                    "securityContext": {"runAsNonRoot": True, "fsGroup": 1000},
+                    # No explicit fsGroup: OpenShift assigns one from the
+                    # namespace's supplemental-group range (restricted-v2 SCC),
+                    # and a hardcoded value is rejected by admission. The
+                    # spool-probe init container proves writability at runtime.
+                    "securityContext": {"runAsNonRoot": True},
                     # The probe runs before the collector starts, with write
                     # access, so an unwritable volume fails deployment instead
                     # of being discovered only after the benchmark.

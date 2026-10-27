@@ -242,6 +242,10 @@ def test_collector_writable_probe_runs_before_collector():
     reader = next(c for c in pod_spec["containers"] if c["name"] == "spool-reader")
     assert reader["volumeMounts"][0]["readOnly"] is True
 
+    # No hardcoded fsGroup: OpenShift's restricted-v2 SCC rejects a value
+    # outside the namespace's assigned supplemental-group range.
+    assert "fsGroup" not in pod_spec.get("securityContext", {})
+
 
 def test_collector_config_uses_valid_file_exporter_schema():
     """The pinned file exporter must accept the rendered config at startup."""
@@ -351,3 +355,58 @@ def test_cleanup_selector_only_matches_own_capture():
     assert key == OWNERSHIP_LABEL_KEY
     for resource in resources:
         assert resource["metadata"]["labels"][OWNERSHIP_LABEL_KEY] == value
+
+
+def test_write_capture_state_tolerates_failed_validation():
+    """@always write_capture_state must not mask a validation error.
+
+    write_capture_state runs after validate_inputs even when validation failed,
+    at which point ctx.identity was never set.
+    """
+    from projects.cluster.toolbox.deploy_trace_collector import main as deploy_main
+
+    class _Ctx:
+        pass
+
+    result = deploy_main.write_capture_state.__wrapped__(_Ctx(), _Ctx())
+
+    assert "nothing to persist" in result
+
+
+def test_wait_for_ready_honors_configured_deadline(monkeypatch):
+    """The readiness wait must end at ready_timeout_seconds, not a fixed count.
+
+    A hard-coded attempt count would ignore the configured budget entirely.
+    """
+    import time
+
+    from projects.cluster.library.tracing.models import TracingSettings
+    from projects.cluster.toolbox.deploy_trace_collector import main as deploy_main
+
+    class _Ctx:
+        settings = TracingSettings(ready_timeout_seconds=30)
+        ready_deadline = time.monotonic() - 1
+
+    with pytest.raises(RuntimeError, match="did not become ready within 30s"):
+        deploy_main.wait_for_ready.__wrapped__(_Ctx(), _Ctx())
+
+
+def test_wait_for_ready_polls_before_deadline(monkeypatch):
+    """Before the deadline, a not-yet-available deployment is a retry, not a failure."""
+    import time
+
+    from projects.cluster.library.tracing.models import CaptureIdentity, TracingSettings
+    from projects.cluster.toolbox.deploy_trace_collector import main as deploy_main
+
+    monkeypatch.setattr(deploy_main, "oc_get_json", lambda *a, **k: None)
+
+    class _Ctx:
+        settings = TracingSettings(ready_timeout_seconds=30)
+        ready_deadline = time.monotonic() + 30
+        identity = CaptureIdentity(
+            job_id="j", capture_id="c", project="p", namespace="ns", deployment_id="d"
+        )
+
+    ctx = _Ctx()
+    result = deploy_main.wait_for_ready.__wrapped__(ctx, ctx)
+    assert result[0] is False

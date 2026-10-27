@@ -27,20 +27,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TraceExportContext:
-    """Connection details native trace ingestion needs, resolved by orchestration.
+    """Marker that native trace ingestion is enabled for this export.
 
-    The experiment ID is always taken from the resolved run, never from here, so
-    a stale value cannot route traces to the wrong experiment.
-
-    ``connection`` holds vault-derived credential fields; it is passed in memory
-    only and never serialized into artifacts, context, or logs.
+    The tracking URI, workspace, credentials and experiment ID are resolved by
+    the export code that already knows them and are passed to ingestion
+    explicitly, so this object carries no destination state that could be left
+    stale or empty.
     """
-
-    # Filled in from the resolved export destination; defaults to empty so the
-    # context can be built before the run is resolved.
-    tracking_uri: str = ""
-    workspace: str = ""
-    connection: dict[str, Any] | None = None
 
 
 @dataclass

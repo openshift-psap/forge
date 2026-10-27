@@ -53,7 +53,6 @@ DEFAULT_COLLECTOR_IMAGE = (
 DEFAULT_STORAGE_SIZE = "10Gi"
 DEFAULT_READY_TIMEOUT_SECONDS = 300
 DEFAULT_SETTLE_TIMEOUT_SECONDS = 300
-DEFAULT_DRAIN_TIMEOUT_SECONDS = 120
 DEFAULT_PVC_NAME = "forge-trace-spool"
 # Size beyond which the transfer/publish step refuses to load the whole archive
 # into memory and streams it instead. Recorded so operators can tune storage.
@@ -71,7 +70,6 @@ class TracingSettings:
     storage_class: str | None = None
     ready_timeout_seconds: int = DEFAULT_READY_TIMEOUT_SECONDS
     settle_timeout_seconds: int = DEFAULT_SETTLE_TIMEOUT_SECONDS
-    drain_timeout_seconds: int = DEFAULT_DRAIN_TIMEOUT_SECONDS
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES
     resource_cpu_request: str = "200m"
     resource_cpu_limit: str = "1"
@@ -352,9 +350,6 @@ def settings_from_config(
         ),
         settle_timeout_seconds=_optional_int(
             f"{section}.collector.settle_timeout_seconds", DEFAULT_SETTLE_TIMEOUT_SECONDS
-        ),
-        drain_timeout_seconds=_optional_int(
-            f"{section}.collector.drain_timeout_seconds", DEFAULT_DRAIN_TIMEOUT_SECONDS
         ),
         max_bundle_bytes=_optional_int(
             f"{section}.collector.max_bundle_bytes", DEFAULT_MAX_BUNDLE_BYTES

@@ -234,7 +234,7 @@ def run_from_orchestration_config(
     else:
         mlflow_config_data = load_mlflow_config_yaml(Path(raw_cfg).expanduser().resolve())
 
-    trace_export = _build_trace_export_context(export_cfg, mlflow_config_data)
+    trace_export = _build_trace_export_context(export_cfg)
 
     run_dirs = discover_run_dirs(from_path)
 
@@ -344,26 +344,20 @@ def run_from_orchestration_config(
     return status
 
 
-def _build_trace_export_context(
-    export_cfg: CaliperOrchestrationExportConfig,
-    mlflow_config_data: dict[str, Any] | None,
-) -> Any:
+def _build_trace_export_context(export_cfg: CaliperOrchestrationExportConfig) -> Any:
     """Build the native trace ingestion context, or None when disabled.
 
     Returns None unless ``caliper.export.traces.enabled`` is true. Imported
     lazily so a tracing-disabled export never imports the tracing modules. The
-    tracking URI, workspace, and credentials are filled in later from the
-    resolved export destination.
+    tracking URI, workspace, and credentials are resolved by the export code
+    that already knows them and passed to ingestion explicitly.
     """
     if not export_cfg.traces.enabled:
         return None
 
     from projects.caliper.engine.tracing.ingest import TraceExportContext
 
-    workspace = ""
-    if mlflow_config_data:
-        workspace = str(mlflow_config_data.get("workspace") or "")
-    return TraceExportContext(workspace=workspace)
+    return TraceExportContext()
 
 
 @requires(
@@ -756,10 +750,6 @@ def _run_multi_run_export(
                 )
             ]
         else:
-            if trace_export is not None:
-                trace_export.tracking_uri = tracking_uri or ""
-                trace_export.workspace = workspace or trace_export.workspace
-                trace_export.connection = mlflow_connection
             detail, ml_meta = mlflow_backend.log_multi_run_artifacts(
                 all_artifact_paths=all_artifact_paths,
                 artifact_root=from_path,

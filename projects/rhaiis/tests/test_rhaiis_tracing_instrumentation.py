@@ -32,8 +32,10 @@ def _identity() -> CaptureIdentity:
     )
 
 
-def _settings(mode: TracingMode = TracingMode.STANDARD) -> TracingSettings:
-    return TracingSettings(mode=mode, sample_ratio=0.5)
+def _settings(
+    mode: TracingMode = TracingMode.STANDARD, sample_ratio: float = 0.5
+) -> TracingSettings:
+    return TracingSettings(mode=mode, sample_ratio=sample_ratio)
 
 
 def _vllm_sr() -> dict:
@@ -133,6 +135,11 @@ def test_manual_tracing_env_is_rejected():
         )
 
 
+def _session(sample_ratio: float):
+    """A minimal capture session exposing the settings the finalizer reads."""
+    return type("S", (), {"settings": _settings(sample_ratio=sample_ratio)})()
+
+
 def _patch_lifecycle(monkeypatch, status_value: str):
     from projects.cluster.library.tracing import lifecycle
     from projects.cluster.library.tracing.models import CollectionStatus
@@ -154,7 +161,7 @@ def test_incomplete_capture_is_a_warning_and_preserves_collector(monkeypatch):
     test_phase, cleaned = _patch_lifecycle(monkeypatch, "incomplete")
     test_phase._warnings.clear()
 
-    test_phase._finalize_trace_capture(object())
+    test_phase._finalize_trace_capture(_session(1.0))
 
     assert notifications == ["tracing-collection-incomplete"]
     assert "Trace collection incomplete" in test_phase._warnings
@@ -165,7 +172,63 @@ def test_completed_capture_cleans_up(monkeypatch):
     test_phase, cleaned = _patch_lifecycle(monkeypatch, "collected")
     test_phase._warnings.clear()
 
-    test_phase._finalize_trace_capture(object())
+    test_phase._finalize_trace_capture(_session(0.5))
+
+    assert cleaned.get("called") is True
+    assert test_phase._warnings == []
+
+
+def test_only_the_model_server_container_is_instrumented():
+    """A sidecar must not receive vLLM-only OTLP flags and env."""
+    manifest = _vllm_sr()
+    sidecar = {
+        "name": "metrics-sidecar",
+        "args": ["--listen=:9090"],
+        "env": [{"name": "SIDECAR", "value": "1"}],
+    }
+    manifest["spec"]["containers"].append(sidecar)
+
+    instrument_servingruntime(manifest, settings=_settings(), identity=_identity(), namespace="ns")
+
+    serving = next(c for c in manifest["spec"]["containers"] if c["name"] == "kserve-container")
+    assert any("--otlp-traces-endpoint" in a for a in serving["args"])
+    # The sidecar is untouched.
+    assert sidecar["args"] == ["--listen=:9090"]
+    assert sidecar["env"] == [{"name": "SIDECAR", "value": "1"}]
+
+
+def test_missing_model_server_container_is_rejected():
+    """Rendering must fail rather than silently instrument nothing."""
+    manifest = _vllm_sr()
+    manifest["spec"]["containers"][0]["name"] = "not-the-server"
+
+    with pytest.raises(TracingConfigError, match="no 'kserve-container'"):
+        instrument_servingruntime(
+            manifest, settings=_settings(), identity=_identity(), namespace="ns"
+        )
+
+
+def test_empty_capture_at_full_sampling_is_a_warning(monkeypatch):
+    notifications = []
+    from projects.core.library import ci
+
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    )
+    test_phase, cleaned = _patch_lifecycle(monkeypatch, "empty")
+    test_phase._warnings.clear()
+
+    test_phase._finalize_trace_capture(_session(1.0))
+
+    assert notifications == ["tracing-collection-empty-at-full-sampling"]
+    assert not cleaned.get("called"), "collector must be preserved for recovery"
+
+
+def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
+    test_phase, cleaned = _patch_lifecycle(monkeypatch, "empty")
+    test_phase._warnings.clear()
+
+    test_phase._finalize_trace_capture(_session(0.1))
 
     assert cleaned.get("called") is True
     assert test_phase._warnings == []

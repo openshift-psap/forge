@@ -261,3 +261,90 @@ def test_changed_archive_is_rejected(
             archive_sha256=sha256_of_file(bundle.archive_path),
             existing_receipt=exporter.read_receipt(bundle.bundle_dir / "mlflow-export.json"),
         )
+
+
+def test_multi_record_archive_posts_bounded_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_backoff: None
+):
+    """Every record in a spool must be encoded and POSTed, not just the last.
+
+    The collector writes one export request per flush, so a real archive has
+    many records. A single-message parse would silently drop all but the final
+    record; this proves each record reaches its own bounded POST and every
+    trace ID is recorded in the receipt.
+    """
+    root = tmp_path
+    node = root / "test_node"
+    bundle_dir = node / "traces"
+    bundle_dir.mkdir(parents=True)
+    (node / "__caliper_test_metadata__.yaml").write_text(
+        yaml.safe_dump({"version": "1", "labels": {"test_id": "t1"}}), encoding="utf-8"
+    )
+    archive = bundle_dir / ARCHIVE_FILENAME
+    traces = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+    with gzip.open(archive, "wt", encoding="utf-8") as handle:
+        for trace in traces:
+            handle.write(
+                json.dumps(
+                    {
+                        "resourceSpans": [
+                            {
+                                "scopeSpans": [
+                                    {
+                                        "spans": [
+                                            {
+                                                "traceId": trace,
+                                                "spanId": "0000000000000001",
+                                                "name": "root",
+                                                "startTimeUnixNano": "1700000000000000000",
+                                                "endTimeUnixNano": "1700000001000000000",
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+    (bundle_dir / SUMMARY_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "identity": {"schema_version": 1, "test_id": "t1"},
+                "config": {"mode": "standard"},
+                "time": {},
+                "data": {
+                    "archive_relative_path": ARCHIVE_FILENAME,
+                    "checksum": {"algorithm": "sha256", "value": sha256_of_file(archive)},
+                    "byte_count": archive.stat().st_size,
+                },
+                "quality": {},
+                "status": {"state": "collected", "reason": ""},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle = discover_bundles(root)[0]
+
+    monkeypatch.setattr("projects.caliper.engine.tracing.otlp.MAX_RECORDS_PER_REQUEST", 1)
+    seen_bodies: list[bytes] = []
+    monkeypatch.setattr(
+        exporter, "_post_traces", lambda **kwargs: seen_bodies.append(kwargs["body"])
+    )
+    monkeypatch.setattr(exporter, "_link_traces", lambda **_kwargs: None)
+
+    outcome = exporter.ingest_bundle(
+        bundle=bundle,
+        run_id="run-1",
+        tracking_uri="http://mlflow.test",
+        experiment_id="1",
+        workspace="",
+        connection=None,
+        archive_sha256=sha256_of_file(bundle.archive_path),
+    )
+
+    assert outcome.status == "complete"
+    assert len(seen_bodies) == 2, "each record must be its own bounded POST"
+    assert outcome.ingested == 2

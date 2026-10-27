@@ -467,8 +467,10 @@ def log_artifacts(
             trace_report = _ingest_trace_bundles(
                 artifact_root=artifact_root,
                 trace_export=trace_export,
+                tracking_uri=uri or mlflow.get_tracking_uri() or "",
                 experiment_id=str(mlflow.active_run().info.experiment_id),
                 workspace=workspace or "",
+                connection=connection,
                 child_run_map={},
                 default_run_id=rid,
                 verbose=verbose,
@@ -497,13 +499,19 @@ def _ingest_trace_bundles(
     *,
     artifact_root: Path,
     trace_export: Any,
+    tracking_uri: str,
     experiment_id: str,
     workspace: str,
+    connection: dict[str, Any] | None,
     child_run_map: dict[str, dict[str, str]],
     default_run_id: str,
     verbose: bool,
 ):
     """Ingest discovered trace bundles, resolving each to its owning run.
+
+    ``tracking_uri`` and ``connection`` are passed by the caller that resolved
+    the export destination, so the context carries only the enabled flag and
+    cannot send a request to a stale or relative URL.
 
     Returns an ingestion report dict, or ``None`` when tracing export is
     disabled. Native ingestion is independent of artifact upload and never
@@ -532,10 +540,10 @@ def _ingest_trace_bundles(
 
     report = ingest_trace_bundles(
         artifact_root=artifact_root,
-        tracking_uri=trace_export.tracking_uri,
+        tracking_uri=tracking_uri,
         experiment_id=experiment_id,
         workspace=workspace,
-        connection=trace_export.connection,
+        connection=connection,
         resolve_run_id=_resolve,
         reporter=(logger.info if verbose else None),
     )
@@ -862,8 +870,10 @@ def log_multi_run_artifacts(
             trace_report = _ingest_trace_bundles(
                 artifact_root=artifact_root,
                 trace_export=trace_export,
+                tracking_uri=uri or mlflow.get_tracking_uri() or "",
                 experiment_id=eid,
                 workspace=workspace or "",
+                connection=connection,
                 child_run_map=read_child_run_map(artifact_root, destination=child_destination),
                 default_run_id=parent_rid,
                 verbose=verbose,

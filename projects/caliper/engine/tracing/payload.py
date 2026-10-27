@@ -11,6 +11,7 @@ The sanitized archive on disk is the source of record and is never modified.
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 # Resource attribute keys copied onto spans in the outgoing payload.
@@ -44,31 +45,38 @@ def _span_has_attribute(span: dict[str, Any], key: str) -> bool:
     )
 
 
-def enrich_records_for_ingestion(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return deep copies of ``records`` with FORGE identity on every span.
+def _enrich_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of ``record`` with FORGE identity on every span.
 
     Existing span attributes win: identity already present on a span is not
     overwritten, so re-running is idempotent.
     """
-    enriched: list[dict[str, Any]] = []
+    record_copy = copy.deepcopy(record)
+    resource_spans = record_copy.get("resourceSpans", []) or []
+    for index, resource_span in enumerate(resource_spans):
+        attrs = _resource_attributes(record, index)
+        additions: list[dict[str, Any]] = []
+        for key in IDENTITY_KEYS:
+            if key in attrs:
+                additions.append({"key": key, "value": attrs[key]})
+        if not additions:
+            continue
+        for scope_span in resource_span.get("scopeSpans", []) or []:
+            for span in scope_span.get("spans", []) or []:
+                for addition in additions:
+                    if not _span_has_attribute(span, addition["key"]):
+                        span.setdefault("attributes", []).append(copy.deepcopy(addition))
+    return record_copy
+
+
+def iter_enriched_records(records: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    """Yield enriched copies lazily so a large archive is not fully materialized."""
     for record in records:
-        record_copy = copy.deepcopy(record)
-        resource_spans = record_copy.get("resourceSpans", []) or []
-        for index, resource_span in enumerate(resource_spans):
-            attrs = _resource_attributes(record, index)
-            additions: list[dict[str, Any]] = []
-            for key in IDENTITY_KEYS:
-                if key in attrs:
-                    additions.append({"key": key, "value": attrs[key]})
-            if not additions:
-                continue
-            for scope_span in resource_span.get("scopeSpans", []) or []:
-                for span in scope_span.get("spans", []) or []:
-                    for addition in additions:
-                        if not _span_has_attribute(span, addition["key"]):
-                            span.setdefault("attributes", []).append(copy.deepcopy(addition))
-        enriched.append(record_copy)
-    return enriched
+        yield _enrich_record(record)
 
 
-__all__ = ["IDENTITY_KEYS", "SERVICE_NAME_KEY", "enrich_records_for_ingestion"]
+__all__ = [
+    "IDENTITY_KEYS",
+    "SERVICE_NAME_KEY",
+    "iter_enriched_records",
+]

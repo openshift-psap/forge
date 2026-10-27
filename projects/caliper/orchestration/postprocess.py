@@ -1537,8 +1537,10 @@ class CaliperPostprocessOrchestrator:
         from projects.caliper.engine.tracing import bundle as bundle_mod
         from projects.caliper.postprocess.helpers import tracing_report
 
-        artifact_root = Path(env.ARTIFACT_DIR)
-        bundles = bundle_mod.discover_bundles(artifact_root)
+        # Bundles live under the Caliper artifact tree, not the postprocessing
+        # output directory (env.ARTIFACT_DIR is NNN__postprocessing here), so
+        # scan the resolved artifacts directory.
+        bundles = bundle_mod.discover_bundles(self.artifacts_dir)
         if not bundles:
             return
         for bundle in bundles:

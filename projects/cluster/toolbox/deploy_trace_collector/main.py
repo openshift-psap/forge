@@ -17,6 +17,7 @@ Can be run standalone:
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -111,6 +112,7 @@ def validate_inputs(args, ctx):
     ctx.manifest_dir = Path(args.manifest_dir) if args.manifest_dir else args.artifact_dir / "src"
     ctx.manifest_dir.mkdir(parents=True, exist_ok=True)
     ctx.started_at = datetime.now(UTC).isoformat()
+    ctx.ready_deadline = time.monotonic() + ctx.settings.ready_timeout_seconds
 
     return f"Deploying collector for capture {args.capture_id} ({ctx.mode.value})"
 
@@ -139,10 +141,25 @@ def apply_resources(args, ctx):
     return f"Applied {len(resources)} collector resource(s)"
 
 
-@retry(attempts=60, delay=5, backoff=1.0)
+# Upper bound on readiness polls; the configured ready_timeout_seconds deadline
+# is the real limit, so a larger configured budget is not cut short.
+READY_MAX_ATTEMPTS = 10_000
+
+
+@retry(attempts=READY_MAX_ATTEMPTS, delay=5, backoff=1.0)
 @task
 def wait_for_ready(args, ctx):
-    """Poll the collector Deployment until it reports an available replica."""
+    """Poll the collector Deployment until it reports an available replica.
+
+    Bounded by ``ready_timeout_seconds``: when the deadline passes the wait
+    fails instead of blocking for a fixed number of attempts.
+    """
+    deadline = getattr(ctx, "ready_deadline", None)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise RuntimeError(
+            f"collector did not become ready within {ctx.settings.ready_timeout_seconds}s"
+        )
+
     from projects.cluster.library.tracing.collection import collector_service_name
 
     deployment = oc_get_json(
@@ -207,8 +224,13 @@ def write_capture_state(args, ctx):
     """Persist capture identity and collector readiness for later finalization.
 
     This file lets a finalization phase recover the capture identity even after
-    an interruption, since ``finally`` blocks cannot run after SIGKILL.
+    an interruption, since ``finally`` blocks cannot run after SIGKILL. It runs
+    after ``validate_inputs`` (``@always``), so when validation failed the
+    identity is absent and there is nothing to recover; return without masking
+    the original error.
     """
+    if getattr(ctx, "identity", None) is None:
+        return "No capture identity (input validation failed); nothing to persist"
     state = {
         "capture_id": ctx.identity.capture_id,
         "job_id": ctx.identity.job_id,

@@ -156,13 +156,30 @@ _SENSITIVE_VALUE_PATTERNS = (
 
 
 def redact_value(value: Any) -> Any:
-    """Redact obviously sensitive content inside an otherwise allowed value."""
+    """Redact obviously sensitive content inside an otherwise allowed scalar."""
     if not isinstance(value, str):
         return value
     for pattern in _SENSITIVE_VALUE_PATTERNS:
         if pattern.search(value):
             return REDACTED_STATUS
     return _redact_url_credentials(value)
+
+
+def redact_anyvalue(any_value: Any) -> Any:
+    """Redact sensitive content inside one OTLP ``AnyValue`` dict.
+
+    Attribute values arrive as ``{"stringValue": ...}`` (or int/bool/double
+    variants), not as bare scalars, so redaction must descend into the wrapped
+    value. Non-dict values are redacted directly for callers that pass a scalar.
+    """
+    if not isinstance(any_value, dict):
+        return redact_value(any_value)
+    for key in ("stringValue", "bytesValue"):
+        if key in any_value:
+            out = dict(any_value)
+            out[key] = redact_value(any_value[key])
+            return out
+    return any_value
 
 
 def _sanitize_attributes(
@@ -176,7 +193,7 @@ def _sanitize_attributes(
         key = attr.get(_ATTR_KEY)
         if not is_allowed_attribute_key(key, allowlist):
             continue
-        sanitized.append({_ATTR_KEY: key, _ATTR_VALUE: redact_value(attr.get(_ATTR_VALUE))})
+        sanitized.append({_ATTR_KEY: key, _ATTR_VALUE: redact_anyvalue(attr.get(_ATTR_VALUE))})
     return sanitized
 
 
@@ -210,6 +227,20 @@ def sanitize_span(span: dict[str, Any]) -> dict[str, Any]:
         )
         events.append(event_out)
     out["events"] = events
+
+    # Links carry their own attributes; they must go through the same allowlist
+    # and redaction as span attributes rather than being copied verbatim.
+    links = []
+    for link in span.get("links") or []:
+        if not isinstance(link, dict):
+            continue
+        link_out = dict(link)
+        link_out["attributes"] = _sanitize_attributes(
+            link.get("attributes"), SPAN_ATTRIBUTE_ALLOWLIST
+        )
+        links.append(link_out)
+    if "links" in span:
+        out["links"] = links
     return out
 
 
@@ -267,6 +298,7 @@ __all__ = [
     "RESOURCE_ATTRIBUTE_ALLOWLIST",
     "SPAN_ATTRIBUTE_ALLOWLIST",
     "is_allowed_attribute_key",
+    "redact_anyvalue",
     "redact_value",
     "sanitize_export_request",
     "sanitize_resource",

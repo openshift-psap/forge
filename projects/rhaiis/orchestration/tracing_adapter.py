@@ -36,6 +36,8 @@ from projects.cluster.library.tracing.models import (
 logger = logging.getLogger(__name__)
 
 SUPPORTED_ENGINE = "vllm"
+# The vLLM model-server container in the rhaiis ServingRuntime manifest.
+SERVING_CONTAINER_NAME = "kserve-container"
 
 
 def resolve_tracing() -> TracingSettings:
@@ -103,23 +105,28 @@ def instrument_servingruntime(
     vllm_detailed_supported(engine, mode=settings.mode)
 
     containers = manifest.get("spec", {}).get("containers", []) or []
-    if not containers:
-        raise TracingConfigError("ServingRuntime manifest has no containers to instrument")
-
-    for container in containers:
-        additions = tracing_environment(
-            settings, identity, InstrumentationRole.VLLM, namespace=namespace
+    # Only the model-server container may be instrumented: the vLLM OTLP flags
+    # are engine-specific, so a sidecar that received them would crash on start.
+    serving = next((c for c in containers if c.get("name") == SERVING_CONTAINER_NAME), None)
+    if serving is None:
+        raise TracingConfigError(
+            f"ServingRuntime manifest has no '{SERVING_CONTAINER_NAME}' container to "
+            "instrument; refusing to inject vLLM-only tracing flags into other containers"
         )
-        _reject_conflicting_tracing_env(container, additions)
 
-        args = list(container.get("args", []) or [])
-        tracing_args = vllm_tracing_args(
-            args, settings, identity, InstrumentationRole.VLLM, namespace=namespace
-        )
-        # vllm_tracing_args preserves the existing args and appends/replaces only
-        # the tracing flags, so a hand-written endpoint cannot survive.
-        container["args"] = tracing_args
-        container["env"] = apply_env_vars(container.get("env", []) or [], additions)
+    additions = tracing_environment(
+        settings, identity, InstrumentationRole.VLLM, namespace=namespace
+    )
+    _reject_conflicting_tracing_env(serving, additions)
+
+    args = list(serving.get("args", []) or [])
+    tracing_args = vllm_tracing_args(
+        args, settings, identity, InstrumentationRole.VLLM, namespace=namespace
+    )
+    # vllm_tracing_args preserves the existing args and appends/replaces only
+    # the tracing flags, so a hand-written endpoint cannot survive.
+    serving["args"] = tracing_args
+    serving["env"] = apply_env_vars(serving.get("env", []) or [], additions)
 
     return manifest
 

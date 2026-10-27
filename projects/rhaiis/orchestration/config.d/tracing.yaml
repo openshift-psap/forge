@@ -12,5 +12,4 @@ collector:
   storage_class: null
   ready_timeout_seconds: 300
   settle_timeout_seconds: 300
-  drain_timeout_seconds: 120
   max_bundle_bytes: 2147483648

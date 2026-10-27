@@ -14,6 +14,7 @@ from projects.caliper.engine.tracing.otlp import (
     OtlpEncodingError,
     encode_records_to_request,
     iter_jsonl_records,
+    iter_record_batches,
 )
 
 HEX_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
@@ -144,3 +145,46 @@ def test_iter_jsonl_records_parses_lines():
 def test_iter_jsonl_records_rejects_bad_line():
     with pytest.raises(OtlpEncodingError, match="invalid JSON"):
         list(iter_jsonl_records('{"a": 1}\nnot json\n'))
+
+
+OTHER_TRACE_ID = "5bf92f3577b34da6a3ce929d0e0e4736"
+
+
+def _record_with_trace(trace_hex: str, service: str) -> dict:
+    record = _record()
+    resource_spans = record["resourceSpans"][0]
+    resource_spans["resource"]["attributes"] = [
+        {"key": "service.name", "value": {"stringValue": service}}
+    ]
+    for span in resource_spans["scopeSpans"][0]["spans"]:
+        span["traceId"] = trace_hex
+    return record
+
+
+def test_encode_merges_every_record_not_just_the_last():
+    """Parse() clears its target, so encoding must merge per-record messages.
+
+    A spool is one record per collector flush; a naive single-message parse
+    keeps only the final record and silently drops the rest.
+    """
+    encoded = encode_records_to_request(
+        [_record_with_trace(HEX_TRACE_ID, "svc-a"), _record_with_trace(OTHER_TRACE_ID, "svc-b")]
+    )
+    request = _decode(encoded.body)
+    resource_spans = request.resource_spans
+    assert len(resource_spans) == 2
+    services = {
+        a.value.string_value
+        for rs in resource_spans
+        for a in rs.resource.attributes
+        if a.key == "service.name"
+    }
+    assert services == {"svc-a", "svc-b"}
+    # Both traces are reported, not only the last one.
+    assert set(encoded.trace_ids) == {HEX_TRACE_ID, OTHER_TRACE_ID}
+
+
+def test_iter_record_batches_is_bounded():
+    records = [_record() for _ in range(5)]
+    batches = list(iter_record_batches(records, max_records=2))
+    assert [len(b) for b in batches] == [2, 2, 1]

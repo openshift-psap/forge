@@ -288,3 +288,46 @@ def _utc(offset_seconds: int):
     from datetime import UTC, datetime, timedelta
 
     return datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=offset_seconds)
+
+
+def test_empty_capture_at_full_sampling_fails_tracing(monkeypatch):
+    """At full sampling, a zero-span capture must not pass as success."""
+    notifications = []
+    from projects.core.library import ci
+
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    )
+    test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "empty")
+
+    with pytest.raises(RuntimeError, match="empty-at-full-sampling"):
+        test_phase._capture_traces_finalizer(
+            "llmisvc-1", (_utc(0), _utc(10)), capture_session=object()
+        )
+
+    assert notifications == ["tracing-collection-empty-at-full-sampling"]
+    assert not captured.get("cleaned"), "collector must be preserved for recovery"
+
+
+def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
+    """A low-sample capture with no spans is an expected empty outcome."""
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.models import CollectionStatus
+    from projects.llm_d.orchestration import test_phase, tracing_adapter
+
+    settings = TracingSettings(mode=TracingMode.STANDARD, sample_ratio=0.1)
+    monkeypatch.setattr(tracing_adapter, "resolve_tracing", lambda: settings)
+    monkeypatch.setattr(test_phase.runtime_config, "get_job_name", lambda: "job-1")
+    monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
+    monkeypatch.setattr(test_phase, "_current_test_id", lambda: "test-1")
+    monkeypatch.setattr(lifecycle, "record_window", lambda *a, **k: None)
+    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus.EMPTY)
+    cleaned = {}
+    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleaned.setdefault("called", True))
+    monkeypatch.setattr(
+        lifecycle, "CaptureSession", lambda **kw: type("S", (), {"settings": settings, **kw})()
+    )
+
+    test_phase._capture_traces_finalizer("llmisvc-1", (_utc(0), _utc(10)), capture_session=object())
+
+    assert cleaned.get("called") is True

@@ -17,8 +17,10 @@ from projects.cluster.library.tracing.sanitizer import (
     SANITIZATION_POLICY_VERSION,
     SPAN_ATTRIBUTE_ALLOWLIST,
     is_allowed_attribute_key,
+    redact_anyvalue,
     redact_value,
     sanitize_export_request,
+    sanitize_span,
 )
 
 SENTINELS = {
@@ -162,3 +164,78 @@ def test_sanitize_does_not_mutate_input():
 def test_policy_version_is_recorded():
     assert isinstance(SANITIZATION_POLICY_VERSION, int)
     assert SANITIZATION_POLICY_VERSION >= 1
+
+
+def test_redact_anyvalue_descends_into_wrapped_scalar():
+    """Attribute values arrive wrapped ({"stringValue": ...}); redaction must
+    descend into the wrapper, not silently return it unchanged."""
+    wrapped = {"stringValue": SENTINELS["authorization"]}
+    assert redact_anyvalue(wrapped)["stringValue"] == "<redacted>"
+
+    url = {"stringValue": SENTINELS["url"]}
+    redacted = redact_anyvalue(url)["stringValue"]
+    assert "SENTINEL_PASSWORD" not in redacted
+    assert "SENTINEL_QUERY" not in redacted
+
+    # Non-string wrappers are preserved as-is.
+    assert redact_anyvalue({"intValue": "42"}) == {"intValue": "42"}
+
+
+def test_wrapped_attribute_values_are_redacted_in_sanitized_record():
+    record = {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [{"key": "service.name", "value": {"stringValue": "forge-llm"}}]
+                },
+                "scopeSpans": [
+                    {
+                        "scope": {"name": "vllm"},
+                        "spans": [
+                            {
+                                "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+                                "spanId": "00f067aa0ba902b7",
+                                "name": "ok",
+                                "attributes": [
+                                    {"key": "url.full", "value": {"stringValue": SENTINELS["url"]}},
+                                    {
+                                        "key": "server.address",
+                                        "value": {"stringValue": SENTINELS["authorization"]},
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    text = json.dumps(sanitize_export_request(record))
+    assert "SENTINEL_PASSWORD" not in text
+    assert "SENTINEL_QUERY" not in text
+    assert "SENTINEL_TOKEN" not in text
+
+
+def test_span_link_attributes_are_sanitized():
+    """Links carry their own attributes; they must not be copied verbatim."""
+    span = {
+        "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "spanId": "00f067aa0ba902b7",
+        "name": "op",
+        "links": [
+            {
+                "traceId": "5bf92f3577b34da6a3ce929d0e0e4736",
+                "spanId": "11f067aa0ba902b7",
+                "attributes": [
+                    {"key": "gen_ai.prompt", "value": {"stringValue": SENTINELS["prompt"]}},
+                    {"key": "http.request.method", "value": {"stringValue": "POST"}},
+                ],
+            }
+        ],
+    }
+    sanitized = sanitize_span(span)
+    link_attrs = sanitized["links"][0]["attributes"]
+    keys = {a["key"] for a in link_attrs}
+    assert "gen_ai.prompt" not in keys
+    assert "http.request.method" in keys
+    assert SENTINELS["prompt"] not in json.dumps(sanitized)

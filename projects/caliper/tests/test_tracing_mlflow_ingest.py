@@ -45,6 +45,9 @@ CHILD_SPAN_HEX = "11f067aa0ba902b7"
 # A distinct trace for the single-run tests: MLflow trace IDs are global, so
 # reusing the trace above would collide with earlier tests in this module.
 SINGLE_RUN_TRACE_HEX = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+# A further distinct trace for the entrypoint test, because MLflow trace IDs are
+# global and an earlier ingestion of the same hex is a no-op.
+ENTRYPOINT_TRACE_HEX = "b1c2d3e4f5061728394a5b6c7d8e9f01"
 
 
 def _otlp_record(
@@ -325,7 +328,7 @@ def test_single_run_export_ingests_traces(mlflow_server: str, tmp_path: Path) ->
     test_dir = tmp_path / "test_node"
     _write_bundle(test_dir, test_id="t1", record=_otlp_record(SINGLE_RUN_TRACE_HEX))
 
-    context = TraceExportContext(tracking_uri=mlflow_server, workspace="", connection=None)
+    context = TraceExportContext()
     results = runner.run_file_export(
         source=tmp_path,
         backends=["mlflow"],
@@ -349,12 +352,19 @@ def test_single_run_export_ingests_traces(mlflow_server: str, tmp_path: Path) ->
     assert mlflow_trace_id in linked
 
 
-def test_single_run_export_reports_trace_failure_status(mlflow_server: str, tmp_path: Path) -> None:
-    """A native trace failure marks the single-run backend as failed, not success."""
+def test_single_run_export_reports_trace_failure_status(
+    mlflow_server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A native trace failure marks the single-run backend as failed, not success.
+
+    Injects an ingestion failure so the ordinary artifact upload completing but
+    native ingestion failing is still reported as a backend failure.
+    """
     import mlflow
 
     from projects.caliper.engine.file_export import runner
-    from projects.caliper.engine.tracing.ingest import TraceExportContext
+    from projects.caliper.engine.tracing import ingest as ingest_mod
+    from projects.caliper.engine.tracing.ingest import IngestionReport, TraceExportContext
 
     mlflow.set_tracking_uri(mlflow_server)
     client = mlflow.tracking.MlflowClient()
@@ -364,10 +374,13 @@ def test_single_run_export_reports_trace_failure_status(mlflow_server: str, tmp_
     test_dir = tmp_path / "test_node"
     _write_bundle(test_dir, test_id="t1", record=_otlp_record())
 
-    # A tracking URI the exporter cannot reach makes native ingestion fail while
-    # the ordinary artifact upload (already done above) stays independent.
-    dead_uri = "http://127.0.0.1:1"
-    context = TraceExportContext(tracking_uri=dead_uri, workspace="", connection=None)
+    def _failed_report(**_kwargs):
+        report = IngestionReport()
+        report.failures.append("t1: injected ingestion failure")
+        return report
+
+    monkeypatch.setattr(ingest_mod, "ingest_trace_bundles", _failed_report)
+
     results = runner.run_file_export(
         source=tmp_path,
         backends=["mlflow"],
@@ -377,7 +390,50 @@ def test_single_run_export_reports_trace_failure_status(mlflow_server: str, tmp_
         mlflow_run_id=run.info.run_id,
         mlflow_connection=None,
         verbose=False,
-        trace_export=context,
+        trace_export=TraceExportContext(),
     )
     assert results[0].status == "failure"
     assert "native trace export failed" in results[0].detail
+
+
+def test_single_run_entrypoint_populates_tracking_uri(mlflow_server: str, tmp_path: Path) -> None:
+    """The real single-run export entrypoint must send traces to the real server.
+
+    Drives ``run_artifacts_export`` (the path orchestration uses) rather than a
+    hand-built context: a context that is only an enabled marker must still
+    reach the resolved tracking URI, not a relative ``/v1/traces`` URL.
+    """
+    import mlflow
+
+    from projects.caliper.engine.file_export.artifacts_export_run import run_artifacts_export
+    from projects.caliper.engine.tracing.ingest import TraceExportContext
+
+    mlflow.set_tracking_uri(mlflow_server)
+    client = mlflow.tracking.MlflowClient()
+    experiment_id = client.create_experiment("traces-single-entrypoint")
+    run = client.create_run(experiment_id)
+
+    test_dir = tmp_path / "test_node"
+    _write_bundle(test_dir, test_id="t1", record=_otlp_record(ENTRYPOINT_TRACE_HEX))
+
+    status_yaml = tmp_path / "status.yaml"
+    ret = run_artifacts_export(
+        from_path=tmp_path,
+        backend=["mlflow"],
+        mlflow_tracking_uri=mlflow_server,
+        mlflow_experiment="traces-single-entrypoint",
+        mlflow_run_id=run.info.run_id,
+        status_yaml_path=status_yaml,
+        trace_export=TraceExportContext(),
+    )
+
+    assert ret == 0
+    status = yaml.safe_load(status_yaml.read_text(encoding="utf-8"))
+    assert status["caliper_artifacts_export"]["backends"]["mlflow"]["status"] == "success"
+
+    mlflow_trace_id = derive_mlflow_trace_ids([ENTRYPOINT_TRACE_HEX])[0]
+    linked = {
+        t.info.trace_id
+        for t in client.search_traces(locations=[experiment_id], run_id=run.info.run_id)
+    }
+    assert mlflow_trace_id in linked
