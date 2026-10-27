@@ -6,6 +6,9 @@ import signal
 from datetime import datetime
 
 from projects.core.library import config, env, run
+from projects.guidellm.toolbox.run_guidellm_benchmark import (
+    build_guidellm_args as shared_build_guidellm_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,12 +231,6 @@ def merge_env_vars(accelerator: str, model: dict) -> dict:
     return base
 
 
-def _format_arg_value(value: object) -> str:
-    if isinstance(value, list):
-        return ",".join(str(v) for v in value)
-    return str(value)
-
-
 def build_guidellm_args(
     *,
     benchmark_cfg: dict,
@@ -243,21 +240,16 @@ def build_guidellm_args(
     max_seconds: int | None,
     rampup: int | None = None,
 ) -> list[str]:
-    guidellm_args = []
-    for key, value in benchmark_cfg.get("args", {}).items():
-        cli_key = key.replace("_", "-")
-        guidellm_args.append(f"--{cli_key}={_format_arg_value(value)}")
-
-    guidellm_args.append(f"--model={model_id}")
+    args = {**benchmark_cfg.get("args", {}), "model": model_id}
     if data is not None:
-        guidellm_args.append(f"--data={data}")
+        args["data"] = data
     if rates is not None:
-        guidellm_args.append(f"--rate={_format_arg_value(rates)}")
+        args["rate"] = rates
     if max_seconds is not None:
-        guidellm_args.append(f"--max-seconds={max_seconds}")
+        args["max_seconds"] = max_seconds
     if rampup is not None:
-        guidellm_args.append(f"--rampup={rampup}")
-    return guidellm_args
+        args["rampup"] = rampup
+    return shared_build_guidellm_args({"args": args})
 
 
 def split_image_tag(full_image: str) -> tuple[str, str]:

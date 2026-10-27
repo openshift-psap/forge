@@ -29,6 +29,55 @@ def _optional_phase_workload_keys(
     return [key for key in workload_keys if key not in excluded]
 
 
+def _load_workloads(workload_keys: list[str]) -> dict[str, dict]:
+    workloads = {key: runtime_config.get_workload(key) for key in workload_keys}
+    benchconf_keys = [key for key in workload_keys if workloads[key].get("benchconf")]
+    if not benchconf_keys:
+        return workloads
+    if not benchconf_lib._is_enabled():
+        raise RuntimeError(
+            f"Workload {benchconf_keys[0]} references BenchConf but benchconf is disabled"
+        )
+
+    benchconf_lib.maybe_install_custom_version()
+    benchconf_lib.save_version()
+    for key in benchconf_keys:
+        workload = workloads[key]
+        ref = workload["benchconf"]
+        path = benchconf_lib.resolve_config_path(ref)
+        benchconf_config = yaml.safe_load(path.read_text())
+        data_specs = benchconf_config["spec"]["data"]
+        if len(data_specs) != 1 or data_specs[0]["kind"] != "synthetic_text":
+            raise ValueError(f"Unsupported RHAIIS BenchConf data in {ref}")
+        data_spec = data_specs[0]
+        parts = [
+            f"{name}={value}"
+            for name, value in data_spec.items()
+            if name not in ("kind", "prefix_buckets")
+        ]
+        for index, bucket in enumerate(data_spec.get("prefix_buckets", [])):
+            parts.extend(
+                f"prefix_buckets[{index}].{name}={value}" for name, value in bucket.items()
+            )
+
+        # shortcut: RHAIIS regression profiles use concurrent streams and max_duration.
+        rates = [benchmark["profile.streams"] for benchmark in benchconf_config["benchmarks"]]
+        max_seconds = next(
+            (
+                constraint["seconds"]
+                for constraint in benchconf_config["spec"]["constraints"]
+                if constraint["kind"] == "max_duration"
+            ),
+            None,
+        )
+        if not rates or max_seconds is None:
+            raise ValueError(f"Missing streams or max_duration in {ref}")
+        workload.update(
+            data=",".join(parts), rates=rates, max_seconds=max_seconds, config_path=path
+        )
+    return workloads
+
+
 def _write_manifest(manifest: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -211,6 +260,7 @@ def _run_test(
             _warnings.append("Standalone analysis failed")
         return 1 if _warnings else 0
 
+    workloads = _load_workloads(workload_keys)
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
     wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
 
@@ -322,7 +372,7 @@ def _run_test(
                 endpoint_url=endpoint_url,
                 benchmark_cfg=benchmark_cfg,
                 model_cfg=model_cfg,
-                workload=runtime_config.get_workload(wl_key),
+                workload=workloads[wl_key],
                 workload_key=wl_key,
                 benchmark_timeout=benchmark_timeout,
             )
@@ -365,6 +415,7 @@ def _run_test(
             _run_workload_benchmark(
                 model_key=model_key,
                 workload_key=wl_key,
+                workload=workloads[wl_key],
                 model_cfg=model_cfg,
                 accelerator=accelerator,
                 accelerator_key=accelerator_key,
@@ -384,7 +435,7 @@ def _run_test(
             )
 
         try:
-            first_workload = runtime_config.get_workload(workload_keys[0])
+            first_workload = workloads[workload_keys[0]]
             first_rates = first_workload.get("rates", [1])
             first_max_seconds = first_workload.get("max_seconds", 180)
             _set_mlflow_metadata(
@@ -427,6 +478,7 @@ def _run_workload_benchmark(
     *,
     model_key: str,
     workload_key: str,
+    workload: dict,
     model_cfg: dict,
     accelerator: str,
     accelerator_key: str,
@@ -452,7 +504,6 @@ def _run_workload_benchmark(
     """
     logger.info("=== Benchmark %s (UUID: %s) ===", workload_key, run_uuid)
 
-    workload = runtime_config.get_workload(workload_key)
     rates = workload.get("rates", [1])
     max_seconds = workload.get("max_seconds", 180)
     rampup = workload.get("rampup")
@@ -498,16 +549,7 @@ def _run_workload_benchmark(
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
-            benchconf_ref = workload.get("benchconf")
-            config_path = None
-            if benchconf_ref:
-                if not benchconf_lib._is_enabled():
-                    raise RuntimeError(
-                        f"Workload {workload_key} references BenchConf but benchconf is disabled"
-                    )
-                benchconf_lib.maybe_install_custom_version()
-                benchconf_lib.save_version()
-                config_path = benchconf_lib.resolve_config_path(benchconf_ref)
+            config_path = workload.get("config_path")
 
             guidellm_args = runtime_config.build_guidellm_args(
                 benchmark_cfg=benchmark_cfg,

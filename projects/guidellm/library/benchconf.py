@@ -50,7 +50,8 @@ def maybe_install_custom_version(_cfg) -> None:
             "--target",
             str(install_dir),
             spec,
-        ]
+        ],
+        timeout=600,
     )
     sys.path.insert(0, str(install_dir))
     sys.modules.pop("benchconf", None)

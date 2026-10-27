@@ -143,7 +143,6 @@ def run_regression_check(
 ) -> None:
     from projects.caliper.cli.s3_export import create_s3_client, get_aws_credentials
     from projects.core.library import config
-    from projects.rhaiis.orchestration import runtime_config
     from projects.rhaiis.postprocess.regression import METRICS, PROFILE_MAP, run_regression_analysis
 
     owner = config.project.get_config("ci_job.owner", "") or ""
@@ -202,36 +201,6 @@ def run_regression_check(
                     engine_args=engine_args,
                 )
 
-            from projects.rhaiis.postprocess.regression import send_regression_notification
-
-            send_regression_notification(
-                analysis,
-                model=model_cfg.get("hf_model_id", ""),
-                accelerator=accelerator,
-                job_id=run_uuid,
-                slack_user=slack_user,
-                owner=owner,
-                notification_vault="psap-forge-notifications",
-                report_url=report_url,
-                tp=str(tp),
-                dp=str(dp),
-            )
-        elif config.project.get_config("tests.rhaiis.slack_notify_always", False):
-            from projects.rhaiis.postprocess.regression import send_success_notification
-
-            send_success_notification(
-                model=model_cfg.get("hf_model_id", ""),
-                accelerator=accelerator,
-                job_id=run_uuid,
-                slack_user=slack_user,
-                owner=owner,
-                notification_vault="psap-forge-notifications",
-                tp=str(tp),
-                dp=str(dp),
-                version=current_version,
-                workload_keys=runtime_config.get_test_workload_keys(),
-                cluster=config.project.get_config("rhaiis.cluster_tag", ""),
-            )
         from projects.rhaiis.postprocess.regression import send_regression_notification
 
         send_regression_notification(
