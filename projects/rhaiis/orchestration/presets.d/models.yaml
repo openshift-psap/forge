@@ -136,12 +136,14 @@ qwen3-vl-30b:
 # GPT-OSS
 gpt-oss-120b:
   tests.rhaiis.model_key: gpt-oss-120b
+  benchmarks.guidellm.args.request_type: /v1/completions
 
 gpt-oss-fp8:
   tests.rhaiis.model_key: gpt-oss-120b-fp8
 
 gpt-oss-20b:
   tests.rhaiis.model_key: gpt-oss-20b
+  benchmarks.guidellm.args.request_type: /v1/completions
 
 # Nemotron 3.1 70B
 nemotron-70b:
@@ -238,6 +240,7 @@ infomaniak-translategemma:
 # Google TranslateGemma
 google-translategemma:
   tests.rhaiis.model_key: google-translategemma-12b
+  benchmarks.guidellm.args.request_type: /v1/completions
 
 # Kimi-K2.5
 kimi-k2-5:

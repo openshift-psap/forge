@@ -117,6 +117,8 @@ def build_guidellm_args(benchmark: dict[str, object]) -> list[str]:
     benchmark_args = benchmark.get("args", {})
     if benchmark_args:
         for key, value in benchmark_args.items():
+            if value is None:
+                continue
             cli_key = key.replace("_", "-")
             if isinstance(value, list):
                 rendered_value = ",".join(str(item) for item in value)

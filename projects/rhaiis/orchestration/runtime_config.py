@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import pathlib
 import signal
@@ -55,8 +56,30 @@ def get_deploy_config() -> dict:
     return dict(config.project.get_config("rhaiis.deploy"))
 
 
-def get_benchmark_config() -> dict:
-    return dict(config.project.get_config("benchmarks.guidellm"))
+def _apply_defaults(base: object, defaults: object) -> object:
+    """Fill missing or null entries in ``base`` from ``defaults``; ``base`` wins."""
+    if not isinstance(base, dict) or not isinstance(defaults, dict):
+        return copy.deepcopy(defaults if base is None else base)
+
+    merged = copy.deepcopy(base)
+    for key, default_value in defaults.items():
+        current_value = merged.get(key)
+        if current_value is None:
+            merged[key] = copy.deepcopy(default_value)
+        elif isinstance(current_value, dict) and isinstance(default_value, dict):
+            merged[key] = _apply_defaults(current_value, default_value)
+    return merged
+
+
+def get_benchmark_config(model_key: str | None = None) -> dict:
+    benchmark_cfg = dict(config.project.get_config("benchmarks.guidellm"))
+    if not model_key:
+        return benchmark_cfg
+
+    model_defaults = get_model(model_key).get("benchmarks", {}).get("guidellm", {})
+    if model_defaults:
+        benchmark_cfg = _apply_defaults(benchmark_cfg, model_defaults)
+    return benchmark_cfg
 
 
 def get_engine() -> str:
@@ -240,7 +263,7 @@ def build_guidellm_args(
     max_seconds: int | None,
     rampup: int | None = None,
 ) -> list[str]:
-    args = {**benchmark_cfg.get("args", {}), "model": model_id}
+    args = {key: value for key, value in benchmark_cfg.get("args", {}).items() if value is not None}
     if data is not None:
         args["data"] = data
     if rates is not None:

@@ -189,6 +189,9 @@ cpt-rhaiis-3.6-h200:
       rhaiis.engines.vllm.args.tool-call-parser: qwen3_coder
     gpt-oss-120b/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
+      # Chat-completions requests trigger harmony errors on this
+      # checkpoint; benchmark via text completions instead.
+      benchmarks.guidellm.args.request_type: /v1/completions
     ministral-14b/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
     muse-glimmer/tp1:
@@ -246,6 +249,7 @@ cpt-rhaiis-3.6-b200:
   __models:
     gpt-oss-120b/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
+      benchmarks.guidellm.args.request_type: /v1/completions
     nemotron3super-120b-nvfp4/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
       rhaiis.engines.vllm.args.kv-cache-dtype: fp8
@@ -320,6 +324,7 @@ cpt-rhaiis-3.6-mi355x:
   __models:
     gpt-oss-120b/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
+      benchmarks.guidellm.args.request_type: /v1/completions
     deepseek-v4-pro-redhat/tp8:
       __workloads: [profile1, profile4, profile5, profile7, profile6]
       rhaiis.engines.vllm.args.tensor-parallel-size: 8

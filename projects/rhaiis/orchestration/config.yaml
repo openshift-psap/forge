@@ -19,6 +19,7 @@ benchmarks:
       rate_type: concurrent
       output_dir: /results
       outputs: json
+      request_type: null
 
 tests:
   rhaiis:

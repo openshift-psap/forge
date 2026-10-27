@@ -384,6 +384,10 @@ gpt-oss-120b:
   hf_model_id: openai/gpt-oss-120b
   vllm_args:
     tensor-parallel-size: 1
+  benchmarks:
+    guidellm:
+      args:
+        request_type: /v1/completions
 
 gpt-oss-120b-fp8:
   name: GPT-OSS-120B-FP8
@@ -396,6 +400,10 @@ gpt-oss-20b:
   hf_model_id: openai/gpt-oss-20b
   vllm_args:
     tensor-parallel-size: 1
+  benchmarks:
+    guidellm:
+      args:
+        request_type: /v1/completions
 
 # Nemotron 3.1 70B
 nemotron-3-1-70b:
@@ -536,6 +544,10 @@ google-translategemma-12b:
   vllm_args:
     tensor-parallel-size: 1
     chat-template-content-format: openai
+  benchmarks:
+    guidellm:
+      args:
+        request_type: /v1/completions
 
 # DeepSeek V4 Pro
 deepseek-v4-pro:
