@@ -7,12 +7,21 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from projects.caliper.engine.tracing.ingest import TraceExportContext as _TraceExportContext
 
 from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.engine.file_export.mlflow_secrets import (
     assert_tracking_uri_has_no_userinfo,
     mlflow_connection_env,
+)
+from projects.caliper.engine.tracing.child_runs import (
+    ChildRunDestination,
+    child_run_key,
+    read_child_run_map,
+    write_child_run_map,
 )
 from projects.core.library import env
 
@@ -360,6 +369,7 @@ def log_artifacts(
     upload_workers: int = 10,
     run_metadata: dict[str, Any] | None = None,
     workspace: str | None = None,
+    trace_export: _TraceExportContext | None = None,
 ) -> tuple[str, dict[str, Any] | None, bool]:
     try:
         import mlflow
@@ -454,6 +464,20 @@ def log_artifacts(
             tu = mlflow.get_tracking_uri() or ""
             meta = _capture_mlflow_run_metadata(tu, workspace=workspace)
 
+            trace_report = _ingest_trace_bundles(
+                artifact_root=artifact_root,
+                trace_export=trace_export,
+                experiment_id=str(mlflow.active_run().info.experiment_id),
+                workspace=workspace or "",
+                child_run_map={},
+                default_run_id=rid,
+                verbose=verbose,
+            )
+            if trace_report is not None:
+                meta["trace_export"] = trace_report.to_dict()
+                if trace_report.failed:
+                    partial_failure.append("native trace export")
+
         if partial_failure:
             logger.info(f"MLflow upload partially failed ({mlflow.get_tracking_uri()})")
 
@@ -467,6 +491,60 @@ def log_artifacts(
             return _run(tracking_uri or connection.get("tracking_uri"))
 
     return _run(tracking_uri)
+
+
+def _ingest_trace_bundles(
+    *,
+    artifact_root: Path,
+    trace_export: Any,
+    experiment_id: str,
+    workspace: str,
+    child_run_map: dict[str, dict[str, str]],
+    default_run_id: str,
+    verbose: bool,
+):
+    """Ingest discovered trace bundles, resolving each to its owning run.
+
+    Returns an ingestion report dict, or ``None`` when tracing export is
+    disabled. Native ingestion is independent of artifact upload and never
+    downgrades a requested export to artifact-only success.
+    """
+    if trace_export is None:
+        return None
+
+    from projects.caliper.engine.tracing.ingest import ingest_trace_bundles
+
+    def _resolve(test_dir: Path) -> str | None:
+        from projects.caliper.engine.tracing.child_runs import child_run_key
+
+        try:
+            key = child_run_key(test_dir, artifact_root)
+        except ValueError:
+            return default_run_id
+        entry = child_run_map.get(key)
+        if entry:
+            return entry["run_id"]
+        # A single-run export has no child map entry; fall back to the run that
+        # received the artifacts.
+        if not child_run_map:
+            return default_run_id
+        return None
+
+    report = ingest_trace_bundles(
+        artifact_root=artifact_root,
+        tracking_uri=trace_export.tracking_uri,
+        experiment_id=experiment_id,
+        workspace=workspace,
+        connection=trace_export.connection,
+        resolve_run_id=_resolve,
+        reporter=(logger.info if verbose else None),
+    )
+    if report.failed:
+        # Surface failures without aborting the artifact upload that already
+        # completed; the caller aggregates failure status.
+        for failure in report.failures:
+            logger.error("Native trace export failed: %s", failure)
+    return report
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:
@@ -595,6 +673,7 @@ def log_multi_run_artifacts(
     run_metadata: dict[str, Any] | None = None,
     workspace: str | None = None,
     child_run_names: dict[Path, str] | None = None,
+    trace_export: _TraceExportContext | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     """Create a parent MLflow run with all artifacts and nested child runs per test directory.
 
@@ -602,6 +681,11 @@ def log_multi_run_artifacts(
     files that live under its own ``run_dir`` subtree, so artifacts are never
     duplicated across children.
     If ``child_run_names`` is provided, those names are used instead of ``run_dir.name``.
+
+    Child run identity is persisted per test directory at the artifact root so a
+    repeated export resumes the existing child instead of creating a new one. The
+    mapping is written as each child is resolved, before native trace ingestion
+    begins, so an interrupted export can still recover ownership.
     """
     try:
         import mlflow
@@ -678,6 +762,13 @@ def log_multi_run_artifacts(
             if parent_url:
                 logger.info("Parent run: %s", parent_url)
 
+            child_destination = ChildRunDestination(
+                tracking_uri=tu,
+                experiment_id=eid,
+                parent_run_id=parent_rid,
+            )
+            existing_children = read_child_run_map(artifact_root, destination=child_destination)
+
             for run_dir in sorted(run_dirs):
                 child_name = (
                     child_run_names.get(run_dir, run_dir.name) if child_run_names else run_dir.name
@@ -688,8 +779,35 @@ def log_multi_run_artifacts(
                     p for p in file_paths if p.resolve().is_relative_to(resolved_run_dir)
                 ]
 
-                with mlflow.start_run(run_name=child_name, nested=True):
+                run_key = child_run_key(run_dir, artifact_root)
+                prior = existing_children.get(run_key)
+                if prior:
+                    # Resume the previously created child run instead of
+                    # creating a duplicate on repeated export.
+                    start_kw_child: dict[str, Any] = {
+                        "run_id": prior["run_id"],
+                        "nested": True,
+                    }
+                    if verbose:
+                        logger.info("  Resuming child run %s (%s)", child_name, prior["run_id"])
+                else:
+                    start_kw_child = {"run_name": child_name, "nested": True}
+
+                with mlflow.start_run(**start_kw_child):
                     child_rid = mlflow.active_run().info.run_id
+                    if prior and child_name:
+                        mlflow.set_tag("mlflow.runName", child_name)
+
+                    # Persist the resolved identity immediately so native trace
+                    # ingestion (which runs after this function) and any resume
+                    # always target the same run.
+                    existing_children[run_key] = {
+                        "run_id": child_rid,
+                        "run_name": child_name,
+                    }
+                    write_child_run_map(
+                        artifact_root, existing_children, destination=child_destination
+                    )
 
                     mf = run_dir / metrics_file
                     if mf.is_file():
@@ -741,11 +859,23 @@ def log_multi_run_artifacts(
                         child_entry["run_url"] = child_url
                     child_runs_meta.append(child_entry)
 
+            trace_report = _ingest_trace_bundles(
+                artifact_root=artifact_root,
+                trace_export=trace_export,
+                experiment_id=eid,
+                workspace=workspace or "",
+                child_run_map=read_child_run_map(artifact_root, destination=child_destination),
+                default_run_id=parent_rid,
+                verbose=verbose,
+            )
+
             parent_meta = _capture_mlflow_run_metadata(tu, workspace=workspace)
             if child_runs_meta:
                 parent_meta["child_runs"] = child_runs_meta
             if all_curve_errors:
                 parent_meta["curve_errors"] = all_curve_errors
+            if trace_report is not None:
+                parent_meta["trace_export"] = trace_report.to_dict()
 
         # Log any curve errors as warnings instead of failing
         for error in all_curve_errors:

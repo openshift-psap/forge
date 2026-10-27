@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import uuid as _uuid_mod
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -40,6 +41,106 @@ def _guidellm_job_name(prefix: str, workload_key: str, deployment_name: str) -> 
     available = _K8S_NAME_MAX - len(base)
     model = deployment_name[:available] if available > 0 else ""
     return f"{base}{model}".rstrip("-")
+
+
+def _tracing_job_id() -> str:
+    """Return the FORGE job / local invocation identity."""
+    from projects.core.library import config as _cfg
+
+    return os.environ.get("FJOB_NAME") or _cfg.project.get_config("ci_job.fjob_name", "") or "local"
+
+
+def _tracing_capture_id(job_id: str, namespace: str) -> str:
+    """Return the stable deployment-capture identity for this job/namespace pair."""
+    import hashlib
+
+    from projects.core.dsl.utils import slugify_identifier
+
+    digest = hashlib.sha256(f"{job_id}:{namespace}".encode()).hexdigest()[:8]
+    base = slugify_identifier(job_id or "local", max_length=40)
+    return f"{base}-{digest}"
+
+
+def _start_trace_capture(*, deployment_name: str, namespace: str):
+    """Start a deployment capture when tracing is enabled; return the session or None."""
+    from projects.rhaiis.orchestration import tracing_adapter
+
+    settings = tracing_adapter.resolve_tracing()
+    if not settings.enabled:
+        return None
+
+    from projects.cluster.library.tracing import lifecycle
+
+    return lifecycle.start_capture(
+        job_id=_tracing_job_id(),
+        capture_id=_tracing_capture_id(_tracing_job_id(), namespace),
+        project="rhaiis",
+        namespace=namespace,
+        deployment_id=deployment_name,
+        output_root=env.ARTIFACT_DIR,
+        settings=settings,
+        # Only standard vLLM is validated end-to-end for this project.
+        roles=["vllm"],
+    )
+
+
+def _record_trace_window(capture_session, *, artifact_dir: Path, start, end) -> None:
+    """Record a per-workload benchmark window when tracing is enabled."""
+    if capture_session is None:
+        return
+    from projects.cluster.library.tracing import lifecycle
+
+    lifecycle.record_window(
+        capture_session,
+        test_id=Path(artifact_dir).name,
+        start=start,
+        end=end,
+        artifact_dir=Path(artifact_dir),
+    )
+
+
+def _finalize_trace_capture(capture_session) -> None:
+    """Capture then clean up the collector for a started capture.
+
+    Capture failures are surfaced through a notification; the collector and
+    spool are only removed after a verified capture, so a failed capture keeps
+    its recovery state. Never raises: the benchmark outcome is preserved.
+    """
+    if capture_session is None:
+        return
+
+    from projects.cluster.library.tracing import lifecycle
+
+    try:
+        status = lifecycle.capture(capture_session)
+    except Exception:
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            "tracing-capture-failed",
+            "Requested trace collection failed for this test; see the test logs. "
+            "Artifacts, recovery state, and collector resources were preserved.",
+        )
+        _warnings.append("Trace collection failed")
+        logger.exception("Trace collection failed; preserving collector for recovery")
+        return
+
+    if status.value in ("failed", "incomplete"):
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            f"tracing-collection-{status.value}",
+            "Requested trace collection did not complete successfully; partial "
+            "bundles were retained and the collector was preserved for recovery.",
+        )
+        _warnings.append(f"Trace collection {status.value}")
+        return
+
+    try:
+        lifecycle.cleanup(capture_session)
+    except Exception:
+        logger.warning("Trace collector cleanup failed", exc_info=True)
+        _warnings.append("Trace collector cleanup failed")
 
 
 def run(
@@ -213,6 +314,7 @@ def _run_test(
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
     wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
 
+    capture_session = None
     try:
         isvc_labels = {
             "opendatahub.io/dashboard": "true",
@@ -247,6 +349,27 @@ def _run_test(
             env_vars=env_vars,
             trtllm_config=runtime_config.get_trtllm_config() if engine == "trtllm" else None,
         )
+        # Apply tracing instrumentation to the vLLM ServingRuntime (off by
+        # default; a no-op when disabled). Unsupported engines are rejected here,
+        # before any resource is applied.
+        from projects.rhaiis.orchestration import tracing_adapter
+
+        tracing_settings = tracing_adapter.resolve_tracing()
+        if tracing_settings.enabled:
+            tracing_identity = tracing_adapter.capture_identity_for_run(
+                job_id=_tracing_job_id(),
+                capture_id=_tracing_capture_id(_tracing_job_id(), namespace),
+                namespace=namespace,
+                deployment_id=deployment_name,
+            )
+            tracing_adapter.instrument_servingruntime(
+                sr_manifest,
+                settings=tracing_settings,
+                identity=tracing_identity,
+                namespace=namespace,
+                engine=engine,
+            )
+
         isvc_manifest = build_inferenceservice(
             deployment_name=deployment_name,
             namespace=namespace,
@@ -270,6 +393,10 @@ def _run_test(
         isvc_file = env.ARTIFACT_DIR / "src" / "inferenceservice.yaml"
         _write_manifest(sr_manifest, sr_file)
         _write_manifest(isvc_manifest, isvc_file)
+
+        # Start the collector before the instrumented serving pods so no spans
+        # are lost at startup. Tracing off is a no-op.
+        capture_session = _start_trace_capture(deployment_name=deployment_name, namespace=namespace)
 
         deploy_kserve_isvc(
             namespace=namespace,
@@ -381,6 +508,7 @@ def _run_test(
                 version=version,
                 cluster_tag=cluster_tag,
                 trtllm_config=trtllm_cfg,
+                capture_session=capture_session,
             )
 
         try:
@@ -403,6 +531,8 @@ def _run_test(
         except Exception:
             logger.warning("Setting MLflow metadata failed; continuing", exc_info=True)
     finally:
+        # Reconcile traces before the collector and serving resources are removed.
+        _finalize_trace_capture(capture_session)
         _capture_and_cleanup(deployment_name, namespace)
         if fjob_name:
             _update_fjob_inference_reference(fjob_name, fjob_ns, None)
@@ -443,6 +573,7 @@ def _run_workload_benchmark(
     version: str,
     cluster_tag: str,
     trtllm_config: dict | None = None,
+    capture_session=None,
 ) -> None:
     """Run benchmark and post-processing for a single workload.
 
@@ -507,17 +638,29 @@ def _run_workload_benchmark(
                 rampup=rampup,
             )
 
-            run_guidellm_benchmark(
-                endpoint_url=f"{endpoint_url}/v1",
-                name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
-                namespace=namespace,
-                image=benchmark_cfg.get("image"),
-                timeout=benchmark_timeout,
-                pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
-                guidellm_args=guidellm_args,
-                hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
-                fs_group=benchmark_cfg.get("fs_group"),
-            )
+            benchmark_start = datetime.now(UTC)
+            try:
+                run_guidellm_benchmark(
+                    endpoint_url=f"{endpoint_url}/v1",
+                    name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
+                    namespace=namespace,
+                    image=benchmark_cfg.get("image"),
+                    timeout=benchmark_timeout,
+                    pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
+                    guidellm_args=guidellm_args,
+                    hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
+                    fs_group=benchmark_cfg.get("fs_group"),
+                )
+            finally:
+                # Record the measured window even when the benchmark fails, so a
+                # failure still captures the traces it produced. Warmup/profiler
+                # phases run in a different artifact dir and are never recorded.
+                _record_trace_window(
+                    capture_session,
+                    artifact_dir=env.ARTIFACT_DIR,
+                    start=benchmark_start,
+                    end=datetime.now(UTC),
+                )
 
 
 def _create_test_labels(

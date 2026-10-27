@@ -1,0 +1,48 @@
+# OpenTelemetry Collector configuration for the FORGE trace spool.
+#
+# The native OTLP file exporter writes newline-delimited OTLP JSON, preserving
+# resource and instrumentation-scope data, span events and links, and nanosecond
+# timestamps. Its tracing stability is alpha, so the collector image is pinned
+# and its output contract is validated in the Stage 1 replay test.
+#
+# There is deliberately no debug exporter: it would dump payloads, including
+# sensitive content, into pod logs.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 512
+    spike_limit_mib: 128
+  batch:
+    send_batch_size: 512
+    timeout: 2s
+exporters:
+  file:
+    path: /var/lib/forge-traces/spool/otlp.jsonl
+    # Append on restart so replacing the collector pod never truncates earlier
+    # data. Rotation is deliberately absent: rotating would silently drop
+    # uncollected segments, and the file exporter forbids append+rotation.
+    # The PVC bound is the storage limit instead.
+    append: true
+    format: json
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+service:
+  extensions: [health_check]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [file]

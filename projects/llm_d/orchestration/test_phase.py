@@ -300,6 +300,7 @@ def run_finalizers(
     primary_exc: tuple[type[BaseException], BaseException, Any] | None,
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None,
     benchmark_times: tuple[datetime, datetime] | None = None,
+    capture_session: Any = None,
 ) -> tuple[type[BaseException], BaseException, Any] | None:
     def _run_finalizer(
         description: str,
@@ -356,6 +357,16 @@ def run_finalizers(
                 capture_prometheus(start_time, end_time, runtime_params=runtime_params)
 
         finalizer_exc = _run_finalizer("capturing Prometheus metrics", _capture_prom)
+
+        # Collect trace bundles for this test window before cleanup removes the
+        # serving resources and the collector spool.
+        finalizer_exc = _run_finalizer(
+            "capturing traces",
+            _capture_traces_finalizer,
+            llmisvc_name=llmisvc_name,
+            benchmark_times=benchmark_times,
+            capture_session=capture_session,
+        )
     else:
         logging.error("No benchmark times received, cannot capture the Prometheus metrics.")
 
@@ -366,6 +377,116 @@ def run_finalizers(
     )
 
     return primary_exc, finalizer_exc
+
+
+def _start_trace_capture(deployment_id: str):
+    """Deploy the trace collector for this capture, or return None when disabled.
+
+    A startup failure raises: requested tracing must fail setup rather than run
+    without collecting.
+    """
+    from projects.llm_d.orchestration import tracing_adapter
+
+    settings = tracing_adapter.resolve_tracing()
+    if not settings.enabled:
+        return None
+
+    from projects.cluster.library.tracing import lifecycle
+
+    session = lifecycle.start_capture(
+        job_id=runtime_config.get_job_name(),
+        capture_id=_tracing_capture_id(),
+        project="llm_d",
+        namespace=runtime_config.get_namespace(),
+        deployment_id=deployment_id,
+        output_root=env.ARTIFACT_DIR,
+        settings=settings,
+        # Only standard vLLM is validated end-to-end; EPP/P-D instrumentation is
+        # rejected before rendering, so the summary must not claim those roles.
+        roles=["vllm"],
+    )
+    return session
+
+
+def _capture_traces_finalizer(
+    llmisvc_name: str | None,
+    benchmark_times: tuple[datetime, datetime],
+    capture_session: Any = None,
+) -> None:
+    """Record the benchmark window, capture trace bundles, and clean up.
+
+    Runs before cleanup so the collector spool is still available. A capture
+    failure is surfaced through a notification and re-raised so the finalizer
+    reports it, while the primary test exception is preserved by the caller.
+    After a verified capture the collector and spool are removed; a failed
+    capture leaves them in place for recovery.
+    """
+    from projects.llm_d.orchestration import tracing_adapter
+
+    settings = tracing_adapter.resolve_tracing()
+    if not settings.enabled:
+        return
+
+    from projects.cluster.library.tracing import lifecycle
+
+    session = capture_session
+    if session is None:
+        # The collector was never started (for example a reused deployment or an
+        # earlier failure). Rebuild the identity so recovery still has a target
+        # rather than silently skipping requested collection.
+        identity = tracing_adapter.capture_identity_for_run(
+            job_id=runtime_config.get_job_name(),
+            capture_id=_tracing_capture_id(),
+            namespace=runtime_config.get_namespace(),
+            deployment_id=llmisvc_name or "llmisvc-unknown",
+        )
+        session = lifecycle.CaptureSession(
+            identity=identity,
+            settings=settings,
+            output_root=env.ARTIFACT_DIR,
+        )
+
+    start_time, end_time = benchmark_times
+    lifecycle.record_window(
+        session,
+        test_id=_current_test_id(),
+        start=start_time,
+        end=end_time,
+        artifact_dir=env.ARTIFACT_DIR,
+    )
+    try:
+        status = lifecycle.capture(session)
+    except Exception as exc:
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            "tracing-capture-failed",
+            "Requested trace collection failed for this test; see the test logs. "
+            "Artifacts, recovery state, and collector resources were preserved.",
+        )
+        raise RuntimeError("requested trace collection failed") from exc
+
+    if status.value in ("failed", "incomplete"):
+        # A drain timeout still yields a valid partial bundle, but requested
+        # tracing is not successful and must be reported as such. The collector
+        # and spool stay in place for recovery.
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            f"tracing-collection-{status.value}",
+            "Requested trace collection did not complete successfully; partial "
+            "bundles were retained and the collector was preserved for recovery.",
+        )
+        raise RuntimeError(f"requested trace collection {status.value}")
+
+    # Only remove the collector and spool after a verified capture; a failed
+    # capture preserved them above for recovery.
+    lifecycle.cleanup(session)
+
+
+def _current_test_id() -> str:
+    """Return a stable test identifier from the current artifact directory name."""
+    return env.ARTIFACT_DIR.name
 
 
 def do_test() -> int:
@@ -397,6 +518,7 @@ def do_test() -> int:
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None = None
 
     actual_llmisvc_name = "llmisvc-na-not-computed"
+    capture_session = None
     test_dir = env.ARTIFACT_DIR
     try:
         # Create test labels with actual model and profile information
@@ -418,6 +540,10 @@ def do_test() -> int:
         initial_llmisvc_name = slugify_identifier(initial_llmisvc_name)
 
         manifest_path, actual_llmisvc_name = build_inference_service_manifest(initial_llmisvc_name)
+
+        # Start the trace collector before the instrumented serving pods, so no
+        # spans are lost at startup. Tracing off is a no-op.
+        capture_session = _start_trace_capture(actual_llmisvc_name)
 
         # Step 2: Deploy using the actual name from the manifest
         endpoint_url = deploy_inference_service_from_manifest(manifest_path, actual_llmisvc_name)
@@ -467,6 +593,7 @@ def do_test() -> int:
                 primary_exc,
                 finalizer_exc,
                 benchmark_times=benchmark_times,
+                capture_session=capture_session,
             )
 
     if primary_exc is not None:
@@ -687,6 +814,25 @@ def _prepare_model_cache() -> None:
     prepare_model_cache()
 
 
+def _tracing_capture_id() -> str:
+    """Return the stable deployment-capture identity for this job.
+
+    Derived from the job name and a short digest of the namespace so sequential
+    workloads of one reused deployment share a capture, while separate jobs do
+    not. The value is an explicit ID recorded in metadata, never derived from a
+    truncated Kubernetes name.
+    """
+    import hashlib
+
+    job = runtime_config.get_job_name() or "local"
+    namespace = runtime_config.get_namespace()
+    digest = hashlib.sha256(f"{job}:{namespace}".encode()).hexdigest()[:8]
+    from projects.core.dsl.utils import slugify_identifier
+
+    base = slugify_identifier(job, max_length=40)
+    return f"{base}-{digest}"
+
+
 def _build_inference_service_manifest() -> Path:
     """Build and write the LLMInferenceService manifest."""
 
@@ -717,6 +863,26 @@ def _build_inference_service_manifest() -> Path:
         deployment_profile_name=deployment_profile_name,
         workload=workload,
     )
+
+    # Apply tracing instrumentation (off by default; a no-op when disabled).
+    from projects.llm_d.orchestration import tracing_adapter
+
+    tracing_settings = tracing_adapter.resolve_tracing()
+    if tracing_settings.enabled:
+        engine = deployment_profile.get("engine", "vllm")
+        identity = tracing_adapter.capture_identity_for_run(
+            job_id=runtime_config.get_job_name(),
+            capture_id=_tracing_capture_id(),
+            namespace=namespace,
+            deployment_id=manifest["metadata"]["name"],
+        )
+        tracing_adapter.instrument_manifest(
+            manifest,
+            settings=tracing_settings,
+            identity=identity,
+            namespace=namespace,
+            engine=engine,
+        )
 
     # Write the manifest to artifacts
     artifacts_dir = env.ARTIFACT_DIR / "artifacts"

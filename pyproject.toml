@@ -63,7 +63,15 @@ testing = [
 caliper = [
     "opensearch-py>=2.4.0",
     "boto3>=1.28.0",
-    "mlflow>=2.10.0",
+    # Native OTLP trace ingestion (POST /v1/traces) requires MLflow >= 3.6 with a
+    # SQL-backed store. FORGE's distributed tracing feature is tested against 3.12.
+    "mlflow>=3.6.0",
+]
+tracing = [
+    # OTLP protobuf encoding for native trace export. Imported lazily so a
+    # tracing-disabled run never needs these packages.
+    "opentelemetry-proto>=1.20.0",
+    "protobuf>=4.25.0",
 ]
 prometheus_metrics = [
     "pyyaml>=6.0",

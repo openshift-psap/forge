@@ -1519,6 +1519,32 @@ class CaliperPostprocessOrchestrator:
         except Exception as e:
             logger.warning("Failed to generate postprocessing status report: %s", e)
 
+        # Trace reports are generated independently of parse/visualize so a
+        # report fix (or a replot) needs neither a running collector nor a
+        # repeated benchmark. Failure is reported but never aborts the pipeline.
+        try:
+            self._generate_trace_reports()
+        except Exception as e:
+            logger.warning("Failed to generate trace reports: %s", e)
+
+    def _generate_trace_reports(self) -> None:
+        """Generate a shared trace report for every discovered bundle.
+
+        Reads only the retained, sanitized artifacts under the artifact root and
+        writes a report beside each owning test node. Never imports a project
+        adapter, so it works for any project that produced a valid bundle.
+        """
+        from projects.caliper.engine.tracing import bundle as bundle_mod
+        from projects.caliper.postprocess.helpers import tracing_report
+
+        artifact_root = Path(env.ARTIFACT_DIR)
+        bundles = bundle_mod.discover_bundles(artifact_root)
+        if not bundles:
+            return
+        for bundle in bundles:
+            tracing_report.write_report(bundle, bundle.test_dir / "reports")
+        logger.info("Generated %d trace report(s)", len(bundles))
+
     def _save_postprocess_status_yaml(self, result: dict[str, Any]) -> None:
         """Save postprocess status as YAML for GitHub notifications."""
         try:

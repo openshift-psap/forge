@@ -1,0 +1,193 @@
+# FORGE distributed tracing — operating guide
+
+FORGE collects distributed request traces from serving workloads, keeps them as
+ordinary test artifacts, and (optionally) ingests them into MLflow's native
+tracing endpoint so each trace is attached to the same experiment, workspace,
+and run as the benchmark that produced it.
+
+**Tracing is off by default.** An untraced run creates no collector, injects no
+arguments, needs no tracing dependencies, and never contacts the native trace
+endpoint.
+
+## Architecture (artifact-first)
+
+```text
+serving pods --OTLP--> OTel Collector --native file exporter--> sanitized
+                       (per-capture, on a PVC)                   OTLP JSONL spool
+                                                                    |
+                        capture toolbox drains/transfers/partitions per test
+                                                                    |
+                        <test dir>/traces/otlp.jsonl.gz + trace-summary.json
+                                                                    |
+                        Caliper export: encode OTLP protobuf -> POST /v1/traces ->
+                        link traces to the owning (child) MLflow run -> receipt
+```
+
+Traces are collected to artifacts first and exported during the existing Caliper
+export phase. This fits FORGE's child runs (created during export) and makes a
+failed upload recoverable without repeating the benchmark.
+
+## Configuration
+
+A common top-level `tracing` section enables collection, and a Caliper switch
+enables native export:
+
+```yaml
+tracing:
+  mode: "off"          # "off" | standard | detailed (quote off for YAML 1.1)
+  sample_ratio: 0.1    # 0.0 - 1.0, parent-based trace-ID-ratio sampling
+  collector:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.115.1
+    storage_size: 10Gi
+    storage_class: null
+    ready_timeout_seconds: 300
+    settle_timeout_seconds: 300
+    drain_timeout_seconds: 120
+    max_bundle_bytes: 2147483648
+
+caliper:
+  export:
+    traces:
+      enabled: true    # ingest discovered bundles natively when MLflow export runs
+```
+
+For projects using `config.d/tracing.yaml`, the file contents are the `tracing`
+section (starting with `mode`). Enable tracing with an ordinary preset, for
+example:
+
+```yaml
+tracing-smoke:
+  extends:
+    - smoke
+  tracing.mode: standard
+  tracing.sample_ratio: 1.0
+```
+
+Keep artifact collection usable without an MLflow connection. Disabling native
+trace export does not remove trace artifacts. Enabling native export without any
+bundle produces a clear *skipped* result, not an empty request.
+
+## Supported producers
+
+| Project | Engine | Topology | Status |
+| --- | --- | --- | --- |
+| llm_d | vLLM | vLLM container only (EPP scheduler present, not instrumented) | instrumented; needs OpenShift smoke validation |
+| rhaiis | vLLM | ServingRuntime (single pod) | instrumented; needs OpenShift smoke validation |
+| llm_d | vLLM | P/D (prefill/decode) | **rejected** (helpers exist; not validated end-to-end) |
+| llm_d | vLLM | routing proxy | **rejected** (helpers exist; not validated end-to-end) |
+| rhaiis | SGLang / TRT-LLM | any | **rejected** until a capability check + smoke test exist |
+
+For llm_d, only the vLLM serving container is instrumented. The EPP scheduler
+container is left exactly as rendered and is **not** instrumented, so llm_d
+traces are single-service and do not show routing decisions. EPP and P/D
+coverage are release gates.
+
+Requesting tracing for an unsupported engine or topology raises before anything
+is rendered or applied. There is no silent fallback.
+
+## Adapter contract (other projects)
+
+A project adopting tracing implements a small adapter and calls shared code
+only:
+
+1. Resolve shared settings (`projects/cluster/library/tracing/models.py`,
+   `settings_from_config`).
+2. Instrument supported containers with the pure helpers in
+   `projects/cluster/library/tracing/instrumentation.py`.
+3. Build a capture identity (`CaptureIdentity`) and start a capture before the
+   instrumented pods (`projects/cluster/library/tracing/lifecycle.py`,
+   `start_capture`).
+4. Record each benchmark window (`lifecycle.record_window`) into the workload's
+   own artifact subtree. Keep warmup/profiler windows separate.
+5. Capture, then clean up (`lifecycle.capture` / `lifecycle.cleanup`) before
+   serving resources are removed.
+
+No project adapter imports another project's orchestration, and toolbox commands
+receive only explicit typed inputs.
+
+## Artifact layout
+
+```text
+<test directory>/
+  __caliper_test_metadata__.yaml
+  <numbered capture command>/
+    artifacts/
+      traces/
+        otlp.jsonl.gz          # sanitized native OTLP archive
+        trace-summary.json     # identity, config, time, data, quality, status
+        mlflow-export.json     # resumable native-export receipt
+  reports/
+    trace_distribution_report.html
+    trace_report.json
+```
+
+The archive is sanitized **before** it is written: prompts, completions,
+request/response bodies, headers, cookies, URL credentials/query strings, and
+arbitrary exception text never reach the spool, archives, reports, or the native
+endpoint.
+
+## Recovery and cleanup
+
+- On capture failure the collector and spool are **preserved** for recovery, and
+  a notification is written. Fix the cause, then re-run capture, or force-remove
+  the resources explicitly:
+
+  `./bin/run_toolbox cluster cleanup_trace_collector --namespace NS --capture-id CAP --force`
+
+- Repeated export resumes the existing child runs and skips already-ingested
+  traces via the scope-checked receipt. A receipt scoped to a different tracking
+  server, workspace, experiment, run, or archive is rejected, never silently
+  reused.
+- If ingestion succeeded but run linkage failed, only linkage is retried.
+- `collector.settle_timeout_seconds` bounds the post-benchmark drain. When it
+  expires the valid partial data is still published, but the bundle is marked
+  `incomplete` with `time.drain_outcome: timeout`, requested tracing fails, a
+  notification is written, and the collector is preserved for recovery.
+- `collector.max_bundle_bytes` bounds each published bundle. Exceeding it fails
+  the capture before a bundle is written, so reduce `sample_ratio` or raise the
+  budget deliberately.
+- A final spool line truncated by a crash is dropped and counted in
+  `quality.partial_records`; corruption anywhere else fails the capture.
+- The spool transfer verifies both the copied byte count and the remote sha256
+  (when the reader image can compute it) before any archive is published.
+
+## Operator checklist for an untraced run
+
+- `tracing.mode: "off"` (the default; quote it in YAML) — no collector, no injected flags, no
+  tracing dependencies, no native request.
+- `caliper.export.traces.enabled: false` — artifacts still upload; native export
+  is reported skipped.
+
+## Release gates (evidence still required)
+
+These capabilities are implemented and covered by local fixtures, but are **not**
+release-validated until the evidence below exists. Live clusters and external
+MLflow are not mutated by this repository's tests.
+
+| Decision | Evidence required |
+| --- | --- |
+| Collector image and file contract | Pinned-image replay, restart, flush, and storage tests on OpenShift |
+| Client/server baseline | Actual native endpoint, auth proxy, workspace routing, run linkage, duplicate-ingestion tests |
+| Storage defaults and retention | Expected trace volumes and tested OpenShift storage behavior |
+| Supported producer matrix | Image/controller-specific standard and P/D smoke results |
+| Drain deadline and quality interpretation | Producer batching measurements and interrupted-run tests |
+| Sanitization allowlist | Safe diagnostic-field review and sentinel tests for every persisted surface |
+| Performance guidance | Controlled overhead measurements, tracing off vs standard vs detailed |
+| EPP / P-D enablement | Standard and P/D smoke runs proving component spans and context propagation |
+
+## Measured compatibility evidence (Stage 1)
+
+Local, disposable fixtures established on MLflow 3.12.0 with a SQL-backed
+store:
+
+- OTLP protobuf is accepted at `POST /v1/traces` (header `x-mlflow-experiment-id`
+  required; `X-MLFLOW-WORKSPACE` for workspace routing).
+- The native trace ID is `tr-<otel-trace-hex>` and resolves through
+  `client.get_trace(...)`.
+- The server drops resource attributes and keeps span attributes, so FORGE
+  identity is copied into `forge.*` **span** attributes in the export payload
+  only; the archived source record is never mutated.
+- `client.link_traces_to_run(...)` links at most 100 traces per call.
+- Duplicate ingestion of the same payload is idempotent on this baseline
+  (3.12 + SQLite); exactly-once delivery is not claimed on the strength of a
+  local checkpoint alone.

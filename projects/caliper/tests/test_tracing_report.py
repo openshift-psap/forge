@@ -1,0 +1,155 @@
+"""Shared Caliper trace report tests.
+
+Covers the plan's Caliper reporting row: a report is generated from retained,
+sanitized artifacts (no collector, no benchmark), distinguishes span duration
+from producer-supplied numeric attributes, and never fails native ingestion.
+
+The report is pure and artifact-only, so these tests use a synthetic bundle
+rather than a running server.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+from pathlib import Path
+
+import yaml
+
+from projects.caliper.engine.tracing.bundle import (
+    ARCHIVE_FILENAME,
+    SUMMARY_FILENAME,
+    discover_bundles,
+    sha256_of_file,
+)
+from projects.caliper.postprocess.helpers import tracing_report
+
+
+def _span(trace_id, span_id, name, *, service, status_code=0, attrs=None, parent=""):
+    return {
+        "traceId": trace_id,
+        "spanId": span_id,
+        "parentSpanId": parent,
+        "name": name,
+        "startTimeUnixNano": "1700000000000000000",
+        "endTimeUnixNano": "1700000000500000000",
+        "status": {"code": status_code},
+        "attributes": attrs or [],
+    }
+
+
+def _record(trace_id, service, spans):
+    return {
+        "resourceSpans": [
+            {
+                "resource": {
+                    "attributes": [{"key": "service.name", "value": {"stringValue": service}}]
+                },
+                "scopeSpans": [{"scope": {"name": "vllm"}, "spans": spans}],
+            }
+        ]
+    }
+
+
+def _write_bundle(root: Path) -> Path:
+    test_dir = root / "000__workload"
+    test_dir.mkdir(parents=True)
+    (test_dir / "__caliper_test_metadata__.yaml").write_text(
+        yaml.safe_dump({"version": "1", "labels": {"workload": "w"}}), encoding="utf-8"
+    )
+    bundle_dir = test_dir / "traces"
+    bundle_dir.mkdir()
+    archive = bundle_dir / ARCHIVE_FILENAME
+    with gzip.open(archive, "wt", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                _record(
+                    "a" * 32,
+                    "forge-svc",
+                    [
+                        _span(
+                            "a" * 32,
+                            "0" * 16,
+                            "POST /v1/completions",
+                            service="forge-svc",
+                            attrs=[
+                                {
+                                    "key": "gen_ai.usage.output_tokens",
+                                    "value": {"intValue": "42"},
+                                },
+                            ],
+                        ),
+                        _span(
+                            "a" * 32,
+                            "1" * 16,
+                            "generate",
+                            service="forge-svc",
+                            parent="0" * 16,
+                            status_code=2,
+                        ),
+                    ],
+                )
+            )
+            + "\n"
+        )
+    summary = {
+        "schema_version": 1,
+        "identity": {"schema_version": 1, "test_id": "000__workload"},
+        "config": {"mode": "standard", "sample_ratio": 1.0, "sanitization_policy_version": 1},
+        "time": {},
+        "data": {
+            "archive_relative_path": ARCHIVE_FILENAME,
+            "checksum": {"algorithm": "sha256", "value": sha256_of_file(archive)},
+            "byte_count": archive.stat().st_size,
+            "trace_count": 1,
+            "span_count": 2,
+            "observed_services": ["forge-svc"],
+        },
+        "quality": {"rootless_traces": 0},
+        "status": {"state": "collected", "reason": ""},
+    }
+    (bundle_dir / SUMMARY_FILENAME).write_text(json.dumps(summary), encoding="utf-8")
+    return test_dir
+
+
+def test_build_report_summarizes_operations_and_quality(tmp_path: Path):
+    _write_bundle(tmp_path)
+    bundle = discover_bundles(tmp_path)[0]
+    report = tracing_report.build_report(bundle)
+
+    assert report["test_id"] == "000__workload"
+    assert report["totals"]["span_count"] == 2
+    assert report["totals"]["error_spans"] == 1
+    assert report["config"]["mode"] == "standard"
+
+    ops = {(o["service"], o["operation"]) for o in report["operations"]}
+    assert ("forge-svc", "generate") in ops
+    gen = next(o for o in report["operations"] if o["operation"] == "generate")
+    assert gen["error_count"] == 1
+    assert gen["duration_ms"]["unit"] == "ms"
+
+    # Producer-supplied numeric attributes are reported separately with provenance.
+    names = {a["name"] for a in report["numeric_attributes"]}
+    assert "gen_ai.usage.output_tokens" in names
+    assert all(a["provenance"] == "producer-attribute" for a in report["numeric_attributes"])
+
+
+def test_write_report_creates_json_and_html(tmp_path: Path):
+    _write_bundle(tmp_path)
+    bundle = discover_bundles(tmp_path)[0]
+    out = tmp_path / "000__workload" / "reports"
+    paths = tracing_report.write_report(bundle, out)
+
+    assert paths["json"].is_file()
+    assert paths["html"].is_file()
+    html_text = paths["html"].read_text(encoding="utf-8")
+    assert "Trace distribution report" in html_text
+    # Reviewed span names appear in the table.
+    assert "generate" in html_text
+
+
+def test_reports_for_artifact_root_generates_per_bundle(tmp_path: Path):
+    _write_bundle(tmp_path)
+    written = tracing_report.reports_for_artifact_root(tmp_path)
+    assert len(written) == 1
+    assert written[0].name == tracing_report.REPORT_HTML_FILENAME

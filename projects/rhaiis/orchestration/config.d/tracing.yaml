@@ -1,0 +1,16 @@
+# Distributed request tracing (off by default).
+#
+# File contents are the "tracing" section (this file is loaded as the top-level
+# `tracing` key). Enable with a preset; nothing is collected while mode is off.
+mode: "off"
+sample_ratio: 0.1
+collector:
+  # Pinned collector image. The file exporter is alpha, so the exact image is a
+  # release gate (see docs/tracing/OPERATING.md).
+  image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.115.1
+  storage_size: 10Gi
+  storage_class: null
+  ready_timeout_seconds: 300
+  settle_timeout_seconds: 300
+  drain_timeout_seconds: 120
+  max_bundle_bytes: 2147483648
