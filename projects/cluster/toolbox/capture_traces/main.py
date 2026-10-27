@@ -346,9 +346,10 @@ def sanitize_and_publish(args, ctx):
 
     partitioned = _partition_spool(ctx, sanitized_path, assignment)
     published = 0
+    empty_windows = 0
     for window in windows:
         trace_ids = set(assignment.assigned.get(window.test_id, []))
-        _publish_bundle(
+        span_count = _publish_bundle(
             ctx,
             window,
             records_path=partitioned.get(window.test_id),
@@ -360,11 +361,23 @@ def sanitize_and_publish(args, ctx):
             total_span_count=total_span_count,
         )
         published += 1
+        if span_count == 0:
+            empty_windows += 1
 
-    ctx.status = CollectionStatus.INCOMPLETE if ctx.interrupted else CollectionStatus.COLLECTED
+    # A window whose bundle held no assigned spans is recorded empty, and any
+    # such window makes the run's status EMPTY. Callers gate full-sampling
+    # acceptance on that, so an instrumentation/endpoint miss is not silent.
+    if ctx.interrupted:
+        ctx.status = CollectionStatus.INCOMPLETE
+    elif empty_windows:
+        ctx.status = CollectionStatus.EMPTY
+    else:
+        ctx.status = CollectionStatus.COLLECTED
     ctx.published = published
     if ctx.interrupted:
         return f"Published {published} incomplete bundle(s) after an interrupted drain"
+    if empty_windows:
+        return f"Published {published} bundle(s), {empty_windows} with no assigned spans"
     return f"Published {published} bundle(s)"
 
 
@@ -553,11 +566,21 @@ def _publish_bundle(
                 handle.write(json.dumps(record) + "\n")
                 span_count += _count_record_spans(record)
 
+    if ctx.interrupted:
+        status = CollectionStatus.INCOMPLETE
+        reason = "drain interrupted; partial data retained"
+    elif span_count == 0:
+        status = CollectionStatus.EMPTY
+        reason = "no spans assigned to this benchmark window"
+    else:
+        status = CollectionStatus.COLLECTED
+        reason = ""
+
     summary = _build_summary(
         ctx,
         window,
-        status=CollectionStatus.INCOMPLETE if ctx.interrupted else CollectionStatus.COLLECTED,
-        reason="drain interrupted; partial data retained" if ctx.interrupted else "",
+        status=status,
+        reason=reason,
         archive_bytes=archive.stat().st_size,
         archive_sha256=bundle_mod.sha256_of_file(archive),
         quality=quality,
@@ -569,6 +592,7 @@ def _publish_bundle(
         total_span_count=total_span_count,
     )
     write_json(bundle_dir / bundle_mod.SUMMARY_FILENAME, summary)
+    return span_count
 
 
 def _iter_jsonl_file(path: Path):

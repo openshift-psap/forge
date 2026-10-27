@@ -24,7 +24,11 @@ from typing import Any
 
 from projects.caliper.engine.tracing.analysis import read_archive_records
 from projects.caliper.engine.tracing.bundle import TraceBundle
-from projects.caliper.engine.tracing.otlp import encode_records_to_request, iter_record_batches
+from projects.caliper.engine.tracing.otlp import (
+    OtlpEncodingError,
+    encode_records_to_request,
+    iter_record_batches,
+)
 from projects.caliper.engine.tracing.payload import iter_enriched_records
 
 # Bounded retry policy for transient transport/throttling failures.
@@ -309,7 +313,13 @@ def ingest_bundle(
         # capture. Enrichment is lazy for the same reason.
         streamed = iter_enriched_records(read_archive_records(bundle.archive_path))
         for batch in iter_record_batches(streamed):
-            encoded = encode_records_to_request(batch)
+            try:
+                encoded = encode_records_to_request(batch)
+            except OtlpEncodingError as exc:
+                # A record protobuf rejects is a per-bundle failure, not an
+                # escape: the caller reports it as a trace failure and keeps the
+                # MLflow run metadata instead of aborting the whole export.
+                raise TraceExportError(str(exc)) from exc
             _post_traces(
                 tracking_uri=tracking_uri,
                 experiment_id=experiment_id,

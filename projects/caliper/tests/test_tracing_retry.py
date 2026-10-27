@@ -348,3 +348,81 @@ def test_multi_record_archive_posts_bounded_batches(
     assert outcome.status == "complete"
     assert len(seen_bodies) == 2, "each record must be its own bounded POST"
     assert outcome.ingested == 2
+
+
+def test_bad_otlp_record_is_a_per_bundle_failure_not_an_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_backoff: None
+):
+    """A record protobuf rejects must fail only its bundle.
+
+    OtlpEncodingError is a ValueError; without conversion it would escape
+    ingest_trace_bundles (which catches TraceExportError) and abort the whole
+    export, losing the MLflow run metadata.
+    """
+    from projects.caliper.engine.tracing import ingest as ingest_mod
+
+    root = tmp_path
+    node = root / "test_node"
+    bundle_dir = node / "traces"
+    bundle_dir.mkdir(parents=True)
+    (node / "__caliper_test_metadata__.yaml").write_text(
+        yaml.safe_dump({"version": "1", "labels": {"test_id": "t1"}}), encoding="utf-8"
+    )
+    archive = bundle_dir / ARCHIVE_FILENAME
+    with gzip.open(archive, "wt", encoding="utf-8") as handle:
+        # traceId is not valid hex or base64 of the right length.
+        handle.write(
+            json.dumps(
+                {
+                    "resourceSpans": [
+                        {
+                            "scopeSpans": [
+                                {
+                                    "spans": [
+                                        {
+                                            "traceId": "zzzz",
+                                            "spanId": "0000000000000001",
+                                            "name": "root",
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            )
+            + "\n"
+        )
+    (bundle_dir / SUMMARY_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "identity": {"schema_version": 1, "test_id": "t1"},
+                "config": {"mode": "standard"},
+                "time": {},
+                "data": {
+                    "archive_relative_path": ARCHIVE_FILENAME,
+                    "checksum": {"algorithm": "sha256", "value": sha256_of_file(archive)},
+                    "byte_count": archive.stat().st_size,
+                },
+                "quality": {},
+                "status": {"state": "collected", "reason": ""},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(exporter, "_post_traces", lambda **_kwargs: None)
+    monkeypatch.setattr(exporter, "_link_traces", lambda **_kwargs: None)
+
+    report = ingest_mod.ingest_trace_bundles(
+        artifact_root=root,
+        tracking_uri="http://mlflow.test",
+        experiment_id="1",
+        workspace="",
+        connection=None,
+        resolve_run_id=lambda _d: "run-1",
+    )
+
+    assert report.failed, "a bad OTLP record must be reported as a bundle failure"
+    assert report.outcomes == []

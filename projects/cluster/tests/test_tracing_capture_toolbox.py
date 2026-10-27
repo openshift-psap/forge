@@ -542,3 +542,55 @@ def test_spool_bytes_returns_zero_for_missing_file(monkeypatch):
     monkeypatch.setattr(capture_main, "oc_exec", lambda *_a, **_k: _Result())
 
     assert capture_main._spool_bytes("ns", "collector-0") == 0
+
+
+def test_window_with_no_assigned_spans_is_recorded_empty(tmp_path: Path):
+    """A two-window capture where one window receives no traces must not pass.
+
+    The spool holds records (other windows get spans), so the run was not
+    "empty" by spool bytes; the empty window's bundle is recorded empty and the
+    overall status becomes EMPTY, which the full-sampling gate acts on.
+    """
+    records = [_record("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "forge-a", start_ns=100 * 10**9)]
+    ctx = _Ctx(
+        output_dir=tmp_path / "out",
+        windows=[
+            _window("workload-a", 90, 150, str(tmp_path / "out" / "workload-a")),
+            _window("workload-b", 160, 200, str(tmp_path / "out" / "workload-b")),
+        ],
+        capture_id="cap-1",
+        namespace="ns",
+        project="llm_d",
+        job_id="job-1",
+        deployment_id="llmd-abc",
+        mode="standard",
+        sample_ratio=1.0,
+        collector_image="img",
+        instrumentation_roles=["vllm"],
+        interrupted=False,
+        max_bundle_bytes=1024 * 1024,
+    )
+    spool = tmp_path / "raw-otlp.jsonl"
+    spool.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    ctx.local_spool = spool
+
+    capture_main.sanitize_and_publish.__wrapped__(ctx, ctx)
+
+    assert ctx.status.value == "empty"
+
+    a = json.loads(
+        (tmp_path / "out" / "workload-a" / "traces" / "trace-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    b = json.loads(
+        (tmp_path / "out" / "workload-b" / "traces" / "trace-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert a["status"]["state"] == "collected"
+    assert a["data"]["span_count"] == 1
+    # The non-empty window's bundle is retained on disk.
+    assert (tmp_path / "out" / "workload-a" / "traces" / "otlp.jsonl.gz").is_file()
+    assert b["status"]["state"] == "empty"
+    assert b["data"]["span_count"] == 0
