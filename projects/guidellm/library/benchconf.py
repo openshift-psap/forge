@@ -53,9 +53,7 @@ def maybe_install_custom_version(_cfg) -> None:
         ]
     )
     sys.path.insert(0, str(install_dir))
-    for module_name in [
-        m for m in sys.modules if m == "benchconf" or m.startswith("benchconf.")
-    ]:
+    for module_name in [m for m in sys.modules if m == "benchconf" or m.startswith("benchconf.")]:
         del sys.modules[module_name]
 
 
