@@ -107,6 +107,15 @@ def test_cpu_workload_keys_exist() -> None:
 
 
 def test_cpu_build_resources() -> None:
+    manifest_resources = _build_resources(
+        accelerator="cpu",
+        gpu_count=0,
+        cpu_request="8",
+        memory_request="64Gi",
+        engine="vllm",
+    )
+    assert manifest_resources["requests"]["cpu"] == "8"
+    assert manifest_resources["limits"]["cpu"] == "8"
     resources = _build_resources(
         accelerator="cpu",
         gpu_count=0,
@@ -122,7 +131,29 @@ def test_cpu_build_resources() -> None:
     assert requests.get("memory") == "64Gi", f"memory request wrong: {requests}"
     assert "nvidia.com/gpu" not in limits, "GPU key must not appear in CPU resources"
     assert "amd.com/gpu" not in limits, "GPU key must not appear in CPU resources"
-    print(f"  _build_resources limits={limits} requests={requests}  OK")
+
+
+def test_omp_threads_from_cpu_request() -> None:
+    env_vars = runtime_config.apply_cpu_omp_threads(
+        {"VLLM_CPU_KVCACHE_SPACE": "10"}, {"cpu_request": "8"}
+    )
+    assert env_vars["OMP_NUM_THREADS"] == "8"
+    assert env_vars["VLLM_CPU_KVCACHE_SPACE"] == "10"
+
+
+def test_omp_threads_explicit_env_wins() -> None:
+    env_vars = runtime_config.apply_cpu_omp_threads(
+        {"OMP_NUM_THREADS": "16"}, {"cpu_request": "8"}
+    )
+    assert env_vars["OMP_NUM_THREADS"] == "16"
+
+
+def test_omp_threads_default_and_invalid_request() -> None:
+    env_vars = runtime_config.apply_cpu_omp_threads({}, {})
+    assert env_vars["OMP_NUM_THREADS"] == "4"
+    assert "OMP_NUM_THREADS" not in runtime_config.apply_cpu_omp_threads(
+        {}, {"cpu_request": "auto"}
+    )
 
 
 if __name__ == "__main__":
@@ -137,6 +168,9 @@ if __name__ == "__main__":
         test_cpu_engine_args_exclude_gpu_defaults,
         test_cpu_workload_keys_exist,
         test_cpu_build_resources,
+        test_omp_threads_from_cpu_request,
+        test_omp_threads_explicit_env_wins,
+        test_omp_threads_default_and_invalid_request,
     ]
     for t in tests:
         print(f"Running {t.__name__}…")

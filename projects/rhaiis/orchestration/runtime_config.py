@@ -266,6 +266,25 @@ def merge_env_vars(accelerator: str, model: dict) -> dict:
     return base
 
 
+def apply_cpu_omp_threads(env_vars: dict, deploy_cfg: dict) -> dict:
+    """Pin OMP_NUM_THREADS to the requested CPU count for CPU predictors.
+
+    vLLM sizes its OpenMP pool for every core visible to the container; inside a
+    pod with a smaller CPU allocation this causes severe CFS throttling. vLLM
+    0.25 no longer recognizes VLLM_CPU_OMP_THREADS, so OMP_NUM_THREADS must be
+    set explicitly. An explicit OMP_NUM_THREADS in the merged env wins.
+    """
+    if "OMP_NUM_THREADS" in env_vars:
+        return env_vars
+    try:
+        threads = int(str(deploy_cfg.get("cpu_request", "4")).strip())
+    except ValueError:
+        return env_vars
+    if threads > 0:
+        env_vars["OMP_NUM_THREADS"] = str(threads)
+    return env_vars
+
+
 def _format_arg_value(value: object) -> str:
     if isinstance(value, list):
         return ",".join(str(v) for v in value)

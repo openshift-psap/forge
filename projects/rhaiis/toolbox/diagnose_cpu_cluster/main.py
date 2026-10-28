@@ -231,6 +231,14 @@ def check_cpu_manager_policy(args, context):
         static = policy == "static"
         context.node_features.setdefault(node, {})["cpu_manager_static"] = static
         print(f"  {node}: cpuManagerPolicy={policy}")
+        if static:
+            print(
+                f"  {node}: NOTE — static pinning only applies to Guaranteed pods "
+                "(limits == requests, integer CPUs, every container); RHOAI KServe "
+                "injects kube-rbac-proxy/agent sidecars with fractional non-guaranteed "
+                "resources, so CPU predictor pods stay Burstable (CFS-quota limited) "
+                "unless sidecar resources are padded to limits == requests"
+            )
     return f"CPU manager policy checked for {len(context.nodes)} node(s)"
 
 

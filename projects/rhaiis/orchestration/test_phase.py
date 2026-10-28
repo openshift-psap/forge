@@ -129,6 +129,8 @@ def _run_test(
         engine_defaults, model_cfg, first_workload, engine
     )
     env_vars = runtime_config.merge_env_vars(accelerator, model_cfg)
+    if accelerator == "cpu":
+        env_vars = runtime_config.apply_cpu_omp_threads(env_vars, deploy_cfg)
 
     from projects.core.library import config as _cfg
 
@@ -305,6 +307,9 @@ def _run_test(
             timeout_seconds=deploy_cfg.get("ready_timeout", 3600),
             health_check_timeout=deploy_cfg.get("health_check_timeout", 120),
         )
+
+        if accelerator == "cpu":
+            _verify_predictor_qos(deployment_name, namespace)
 
         endpoint_url = (
             f"http://{deployment_name}-predictor.{namespace}.svc.cluster.local:{engine_port}"
@@ -743,6 +748,42 @@ def _maybe_send_success_notification(model_key: str, workload_keys: list[str]) -
         cluster=config.project.get_config("rhaiis.cluster_tag", ""),
         engine=engine,
     )
+
+
+def _verify_predictor_qos(deployment_name: str, namespace: str) -> None:
+    """Warn when the deployed predictor pod cannot get static CPU pinning.
+
+    The kubelet's CPU Manager static policy only pins Guaranteed pods (limits
+    == requests with integer CPUs in *every* container). RHOAI KServe injects
+    kube-rbac-proxy and agent sidecars with fractional, non-guaranteed
+    resources, which leaves the predictor pod Burstable: it runs under a CFS
+    quota instead of pinned CPUs, where vLLM CPU decode throughput collapses
+    (~20x observed with vLLM 0.25.1 busy-wait workers).
+    """
+    from projects.core.dsl.utils.k8s import oc_get_json
+
+    try:
+        pods = oc_get_json(
+            "pod",
+            namespace=namespace,
+            selector=f"serving.kserve.io/inferenceservice={deployment_name}",
+        )
+        for pod in (pods or {}).get("items", []):
+            pod_name = pod.get("metadata", {}).get("name", "?")
+            qos = pod.get("status", {}).get("qosClass", "unknown")
+            if qos == "Guaranteed":
+                logger.info("Predictor pod %s is Guaranteed (eligible for static CPU pinning)", pod_name)
+            else:
+                logger.warning(
+                    "Predictor pod %s is %s (not Guaranteed): RHOAI-injected sidecars "
+                    "(kube-rbac-proxy, agent) break limits==requests, so CPU Manager "
+                    "static pinning does not apply and the pod stays CFS-quota limited "
+                    "(expect heavily reduced vLLM CPU throughput)",
+                    pod_name,
+                    qos,
+                )
+    except Exception as exc:  # noqa: BLE001 — diagnostics must not fail the benchmark
+        logger.debug("QoS verification skipped: %s", exc)
 
 
 def _upload_predictor_log(run_uuid: str) -> None:

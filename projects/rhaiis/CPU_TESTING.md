@@ -414,6 +414,12 @@ but functionally correct.
   For bare-metal NUMA/cpuset testing, use the format-results Ansible playbooks.
 - **No CPU Manager pinning**: CPU Manager must be enabled on the cluster with
   static policy for dedicated CPU allocation. Without it, CPUs are time-sliced
-  and benchmark results will have higher variance.
+  and benchmark results will have higher variance. Note that even with static
+  policy, RHOAI KServe injects `kube-rbac-proxy` and `agent` sidecars with
+  fractional, non-guaranteed resources: the predictor pod is then **Burstable**
+  and runs under a CFS quota, where vLLM CPU decode throughput collapses
+  (~20x observed with vLLM 0.25.1 busy-wait workers). `OMP_NUM_THREADS` is set
+  from the deployment CPU request automatically; sidecar resources must be
+  padded to `limits == requests` (integer CPUs) for actual pinning.
 - **No Phase 3**: Prefix-caching (Phase 3) workloads are defined in config but
   not yet part of the concurrent load suite (matching format-results).
