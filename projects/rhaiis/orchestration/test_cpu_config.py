@@ -142,9 +142,7 @@ def test_omp_threads_from_cpu_request() -> None:
 
 
 def test_omp_threads_explicit_env_wins() -> None:
-    env_vars = runtime_config.apply_cpu_omp_threads(
-        {"OMP_NUM_THREADS": "16"}, {"cpu_request": "8"}
-    )
+    env_vars = runtime_config.apply_cpu_omp_threads({"OMP_NUM_THREADS": "16"}, {"cpu_request": "8"})
     assert env_vars["OMP_NUM_THREADS"] == "16"
 
 

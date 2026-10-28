@@ -772,7 +772,9 @@ def _verify_predictor_qos(deployment_name: str, namespace: str) -> None:
             pod_name = pod.get("metadata", {}).get("name", "?")
             qos = pod.get("status", {}).get("qosClass", "unknown")
             if qos == "Guaranteed":
-                logger.info("Predictor pod %s is Guaranteed (eligible for static CPU pinning)", pod_name)
+                logger.info(
+                    "Predictor pod %s is Guaranteed (eligible for static CPU pinning)", pod_name
+                )
             else:
                 logger.warning(
                     "Predictor pod %s is %s (not Guaranteed): RHOAI-injected sidecars "
