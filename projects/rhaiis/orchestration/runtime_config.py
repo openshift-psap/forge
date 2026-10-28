@@ -263,7 +263,8 @@ def build_guidellm_args(
     max_seconds: int | None,
     rampup: int | None = None,
 ) -> list[str]:
-    args = {key: value for key, value in benchmark_cfg.get("args", {}).items() if value is not None}
+    args = dict(benchmark_cfg.get("args", {}))
+    args["model"] = model_id
     if data is not None:
         args["data"] = data
     if rates is not None:
