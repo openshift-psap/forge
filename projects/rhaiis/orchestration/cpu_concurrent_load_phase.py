@@ -46,8 +46,9 @@ def do_test(
     resolved_cpu_requests = cpu_requests or DEFAULT_CPU_REQUESTS
     resolved_workloads = workload_keys or DEFAULT_WORKLOAD_KEYS
 
-    from projects.core.library import ci
     from projects.rhaiis.orchestration.notifications import send_pipeline_failure_alert
+
+    from projects.core.library import ci
 
     total = len(resolved_models) * len(resolved_cpu_requests) * len(resolved_workloads)
     current = 0
