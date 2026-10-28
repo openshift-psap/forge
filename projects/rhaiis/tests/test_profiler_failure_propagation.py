@@ -109,7 +109,7 @@ def test_profiler_failure_does_not_skip_performance_benchmarks(monkeypatch, tmp_
     monkeypatch.setattr(runtime_config, "get_accelerator", lambda: "nvidia")
     monkeypatch.setattr(runtime_config, "get_gpu_type", lambda accelerator: "h200")
     monkeypatch.setattr(runtime_config, "get_deploy_config", lambda: {})
-    monkeypatch.setattr(runtime_config, "get_benchmark_config", lambda: {})
+    monkeypatch.setattr(runtime_config, "get_benchmark_config", lambda *args: {})
     monkeypatch.setattr(runtime_config, "get_engine", lambda: "vllm")
     monkeypatch.setattr(runtime_config, "get_serving_image", lambda *args: "test-image")
     monkeypatch.setattr(runtime_config, "get_engine_args", lambda engine: {})

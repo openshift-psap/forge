@@ -99,7 +99,7 @@ def _run_test(
     cluster_tag = _cfg.project.get_config("rhaiis.cluster_tag", "")
     accelerator_key = f"{gpu_type}_{cluster_tag}".upper() if cluster_tag else gpu_type.upper()
     deploy_cfg = runtime_config.get_deploy_config()
-    benchmark_cfg = runtime_config.get_benchmark_config()
+    benchmark_cfg = runtime_config.get_benchmark_config(model_key)
 
     if not deployment_name:
         base_name = runtime_config.derive_deployment_name(model_cfg["hf_model_id"])
@@ -613,6 +613,8 @@ def _set_mlflow_metadata(
         "deployment_name": deployment_name,
     }
     for key, value in benchmark_args.items():
+        if value is None:
+            continue
         tags[f"guidellm_{key}"] = str(value)
 
     config.project.set_config("caliper.export.backend.mlflow.config.tags", tags)

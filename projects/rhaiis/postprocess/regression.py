@@ -176,6 +176,19 @@ def compare_runs(
             f"No baseline data for {compare_version} with model={model}, accelerator={accelerator}, TP={tp}",
         )
 
+    for label, frame in (("current", current_df), ("baseline", baseline_filtered)):
+        unmapped = frame[frame["_profile"].isna()]
+        if not unmapped.empty:
+            shapes = sorted(
+                {f"({row['prompt toks']}, {row['output toks']})" for _, row in unmapped.iterrows()}
+            )
+            logger.warning(
+                "Excluding %d %s row(s) with ISL/OSL shape(s) %s missing from PROFILE_MAP",
+                len(unmapped),
+                label,
+                shapes,
+            )
+
     current_profiles = set(current_df["_profile"].dropna().unique())
     baseline_profiles = set(baseline_filtered["_profile"].dropna().unique())
     common_profiles = sorted(current_profiles & baseline_profiles)
@@ -357,6 +370,8 @@ PROFILE_MAP = {
     (512, 2048): "profile2",
     (2048, 128): "profile3",
     (8000, 1000): "profile4",
+    (128, 128): "profile6",
+    (8000, 800): "profile7",
 }
 
 METRICS = {
