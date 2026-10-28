@@ -34,10 +34,29 @@ def maybe_install_custom_version(_cfg) -> None:
 
     import subprocess
     import sys
+    import tempfile
 
     spec = f"benchconf @ {custom['repo']}@{custom['version']}"
-    logger.info("Installing benchconf: %s", spec)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", spec])
+    install_dir = Path(tempfile.mkdtemp(prefix="benchconf-"))
+    logger.info("Installing benchconf: %s into %s", spec, install_dir)
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--force-reinstall",
+            "--target",
+            str(install_dir),
+            spec,
+        ]
+    )
+    sys.path.insert(0, str(install_dir))
+    for module_name in [
+        m for m in sys.modules if m == "benchconf" or m.startswith("benchconf.")
+    ]:
+        del sys.modules[module_name]
 
 
 def save_version() -> None:
