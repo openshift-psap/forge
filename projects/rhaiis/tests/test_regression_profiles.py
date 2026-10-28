@@ -11,7 +11,15 @@ WORKLOADS_YAML = Path(__file__).parent.parent / "orchestration" / "config.d" / "
 
 # profile5 rows are not collected for regression comparison, so its shape is
 # intentionally absent from PROFILE_MAP.
-UNCOMPARED_WORKLOADS = {"profile5"}
+# CPU workloads are a separate benchmark class: they have no GPU regression
+# profile on the RHAIIS dashboard yet, so their shapes are also unmapped.
+UNCOMPARED_WORKLOADS = {
+    "profile5",
+    "cpu-smoke",
+    "cpu-balanced",
+    "cpu-decode-heavy",
+    "cpu-prefill-heavy",
+}
 
 
 def _workload_shapes():
