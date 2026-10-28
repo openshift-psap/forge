@@ -138,6 +138,7 @@ testpaths = [
     "projects/rhaiis/tests",
     "projects/cluster/tests",
     "projects/inference_playbooks/tests",
+    "projects/rhaiis/orchestration",
 ]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

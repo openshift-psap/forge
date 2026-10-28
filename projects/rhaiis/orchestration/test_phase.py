@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from projects.core.library import env
+from projects.core.library import env, vault
 from projects.core.library.fournos_status import patch_fjob_relevant_deployments
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
 from projects.rhaiis.orchestration import runtime_config
@@ -57,11 +57,14 @@ def run(
         deployment_name=deployment_name,
     )
 
-    try:
-        _sync_postprocessed_dashboard_csv(model_key, workload_keys)
-    except Exception:
-        logger.exception("Dashboard CSV S3 sync after postprocessing failed")
-        ret = 1
+    if not vault.is_initialized():
+        logger.info("Vault not initialized; skipping dashboard CSV S3 sync")
+    else:
+        try:
+            _sync_postprocessed_dashboard_csv(model_key, workload_keys)
+        except Exception:
+            logger.exception("Dashboard CSV S3 sync after postprocessing failed")
+            ret = 1
 
     return ret
 
@@ -89,6 +92,7 @@ def _run_test(
     workload_keys: list[str],
     namespace: str,
     deployment_name: str | None = None,
+    deploy_cfg_overrides: dict | None = None,
 ) -> int:
     _warnings.clear()
     model_cfg = runtime_config.get_model(model_key)
@@ -99,6 +103,8 @@ def _run_test(
     cluster_tag = _cfg.project.get_config("rhaiis.cluster_tag", "")
     accelerator_key = f"{gpu_type}_{cluster_tag}".upper() if cluster_tag else gpu_type.upper()
     deploy_cfg = runtime_config.get_deploy_config()
+    if deploy_cfg_overrides:
+        deploy_cfg.update(deploy_cfg_overrides)
     benchmark_cfg = runtime_config.get_benchmark_config(model_key)
 
     if not deployment_name:
@@ -123,6 +129,8 @@ def _run_test(
         engine_defaults, model_cfg, first_workload, engine
     )
     env_vars = runtime_config.merge_env_vars(accelerator, model_cfg)
+    if accelerator == "cpu":
+        env_vars = runtime_config.apply_cpu_omp_threads(env_vars, deploy_cfg)
 
     from projects.core.library import config as _cfg
 
@@ -242,6 +250,7 @@ def _run_test(
             engine_args=engine_args,
             engine_port=engine_port,
             storage_source=deploy_cfg.get("storage_source", "hf"),
+            storage_pvc=deploy_cfg.get("storage_pvc", ""),
             gpu_count=gpu_count,
             image_pull_secrets=deploy_cfg.get("image_pull_secrets") or [],
             env_vars=env_vars,
@@ -264,6 +273,7 @@ def _run_test(
             supplemental_groups=deploy_cfg.get("supplemental_groups"),
             labels=isvc_labels,
             profiler_ranges=profiler_ranges,
+            node_selector=deploy_cfg.get("node_selector") or None,
         )
         sr_file = env.ARTIFACT_DIR / "src" / "servingruntime.yaml"
         isvc_file = env.ARTIFACT_DIR / "src" / "inferenceservice.yaml"
@@ -296,6 +306,9 @@ def _run_test(
             timeout_seconds=deploy_cfg.get("ready_timeout", 3600),
             health_check_timeout=deploy_cfg.get("health_check_timeout", 120),
         )
+
+        if accelerator == "cpu":
+            _verify_predictor_qos(deployment_name, namespace)
 
         endpoint_url = (
             f"http://{deployment_name}-predictor.{namespace}.svc.cluster.local:{engine_port}"
@@ -406,11 +419,14 @@ def _run_test(
         if fjob_name:
             _update_fjob_inference_reference(fjob_name, fjob_ns, None)
 
-    try:
-        _upload_predictor_log(run_uuid)
-    except Exception:
-        logger.warning("Predictor log upload failed", exc_info=True)
-        _warnings.append("Predictor log upload failed")
+    if not vault.is_initialized():
+        logger.info("Vault not initialized; skipping predictor log upload")
+    else:
+        try:
+            _upload_predictor_log(run_uuid)
+        except Exception:
+            logger.warning("Predictor log upload failed", exc_info=True)
+            _warnings.append("Predictor log upload failed")
 
     if _warnings:
         logger.warning(
@@ -687,6 +703,88 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
             run_uuid=config.project.get_config("ci_job.fjob_name", ""),
             engine_args=ea,
         )
+        return
+
+
+def _maybe_send_success_notification(model_key: str, workload_keys: list[str]) -> None:
+    """Send a Slack success notification if slack_notify_always is set and no regression check."""
+    from projects.core.library import config
+
+    compare_version = config.project.get_config("tests.rhaiis.compare_version", "")
+    if compare_version:
+        return
+
+    if not config.project.get_config("tests.rhaiis.slack_notify_always", False):
+        return
+
+    if not vault.is_initialized():
+        logger.info("Vault not initialized; skipping Slack success notification")
+        return
+
+    from projects.rhaiis.postprocess.regression import send_success_notification
+
+    model_cfg = runtime_config.get_model(model_key)
+    accelerator = runtime_config.get_accelerator()
+    engine = runtime_config.get_engine()
+    engine_defaults = runtime_config.get_engine_args(engine)
+    first_workload = runtime_config.get_workload(workload_keys[0])
+    ea = runtime_config.merge_engine_args(engine_defaults, model_cfg, first_workload, engine)
+    tp = ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or ""
+    dp = ea.get("data-parallel-size") or ea.get("dp-size") or ""
+    version = config.project.get_config("tests.rhaiis.version", "")
+
+    send_success_notification(
+        model=model_cfg.get("hf_model_id", ""),
+        accelerator=accelerator,
+        job_id=os.environ.get("FJOB_NAME", ""),
+        slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
+        owner=config.project.get_config("ci_job.owner", "") or "",
+        notification_vault="psap-forge-notifications",
+        tp=str(tp),
+        dp=str(dp),
+        version=version,
+        workload_keys=workload_keys,
+        cluster=config.project.get_config("rhaiis.cluster_tag", ""),
+        engine=engine,
+    )
+
+
+def _verify_predictor_qos(deployment_name: str, namespace: str) -> None:
+    """Warn when the deployed predictor pod cannot get static CPU pinning.
+
+    The kubelet's CPU Manager static policy only pins Guaranteed pods (limits
+    == requests with integer CPUs in *every* container). RHOAI KServe injects
+    kube-rbac-proxy and agent sidecars with fractional, non-guaranteed
+    resources, which leaves the predictor pod Burstable: it runs under a CFS
+    quota instead of pinned CPUs, where vLLM CPU decode throughput collapses
+    (~20x observed with vLLM 0.25.1 busy-wait workers).
+    """
+    from projects.core.dsl.utils.k8s import oc_get_json
+
+    try:
+        pods = oc_get_json(
+            "pod",
+            namespace=namespace,
+            selector=f"serving.kserve.io/inferenceservice={deployment_name}",
+        )
+        for pod in (pods or {}).get("items", []):
+            pod_name = pod.get("metadata", {}).get("name", "?")
+            qos = pod.get("status", {}).get("qosClass", "unknown")
+            if qos == "Guaranteed":
+                logger.info(
+                    "Predictor pod %s is Guaranteed (eligible for static CPU pinning)", pod_name
+                )
+            else:
+                logger.warning(
+                    "Predictor pod %s is %s (not Guaranteed): RHOAI-injected sidecars "
+                    "(kube-rbac-proxy, agent) break limits==requests, so CPU Manager "
+                    "static pinning does not apply and the pod stays CFS-quota limited "
+                    "(expect heavily reduced vLLM CPU throughput)",
+                    pod_name,
+                    qos,
+                )
+    except Exception as exc:  # noqa: BLE001 — diagnostics must not fail the benchmark
+        logger.debug("QoS verification skipped: %s", exc)
 
 
 def _upload_predictor_log(run_uuid: str) -> None:
