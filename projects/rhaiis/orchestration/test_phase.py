@@ -406,7 +406,7 @@ def _run_test(
                             "Could not create profiler failure notification for %s", wl_key
                         )
             elif warmup_enabled and wl_key in optional_phase_workload_keys:
-                logger.info("Running warmup for workload=%s", wl_key)
+                logger.info("Running burn-in for workload=%s", wl_key)
                 _run_warmup_step(**step_kwargs)
 
         # Phase 2: benchmark + post-processing for ALL workloads
@@ -783,7 +783,7 @@ def _run_warmup_step(
     workload_key: str,
     benchmark_timeout: int,
 ) -> None:
-    """Run a short warmup benchmark to prime KV cache and CUDA kernels."""
+    """Run a short burn-in benchmark to prime KV cache and CUDA kernels."""
     from projects.core.library import config
     from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
         run as run_guidellm_benchmark,
@@ -801,11 +801,11 @@ def _run_warmup_step(
         max_seconds=warmup_max_seconds,
     )
 
-    logger.info("Running warmup (concurrency=%d, duration=%ds)", warmup_rate, warmup_max_seconds)
+    logger.info("Running burn-in (concurrency=%d, duration=%ds)", warmup_rate, warmup_max_seconds)
     try:
         run_guidellm_benchmark(
             endpoint_url=f"{endpoint_url}/v1",
-            name=_guidellm_job_name("guidellm-warmup", workload_key, deployment_name),
+            name=_guidellm_job_name("burn-in", workload_key, deployment_name),
             namespace=namespace,
             image=benchmark_cfg.get("image"),
             timeout=benchmark_timeout,
@@ -814,9 +814,9 @@ def _run_warmup_step(
             hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
             fs_group=benchmark_cfg.get("fs_group"),
         )
-        logger.info("Warmup completed")
+        logger.info("Burn-in completed")
     except Exception:
-        logger.warning("Warmup failed; continuing with benchmark", exc_info=True)
+        logger.warning("Burn-in failed; continuing with benchmark", exc_info=True)
 
 
 def _run_profiler_step(

@@ -4,7 +4,7 @@
 using KServe InferenceService.
 
 Supports **vLLM**, **SGLang**, and **TRT-LLM** engines via a generic abstraction.
-The workflow deploys an InferenceService with the selected engine, runs warmup
+The workflow deploys an InferenceService with the selected engine, runs burn-in
 and/or profiler passes, executes multi-profile GuideLLM benchmarks, generates a
 dashboard CSV via the Caliper postprocessing pipeline, syncs results to S3, and
 cleans up.
@@ -18,7 +18,7 @@ wait_isvc_ready            Poll InferenceService status + health check
         |
   ┌─────┴─────┐
   │  Phase 1   │  For each workload profile:
-  │  (warmup   │    - warmup run (optional) OR profiler-gated run
+  │  (burn-in  │    - burn-in run (optional) OR profiler-gated run
   │  /profiler)│    - profiler trace upload to S3
   └─────┬─────┘
   ┌─────┴─────┐
@@ -70,10 +70,10 @@ Key sections:
 | `rhaiis.deploy` | Deploy settings (replicas, CPU/memory, image_pull_secrets list, storage) |
 | `rhaiis.s3` | S3 bucket, vault, and credentials for dashboard CSV and profiler trace uploads |
 | `rhaiis.agent_analysis` | Optional regression analysis using the PSAP agent, including its selected model |
-| `rhaiis.warmup` | Warmup benchmark settings applied before each selected workload |
+| `rhaiis.warmup` | Forge burn-in settings applied before each selected workload |
 | `rhaiis.profiler` | PyTorch profiler settings (enable, S3 prefix, rates, labels) |
 | `models` | Model definitions (hf_model_id, per-model `vllm_args` overrides) |
-| `workloads` | Benchmark profiles (data shape, rates, max_seconds, rampup, warmup) |
+| `workloads` | Benchmark selectors, BenchConf refs, and custom workload inputs |
 | `benchmarks.guidellm` | GuideLLM image, backend, timeout, PVC size, HF token secret, fs_group |
 | `tests` | CI test mapping (model_key, workload_keys, version) |
 | `caliper.postprocess` | Caliper postprocessing pipeline (parse, KPI, CSV export) |
@@ -274,7 +274,7 @@ Available configOverrides:
 | `tests.rhaiis.model_key` | Model key from config.d/models.yaml |
 | `tests.rhaiis.version` | Version label for dashboard and regression |
 | `runtime.benchmark_key` | BenchConf benchmark key or list of keys to run |
-| `tests.rhaiis.warmup` | Enable warmup pass before benchmarks |
+| `tests.rhaiis.warmup` | Enable the 200-concurrency burn-in before benchmarks |
 | `tests.rhaiis.slack_user` | Slack user ID for failure notifications |
 | `tests.rhaiis.compare_version` | Baseline version for regression comparison |
 | `rhaiis.engine` | Inference engine: `vllm` (default), `sglang`, `trtllm` |
@@ -520,15 +520,16 @@ Full list: `grep "^[a-z]" orchestration/config.d/models.yaml`
 
 ## Workload profiles
 
-The standard workload profiles run for 275 seconds per rate with a 35-second
-GuideLLM ramp-up and a 75-second warmup pass before each selected workload.
+Each concurrency runs for up to 275 seconds, including a 75-second GuideLLM
+warmup with a 35-second ramp-up. A separate 200-concurrency, 60-second burn-in
+runs before each selected workload.
 
-| Key | Prompt tokens | Output tokens | Rates | Max seconds | Rampup | Warmup |
-|-----|--------------|---------------|-------|-------------|---------|--------|
-| `profile1` | 1000 | 1000 | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
-| `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
-| `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
-| `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 275 | 35 | 75 |
+| Key | Prompt tokens | Output tokens | Rates | Max seconds | GuideLLM warmup | Ramp-up | Burn-in |
+|-----|--------------|---------------|-------|-------------|-----------------|---------|---------|
+| `profile1` | 1000 | 1000 | 1, 50, 100, 200, 300 | 275 | 75 | 35 | 60 |
+| `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 275 | 75 | 35 | 60 |
+| `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 275 | 75 | 35 | 60 |
+| `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 275 | 75 | 35 | 60 |
 
 ## Presets
 

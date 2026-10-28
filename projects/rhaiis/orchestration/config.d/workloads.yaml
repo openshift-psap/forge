@@ -3,35 +3,28 @@ ci-quick:
   rates: [1, 5]
   max_seconds: 60
 
-# BenchConf owns GuideLLM data, rates, duration, and ramp-up. Forge's separate
-# pre-benchmark warmup still uses the local warmup duration.
+# BenchConf owns the measured GuideLLM profile. The separate 200-concurrency
+# burn-in uses the duration from rhaiis.warmup.
 profile1:
   benchconf: rhaiis-regression/concurrent-1k-1k-equal
-  warmup: 75
 
 profile2:
   benchconf: rhaiis-regression/concurrent-512-2ki-norm
-  warmup: 75
 
 profile3:
   benchconf: rhaiis-regression/concurrent-2ki-128-equal
-  warmup: 75
 
 profile4:
   benchconf: rhaiis-regression/concurrent-8k-1k-equal
-  warmup: 75
 
 profile5:
   benchconf: rhaiis-regression/concurrent-100k-1k-equal
-  warmup: 75
 
 profile6:
   benchconf: rhaiis-regression/concurrent-128-128-multiturn
-  warmup: 75
 
 profile7:
   benchconf: rhaiis-regression/concurrent-8k-800-norm
-  warmup: 75
 
 # Public selectors for /var runtime.benchmark_key, matching LLM_D's interface.
 benchmarks:
@@ -54,10 +47,9 @@ benchmarks:
   custom:
     workload_key: custom
 
-# Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
+# Dashboard override stub (set data, rates, max_seconds, and rampup at runtime)
 custom:
   data: "prompt_tokens=1000,output_tokens=1000"
   rates: [1]
   max_seconds: 275
   rampup: 35
-  warmup: 75
