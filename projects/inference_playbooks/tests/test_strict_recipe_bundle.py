@@ -226,6 +226,97 @@ def test_namespace_only_placement_and_identity_collision():
         )
 
 
+def test_ci_node_selector_records_and_submits_only_declared_overlay(launch):
+    source = _manifest()
+    selector = {"kubernetes.io/hostname": "gpu-node-1"}
+    launch.values["inference_playbooks.deploy.node_selector"] = selector
+
+    test_phase._launch_recipe("synthetic", launch.checkout.recipe)
+
+    source_bundle = contract.load_documents((launch.src / "source-bundle.yaml").read_bytes())
+    submitted = contract.load_documents((launch.src / "submitted-bundle.yaml").read_bytes())
+    metadata = yaml.safe_load((launch.src / "bundle-metadata.yaml").read_bytes())
+    assert source_bundle == [source]
+    assert metadata["contract_version"] == 2
+    assert metadata["ci_node_selector"] == selector
+    assert metadata["submission_mode"] == "ci-node-selector-override"
+    assert contract.checked_submission(launch.src, "target", metadata) == submitted
+    created = [
+        json.loads(kwargs["input_text"])
+        for args, kwargs in launch.actions
+        if isinstance(args, tuple) and args[0] == "create"
+    ]
+    assert created == submitted
+    assert submitted == contract.normalized_documents([source], "target", selector)
+    assert submitted[0]["spec"]["template"]["spec"]["nodeSelector"] == selector
+    assert "nodeSelector" not in source["spec"]["template"]["spec"]
+    submitted[0]["spec"]["model"] = {"uri": "changed"}
+    with pytest.raises(ValueError, match="differs"):
+        contract.assert_submission(source_bundle, submitted, "target", selector)
+
+
+@pytest.mark.parametrize("selector", [[], "bad", {"gpu": 1}, {"": "B200"}])
+def test_invalid_ci_node_selector_fails_before_artifacts_or_cluster_calls(launch, selector):
+    launch.values["inference_playbooks.deploy.node_selector"] = selector
+    with pytest.raises(ValueError, match="node_selector"):
+        test_phase._launch_recipe("synthetic", launch.checkout.recipe)
+    assert not launch.src.exists()
+    assert not launch.actions
+
+
+def test_ci_node_selector_conflict_fails_before_artifacts_or_cluster_calls(launch):
+    source = _manifest()
+    source["spec"]["template"]["spec"]["nodeSelector"] = {"nvidia.com/gpu.product": "NVIDIA-H200"}
+    launch.checkout.path.write_text(yaml.safe_dump(source))
+    launch.checkout.snapshot()
+    launch.values["inference_playbooks.deploy.node_selector"] = {
+        "nvidia.com/gpu.product": "NVIDIA-B200"
+    }
+    with pytest.raises(ValueError, match="conflicts with authored"):
+        test_phase._launch_recipe("synthetic", launch.checkout.recipe)
+    assert not launch.src.exists()
+    assert not launch.actions
+
+
+def test_ci_node_selector_keeps_compatible_authored_constraints():
+    source = _manifest()
+    source["spec"]["template"]["spec"]["nodeSelector"] = {"topology.kubernetes.io/zone": "rdu"}
+    submitted = contract.normalized_documents(
+        [source], "target", {"nvidia.com/gpu.product": "NVIDIA-B200"}
+    )
+    assert submitted[0]["spec"]["template"]["spec"]["nodeSelector"] == {
+        "topology.kubernetes.io/zone": "rdu",
+        "nvidia.com/gpu.product": "NVIDIA-B200",
+    }
+    assert source["spec"]["template"]["spec"]["nodeSelector"] == {
+        "topology.kubernetes.io/zone": "rdu"
+    }
+
+
+def test_ci_node_selector_accepts_empty_label_value():
+    submitted = contract.normalized_documents(
+        [_manifest()], "target", {"node-role.kubernetes.io/gpu": ""}
+    )
+    assert submitted[0]["spec"]["template"]["spec"]["nodeSelector"] == {
+        "node-role.kubernetes.io/gpu": ""
+    }
+
+
+@pytest.mark.parametrize("kind", ["LeaderWorkerSet", "InferenceService", "LLMInferenceService"])
+def test_ci_node_selector_rejects_unsupported_recipe_kind(kind):
+    with pytest.raises(ValueError, match="Deployment recipes only"):
+        contract.normalized_documents(
+            [_manifest(kind)], "target", {"kubernetes.io/hostname": "gpu-node-1"}
+        )
+
+
+def test_ci_node_selector_rejects_authored_node_name():
+    source = _manifest()
+    source["spec"]["template"]["spec"]["nodeName"] = "other-gpu-node"
+    with pytest.raises(ValueError, match="nodeName"):
+        contract.normalized_documents([source], "target", {"kubernetes.io/hostname": "gpu-node-1"})
+
+
 @pytest.mark.parametrize(
     "field",
     [

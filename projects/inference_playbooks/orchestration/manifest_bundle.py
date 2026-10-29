@@ -149,13 +149,47 @@ def classify_documents(documents: list[dict]) -> dict:
     return {"primary": primary[0], "servingruntime": runtimes[0] if runtimes else None}
 
 
-def normalized_documents(documents: list[dict], namespace: str) -> list[dict]:
+def _validated_node_selector(node_selector: dict[str, str] | None) -> dict[str, str]:
+    if node_selector is None:
+        return {}
+    if not isinstance(node_selector, dict) or any(
+        not isinstance(key, str) or not key or not isinstance(value, str)
+        for key, value in node_selector.items()
+    ):
+        raise ValueError(
+            "inference_playbooks.deploy.node_selector must map nonempty label keys to string values"
+        )
+    return node_selector
+
+
+def _add_node_selector(primary: dict, node_selector: dict[str, str]) -> None:
+    if primary["kind"] != "Deployment":
+        raise ValueError("CI node selector currently supports Deployment recipes only")
+    spec = primary.get("spec")
+    template = spec.get("template") if isinstance(spec, dict) else None
+    pod_spec = template.get("spec") if isinstance(template, dict) else None
+    if not isinstance(pod_spec, dict):
+        raise ValueError("CI node selector requires an explicit Deployment pod template")
+    if "nodeName" in pod_spec:
+        raise ValueError("CI node selector cannot override an authored nodeName")
+    authored = pod_spec.get("nodeSelector", {})
+    if not isinstance(authored, dict):
+        raise ValueError("Deployment has an invalid authored nodeSelector")
+    if any(key in authored and authored[key] != value for key, value in node_selector.items()):
+        raise ValueError("CI node selector conflicts with authored Deployment nodeSelector")
+    pod_spec["nodeSelector"] = {**authored, **node_selector}
+
+
+def normalized_documents(
+    documents: list[dict], namespace: str, node_selector: dict[str, str] | None = None
+) -> list[dict]:
     if (
         not isinstance(namespace, str)
         or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", namespace)
         or len(namespace) > 63
     ):
         raise ValueError("Recipe launch requires a valid selected namespace")
+    node_selector = _validated_node_selector(node_selector)
     classify_documents(documents)
     submitted = copy.deepcopy(documents)
     for document in submitted:
@@ -164,12 +198,21 @@ def normalized_documents(documents: list[dict], namespace: str) -> list[dict]:
             metadata["namespace"] = namespace
         elif metadata["namespace"] != namespace:
             raise ValueError("Explicit source namespace does not match the selected namespace")
-    classify_documents(submitted)  # Includes identities that collide only after placement.
+    selected = classify_documents(
+        submitted
+    )  # Includes identities that collide only after placement.
+    if node_selector:
+        _add_node_selector(selected["primary"], node_selector)
     return submitted
 
 
-def assert_submission(source: list[dict], submitted: list[dict], namespace: str) -> None:
-    expected = normalized_documents(source, namespace)
+def assert_submission(
+    source: list[dict],
+    submitted: list[dict],
+    namespace: str,
+    node_selector: dict[str, str] | None = None,
+) -> None:
+    expected = normalized_documents(source, namespace, node_selector)
     _json_value(submitted)
 
     # JSON comparison preserves scalar types (Python equality considers True == 1).
@@ -177,7 +220,8 @@ def assert_submission(source: list[dict], submitted: list[dict], namespace: str)
         return json.dumps(value, sort_keys=True, allow_nan=False, separators=(",", ":"))
 
     if canonical(expected) != canonical(submitted):
-        raise ValueError("Submitted bundle differs from source beyond absent-namespace placement")
+        allowed = "declared CI placement" if node_selector else "absent-namespace placement"
+        raise ValueError(f"Submitted bundle differs from source beyond {allowed}")
 
 
 def _revision(root: Path) -> str:
@@ -314,13 +358,19 @@ def load_source_bundle(root: Path, recipe: dict, selection: Path | None = None) 
 
 
 def write_bundle_artifacts(
-    bundle: dict, submitted: list[dict], namespace: str, src: Path, forge_root: Path
+    bundle: dict,
+    submitted: list[dict],
+    namespace: str,
+    src: Path,
+    forge_root: Path,
+    node_selector: dict[str, str] | None = None,
 ) -> dict:
-    assert_submission(bundle["documents"], submitted, namespace)
+    node_selector = _validated_node_selector(node_selector)
+    assert_submission(bundle["documents"], submitted, namespace, node_selector)
     source_bytes = yaml.safe_dump_all(bundle["documents"], sort_keys=False).encode("utf-8")
     submitted_bytes = yaml.safe_dump_all(submitted, sort_keys=False).encode("utf-8")
     metadata = {
-        "contract_version": 1,
+        "contract_version": 2 if node_selector else 1,
         "recipe_id": bundle["recipe_id"],
         "recipe_path": bundle["recipe_path"],
         "recipe_revision": bundle["recipe_revision"],
@@ -330,6 +380,9 @@ def write_bundle_artifacts(
         "source_bundle_sha256": hashlib.sha256(source_bytes).hexdigest(),
         "submitted_bundle_sha256": hashlib.sha256(submitted_bytes).hexdigest(),
     }
+    if node_selector:
+        metadata["ci_node_selector"] = node_selector
+        metadata["submission_mode"] = "ci-node-selector-override"
     src.mkdir(parents=True, exist_ok=True)
     (src / "source-bundle.yaml").write_bytes(source_bytes)
     (src / "submitted-bundle.yaml").write_bytes(submitted_bytes)
@@ -359,5 +412,5 @@ def checked_submission(src: Path, namespace: str, expected_metadata: dict) -> li
         raise ValueError("Bundle artifact hash mismatch before submission")
     source = load_documents(source_raw)
     submitted = load_documents(submitted_raw)
-    assert_submission(source, submitted, namespace)
+    assert_submission(source, submitted, namespace, metadata.get("ci_node_selector"))
     return submitted

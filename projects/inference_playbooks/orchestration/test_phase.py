@@ -71,6 +71,8 @@ def create_custom_test_metadata(recipe_id: str | None = None):
         labels["recipe_id"] = recipe_id
         labels["workload_key"] = workload_label
         labels["skip"] = True
+        if config.project.get_config("inference_playbooks.deploy.node_selector"):
+            labels["submission_mode"] = "ci-node-selector-override"
     test_dir = env.ARTIFACT_DIR
     create_test_metadata(test_dir, labels)
     return test_dir
@@ -298,7 +300,10 @@ def _launch_recipe(recipe_id: str, recipe: dict) -> None:
 
     if config.project.get_config("inference_playbooks.rdma_resource"):
         raise ValueError("RDMA resource overrides are forbidden; update the canonical recipe")
-    submitted = normalized_documents(bundle["documents"], namespace)
+    node_selector = config.project.get_config("inference_playbooks.deploy.node_selector")
+    submitted = normalized_documents(bundle["documents"], namespace, node_selector)
+    if node_selector:
+        logger.info("Applying declared CI node selector to serving pod templates")
     kind = manifest["kind"]
     port = (
         _recipe_http_port(recipe, manifest) if kind in {"Deployment", "LeaderWorkerSet"} else None
@@ -310,7 +315,9 @@ def _launch_recipe(recipe_id: str, recipe: dict) -> None:
     if type(timeout) is not int or timeout <= 0:
         raise ValueError("Recipe readiness timeout must be a positive integer")
     src = env.ARTIFACT_DIR / "src"
-    metadata = write_bundle_artifacts(bundle, submitted, namespace, src, env.FORGE_HOME)
+    metadata = write_bundle_artifacts(
+        bundle, submitted, namespace, src, env.FORGE_HOME, node_selector
+    )
     # Keep existing primary launch files as attribution inputs, but never submit from them.
     suffixes = {
         "LeaderWorkerSet": "-lws",

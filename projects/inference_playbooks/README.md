@@ -21,13 +21,27 @@ launch.
 
 The explicit path selects one declared platform. Forge checks **all** immediate
 YAML/YML files in that platform's manifest directory, including all documents.
-Only an absent object namespace may be filled from the selected target namespace;
-explicit namespaces must match. Services, Secrets, unsupported objects and hidden
-serving repairs are rejected. Namespace provisioning, storage, credentials and
-network prerequisites remain external.
+By default, only an absent object namespace may be filled from the selected
+target namespace; explicit namespaces must match. Services, Secrets,
+unsupported objects and hidden serving repairs are rejected. Namespace
+provisioning, storage, credentials and network prerequisites remain external.
 
 With no recipe selected, the existing catalog-only validation performs no launch.
 Bundle artifact filenames and repository-relative provenance paths are unchanged.
+
+For a Deployment recipe on a mixed-GPU cluster, CI can select a verified node
+without editing the recipe checkout:
+
+```text
+/var inference_playbooks.deploy.node_selector: {kubernetes.io/hostname: <verified-hostname-label-value>}
+```
+
+Use a label value confirmed on the target node. The override is empty by default.
+Forge preserves `source-bundle.yaml`, records
+the selector in `bundle-metadata.yaml`, and submits `submitted-bundle.yaml`.
+It rejects conflicts with an authored selector or `nodeName`. A run with this
+override tests the recipe under a CI scheduling constraint, not the unmodified
+customer manifest; verify the pod's actual placement separately.
 
 ## AIPerf concurrency sweeps
 

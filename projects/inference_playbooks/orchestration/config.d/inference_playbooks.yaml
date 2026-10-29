@@ -6,6 +6,8 @@ recipe: null
 # The path selects a platform, not a subset of its published YAML/YML artifacts.
 manifest_path: null
 namespace: kserve-e2e-perf
+deploy:
+  node_selector: {}
 workload: profile1
 rdma_resource: null
 lws_ready_timeout_seconds: 7200
