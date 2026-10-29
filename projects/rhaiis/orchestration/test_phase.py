@@ -28,6 +28,28 @@ def _optional_phase_workload_keys(
     return [key for key in workload_keys if key not in excluded]
 
 
+def _effective_profiler_enabled(profiler_cfg: dict, workload_keys: list[str], engine: str) -> bool:
+    """Profiler runs only with vLLM and at least one workload eligible for optional phases."""
+    if not profiler_cfg.get("enabled", False) or engine != "vllm":
+        return False
+
+    from projects.core.library import config
+
+    excluded_workloads = config.project.get_config("rhaiis.optional_phase.excluded_workloads", [])
+    return bool(_optional_phase_workload_keys(workload_keys, excluded_workloads))
+
+
+def _standalone_only_analysis(workload_keys: list[str]) -> bool:
+    """True when the run only compares existing S3 data (no benchmark, no profiler)."""
+    from projects.core.library import config
+
+    if config.project.get_config("tests.rhaiis.run_benchmark", True):
+        return False
+
+    profiler_cfg = runtime_config.get_profiler_config()
+    return not _effective_profiler_enabled(profiler_cfg, workload_keys, runtime_config.get_engine())
+
+
 def _write_manifest(manifest: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -49,13 +71,21 @@ def run(
     namespace: str,
     deployment_name: str | None = None,
 ) -> int:
+    run_postprocess = not _standalone_only_analysis(workload_keys)
     ret = run_and_postprocess(
         do_test,
         model_key=model_key,
         workload_keys=workload_keys,
         namespace=namespace,
         deployment_name=deployment_name,
+        run_postprocess=run_postprocess,
     )
+
+    if not run_postprocess:
+        # no postprocessing ran, so any *__postprocessing directory in the
+        # artifact tree is stale — don't sync it to the consolidated dashboard
+        logger.info("Postprocessing was skipped: not syncing the dashboard CSV")
+        return ret
 
     try:
         _sync_postprocessed_dashboard_csv(model_key, workload_keys)
@@ -180,7 +210,9 @@ def _run_test(
     optional_phase_workload_keys = _optional_phase_workload_keys(
         workload_keys, excluded_optional_phase_workloads
     )
-    profiler_enabled = profiler_requested and bool(optional_phase_workload_keys)
+    profiler_enabled = _effective_profiler_enabled(profiler_cfg, workload_keys, engine)
+    if profiler_requested and engine != "vllm":
+        logger.warning("Profiler is only supported with vLLM engine, skipping profiler")
     skipped_optional_phase_workloads = [
         key for key in workload_keys if key not in optional_phase_workload_keys
     ]
@@ -219,13 +251,10 @@ def _run_test(
             "deployment_uuid": run_uuid,
         }
         profiler_ranges = None
-        if profiler_enabled and engine == "vllm":
+        if profiler_enabled:
             isvc_labels["vllm-profiler/enabled"] = "true"
             profiler_ranges = profiler_cfg["ranges"]
             logger.info("Enabling PyTorch profiler for forward-pass range %s", profiler_ranges)
-        elif profiler_enabled and engine != "vllm":
-            logger.warning("Profiler is only supported with vLLM engine, skipping profiler")
-            profiler_enabled = False
 
         logger.info("Deploying %s to %s/%s", model_cfg["hf_model_id"], namespace, deployment_name)
         ea = engine_args or {}
@@ -382,6 +411,25 @@ def _run_test(
                 trtllm_config=trtllm_cfg,
             )
 
+        if not run_benchmark:
+            # one comparison for the whole run, not one per workload
+            logger.info(
+                "run_benchmark=false: comparing existing S3 data for workloads %s", workload_keys
+            )
+            try:
+                from projects.rhaiis.orchestration.analysis import run_standalone_analysis
+
+                run_standalone_analysis(
+                    model_cfg,
+                    accelerator_key,
+                    engine_args,
+                    run_uuid=config.project.get_config("ci_job.fjob_name", ""),
+                    restrict_profiles=workload_keys,
+                )
+            except Exception:
+                logger.warning("Standalone analysis failed", exc_info=True)
+                _warnings.append("Standalone analysis failed")
+
         try:
             first_workload = runtime_config.get_workload(workload_keys[0])
             first_rates = first_workload.get("rates", [1])
@@ -481,19 +529,6 @@ def _run_workload_benchmark(
 
         if not run_benchmark:
             logger.info("run_benchmark=false, skipping main benchmark")
-            try:
-                from projects.rhaiis.orchestration.analysis import run_standalone_analysis
-
-                run_standalone_analysis(
-                    model_cfg,
-                    accelerator_key,
-                    engine_args,
-                    run_uuid=config.project.get_config("ci_job.fjob_name", ""),
-                    restrict_profiles=[workload_key],
-                )
-            except Exception:
-                logger.warning("Standalone analysis failed", exc_info=True)
-                _warnings.append(f"Standalone analysis failed for {workload_key}")
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
@@ -663,9 +698,16 @@ def _sync_postprocessed_dashboard_csv(model_key: str, workload_keys: list[str]) 
     else:
         logger.info("Dashboard CSV S3 sync not enabled")
 
-    # Regression check — runs regardless of csv_dashboard.enabled.
+    # Regression check — runs regardless of csv_dashboard.enabled, except for
+    # standalone-only runs, where run_standalone_analysis already owns it.
     version = config.project.get_config("tests.rhaiis.version", "")
     compare_version = config.project.get_config("tests.rhaiis.compare_version", "")
+
+    if not config.project.get_config("tests.rhaiis.run_benchmark", True):
+        logger.info(
+            "run_benchmark=false: standalone analysis owns the regression check, skipping here"
+        )
+        return
 
     if compare_version and version:
         model_cfg = runtime_config.get_model(model_key)

@@ -112,3 +112,23 @@ def test_regression_notification_zero_comparisons_is_skip(monkeypatch) -> None:
     assert "*No performance changes detected*" not in messages[0]
     assert "*Performance comparison skipped*" in messages[0]
     assert "*Reason:* No common concurrency levels between current and baseline\n" in messages[0]
+
+
+def test_regression_notification_notes_same_version(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "completed",
+        "regressions": [],
+        "improvements": [],
+        "total_comparisons": 3,
+        "current_version": "vLLM-0.28.0",
+        "compare_version": "vLLM-0.28.0",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*Note:* same version on both sides" in messages[0]

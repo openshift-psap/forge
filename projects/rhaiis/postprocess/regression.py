@@ -524,6 +524,13 @@ def send_regression_notification(
     mlflow_url = _build_mlflow_run_url()
     mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""
 
+    same_version_line = ""
+    if current_version and current_version == compare_version:
+        same_version_line = (
+            "*Note:* same version on both sides — this compares the current run "
+            "against previously published rows of that version.\n"
+        )
+
     header = (
         f"{user_line}"
         f"{owner_line}"
@@ -532,6 +539,7 @@ def send_regression_notification(
         f"*Accelerator:* {accelerator}\n"
         f"{parallelism_line}"
         f"*Versions:* {current_version} vs {compare_version} (baseline)\n"
+        f"{same_version_line}"
     )
 
     if status == "skipped":

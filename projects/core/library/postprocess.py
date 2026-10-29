@@ -266,20 +266,22 @@ def generate_postprocess_status_report(
             temp_yaml.unlink()
 
 
-def run_and_postprocess(test_func, *args, **kwargs):
+def run_and_postprocess(test_func, *args, run_postprocess: bool = True, **kwargs):
     """
     Wrapper that runs a test function and handles outcome tracking with Caliper postprocessing.
 
     This wrapper:
     1. Executes the provided test function with given arguments
     2. Captures test outcomes (success, failure, exception details)
-    3. Runs Caliper postprocessing with the test outcome
+    3. Runs Caliper postprocessing with the test outcome (unless ``run_postprocess`` is false)
     4. Returns 1 if postprocessing fails when test succeeds
     5. Properly chains exceptions if both test and postprocess fail
 
     Args:
         test_func: Callable test function to execute
         *args: Positional arguments to pass to test_func
+        run_postprocess: Set to false for test phases that produce no Caliper-parsable
+            artifacts (e.g. analysis-only runs), so postprocessing cannot fail them
         **kwargs: Keyword arguments to pass to test_func
 
     Returns:
@@ -329,35 +331,42 @@ def run_and_postprocess(test_func, *args, **kwargs):
             outcome = TestPhaseOutcome("FAILED", f"exit_code={ret}")
 
         # Run postprocessing and check status for failures
-        try:
-            status = (
-                run_postprocess_after_test(artifact_base_dir, test_outcome=outcome)
-                if not interrupted
-                else dict(success=False, final_status="Test interrupted")
-            )
+        if not run_postprocess:
+            logger.info("Caliper post-processing skipped for this test phase")
+        else:
+            try:
+                status = (
+                    run_postprocess_after_test(artifact_base_dir, test_outcome=outcome)
+                    if not interrupted
+                    else dict(success=False, final_status="Test interrupted")
+                )
 
-            # Handle None status when postprocessing is disabled - treat as unsuccessful
-            if status is None or not status.get("success", False):
-                if status is None:
-                    final_status = "postprocessing disabled"
-                else:
-                    final_status = status.get("final_status", "unknown")
-                result = _handle_postprocess_failure(status, original_exc, final_status)
-                if result is None:
-                    # Let original test exception propagate through outer flow
-                    pass
-                else:
-                    return result
+                # Handle None status when postprocessing is disabled - treat as unsuccessful
+                if status is None or not status.get("success", False):
+                    if status is None:
+                        final_status = "postprocessing disabled"
+                    else:
+                        final_status = status.get("final_status", "unknown")
+                    result = _handle_postprocess_failure(status, original_exc, final_status)
+                    if result is None:
+                        # Let original test exception propagate through outer flow
+                        pass
+                    else:
+                        return result
 
-        except Exception as postprocess_exc:
-            logger.exception("Caliper postprocess after test failed with exception")
-            if original_exc is not None:
-                raise postprocess_exc from original_exc
+            except Exception as postprocess_exc:
+                logger.exception("Caliper postprocess after test failed with exception")
+                if original_exc is not None:
+                    raise postprocess_exc from original_exc
 
-            logger.error(
-                "Test succeeded but postprocessing failed with exception - returning exit code 1"
-            )
-            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing exception: {postprocess_exc}"
+                logger.error(
+                    "Test succeeded but postprocessing failed with exception - returning exit code 1"
+                )
+                return (
+                    1,
+                    ExitCategory.INTERNAL_ERROR,
+                    f"Postprocessing exception: {postprocess_exc}",
+                )
 
 
 def _handle_postprocess_failure(

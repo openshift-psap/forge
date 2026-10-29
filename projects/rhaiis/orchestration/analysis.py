@@ -12,6 +12,40 @@ from projects.core.library import env
 logger = logging.getLogger(__name__)
 
 
+def _notify_comparison_skipped(
+    reason: str,
+    *,
+    model: str,
+    accelerator: str,
+    job_id: str,
+    tp: str = "",
+    dp: str = "",
+) -> None:
+    """Report a comparison that could not run (credentials, S3, data issues)."""
+    from projects.core.library import config
+    from projects.rhaiis.postprocess.regression import send_regression_notification
+
+    try:
+        send_regression_notification(
+            {
+                "status": "skipped",
+                "reason": reason,
+                "current_version": config.project.get_config("tests.rhaiis.version", ""),
+                "compare_version": config.project.get_config("tests.rhaiis.compare_version", ""),
+            },
+            model=model,
+            accelerator=accelerator,
+            job_id=job_id,
+            slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
+            owner=config.project.get_config("ci_job.owner", "") or "",
+            notification_vault="psap-forge-notifications",
+            tp=tp,
+            dp=dp,
+        )
+    except Exception:
+        logger.warning("Could not send comparison-skip notification", exc_info=True)
+
+
 def run_standalone_analysis(
     model_cfg: dict,
     accelerator_key: str,
@@ -37,14 +71,31 @@ def run_standalone_analysis(
     vault_name = s3_cfg.get("vault", "")
     credentials_file = s3_cfg.get("credentials_file", "aws.credentials")
 
-    credentials_path = get_aws_credentials(vault_name, credentials_file)
-    if not credentials_path:
-        logger.warning("AWS credentials not available, skipping standalone analysis")
-        return
-
     accelerator = (
         accelerator_key.split("_")[0].upper() if "_" in accelerator_key else accelerator_key.upper()
     )
+    display_accelerator = config.project.get_config("rhaiis.accelerator", "") or accelerator
+    model_id = model_cfg.get("hf_model_id", "")
+    tp = str(
+        engine_args.get("tensor-parallel-size")
+        or engine_args.get("tp-size")
+        or engine_args.get("tp_size")
+        or 1
+    )
+    dp = str(engine_args.get("data-parallel-size") or engine_args.get("dp-size") or "")
+
+    credentials_path = get_aws_credentials(vault_name, credentials_file)
+    if not credentials_path:
+        logger.warning("AWS credentials not available, skipping standalone analysis")
+        _notify_comparison_skipped(
+            "AWS credentials are not available; cannot read the consolidated CSV",
+            model=model_id,
+            accelerator=display_accelerator,
+            job_id=run_uuid,
+            tp=tp,
+            dp=dp,
+        )
+        return
 
     consolidated_path = None
     current_csv_path = None
@@ -61,14 +112,6 @@ def run_standalone_analysis(
             if df[col].dtype == object:
                 df[col] = df[col].str.strip()
 
-        model_id = model_cfg.get("hf_model_id", "")
-        tp = str(
-            engine_args.get("tensor-parallel-size")
-            or engine_args.get("tp-size")
-            or engine_args.get("tp_size")
-            or 1
-        )
-
         current_rows = df[
             (df["version"] == version)
             & (df["model"] == model_id)
@@ -84,23 +127,12 @@ def run_standalone_analysis(
                 accelerator,
                 tp,
             )
-            from projects.rhaiis.postprocess.regression import send_regression_notification
-
-            dp = str(engine_args.get("data-parallel-size") or engine_args.get("dp-size") or "")
-            send_regression_notification(
-                {
-                    "status": "skipped",
-                    "reason": f"No data in consolidated CSV for version={version}, "
-                    f"model={model_id}, accelerator={accelerator}, TP={tp}",
-                    "current_version": version,
-                    "compare_version": compare_version,
-                },
+            _notify_comparison_skipped(
+                f"No data in consolidated CSV for version={version}, "
+                f"model={model_id}, accelerator={accelerator}, TP={tp}",
                 model=model_id,
-                accelerator=accelerator,
+                accelerator=display_accelerator,
                 job_id=run_uuid,
-                slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
-                owner=config.project.get_config("ci_job.owner", "") or "",
-                notification_vault="psap-forge-notifications",
                 tp=tp,
                 dp=dp,
             )
@@ -121,8 +153,16 @@ def run_standalone_analysis(
             restrict_profiles=restrict_profiles,
             engine_args=engine_args,
         )
-    except Exception:
+    except Exception as e:
         logger.warning("Standalone analysis failed", exc_info=True)
+        _notify_comparison_skipped(
+            f"Standalone analysis failed: {e}",
+            model=model_id,
+            accelerator=display_accelerator,
+            job_id=run_uuid,
+            tp=tp,
+            dp=dp,
+        )
     finally:
         if consolidated_path and os.path.exists(consolidated_path):
             os.unlink(consolidated_path)
@@ -153,9 +193,22 @@ def run_regression_check(
     vault_name = s3_cfg.get("vault", "")
     credentials_file = s3_cfg.get("credentials_file", "aws.credentials")
 
+    _ea = engine_args or {}
+    tp = _ea.get("tensor-parallel-size") or _ea.get("tp-size") or _ea.get("tp_size") or ""
+    dp = _ea.get("data-parallel-size") or _ea.get("dp-size") or ""
+    model_id = model_cfg.get("hf_model_id", "")
+
     credentials_path = get_aws_credentials(vault_name, credentials_file)
     if not credentials_path:
         logger.warning("AWS credentials not available, skipping regression analysis")
+        _notify_comparison_skipped(
+            "AWS credentials are not available; cannot read the consolidated CSV",
+            model=model_id,
+            accelerator=accelerator,
+            job_id=run_uuid,
+            tp=str(tp),
+            dp=str(dp),
+        )
         return
 
     consolidated_path = None
@@ -166,6 +219,14 @@ def run_regression_check(
         s3.download_file(s3_bucket, s3_key, consolidated_path)
     except Exception as e:
         logger.warning("Could not download consolidated CSV for regression check: %s", e)
+        _notify_comparison_skipped(
+            f"Could not download the consolidated CSV: {e}",
+            model=model_id,
+            accelerator=accelerator,
+            job_id=run_uuid,
+            tp=str(tp),
+            dp=str(dp),
+        )
         return
 
     try:
@@ -181,9 +242,6 @@ def run_regression_check(
             restrict_profiles=restrict_profiles,
         )
 
-        _ea = engine_args or {}
-        tp = _ea.get("tensor-parallel-size") or _ea.get("tp-size") or _ea.get("tp_size") or ""
-        dp = _ea.get("data-parallel-size") or _ea.get("dp-size") or ""
         slack_user = config.project.get_config("tests.rhaiis.slack_user", "")
 
         report_url = ""
