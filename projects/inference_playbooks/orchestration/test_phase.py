@@ -633,6 +633,7 @@ def _run_aiperf_workload(
     else:
         sweep = [None]
 
+    sweep_id = uuid.uuid4().hex if concurrency_values is not None else None
     for concurrency in sweep:
         label = f"concurrency-{concurrency}" if concurrency is not None else "default"
         phase_name = f"benchmark_{workload_key}"
@@ -642,8 +643,11 @@ def _run_aiperf_workload(
             run_labels = {
                 "phase": "benchmark",
                 "benchmark_tool": "aiperf",
+                "benchmark_key": workload_key,
             }
-            run_kpi_labels = {**kpi_labels, "benchmark_tool": "aiperf"}
+            if sweep_id is not None:
+                run_labels["sweep_id"] = sweep_id
+            run_kpi_labels = {**kpi_labels, **run_labels}
             if concurrency is not None:
                 run_labels["concurrency"] = concurrency
                 run_kpi_labels["concurrency"] = str(concurrency)

@@ -25,6 +25,12 @@
         <h3>{{ scalar_kpis_count }}</h3>
         <p>Scalar KPIs</p>
     </div>
+    {% if sweep_count %}
+    <div class="summary-card">
+        <h3>{{ sweep_count }}</h3>
+        <p>Benchmark Sweeps</p>
+    </div>
+    {% endif %}
 </div>
 
 <!-- Test Runs Navigation -->
@@ -174,9 +180,12 @@
 {% if curve_kpi_ids %}
 <div class="card">
     <h2>Curve Visualizations</h2>
+    {% if sweep_count %}
+    <p>Sweep series are derived for this report; individual run KPIs remain unchanged.</p>
+    {% endif %}
     {% for kpi_id in curve_kpi_ids %}
     {% set ns = namespace(first_kpi=none) %}
-    {% for test in tests %}
+    {% for test in chart_tests %}
         {% for kpi in test.kpis %}
             {% if kpi.kpi_id == kpi_id and kpi.is_curve %}
                 {% if not ns.first_kpi %}
@@ -216,7 +225,7 @@
         let colorIndex = 0;
         let firstKpi = null;
 
-        {% for test in tests %}
+        {% for test in chart_tests %}
         {% for kpi in test.kpis %}
         {% if kpi.kpi_id == kpi_id and kpi.is_curve and kpi.values_list and kpi.values_list|length > 0 %}
         (function() { // IIFE for {{ test.run_id }}

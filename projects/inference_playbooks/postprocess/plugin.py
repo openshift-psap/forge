@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 analysis_config = AnalysisConfig(
     comparison_labels=["product_version"],
-    ignored_labels=["higher_is_better"],
+    ignored_labels=["higher_is_better", "sweep_id"],
     sorting_labels=["product_version"],
     regression_config={
         "SCALAR_RELATIVE_CHANGE": {

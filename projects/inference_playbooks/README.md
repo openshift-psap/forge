@@ -29,6 +29,20 @@ network prerequisites remain external.
 With no recipe selected, the existing catalog-only validation performs no launch.
 Bundle artifact filenames and repository-relative provenance paths are unchanged.
 
+## AIPerf concurrency sweeps
+
+Each concurrency workload invocation receives a unique `sweep_id`, persisted in
+each member's Caliper metadata. Repeating the same workload starts a new sweep.
+Individual runs retain their scalar KPIs. When rendering `kpis/kpis.html`, Caliper
+uses a transient `KpiSweep` reporting group to draw concurrency-sorted series.
+These series never merge or average the underlying runs, add artifact directories,
+or create extra entries in `kpis.json` or MLflow metrics.
+
+Members must have matching workload, model, deployment and other non-axis labels.
+Conflicting labels or duplicate concurrency points are errors. Missing metrics
+are omitted, not replaced with zero. Artifacts without `sweep_id` remain scalar
+results; sweep membership is never inferred from directory names or metric IDs.
+
 ## LWS model storage
 
 LeaderWorkerSet manifests may use existing PVCs or node-local `hostPath` volumes,

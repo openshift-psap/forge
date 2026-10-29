@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from pathlib import Path
 
 import jinja2
 
 from projects.caliper.engine.kpi.format import read_kpis_from_file
 from projects.caliper.engine.kpi.report_dataclasses import RegressionReport
+from projects.caliper.engine.kpi.sweeps import build_sweep_report_tests
 
 logger = logging.getLogger(__name__)
 
@@ -41,24 +43,27 @@ class HTMLGenerator:
 
             # Handle both hierarchical (dict) and flat (list) formats
             if isinstance(kpi_data, dict):
-                tests = kpi_data.get("tests", [])
+                tests = deepcopy(kpi_data.get("tests", []))
                 schema_version = kpi_data.get("schema_version", "2")
             else:
                 # Convert flat list to grouped format for template
                 tests = self._group_flat_kpis(kpi_data)
                 schema_version = "1"
 
+            sweep_tests = build_sweep_report_tests(tests)
+            chart_tests = tests + sweep_tests
+
             # Calculate KPI counts and prepare chart data for curve KPIs
-            total_kpis = 0
-            curve_kpis_count = 0
-            scalar_kpis_count = 0
+            total_kpis = sum(len(test.get("kpis", [])) for test in tests)
+            curve_kpis_count = sum(
+                bool(kpi.get("is_curve")) for test in tests for kpi in test.get("kpis", [])
+            )
+            scalar_kpis_count = total_kpis - curve_kpis_count
             curve_kpi_ids = set()  # Track unique curve KPI IDs
 
-            for test in tests:
+            for test in chart_tests:
                 for kpi in test.get("kpis", []):
-                    total_kpis += 1
                     if kpi.get("is_curve", False):
-                        curve_kpis_count += 1
                         # Add values count and prepare chart data
                         values = kpi.get("values", [])
                         kpi["values_count"] = len(values) if values else 0
@@ -71,11 +76,10 @@ class HTMLGenerator:
                             curve_kpi_ids.add(kpi.get("kpi_id"))
                         else:
                             kpi["values_json"] = "[]"
-                    else:
-                        scalar_kpis_count += 1
-
             html_content = template.render(
                 tests=tests,
+                chart_tests=chart_tests,
+                sweep_count=len(sweep_tests),
                 schema_version=schema_version,
                 total_tests=len(tests),
                 total_kpis=total_kpis,

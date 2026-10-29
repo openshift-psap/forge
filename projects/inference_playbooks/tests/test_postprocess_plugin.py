@@ -9,6 +9,8 @@ import pytest
 
 from projects.caliper.engine.kpi import KpiComputationStatus, KpiRecord
 from projects.caliper.engine.kpi.analyze import AnalysisConfig
+from projects.caliper.engine.kpi.format import write_kpis_in_format
+from projects.caliper.engine.kpi.html_generator import generate_kpi_html_from_file
 from projects.caliper.engine.model import (
     BaseTestNode,
     ParseResult,
@@ -87,7 +89,9 @@ def _guidellm_node(tmp_path: Path, name: str = "bench_guidellm") -> BaseTestNode
     )
 
 
-def _aiperf_node(tmp_path: Path, concurrency: int = 1, name: str | None = None) -> BaseTestNode:
+def _aiperf_node(
+    tmp_path: Path, concurrency: int = 1, name: str | None = None, sweep_id: str = "test-sweep"
+) -> BaseTestNode:
     """Create a minimal AI Perf test node with a profile_export_aiperf.json."""
     if name is None:
         name = f"bench_aiperf_c{concurrency}"
@@ -111,6 +115,7 @@ def _aiperf_node(tmp_path: Path, concurrency: int = 1, name: str | None = None) 
                 "phase": "benchmark",
                 "benchmark_tool": "aiperf",
                 "concurrency": concurrency,
+                "sweep_id": sweep_id,
             },
             "kpi_labels": {
                 "model_name": "test/model",
@@ -147,6 +152,7 @@ class TestModuleLevelContract:
         cfg = plugin_mod.analysis_config
         assert isinstance(cfg, AnalysisConfig)
         assert "product_version" in cfg.comparison_labels
+        assert "sweep_id" in cfg.ignored_labels
 
     def test_get_plugin_factory(self):
         plugin = plugin_mod.get_plugin()
@@ -173,6 +179,15 @@ class TestParsing:
         result = plugin.parse([node])
         assert len(result.records) == 1
         assert result.records[0].run_identity.get("aiperf")
+
+    def test_sweep_identity_and_conditions_survive_parsing(self, tmp_path: Path):
+        node = _aiperf_node(tmp_path, concurrency=4)
+        node.test_labels["kpi_labels"]["sweep_id"] = "stale-user-label"
+        record = InferencePlaybooksPlugin().parse([node]).records[0]
+        assert record.distinguishing_labels["sweep_id"] == "test-sweep"
+        assert record.distinguishing_labels["model_name"] == "test/model"
+        assert record.distinguishing_labels["benchmark_key"] == "agentx-180s"
+        assert record.distinguishing_labels["concurrency"] == 4
 
     def test_mixed_tools(self, tmp_path: Path):
         plugin = InferencePlaybooksPlugin()
@@ -256,7 +271,9 @@ class TestKpis:
         aiperf_kpis = [k for k in kpis if k.kpi_id.startswith("aiperf_")]
         assert len(aiperf_kpis) > 0
         for k in aiperf_kpis:
-            assert k.labels.get("concurrency") == "4"
+            assert k.labels["sweep_id"] == "test-sweep"
+            assert k.labels["concurrency"] == "4"
+            assert not k.is_curve
 
 
 # ---------------------------------------------------------------------------
@@ -317,11 +334,49 @@ class TestAiData:
 
 
 # ---------------------------------------------------------------------------
-# Visualization disabled
+# KPI HTML and plugin visualization
 # ---------------------------------------------------------------------------
 
 
 class TestVisualization:
+    @pytest.mark.parametrize("include_guidellm", [False, True])
+    def test_kpi_html_contains_aiperf_concurrency_graphs(
+        self, tmp_path: Path, include_guidellm: bool
+    ):
+        plugin = InferencePlaybooksPlugin()
+        nodes = [_aiperf_node(tmp_path, concurrency=c) for c in (16, 4, 8)]
+        if include_guidellm:
+            nodes.append(_guidellm_node(tmp_path))
+        model = _model(tmp_path, nodes, plugin.parse(nodes).records)
+        kpis, _ = plugin.compute_kpis(model)
+        output = tmp_path / "kpis" / "kpis.json"
+        write_kpis_in_format([kpi.to_dict() for kpi in kpis], output, model=model)
+        original_json = output.read_bytes()
+        html_path = generate_kpi_html_from_file(output)
+        assert output.read_bytes() == original_json
+
+        document = json.loads(output.read_text())
+        aiperf_tests = [test for test in document["tests"] if "concurrency" in test["labels"]]
+        assert len(aiperf_tests) == 3
+        for test in aiperf_tests:
+            by_id = {kpi["kpi_id"]: kpi for kpi in test["kpis"]}
+            assert all(not kpi["is_curve"] for kpi in test["kpis"])
+            assert by_id["aiperf_time_to_first_token_p95"]["value"] == 80.0
+
+        assert len(document["tests"]) == len(nodes)
+        assert not any(test["run_id"].startswith("sweep/") for test in document["tests"])
+
+        html = html_path.read_text()
+        for metric in ("time_to_first_token", "inter_token_latency", "request_latency"):
+            assert f'id="chart-aiperf_{metric}_p95_vs_concurrency"' in html
+        assert 'id="chart-aiperf_output_token_throughput_avg_vs_concurrency"' in html
+        assert "const rawData = [[4.0, 80.0], [8.0, 80.0], [16.0, 80.0]];" in html
+        assert "Configured concurrency" in html
+        assert "Time to first token p95 (ms)" in html
+        assert "name: 'sweep/test-sweep'" in html
+        assert 'id="test-sweep/test-sweep"' not in html
+        assert ('id="chart-playbooks_output_tok_per_sec"' in html) is include_guidellm
+
     def test_visualize_returns_empty(self, tmp_path: Path):
         plugin = InferencePlaybooksPlugin()
         model = _model(tmp_path, [], [])

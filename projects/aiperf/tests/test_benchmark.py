@@ -261,6 +261,27 @@ def test_count_throughput_exports_unchanged(tmp_path: Path) -> None:
     assert "aiperf_request_throughput_p95" not in by_id
 
 
+def test_sweep_identity_preserves_scalar_kpis(tmp_path: Path) -> None:
+    model = _make_aiperf_model(tmp_path, _full_latency_summary())
+    scalar_rows, _ = compute_aiperf_kpis(model)
+    assert all(not row.is_curve for row in scalar_rows)
+
+    model.unified_result_records[0].distinguishing_labels["concurrency"] = "4"
+    model.unified_result_records[0].distinguishing_labels["sweep_id"] = "test-sweep"
+    rows, status = compute_aiperf_kpis(model)
+    assert status.success
+    assert len(rows) == len(scalar_rows)
+    assert all(not row.is_curve for row in rows)
+    scalars = {row.kpi_id: row for row in rows}
+    for original in scalar_rows:
+        scalar = scalars[original.kpi_id]
+        assert scalar.value == original.value
+        assert scalar.unit == original.unit
+        assert scalar.labels["sweep_id"] == "test-sweep"
+        assert scalar.labels["concurrency"] == "4"
+        assert scalar.run_id == original.run_id
+
+
 def test_missing_summary_and_wrong_units_fail(tmp_path: Path) -> None:
     node = BaseTestNode(
         directory=tmp_path,

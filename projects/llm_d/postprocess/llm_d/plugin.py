@@ -34,7 +34,7 @@ from projects.llm_d.postprocess.llm_d.parsing.kpis import GuideLLMKpiHandler
 # Analysis configuration for KPI regression testing
 analysis_config = AnalysisConfig(
     comparison_labels=["product_version"],
-    ignored_labels=["cluster"],
+    ignored_labels=["cluster", "sweep_id"],
     sorting_labels=["product_version"],
     regression_config={
         "SCALAR_RELATIVE_CHANGE": {

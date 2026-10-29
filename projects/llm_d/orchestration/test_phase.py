@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 import sys
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -810,6 +811,7 @@ def run_benchmark(
         multi_run = len(runs) > 1
         if multi_run:
             _mark_parent_skip_for_expansion(test_dir)
+        sweep_id = uuid.uuid4().hex
         for run_label, run_benchmark_cfg in runs:
             artifact_name = f"benchmark_{slugify_identifier(benchmark_key, max_length=48)}"
             if run_label != "default":
@@ -820,7 +822,10 @@ def run_benchmark(
                         "benchmark_tool": run_benchmark_cfg["tool"],
                         "benchmark_key": benchmark_key,
                         "run_label": run_label,
+                        "sweep_id": sweep_id,
                     }
+                    if run_benchmark_cfg.get("concurrency") is not None:
+                        run_labels["concurrency"] = run_benchmark_cfg["concurrency"]
                     create_test_metadata(
                         env.ARTIFACT_DIR,
                         run_labels,

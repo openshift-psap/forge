@@ -67,10 +67,15 @@ class AIPerfParser:
             if not isinstance(summary, dict) or "request_count" not in summary:
                 raise ValueError(f"AI Perf summary lacks request_count for {node.test_path}")
             labels = node.test_labels.get("labels", node.test_labels)
+            kpi_labels = node.test_labels.get("kpi_labels", {})
+            if kpi_labels is None:
+                kpi_labels = {}
+            if not isinstance(labels, dict) or not isinstance(kpi_labels, dict):
+                raise ValueError(f"Invalid AI Perf labels for {node.test_path}")
             records.append(
                 UnifiedResultRecord(
                     test_base_path=str(node.test_path),
-                    distinguishing_labels=dict(labels),
+                    distinguishing_labels={**kpi_labels, **labels},
                     metrics={"aiperf_summary": summary},
                     run_identity={"aiperf": True},
                 )

@@ -459,7 +459,7 @@ def _run_workload_benchmark(
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
 
     with env.NextArtifactDir(f"benchmark_{workload_key}"):
-        _create_test_labels(
+        workload_labels = _create_test_labels(
             model_key,
             workload_key,
             accelerator,
@@ -494,6 +494,7 @@ def _run_workload_benchmark(
             multi_run = len(runs) > 1
             if multi_run:
                 _mark_parent_skip(env.ARTIFACT_DIR)
+            sweep_id = _uuid_mod.uuid4().hex
             for run_label, run_workload in runs:
                 run_dir_name = workload_key
                 if run_label != "default":
@@ -502,14 +503,16 @@ def _run_workload_benchmark(
                     if multi_run:
                         from projects.core.library.postprocess import create_test_metadata
 
-                        create_test_metadata(
-                            env.ARTIFACT_DIR,
-                            {
-                                "benchmark_tool": run_workload.get("tool", benchmark_tool),
-                                "workload_key": workload_key,
-                                "run_label": run_label,
-                            },
-                        )
+                        # Preserve the parent workload/deployment conditions on
+                        # every member so a sweep cannot mix unlike benchmarks.
+                        run_labels = {
+                            **workload_labels,
+                            "run_label": run_label,
+                            "sweep_id": sweep_id,
+                        }
+                        if run_workload.get("concurrency") is not None:
+                            run_labels["concurrency"] = run_workload["concurrency"]
+                        create_test_metadata(env.ARTIFACT_DIR, run_labels)
                     generator.run(
                         BenchmarkContext(
                             deployment_name=deployment_name,
@@ -550,7 +553,7 @@ def _create_test_labels(
     run_uuid: str = "",
     trtllm_config: dict | None = None,
     benchmark_tool: str = "guidellm",
-) -> None:
+) -> dict[str, str]:
     _, image_tag = runtime_config.split_image_tag(serving_image) if serving_image else ("", "")
     parts = [f"{k}: {v}" for k, v in engine_args.items()]
     for key, value in (trtllm_config or {}).items():
@@ -584,6 +587,7 @@ def _create_test_labels(
         labels,
     )
     logger.info("Created test labels: %s", labels)
+    return labels
 
 
 def _set_mlflow_metadata(
