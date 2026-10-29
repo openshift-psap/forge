@@ -456,6 +456,7 @@ def _run_workload_benchmark(
     rates = workload.get("rates", [1])
     max_seconds = workload.get("max_seconds", 180)
     rampup = workload.get("rampup")
+    warmup = workload.get("warmup")
 
     from projects.core.library import config
     from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
@@ -505,6 +506,7 @@ def _run_workload_benchmark(
                 rates=rates,
                 max_seconds=max_seconds,
                 rampup=rampup,
+                warmup=warmup,
             )
 
             run_guidellm_benchmark(
@@ -737,7 +739,7 @@ def _run_warmup_step(
 
     warmup_cfg = config.project.get_config("rhaiis.warmup", {})
     warmup_rate = warmup_cfg.get("rate", 200)
-    warmup_max_seconds = int(workload.get("warmup", warmup_cfg.get("max_seconds", 60)))
+    warmup_max_seconds = int(warmup_cfg.get("max_seconds", 60))
 
     guidellm_args = runtime_config.build_guidellm_args(
         benchmark_cfg=benchmark_cfg,
