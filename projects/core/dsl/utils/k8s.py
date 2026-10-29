@@ -372,7 +372,7 @@ def oc_cp_from_pod(
     Returns:
         CommandResult with execution details
     """
-    args = ["cp", f"{namespace}/{pod}:{remote_path}", str(local_path)]
+    args = ["cp", "--retries=99", f"{namespace}/{pod}:{remote_path}", str(local_path)]
     if container:
         args.extend(["-c", container])
     return oc(*args)
