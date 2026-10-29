@@ -785,7 +785,7 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
     benchmark = runtime_config.get_benchmark_config()
 
     burnin_rate = burnin_cfg.get("rate", 200)
-    burnin_duration = burnin_cfg.get("max_seconds", 75)
+    burnin_duration = burnin_cfg.get("max_seconds", 200)
     job_name_prefix = burnin_cfg.get("job_name_prefix", "guidellm-burnin")
 
     logger.info(

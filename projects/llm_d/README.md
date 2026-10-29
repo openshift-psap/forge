@@ -88,7 +88,7 @@ Configuration is in [`orchestration/config.d/burnin.yaml`](./orchestration/confi
 |---------|---------|-------------|
 | `burnin.enabled` | `true` | Enable/disable burn-in phase |
 | `burnin.rate` | `200` | Concurrent streams during burn-in |
-| `burnin.max_seconds` | `75` | Duration of burn-in in seconds |
+| `burnin.max_seconds` | `200` | Duration of burn-in in seconds |
 
 Burn-in automatically skips for `smoke` tests (functional checks don't need warming).
 

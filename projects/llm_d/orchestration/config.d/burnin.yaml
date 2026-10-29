@@ -4,5 +4,5 @@
 
 enabled: true
 rate: 200           # Concurrent streams during burn-in (high load)
-max_seconds: 75     # Duration of burn-in phase in seconds
+max_seconds: 200    # Duration of burn-in phase in seconds
 job_name_prefix: guidellm-burnin
