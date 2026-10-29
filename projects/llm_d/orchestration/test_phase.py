@@ -43,7 +43,7 @@ from projects.llm_d.orchestration.prepare_phase import prepare_model_cache
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
 )
-from projects.llm_d.orchestration.utils import write_yaml
+from projects.llm_d.orchestration.utils import load_yaml, write_yaml
 from projects.llm_d.toolbox.cleanup_test_resources import main as cleanup_test_resources_command
 
 logger = logging.getLogger(__name__)
@@ -794,14 +794,23 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
         burnin_duration,
     )
 
-    # Build burn-in GuideLLM args - use same kind ofdata profile as benchmark but fixed rate and duration
     burnin_args = []
 
-    # Get data specification from benchmark config
-    if benchmark:
-        benchmark_args = benchmark.get("args", {})
-        if "data" in benchmark_args:
-            burnin_args.append(f"--data={benchmark_args['data']}")
+    benchconf_ref = benchmark["benchconf"]
+    benchconf_lib.maybe_install_custom_version()
+    source_config_path = benchconf_lib.resolve_config_path(benchconf_ref)
+    source_config = load_yaml(source_config_path)
+
+    try:
+        burnin_data = source_config["spec"]["data"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"Benchconf scenario has no data for burn-in: {benchconf_ref}") from exc
+
+    # Keep only the selected scenario's data. The burn-in profile and duration
+    # are set separately below and should not inherit the benchmark matrix.
+    burnin_config_path = env.ARTIFACT_DIR / "burnin-guidellm-config.yaml"
+    write_yaml(burnin_config_path, {"spec": {"data": burnin_data}})
+    logger.info("Using data from Benchconf scenario %s for burn-in", benchconf_ref)
 
     # Set burn-in profile: high concurrency, short duration
     burnin_args.append(f"--profile=kind=concurrent,streams={burnin_rate}")
@@ -824,6 +833,7 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
                 timeout=burnin_duration + 300,  # Buffer for pod startup and result collection
                 pvc_size=benchmark.get("pvc_size") if benchmark else "1Gi",
                 guidellm_args=burnin_args,
+                config_path=burnin_config_path,
                 fs_group=fs_group,
                 use_pvc=benchmark.get("use_pvc") if benchmark else False,
             )
