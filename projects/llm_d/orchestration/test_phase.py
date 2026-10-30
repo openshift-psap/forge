@@ -43,7 +43,7 @@ from projects.llm_d.orchestration.prepare_phase import prepare_model_cache
 from projects.llm_d.orchestration.render_inference_service import (
     render_inference_service_from_parts,
 )
-from projects.llm_d.orchestration.utils import write_yaml
+from projects.llm_d.orchestration.utils import load_yaml, write_yaml
 from projects.llm_d.toolbox.cleanup_test_resources import main as cleanup_test_resources_command
 
 logger = logging.getLogger(__name__)
@@ -433,6 +433,9 @@ def do_test() -> int:
 
         run_smoke_request(endpoint_url=endpoint_url)
 
+        # Run burn-in phase if enabled (primes KV cache and CUDA kernels)
+        _run_burnin_if_enabled(endpoint_url=endpoint_url)
+
         benchmark_start = datetime.now(UTC)
         try:
             benchmark_times = run_guidellm_benchmark(test_dir, endpoint_url=endpoint_url)
@@ -748,6 +751,95 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
         max_tokens=smoke_request["max_tokens"],
         temperature=smoke_request["temperature"],
     )
+
+
+def _should_run_burnin() -> bool:
+    """Determine if burn-in phase should run.
+
+    Burn-in runs for performance benchmarks only, not for smoke tests.
+    """
+    burnin_cfg = runtime_config.get_burnin_config()
+    if not burnin_cfg.get("enabled", False):
+        return False
+
+    # Skip burn-in for smoke/functional tests
+    benchmark_keys = runtime_config.get_benchmark_keys()
+    if benchmark_keys and benchmark_keys[0] == "smoke":
+        return False
+
+    return True
+
+
+def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
+    """Run burn-in phase if enabled to prime KV cache and CUDA kernels.
+
+    Creates a separate GuideLLM job with high concurrency for a short duration
+    before the main benchmark to ensure stable, representative results.
+    """
+    if not _should_run_burnin():
+        logger.info("Burn-in phase skipped (disabled or smoke test)")
+        return
+
+    burnin_cfg = runtime_config.get_burnin_config()
+    namespace = runtime_config.get_namespace()
+    benchmark = runtime_config.get_benchmark_config()
+
+    burnin_rate = burnin_cfg.get("rate", 200)
+    burnin_duration = burnin_cfg.get("max_seconds", 200)
+    job_name_prefix = burnin_cfg.get("job_name_prefix", "guidellm-burnin")
+
+    logger.info(
+        "Running burn-in phase (rate=%d, duration=%ds) to prime KV cache and CUDA kernels",
+        burnin_rate,
+        burnin_duration,
+    )
+
+    burnin_args = []
+
+    benchconf_ref = benchmark["benchconf"]
+    benchconf_lib.maybe_install_custom_version()
+    source_config_path = benchconf_lib.resolve_config_path(benchconf_ref)
+    source_config = load_yaml(source_config_path)
+
+    try:
+        burnin_data = source_config["spec"]["data"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"Benchconf scenario has no data for burn-in: {benchconf_ref}") from exc
+
+    # Keep only the selected scenario's data. The burn-in profile and duration
+    # are set separately below and should not inherit the benchmark matrix.
+    burnin_config_path = env.ARTIFACT_DIR / "burnin-guidellm-config.yaml"
+    write_yaml(burnin_config_path, {"spec": {"data": burnin_data}})
+    logger.info("Using data from Benchconf scenario %s for burn-in", benchconf_ref)
+
+    # Set burn-in profile: high concurrency, short duration
+    burnin_args.append(f"--profile=kind=concurrent,streams={burnin_rate}")
+    burnin_args.append(f"--constraint=kind=max_duration,seconds={burnin_duration}")
+
+    # Add tokenizer for the model
+    burnin_args.append(f"--tokenizer=kind=huggingface_auto,model={runtime_config.get_model_name()}")
+
+    # Get fs_group from workload config
+    workload = runtime_config.get_workload_config()
+    fs_group = workload.get("fs_group") if workload else None
+
+    with env.NextArtifactDir("burnin"):
+        try:
+            run_guidellm_benchmark_command.run(
+                endpoint_url=endpoint_url,
+                name=job_name_prefix,
+                namespace=namespace,
+                image=benchmark.get("image") if benchmark else None,
+                timeout=burnin_duration + 300,  # Buffer for pod startup and result collection
+                pvc_size=benchmark.get("pvc_size") if benchmark else "1Gi",
+                guidellm_args=burnin_args,
+                config_path=burnin_config_path,
+                fs_group=fs_group,
+                use_pvc=benchmark.get("use_pvc") if benchmark else False,
+            )
+            logger.info("Burn-in phase completed successfully")
+        except Exception:
+            logger.warning("Burn-in phase failed; continuing with benchmark", exc_info=True)
 
 
 def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, datetime] | None:

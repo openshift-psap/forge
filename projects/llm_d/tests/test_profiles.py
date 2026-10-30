@@ -107,10 +107,7 @@ def test_benchmark_workloads_are_available() -> None:
 
     assert concurrent["benchconf"] == "llm-d/concurrent-1k-1k"
     assert heavy["benchconf"] == "llm-d/concurrent-heavy-heterogeneous"
-    assert multi_turn["rate"] == [32, 64, 128, 256, 512]
-    assert "turns=5" in multi_turn["args"]["data"]
-    assert "prefix_count={2*rate}" in multi_turn["args"]["data"]
-    assert "kind=max_requests,count={10*rate}" == multi_turn["args"]["constraint"]
+    assert multi_turn["benchconf"] == "llm-d/multi-turn"
 
 
 def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overrides() -> None:

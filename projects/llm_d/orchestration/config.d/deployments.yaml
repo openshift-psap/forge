@@ -113,6 +113,14 @@ profiles:
       args:
         max_model_len: 40960
 
+  default-3.6GA:
+    scheduler_manifest: manifests/deployments/default-3.6GA.yaml
+    replicas: 4
+    tensor_parallelism: 2
+    vllm_extra:
+      args:
+        max_model_len: 40960
+
 # Template flavor configurations with name-based extraction
 templates:
   pd:

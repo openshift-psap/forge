@@ -1,0 +1,8 @@
+# Burn-in phase configuration
+# Runs a separate GuideLLM job before the main benchmark to prime KV cache and CUDA kernels.
+# This helps achieve stable, representative benchmark results.
+
+enabled: true
+rate: 200           # Concurrent streams during burn-in (high load)
+max_seconds: 200    # Duration of burn-in phase in seconds
+job_name_prefix: guidellm-burnin

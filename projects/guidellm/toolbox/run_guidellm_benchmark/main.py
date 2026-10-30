@@ -823,6 +823,7 @@ def _extract_from_copy_pod_file(
 
     result = oc(
         "cp",
+        "--retries=99",
         "-n",
         ctx.target_namespace,
         f"{copy_pod}:{remote_gz_path}",
@@ -983,6 +984,7 @@ def _extract_from_sidecar_pod(
 
         result = oc(
             "cp",
+            "--retries=99",
             "-n",
             ctx.target_namespace,
             "-c",
