@@ -1,12 +1,14 @@
-# Template for the resolve K8s Job (currently Forge).
+# GitOps-managed resolve Job template for FORGE deployments.
 #
-# The operator loads this at startup, deep-copies it per job, and injects
-# dynamic values (metadata, image, env-var values, ownerReferences, deadline).
+# NOTE: This is NOT the template the Fournos operator loads at startup.
+# The operator uses fournos/config/resolve/resolve_job.yaml (the source of
+# truth). This file exists for ArgoCD/GitOps deployment pipelines that apply
+# a pre-configured, image-pinned variant. Keep the container spec (command,
+# env) consistent with the canonical template in the fournos repo.
 #
-# The container setup mirrors task-forge-step.yaml so the same forge-core
-# image runs through the identical bootstrap sequence.
-# The only difference is that no kubeconfig volume is mounted — the resolve
-# step runs on the hub cluster and does not need remote-cluster access.
+# Uses the Fournos execution-engine entrypoint contract
+# (/opt/fournos/entrypoint). All FORGE-specific bootstrap logic lives in the
+# image at bin/fournos_entrypoint; this YAML carries none of it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -27,6 +29,8 @@ spec:
         - name: resolve
           image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/forge-core:latest
           imagePullPolicy: Always
+          command: ["/opt/fournos/entrypoint"]
+          args: []
           env:
             - name: FJOB_NAME
             - name: FOURNOS_WORKLOAD_NAMESPACE
@@ -34,52 +38,3 @@ spec:
               value: resolve-fournos-config
             - name: FOURNOS_CI
               value: "true"
-          command: ["/bin/bash", "-c"]
-          args:
-            - |
-              set -o pipefail
-              set -o errexit
-              set -o nounset
-              set -o errtrace
-
-              export ARTIFACT_DIR=/tmp/artifacts
-              mkdir -p "${ARTIFACT_DIR}"
-
-              exec &> >(tee -a "$ARTIFACT_DIR/run.log")
-
-              oc get "fjob/$FJOB_NAME" -n "$FOURNOS_WORKLOAD_NAMESPACE" -oyaml > $ARTIFACT_DIR/fournos_fjob.yaml
-
-              PULL_BASE_SHA=$(cat "$ARTIFACT_DIR/fournos_fjob.yaml" | yq -r .spec.env.PULL_BASE_SHA)
-              if [[ "$PULL_BASE_SHA" != null ]]; then
-                export PULL_BASE_SHA
-              else
-                unset PULL_BASE_SHA
-              fi
-
-              PULL_PULL_SHA=$(cat "$ARTIFACT_DIR/fournos_fjob.yaml" | yq -r .spec.env.PULL_PULL_SHA)
-              if [[ "$PULL_PULL_SHA" != null ]]; then
-                export PULL_PULL_SHA
-              else
-                unset PULL_PULL_SHA
-              fi
-
-              if [[ "${PULL_PULL_SHA:-}" ]]; then
-                echo
-                echo "Updating to PULL_PULL_SHA=$PULL_PULL_SHA ..."
-
-                git -C "$FORGE_HOME" fetch --quiet origin "$PULL_PULL_SHA"
-                git -C "$FORGE_HOME" reset --hard FETCH_HEAD
-              else
-                echo "No PULL_PULL_SHA, using the image commit"
-              fi
-              git show --quiet
-
-              FORGE_PROJECT=$(cat "$ARTIFACT_DIR/fournos_fjob.yaml" | yq -r .spec.executionEngine.forge.project)
-              if [[ -z "$FORGE_PROJECT" || "$FORGE_PROJECT" == null ]]; then
-                echo "ERROR: invalid .spec.executionEngine.forge.project='$FORGE_PROJECT' in $FOURNOS_WORKLOAD_NAMESPACE/$FJOB_NAME"
-                exit 1
-              fi
-
-              export FOURNOS_CI=true
-
-              exec bin/run_ci "$FORGE_PROJECT" ci "$FOURNOS_STEP"
