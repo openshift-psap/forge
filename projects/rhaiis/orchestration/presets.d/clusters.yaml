@@ -50,7 +50,7 @@ cluster_hera:
 cluster_zeus:
   extends: [nvidia, zeus]
 
-cluster_old_zeus:
+cluster_old-zeus:
   extends: [nvidia, old-zeus]
 
 cluster_athena-fire:
