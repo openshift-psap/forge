@@ -69,7 +69,7 @@ Key sections:
 | `rhaiis.engines.trtllm.trtllm_config` | TRT-LLM server config (KV cache, CUDA graphs, MoE) |
 | `rhaiis.deploy` | Deploy settings (replicas, CPU/memory, image_pull_secrets list, storage) |
 | `rhaiis.s3` | S3 bucket, vault, and credentials for dashboard CSV and profiler trace uploads |
-| `rhaiis.agent_analysis` | Optional regression analysis using the PSAP agent, including its selected model |
+| `rhaiis.agent_analysis` | Optional regression and improvement analysis using the PSAP agent, including its selected model |
 | `rhaiis.warmup` | Warmup benchmark settings applied before each selected workload |
 | `rhaiis.profiler` | PyTorch profiler settings (enable, S3 prefix, rates, labels) |
 | `models` | Model definitions (hf_model_id, per-model `vllm_args` overrides) |
@@ -292,7 +292,7 @@ Available configOverrides:
 | `rhaiis.profiler.enabled` | Enable PyTorch profiler |
 | `rhaiis.profiler.ranges` | vLLM forward-pass range to capture (default: `500-503`) |
 | `rhaiis.profiler.transfer_timeout_seconds` | Timeout for each rank-0 trace transfer (default: `300`) |
-| `rhaiis.agent_analysis.enabled` | Enable AI agent regression analysis |
+| `rhaiis.agent_analysis.enabled` | Enable AI agent regression and improvement analysis |
 | `caliper.postprocess.csv_dashboard.enabled` | Enable dashboard CSV S3 sync |
 | `benchmarks.guidellm.timeout` | Benchmark timeout in seconds |
 | `benchmarks.guidellm.hf_token_secret` | K8s secret name for HF_TOKEN (omit to skip) |

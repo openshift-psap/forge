@@ -233,7 +233,10 @@ def run_agent_analysis(
     severity_threshold: int = 10,
     engine_args: dict | None = None,
 ) -> str:
-    """Request AI agent analysis for severe regressions. Returns report URL or empty string."""
+    """Request AI agent analysis for significant regressions and improvements.
+
+    Returns report URL or empty string.
+    """
     from projects.core.library import ci, config, vault
     from projects.rhaiis.postprocess.agent import (
         AGENT_SEVERITY_THRESHOLD,
@@ -246,8 +249,13 @@ def run_agent_analysis(
 
     threshold = severity_threshold or AGENT_SEVERITY_THRESHOLD
     severe = [r for r in analysis.get("regressions", []) if abs(r["pct_diff"]) > threshold]
-    if not severe:
-        logger.info("No severe regressions (>%d%%), skipping agent analysis", threshold)
+    notable_improvements = [
+        r for r in analysis.get("improvements", []) if abs(r["pct_diff"]) > threshold
+    ]
+    if not severe and not notable_improvements:
+        logger.info(
+            "No severe regressions or improvements (>%d%%), skipping agent analysis", threshold
+        )
         return ""
 
     endpoint_path = vault.get_vault_content_path("psap-forge-rhaiis-agent-analysis", "agent-url")
@@ -280,7 +288,6 @@ def run_agent_analysis(
     tp = str(ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or 1)
     model = model_cfg.get("hf_model_id", "")
     agent_model = config.project.get_config("rhaiis.agent_analysis.model")
-    improvements = analysis.get("improvements", [])
 
     agent_response = request_agent_analysis(
         model=model,
@@ -291,7 +298,7 @@ def run_agent_analysis(
         tp=tp,
         severe_regressions=severe,
         job_id=run_uuid,
-        improvements=improvements if improvements else None,
+        improvements=notable_improvements or None,
         agent_url=agent_url,
     )
     if not agent_response:
