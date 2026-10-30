@@ -3,7 +3,9 @@ from __future__ import annotations
 from projects.rhaiis.orchestration.manifests import build_inferenceservice
 
 
-def _build_isvc(*, profiler_ranges: str | None = None) -> dict:
+def _build_isvc(
+    *, profiler_ranges: str | None = None, node_selector: dict[str, str] | None = None
+) -> dict:
     return build_inferenceservice(
         deployment_name="test-model",
         namespace="test-namespace",
@@ -18,6 +20,7 @@ def _build_isvc(*, profiler_ranges: str | None = None) -> dict:
         storage_pvc="model-pvc",
         model_id="org/model",
         profiler_ranges=profiler_ranges,
+        node_selector=node_selector,
     )
 
 
@@ -31,3 +34,16 @@ def test_build_inferenceservice_omits_profiler_range_when_not_configured() -> No
     manifest = _build_isvc()
 
     assert "vllm.profiler/ranges" not in manifest["metadata"]["annotations"]
+
+
+def test_build_inferenceservice_adds_configured_node_selector() -> None:
+    manifest = _build_isvc(node_selector={"kubernetes.io/hostname": "gpu-node-1"})
+
+    assert manifest["spec"]["predictor"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+
+
+def test_build_inferenceservice_omits_node_selector_when_not_configured() -> None:
+    for node_selector in (None, {}):
+        manifest = _build_isvc(node_selector=node_selector)
+
+        assert "nodeSelector" not in manifest["spec"]["predictor"]
