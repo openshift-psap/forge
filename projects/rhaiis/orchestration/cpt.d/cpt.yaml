@@ -8,6 +8,7 @@
 # Non-__ keys at the pipeline level are global overrides applied to every job.
 
 __cpt: true
+__multiple: true
 
 # ──────────────────────────────────────────────
 # vLLM Release — Tier 1 models
@@ -15,6 +16,9 @@ __cpt: true
 cpt-vllm-release:
   __description: "vLLM Release CPT — Tier 1 models across all workload profiles"
   __engine: vllm
+  __accelerator: nvidia
+  rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.31.0
+  tests.rhaiis.version: vLLM-0.31.0
   rhaiis.engines.vllm.args.enable-prefix-caching: true
   __models:
     llama-70b/tp4:
@@ -47,6 +51,9 @@ cpt-vllm-release:
 cpt-sglang-competitive:
   __description: "SGLang Release CPT — Tier 1 models across all workload profiles"
   __engine: sglang
+  __accelerator: nvidia
+  rhaiis.engines.sglang.images.nvidia: lmsysorg/sglang:v0.5.11
+  tests.rhaiis.version: sglang-0.5.11
   rhaiis.engines.sglang.args.disable-radix-cache: false
   __models:
     llama-70b/tp4:
@@ -74,6 +81,8 @@ cpt-sglang-competitive:
 cpt-trtllm-competitive:
   __description: "TensorRT-LLM Release CPT — supported NVIDIA models across all workload profiles"
   __engine: trtllm
+  rhaiis.engines.trtllm.images.nvidia: nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc13
+  tests.rhaiis.version: TRT-LLM-1.3.0rc13
   rhaiis.engines.trtllm.trtllm_config.kv_cache_config.enable_block_reuse: true
   __accelerator: nvidia
   __models:
@@ -98,6 +107,9 @@ cpt-trtllm-competitive:
 cpt-vllm-competitive:
   __description: "vLLM Competitive CPT — wide model coverage for cross-engine comparison"
   __engine: vllm
+  __accelerator: nvidia
+  rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.31.0
+  tests.rhaiis.version: vLLM-0.31.0
   rhaiis.engines.vllm.args.enable-prefix-caching: true
   __models:
     llama-70b/tp4:
@@ -127,8 +139,9 @@ cpt-vllm-competitive:
 # ──────────────────────────────────────────────
 # RHAIIS 3.6 release regression — H200
 # ──────────────────────────────────────────────
-cpt-rhaiis-3.6-h200:
-  __description: "RHAIIS 3.6 release regression — H200 model matrix"
+# Shared H200 matrix — __-prefixed top-level keys are skipped by the CPT parser.
+# Real pipelines below merge this anchor and add their per-campaign pins.
+__matrix-h200: &cpt_rhaiis_3_6_h200
   __engine: vllm
   rhaiis.engines.vllm.args.enable-prefix-caching: true
   __accelerator: nvidia
@@ -236,11 +249,43 @@ cpt-rhaiis-3.6-h200:
   tests.rhaiis.slack_notify_always: true
   rhaiis.agent_analysis.enabled: false
 
+cpt-rhaiis-3.6-h200:
+  <<: *cpt_rhaiis_3_6_h200
+  __description: "RHAIIS 3.6 release regression — H200 matrix, vLLM 0.31.0 campaign"
+  rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.31.0
+  tests.rhaiis.version: vLLM-0.31.0
+
+# Campaign variants — same H200 matrix, pinned per validated build
+cpt-rhaiis-3.6-h200-vllm0.26:
+  <<: *cpt_rhaiis_3_6_h200
+  __description: "RHAIIS 3.6 release regression — H200 matrix, vLLM 0.26.0 campaign"
+  rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.26.0
+  tests.rhaiis.version: vLLM-0.26.0
+
+cpt-rhaiis-3.6-h200-vllm0.28:
+  <<: *cpt_rhaiis_3_6_h200
+  __description: "RHAIIS 3.6 release regression — H200 matrix, vLLM 0.28.0 campaign"
+  rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.28.0
+  tests.rhaiis.version: vLLM-0.28.0
+
+cpt-rhaiis-3.6-h200-fast1:
+  <<: *cpt_rhaiis_3_6_h200
+  __description: "RHAIIS 3.6 release regression — H200 matrix, RHAIIS 3.6 fast1 build"
+  # Fast-build images are pre-release product artifacts — set the image at submission time.
+  tests.rhaiis.version: RHAIIS-3.6-fast1
+
+cpt-rhaiis-3.6-h200-fast2:
+  <<: *cpt_rhaiis_3_6_h200
+  __description: "RHAIIS 3.6 release regression — H200 matrix, RHAIIS 3.6 fast2 build"
+  # Fast-build images are pre-release product artifacts — set the image at submission time.
+  tests.rhaiis.version: RHAIIS-3.6-fast2
+
 # ──────────────────────────────────────────────
 # RHAIIS 3.6 release regression — B200
 # ──────────────────────────────────────────────
-cpt-rhaiis-3.6-b200:
-  __description: "RHAIIS 3.6 release regression — B200 model matrix"
+# Shared B200 matrix — __-prefixed top-level keys are skipped by the CPT parser.
+# Real pipelines below merge this anchor and add their per-campaign pins.
+__matrix-b200: &cpt_rhaiis_3_6_b200
   __engine: vllm
   rhaiis.engines.vllm.args.enable-prefix-caching: true
   __accelerator: nvidia
@@ -308,11 +353,25 @@ cpt-rhaiis-3.6-b200:
   tests.rhaiis.slack_notify_always: true
   rhaiis.agent_analysis.enabled: false
 
+cpt-rhaiis-3.6-b200:
+  <<: *cpt_rhaiis_3_6_b200
+  __description: "RHAIIS 3.6 release regression — B200 matrix, vLLM 0.28.0 campaign"
+  rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.28.0
+  tests.rhaiis.version: vLLM-0.28.0
+
+# Campaign variants — same B200 matrix, pinned per validated build
+cpt-rhaiis-3.6-b200-vllm0.26:
+  <<: *cpt_rhaiis_3_6_b200
+  __description: "RHAIIS 3.6 release regression — B200 matrix, vLLM 0.26.0 campaign"
+  rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.26.0
+  tests.rhaiis.version: vLLM-0.26.0
+
 # ──────────────────────────────────────────────
 # RHAIIS 3.6 release regression — MI355X
 # ──────────────────────────────────────────────
-cpt-rhaiis-3.6-mi355x:
-  __description: "RHAIIS 3.6 release regression — MI355X model matrix"
+# Shared MI355X matrix — __-prefixed top-level keys are skipped by the CPT parser.
+# Real pipelines below merge this anchor and add their per-campaign pins.
+__matrix-mi355x: &cpt_rhaiis_3_6_mi355x
   __engine: vllm
   rhaiis.engines.vllm.args.enable-prefix-caching: true
   rhaiis.profiler.ranges: "100-103"
@@ -395,3 +454,40 @@ cpt-rhaiis-3.6-mi355x:
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
   rhaiis.agent_analysis.enabled: false
+
+cpt-rhaiis-3.6-mi355x:
+  <<: *cpt_rhaiis_3_6_mi355x
+  __description: "RHAIIS 3.6 release regression — MI355X matrix, vLLM 0.31.0 campaign"
+  rhaiis.engines.vllm.images.amd: vllm/vllm-openai-rocm:v0.31.0
+  tests.rhaiis.version: vLLM-0.31.0
+
+# Campaign variants — same MI355X matrix, pinned per validated build
+cpt-rhaiis-3.6-mi355x-vllm0.26:
+  <<: *cpt_rhaiis_3_6_mi355x
+  __description: "RHAIIS 3.6 release regression — MI355X matrix, vLLM 0.26.0 campaign"
+  rhaiis.engines.vllm.images.amd: vllm/vllm-openai-rocm:v0.26.0
+  tests.rhaiis.version: vLLM-0.26.0
+
+cpt-rhaiis-3.6-mi355x-vllm0.28:
+  <<: *cpt_rhaiis_3_6_mi355x
+  __description: "RHAIIS 3.6 release regression — MI355X matrix, vLLM 0.28.0 campaign"
+  rhaiis.engines.vllm.images.amd: vllm/vllm-openai-rocm:v0.28.0
+  tests.rhaiis.version: vLLM-0.28.0
+
+cpt-rhaiis-3.6-mi355x-vllm0.30:
+  <<: *cpt_rhaiis_3_6_mi355x
+  __description: "RHAIIS 3.6 release regression — MI355X matrix, vLLM 0.30.0 campaign"
+  rhaiis.engines.vllm.images.amd: vllm/vllm-openai-rocm:v0.30.0
+  tests.rhaiis.version: vLLM-0.30.0
+
+cpt-rhaiis-3.6-mi355x-fast1:
+  <<: *cpt_rhaiis_3_6_mi355x
+  __description: "RHAIIS 3.6 release regression — MI355X matrix, RHAIIS 3.6 fast1 build"
+  # Fast-build images are pre-release product artifacts — set the image at submission time.
+  tests.rhaiis.version: RHAIIS-3.6-fast1
+
+cpt-rhaiis-3.6-mi355x-fast2:
+  <<: *cpt_rhaiis_3_6_mi355x
+  __description: "RHAIIS 3.6 release regression — MI355X matrix, RHAIIS 3.6 fast2 build"
+  # Fast-build images are pre-release product artifacts — set the image at submission time.
+  tests.rhaiis.version: RHAIIS-3.6-fast2
