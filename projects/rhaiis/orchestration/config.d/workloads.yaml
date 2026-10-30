@@ -100,6 +100,8 @@ aiperf-agentx-128k:
   concurrency: [4, 8, 16, 32, 64]
   timeout_seconds: 7200
   aiperf_args:
+    - --connection-reuse-strategy
+    - never
     - --scenario
     - inferencex-agentx-mvp
     - --public-dataset
