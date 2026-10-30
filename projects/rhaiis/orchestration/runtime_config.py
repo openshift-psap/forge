@@ -7,6 +7,9 @@ import signal
 from datetime import datetime
 
 from projects.core.library import config, env, run
+from projects.guidellm.toolbox.run_guidellm_benchmark import (
+    build_guidellm_args as shared_build_guidellm_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,35 @@ def get_model(model_key: str) -> dict:
 
 def get_workload(workload_key: str) -> dict:
     return dict(config.project.get_config(f"workloads.{workload_key}"))
+
+
+def get_benchmark_workload_keys() -> list[str]:
+    benchmark_keys = config.project.get_config("runtime.benchmark_key", [])
+    if isinstance(benchmark_keys, str):
+        benchmark_keys = [benchmark_keys]
+    if not isinstance(benchmark_keys, list):
+        raise ValueError("runtime.benchmark_key must be a string or list of strings")
+    if not benchmark_keys:
+        return []
+
+    benchmarks = config.project.get_config("workloads.benchmarks", {})
+    workload_keys = []
+    for benchmark_key in benchmark_keys:
+        if not isinstance(benchmark_key, str):
+            raise ValueError("runtime.benchmark_key must contain only strings")
+        benchmark = benchmarks.get(benchmark_key)
+        if benchmark is None:
+            raise ValueError(f"Unknown runtime.benchmark_key: {benchmark_key}")
+        workload_keys.append(benchmark["workload_key"])
+    return workload_keys
+
+
+def get_test_workload_keys() -> list[str]:
+    workload_keys = get_benchmark_workload_keys()
+    if workload_keys:
+        return workload_keys
+    workload_keys = config.project.get_config("tests.rhaiis.workload_keys", [])
+    return workload_keys or [get_test_workload_key()]
 
 
 def get_vaults() -> list[str]:
@@ -222,35 +254,26 @@ def merge_env_vars(accelerator: str, model: dict) -> dict:
     return base
 
 
-def _format_arg_value(value: object) -> str:
-    if isinstance(value, list):
-        return ",".join(str(v) for v in value)
-    return str(value)
-
-
 def build_guidellm_args(
     *,
     benchmark_cfg: dict,
     model_id: str,
-    data: str,
-    rates: list[int],
-    max_seconds: int,
+    data: str | None,
+    rates: list[int] | None,
+    max_seconds: int | None,
     rampup: int | None = None,
 ) -> list[str]:
-    guidellm_args = []
-    for key, value in benchmark_cfg.get("args", {}).items():
-        if value is None:
-            continue
-        cli_key = key.replace("_", "-")
-        guidellm_args.append(f"--{cli_key}={_format_arg_value(value)}")
-
-    guidellm_args.append(f"--model={model_id}")
-    guidellm_args.append(f"--data={data}")
-    guidellm_args.append(f"--rate={_format_arg_value(rates)}")
-    guidellm_args.append(f"--max-seconds={max_seconds}")
+    args = dict(benchmark_cfg.get("args", {}))
+    args["model"] = model_id
+    if data is not None:
+        args["data"] = data
+    if rates is not None:
+        args["rate"] = rates
+    if max_seconds is not None:
+        args["max_seconds"] = max_seconds
     if rampup is not None:
-        guidellm_args.append(f"--rampup={rampup}")
-    return guidellm_args
+        args["rampup"] = rampup
+    return shared_build_guidellm_args({"args": args})
 
 
 def split_image_tag(full_image: str) -> tuple[str, str]:

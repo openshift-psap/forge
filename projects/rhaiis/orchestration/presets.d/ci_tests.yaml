@@ -1,7 +1,7 @@
 __multiple: true
 
 ci-test:
-  tests.rhaiis.workload_key: ci-quick
+  runtime.benchmark_key: ci-quick
   tests.rhaiis.model_key: qwen3-0_6b
   tests.rhaiis.warmup: false
   tests.rhaiis.version: "vLLM-0.24.0-ci-test"
@@ -12,7 +12,7 @@ ci-test:
   tests.rhaiis.run_benchmark: true
 
 ci-quick:
-  tests.rhaiis.workload_key: ci-quick
+  runtime.benchmark_key: ci-quick
   tests.rhaiis.warmup: false
   tests.rhaiis.version: "vLLM-ci-quick"
   rhaiis.profiler.enabled: false
@@ -24,8 +24,7 @@ sglang-ci-quick:
   extends:
     - sglang
   tests.rhaiis.model_key: qwen3-0_6b
-  tests.rhaiis.workload_key: ci-quick
-  tests.rhaiis.workload_keys: ["ci-quick"]
+  runtime.benchmark_key: ci-quick
   tests.rhaiis.version: "sglang-ci-quick-deleteme"
   tests.rhaiis.warmup: false
   rhaiis.profiler.enabled: false

@@ -19,6 +19,8 @@ def _workload_shapes():
     workloads = yaml.safe_load(WORKLOADS_YAML.read_text())
     shapes = {}
     for key, cfg in workloads.items():
+        if "data" not in cfg:
+            continue
         isl = re.search(r"prompt_tokens=(\d+)", cfg["data"])
         osl = re.search(r"output_tokens=(\d+)", cfg["data"])
         if isl and osl:
@@ -36,6 +38,12 @@ def test_every_compared_workload_shape_is_in_profile_map():
         if key not in UNCOMPARED_WORKLOADS and shape not in PROFILE_MAP
     }
     assert not missing, f"workload shapes missing from PROFILE_MAP: {missing}"
+    benchconf_keys = {
+        key
+        for key, cfg in yaml.safe_load(WORKLOADS_YAML.read_text()).items()
+        if cfg.get("benchconf") and key not in UNCOMPARED_WORKLOADS
+    }
+    assert benchconf_keys <= set(PROFILE_MAP.values())
 
 
 def _row(isl, osl, version, conc=25.0, output_tput=100.0):

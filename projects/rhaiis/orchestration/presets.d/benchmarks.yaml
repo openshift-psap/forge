@@ -10,23 +10,23 @@ benchmark:
 benchmark-standard:
   extends:
   - benchmark
-  tests.rhaiis.workload_key:
-  - profile1
-  - profile4
+  runtime.benchmark_key:
+  - concurrent-1k-1k
+  - concurrent-8k-1k
 
 benchmark-multi-turn-prefix-on:
   extends:
   - benchmark
   - prefix-cache-on
-  tests.rhaiis.workload_key: profile6
+  runtime.benchmark_key: concurrent-128-128-multiturn
 
 benchmark-multi-turn-prefix-off:
   extends:
   - benchmark
   - prefix-cache-off
-  tests.rhaiis.workload_key: profile6
+  runtime.benchmark_key: concurrent-128-128-multiturn
 
 benchmark-heavy-heterogeneous:
   extends:
   - benchmark
-  tests.rhaiis.workload_key: profile7
+  runtime.benchmark_key: concurrent-8k-800
