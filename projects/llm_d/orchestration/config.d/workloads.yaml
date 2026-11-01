@@ -34,11 +34,19 @@ benchmarks:
     timeout_seconds: 3600
     benchconf: llm-d/concurrent-1k-1k
 
+  concurrent-8k-1k:
+    timeout_seconds: 3600
+    benchconf: llm-d/concurrent-8k-1k
+
   heavy-heterogeneous:
     timeout_seconds: 3600
     vllm_args:
       max_model_len: 40960
     benchconf: llm-d/concurrent-heavy-heterogeneous
+
+  heavy-load:
+    timeout_seconds: 3600
+    benchconf: llm-d/heavy-load
 
   multi-turn:
     vllm_args:
