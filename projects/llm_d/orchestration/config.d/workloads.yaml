@@ -20,8 +20,6 @@ benchmarks:
 
   short:
     timeout_seconds: 3600
-    vllm_args:
-      max_model_len: 40960
     args:
       profile: "kind=concurrent,streams={rate}"
       data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
@@ -30,8 +28,6 @@ benchmarks:
 
   smoke:
     timeout_seconds: 300
-    vllm_args:
-      max_model_len: 40960
     benchconf: llm-d/smoke
 
   concurrent-1k-1k:
