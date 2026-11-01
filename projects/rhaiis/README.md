@@ -284,6 +284,7 @@ Available configOverrides:
 | `rhaiis.deploy.storage_pvc` | PVC name for model storage |
 | `rhaiis.deploy.replicas` | Number of predictor replicas |
 | `rhaiis.deploy.memory_request` | Memory request for predictor (e.g. `256Gi` for TRT-LLM) |
+| `rhaiis.deploy.node_selector` | Node selector for predictor pods (e.g. `{kubernetes.io/hostname: my-gpu-node}`) |
 | `rhaiis.engines.vllm.args.*` | vLLM CLI args (e.g. `tensor-parallel-size`, `gpu-memory-utilization`) |
 | `rhaiis.engines.sglang.args.*` | SGLang CLI args (e.g. `tp-size`, `mem-fraction-static`, `context-length`) |
 | `rhaiis.engines.trtllm.args.*` | TRT-LLM CLI args (e.g. `tp_size`, `ep_size`, `max_batch_size`) |
