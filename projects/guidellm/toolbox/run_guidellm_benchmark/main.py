@@ -24,6 +24,7 @@ from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
     oc,
     oc_apply,
+    oc_cp_from_pod,
     oc_get_json,
 )
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
@@ -821,13 +822,11 @@ def _extract_from_copy_pod_file(
             f"Failed to create compressed results for {ctx.benchmark_name} run {run.label}{replica_suffix}"
         )
 
-    result = oc(
-        "cp",
-        "--retries=99",
-        "-n",
-        ctx.target_namespace,
-        f"{copy_pod}:{remote_gz_path}",
-        str(temp_gz_path),
+    result = oc_cp_from_pod(
+        remote_gz_path,
+        temp_gz_path,
+        namespace=ctx.target_namespace,
+        pod=copy_pod,
         check=False,
         timeout_seconds=1800,
     )
@@ -982,15 +981,12 @@ def _extract_from_sidecar_pod(
                 f"Failed to create compressed results for {ctx.benchmark_name} run {run.label}{replica_suffix}"
             )
 
-        result = oc(
-            "cp",
-            "--retries=99",
-            "-n",
-            ctx.target_namespace,
-            "-c",
-            "guidellm-sidecar",
-            f"{pod_name}:{remote_gz_path}",
-            str(temp_gz_path),
+        result = oc_cp_from_pod(
+            remote_gz_path,
+            temp_gz_path,
+            namespace=ctx.target_namespace,
+            pod=pod_name,
+            container="guidellm-sidecar",
             check=False,
             timeout_seconds=1800,
         )
