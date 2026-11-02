@@ -194,6 +194,7 @@ def test_release_preset_expands_benchmark_list_and_merges_workload_args() -> Non
         "concurrent-1k-1k",
         "heavy-heterogeneous",
         "multi-turn",
+        "concurrent-8k-1k",
     ]
 
     run_specs = runtime_config.get_run_specs()
@@ -210,11 +211,12 @@ def test_gpt_release_preset_produces_deployment_workload_matrix() -> None:
 
     run_specs = runtime_config.get_run_specs()
 
-    assert len(run_specs) == 9
+    assert len(run_specs) == 12
     assert {spec.benchmark_key for spec in run_specs} == {
         "concurrent-1k-1k",
         "heavy-heterogeneous",
         "multi-turn",
+        "concurrent-8k-1k",
     }
     assert all(spec.model_name == "openai/gpt-oss-120b" for spec in run_specs)
     assert {spec.deployment_profile_name for spec in run_specs} == {
@@ -241,7 +243,7 @@ def test_llama_release_preset_produces_deployment_workload_matrix() -> None:
     )
 
     run_specs = runtime_config.get_run_specs()
-    assert len(run_specs) == 9
+    assert len(run_specs) == 12
     assert {spec.deployment_profile_name for spec in run_specs} == {
         "release-distributed-default",
         "release-precise-prefix-cache",
@@ -251,6 +253,7 @@ def test_llama_release_preset_produces_deployment_workload_matrix() -> None:
         "concurrent-1k-1k",
         "heavy-heterogeneous",
         "multi-turn",
+        "concurrent-8k-1k",
     }
     assert {spec.namespace for spec in run_specs} == {"forge-llm-d"}
 
