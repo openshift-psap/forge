@@ -53,3 +53,11 @@ profile7:
   max_seconds: 275
   rampup: 35
   warmup: 75
+
+# Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
+custom:
+  data: "prompt_tokens=1000,output_tokens=1000"
+  rates: [1]
+  max_seconds: 275
+  rampup: 35
+  warmup: 75
