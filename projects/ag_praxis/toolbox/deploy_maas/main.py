@@ -282,7 +282,13 @@ def install_dependencies(args, ctx):
 @task
 def clone_repository(args, ctx):
     """Clone the MaaS repository into the deployer Pod."""
-    clone_cmd = f"rm -rf {CLONE_DIR} && git clone --branch {args.repo_ref} --single-branch {args.repo_url} {CLONE_DIR}"
+    clone_cmd = (
+        f"rm -rf {CLONE_DIR}"
+        f" && git clone {args.repo_url} {CLONE_DIR}"
+        f" && cd {CLONE_DIR}"
+        f" && git fetch origin {args.repo_ref}"
+        f" && git checkout {args.repo_ref}"
+    )
     oc_exec(
         "sh",
         "-c",

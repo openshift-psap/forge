@@ -8,8 +8,9 @@ run_warmup: true
 
 skip_cleanup: false
 skip_prepare: false
-skip_finalizers: true
+skip_finalizers: false
 
 endpoints:
 - svc
 - maas
+- maas/praxis

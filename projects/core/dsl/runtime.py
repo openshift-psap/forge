@@ -119,10 +119,12 @@ def execute_tasks(function_args: dict = None):
 
     # Prepend prefix to command name if provided
     if prefix:
+        prefix = prefix.replace("/", "_")
         command_name = f"{prefix}_{command_name}"
 
     # Append suffix to command name if provided
     if suffix:
+        suffix = suffix.replace("/", "_")
         command_name = f"{command_name}_{suffix}"
 
     # Log the final command name for debugging
