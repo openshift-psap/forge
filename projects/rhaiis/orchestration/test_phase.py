@@ -271,10 +271,9 @@ def _run_test(
             model_id=model_cfg["hf_model_id"],
             service_account_name=deploy_cfg.get("service_account_name", ""),
             supplemental_groups=deploy_cfg.get("supplemental_groups"),
-            node_selector=deploy_cfg.get("node_selector"),
+            node_selector=deploy_cfg.get("node_selector") or None,
             labels=isvc_labels,
             profiler_ranges=profiler_ranges,
-            node_selector=deploy_cfg.get("node_selector") or None,
         )
         sr_file = env.ARTIFACT_DIR / "src" / "servingruntime.yaml"
         isvc_file = env.ARTIFACT_DIR / "src" / "inferenceservice.yaml"

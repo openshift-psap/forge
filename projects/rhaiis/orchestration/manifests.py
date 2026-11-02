@@ -100,7 +100,6 @@ def build_inferenceservice(
     node_selector: dict[str, str] | None = None,
     labels: dict | None = None,
     profiler_ranges: str | None = None,
-    node_selector: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a KServe InferenceService manifest dict."""
     annotations: dict[str, str] = {
