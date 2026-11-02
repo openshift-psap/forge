@@ -2,7 +2,7 @@ import logging
 import sys
 from datetime import UTC, datetime
 
-from projects.core.library import config, env, run
+from projects.core.library import config, env
 from projects.core.library.ci import ExitCategory
 from projects.core.library.postprocess import (
     create_test_metadata,
@@ -239,91 +239,60 @@ def _smoke_test(test_namespace, endpoint_url, suffix, served_model_name, api_key
     )
 
 
-def _resolve_maas_external_url():
-    """Resolve the external MaaS gateway URL from the cluster ingress domain."""
+def _resolve_maas_gateway_url():
+    """Resolve the MaaS gateway URL and internal service name.
+
+    Returns (gateway_url, curl_connect_to):
+        gateway_url: the external hostname-based URL (https://maas.apps.…)
+        curl_connect_to: a --connect-to value mapping the hostname to the internal service
+    """
     from projects.core.dsl.utils.k8s import oc
+
+    maas_cfg = config.project.get_config("platform.maas")
+    gw_name = maas_cfg["gateway"]["name"]
+    gw_namespace = maas_cfg["gateway"]["namespace"]
 
     result = oc(
         "get",
-        "ingresses.config.openshift.io",
-        "cluster",
+        "gateway",
+        gw_name,
+        "-n",
+        gw_namespace,
         "-o",
-        "jsonpath={.spec.domain}",
+        "jsonpath={.spec.gatewayClassName} {.spec.listeners[0].hostname}",
         log_stdout=True,
     )
-    cluster_domain = result.stdout.strip()
-    if not cluster_domain:
-        raise RuntimeError("Failed to resolve cluster ingress domain")
-
-    return f"https://maas.{cluster_domain}"
-
-
-def _create_maas_api_key(namespace, maas_gateway_url, subscription_name):
-    """Create an ephemeral MaaS API key and write it to a temp file.
-
-    Returns the path to the file containing the API key (outside ARTIFACT_DIR).
-    """
-    import json
-    import shlex
-    import tempfile
-
-    from projects.core.dsl.utils.k8s import oc
-
-    sa_name = "default"
-    logger.info(
-        "Creating MaaS API key: gateway_url=%s, subscription=%s, sa=%s, namespace=%s",
-        maas_gateway_url,
-        subscription_name,
-        sa_name,
-        namespace,
-    )
-
-    token_result = oc(
-        "create",
-        "token",
-        sa_name,
-        "-n",
-        namespace,
-        handled_secretly=True,
-    )
-    sa_token = token_result.stdout.strip()
-
-    payload = json.dumps(
-        {
-            "name": "forge-test-key",
-            "expiresIn": "1h",
-            "ephemeral": True,
-            "subscription": subscription_name,
-        }
-    )
-    curl_cmd = (
-        f"curl -sS -k -X POST {shlex.quote(maas_gateway_url + '/maas-api/v1/api-keys')}"
-        f" -H {shlex.quote('Authorization: Bearer ' + sa_token)}"
-        f" -H 'Content-Type: application/json'"
-        f" -d {shlex.quote(payload)}"
-    )
-    result = run.run(curl_cmd, capture_stdout=True, timeout=30, handled_securely=True)
-
-    if not result.stdout.strip():
+    parts = result.stdout.strip().split()
+    if len(parts) != 2:
         raise RuntimeError(
-            f"MaaS API key creation returned empty response "
-            f"(url={maas_gateway_url}/maas-api/v1/api-keys, "
-            f"subscription={subscription_name})"
+            f"Failed to resolve gatewayClassName/hostname for {gw_name} in {gw_namespace}: "
+            f"got {result.stdout.strip()!r}"
         )
+    gateway_class, hostname = parts
 
-    response = json.loads(result.stdout)
-    api_key = response.get("key")
-    if not api_key:
-        raise RuntimeError(f"Failed to create MaaS API key: {response}")
+    svc_name = f"{gw_name}-{gateway_class}.{gw_namespace}.svc.cluster.local"
+    gateway_url = f"https://{hostname}"
+    curl_connect_to = f"{hostname}:443:{svc_name}:443"
 
-    token_file = tempfile.NamedTemporaryFile(
-        prefix="maas-api-key-", suffix=".key", delete=False, mode="w"
+    logger.info("MaaS gateway URL: %s (connect-to: %s)", gateway_url, curl_connect_to)
+    return gateway_url, curl_connect_to
+
+
+def _create_maas_api_key(namespace, maas_gateway_url, curl_connect_to, subscription_name):
+    """Create an ephemeral MaaS API key via the maas-deployer pod."""
+    from projects.ag_praxis.toolbox.create_maas_token import main as create_maas_token_command
+
+    deployer_namespace = config.project.get_config("platform.maas.namespace")
+
+    context = create_maas_token_command.run(
+        namespace=namespace,
+        gateway_url=maas_gateway_url,
+        curl_connect_to=curl_connect_to,
+        subscription_name=subscription_name,
+        deployer_namespace=deployer_namespace,
     )
-    token_file.write(api_key)
-    token_file.close()
 
-    logger.info("Created ephemeral MaaS API key: %s...", api_key[:10])
-    return token_file.name
+    return context.api_key_file_path
 
 
 def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
@@ -461,11 +430,11 @@ def do_test_praxis():
         model_name = config.project.get_config("platform.sim.model_name")
         _register_maas_model(test_namespace, maas_cfg, model_name)
 
-        maas_gateway_url = _resolve_maas_external_url()
+        maas_gateway_url, maas_curl_connect_to = _resolve_maas_gateway_url()
         llmisvc_name = maas_cfg["llmisvc_name"]
         subscription_name = f"{test_namespace}-{llmisvc_name}-subscription"
         api_key_file_path = _create_maas_api_key(
-            test_namespace, maas_gateway_url, subscription_name
+            test_namespace, maas_gateway_url, maas_curl_connect_to, subscription_name
         )
         maas_endpoint = f"{maas_gateway_url}/{test_namespace}/{llmisvc_name}"
         logger.info("MaaS external endpoint: %s", maas_endpoint)
@@ -483,8 +452,7 @@ def do_test_praxis():
         benchmark_start = None
 
         for ep_name, ep_url, api_key_path in endpoints:
-            artifact_name = ep_name.replace("/", "_")
-            with env.NextArtifactDir(artifact_name):
+            with env.NextArtifactDir(ep_name.replace("/", "_")):
                 _toggle_praxis_for_endpoint(ep_name, maas_cfg)
 
                 _smoke_test(
