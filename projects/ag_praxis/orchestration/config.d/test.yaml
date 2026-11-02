@@ -13,3 +13,4 @@ skip_finalizers: true
 endpoints:
 - svc
 - maas
+- maas/praxis

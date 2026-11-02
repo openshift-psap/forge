@@ -326,6 +326,24 @@ def _create_maas_api_key(namespace, maas_gateway_url, subscription_name):
     return token_file.name
 
 
+def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
+    """Toggle praxis activation based on the endpoint name."""
+    from projects.ag_praxis.toolbox.enable_maas_praxis import main as enable_maas_praxis_command
+
+    if ep_name == "maas/praxis":
+        logger.info("Activating praxis for endpoint %s", ep_name)
+        enable_maas_praxis_command.run(
+            activate=True,
+            tenant_namespace=maas_cfg["tenant_namespace"],
+        )
+    elif ep_name == "maas":
+        logger.info("Deactivating praxis for endpoint %s", ep_name)
+        enable_maas_praxis_command.run(
+            activate=False,
+            tenant_namespace=maas_cfg["tenant_namespace"],
+        )
+
+
 def _deploy_maas_sim(test_namespace, maas_cfg):
     """Deploy a sim for MaaS as an LLMInferenceService with TLS.
 
@@ -456,12 +474,19 @@ def do_test_praxis():
         all_endpoints = [
             ("svc", svc_endpoint, None),
             ("maas", maas_endpoint, api_key_file_path),
+            ("maas/praxis", maas_endpoint, api_key_file_path),
         ]
         selected = config.project.get_config("test.endpoints")
         endpoints = [(n, u, k) for n, u, k in all_endpoints if n in selected]
 
-        with env.NextArtifactDir("smoke_tests"):
-            for ep_name, ep_url, api_key_path in endpoints:
+        run_benchmark = config.project.get_config("test.run_benchmark")
+        benchmark_start = None
+
+        for ep_name, ep_url, api_key_path in endpoints:
+            artifact_name = ep_name.replace("/", "_")
+            with env.NextArtifactDir(artifact_name):
+                _toggle_praxis_for_endpoint(ep_name, maas_cfg)
+
                 _smoke_test(
                     test_namespace,
                     ep_url,
@@ -470,10 +495,9 @@ def do_test_praxis():
                     api_key_file_path=api_key_path,
                 )
 
-        if config.project.get_config("test.run_benchmark"):
-            benchmark_start = datetime.now(UTC)
-            for ep_name, ep_url, api_key_path in endpoints:
-                with env.NextArtifactDir(ep_name):
+                if run_benchmark:
+                    if benchmark_start is None:
+                        benchmark_start = datetime.now(UTC)
                     test_dir = env.ARTIFACT_DIR
                     payload_name = config.project.get_config("test.payload")
                     sweep_name = config.project.get_config("test.sweep")
@@ -496,8 +520,10 @@ def do_test_praxis():
                         test_dir, True, f"Endpoint {ep_name} completed successfully"
                     )
                     completed_endpoints.append(ep_name)
+
+        if run_benchmark and benchmark_start:
             benchmark_times = (benchmark_start, datetime.now(UTC))
-        else:
+        elif not run_benchmark:
             _write_benchmark_dry_run(maas_endpoint)
 
     except Exception:
