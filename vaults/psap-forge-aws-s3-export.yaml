@@ -10,3 +10,26 @@ content:
       [default]
       aws_access_key_id = AKIA...
       aws_secret_access_key = .....
+    recreate: |
+      aws iam create-user --user-name forge-s3-uploader
+      aws iam create-access-key --user-name forge-s3-uploader
+      # --> extract the access key id and secret
+      aws iam put-user-policy --user-name forge-s3-uploader \
+                --policy-name s3-access-psap-dashboard-data  \
+                --policy-document '{
+      "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              "s3:PutObject",
+              "s3:GetObject",
+              "s3:ListBucket"
+            ],
+            "Resource": [
+              "arn:aws:s3:::psap-dashboard-data",
+              "arn:aws:s3:::psap-dashboard-data/*"
+            ]
+          }
+        ]
+      }'
