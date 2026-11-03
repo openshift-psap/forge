@@ -15,6 +15,24 @@ Key paths:
 - `projects/fournos_launcher/` — Fournos launcher orchestration (irrelevant for most Forge work — do not explore unless explicitly asked)
 - `docs/` — project documentation
 
+## Architectural Boundaries & Layering
+This codebase enforces strict directory-based module layering. When modifying a file, look at its directory path to determine its allowed dependencies. You are strictly forbidden from creating circular dependencies or importing from higher-level layers.
+
+* **Orchestration Layer (`projects/NAME/orchestration/`):**
+  - *Allowed:* May import from `projects/*/toolbox/` and `projects/caliper/orchestration`.
+  - *Constraint:* You may only import public exports (defined in `__init__.py` or explicitly public functions). Do not deep-import internal files.
+  - *Constraint:* NEVER import from `projects/caliper/engine`.
+
+* **Toolbox Layer (`projects/NAME/toolbox/`):**
++  - *Allowed:* Agnostic utilities, standard library and external pip dependencies, `projects/core/dsl`, and other projects' `projects/*/toolbox/` commands.
+  - *Constraint:* NEVER import from `projects/*/orchestration/` or `projects/core/library`.
+
+* **Caliper Layer (`projects/caliper/`):**
+  - *Allowed:* `projects/caliper/orchestration` may import from `projects/core/library/`.
+  - *Standalone:* `projects/caliper/engine` NEVER imports from any other `project/*`.
+
+If a requested change requires violating these directory boundaries, reject the task and state that the architecture forbids it.
+
 ## Security: Secret Handling (CRITICAL)
 
 **NEVER write secrets or sensitive data to artifact directories, logs, or files.**
@@ -167,6 +185,7 @@ Orchestration is the **upper layer** — CI phases, config, presets.
 
 1. **Toolbox must never import from orchestration.**
    No `from projects.NAME.orchestration.runtime_config import cfg` in toolbox code.
+   No `from projects.library.core import config` in toolbox code.
    All inputs come through the `run()` entrypoint parameters for strong isolation.
 
 2. **Pass all values explicitly via `run()` parameters.**
