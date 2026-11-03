@@ -39,15 +39,11 @@ def _effective_profiler_enabled(profiler_cfg: dict, workload_keys: list[str], en
     return bool(_optional_phase_workload_keys(workload_keys, excluded_workloads))
 
 
-def _standalone_only_analysis(workload_keys: list[str]) -> bool:
-    """True when the run only compares existing S3 data (no benchmark, no profiler)."""
+def _postprocess_enabled() -> bool:
+    """Caliper postprocessing only has records to work on when the benchmark ran."""
     from projects.core.library import config
 
-    if config.project.get_config("tests.rhaiis.run_benchmark", True):
-        return False
-
-    profiler_cfg = runtime_config.get_profiler_config()
-    return not _effective_profiler_enabled(profiler_cfg, workload_keys, runtime_config.get_engine())
+    return config.project.get_config("tests.rhaiis.run_benchmark", True)
 
 
 def _write_manifest(manifest: dict, path: Path) -> None:
@@ -73,7 +69,7 @@ def run(
 ) -> int:
     from projects.core.library import config
 
-    postprocess_enabled = not _standalone_only_analysis(workload_keys)
+    postprocess_enabled = _postprocess_enabled()
     if not postprocess_enabled:
         # no Caliper-parsable artifacts are produced, so postprocessing would
         # only fail the run; disable it before wrapping the test
