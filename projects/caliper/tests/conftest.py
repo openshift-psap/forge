@@ -65,11 +65,15 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _wait_for_server(uri: str, timeout_seconds: float = 60.0) -> None:
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
+def _wait_for_server(uri: str, timeout_seconds: float = 180.0) -> None:
+    # Cold imports/database migrations can take over a minute on a busy host.
+    # Never route this loopback readiness check through a developer's proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
         try:
-            urllib.request.urlopen(uri + "/health", timeout=2)
+            with opener.open(uri + "/health", timeout=2):
+                pass
             return
         except (urllib.error.URLError, OSError):
             time.sleep(0.5)
@@ -94,6 +98,8 @@ def mlflow_server(tmp_path_factory: pytest.TempPathFactory, mlflow_env_session_s
         [
             "mlflow",
             "server",
+            "--workers",
+            "1",
             "--host",
             "127.0.0.1",
             "--port",

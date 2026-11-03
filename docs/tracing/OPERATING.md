@@ -196,3 +196,54 @@ store:
 - Duplicate ingestion of the same payload is idempotent on this baseline
   (3.12 + SQLite); exactly-once delivery is not claimed on the strength of a
   local checkpoint alone.
+
+## Sanitization boundary and diagnostic recovery
+
+The first Collector receiver accepts gRPC/HTTP OTLP and synchronously forwards
+OTLP JSON to a loopback-only, standard-library Python sanitizer sidecar. The
+sidecar imports the same versioned policy as artifact capture, sanitizes in
+memory, and forwards to a second loopback-only Collector receiver connected to
+the native file exporter. The raw pipeline has no batch processor, persistent
+queue, or file exporter. Sanitizer errors reject ingress; there is no bypass.
+The sidecar has no spool mount, a read-only root filesystem, a 16 MiB request
+limit, socket/forwarding deadlines, and bounded CPU/memory. Source files are
+mounted from the capture-owned ConfigMap; no runtime package installation is
+needed. Its image is pinned to `python:3.12.8-slim-bookworm`.
+
+Policy version 2 recursively filters key/value lists and redacts arrays, removes
+opaque bytes and tracestate, and reviews scope identity and schema URLs.
+The policy runs again during capture as defense in depth. It preserves original
+trace/span IDs, hierarchy, timestamps, events, and link identities.
+
+Unassigned traces are retained in `trace-diagnostics/unassigned.otlp.jsonl.gz`
+at the capture root, with per-trace IDs/reasons and a checksum in
+`attribution.json`. These files are ordinary diagnostics, not discoverable
+native-export bundles. Missing roots and ambiguous ownership fail collection
+at every sampling ratio and preserve the collector. Outside-window traces
+(such as warmup) remain diagnostic-only without failing a valid measured window.
+Conflicting captures retain `invalid.otlp.jsonl.gz` and `validation.json` before
+raising. The configured bundle size limit also bounds diagnostic archives.
+Report errors now create `tracing-report-failed`, mark postprocessing failed,
+and leave retained artifacts available for independent export/replay.
+
+## Reproduce local boundary validation
+
+The container test uses only disposable local containers and a volume. Pre-pull
+these images using Podman:
+
+```sh
+podman pull ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.115.1
+podman pull python:3.12.8-slim-bookworm
+FORGE_TEST_COLLECTOR=1 python -m pytest projects/cluster/tests/test_tracing_collector_integration.py
+python -m pytest projects/cluster/tests/test_tracing_regressions.py projects/cluster/tests/test_tracing_sanitizer_boundary.py
+python -m pytest projects/caliper/tests/test_tracing_mlflow_ingest.py projects/caliper/tests/test_tracing_multi_run_export.py
+```
+
+The Collector fixture tests the first persisted record, link identity, nested
+sentinels, sanitizer failure, append after restart, and rejection on a full spool. The MLflow fixture starts
+one loopback worker on a disposable SQLite store and scrubs live credentials.
+These tests do not establish OpenShift SCC/storage behavior, deployed
+workspace/auth-proxy compatibility, producer span emission, or tracing overhead.
+EPP and P/D remain unvalidated and are not enabled by these fixes. Their controller
+fields, images, and propagation must be proven on an explicitly authorized test
+cluster before changing the supported topology gate.

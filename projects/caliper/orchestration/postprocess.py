@@ -1524,8 +1524,17 @@ class CaliperPostprocessOrchestrator:
         # repeated benchmark. Failure is reported but never aborts the pipeline.
         try:
             self._generate_trace_reports()
-        except Exception as e:
-            logger.warning("Failed to generate trace reports: %s", e)
+        except Exception:
+            from projects.core.library import ci
+
+            # Do not include raw exception text: it can originate in trace data.
+            message = "Trace report generation failed; retained bundles can be replayed."
+            logger.error(message)
+            ci.add_notification_file("tracing-report-failed", message)
+            self._add_step("trace_reports", {"status": "failed", "error": message})
+            result["success"] = False
+            if result.get("final_status") == FINAL_SUCCESS:
+                result["final_status"] = FINAL_KPI_PIPELINE_FAILED
 
     def _generate_trace_reports(self) -> None:
         """Generate a shared trace report for every discovered bundle.

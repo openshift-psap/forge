@@ -10,6 +10,7 @@ artifact directory, and no credential is ever embedded in a manifest.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from projects.cluster.library.tracing.instrumentation import collector_service_name
@@ -30,6 +31,18 @@ MANAGED_BY_LABEL_VALUE = "forge"
 # A small image that surely contains a shell-less reader is not assumed; the
 # spool-reader container uses a pinned busybox so `oc exec`/`oc cp` work.
 DEFAULT_READER_IMAGE = "busybox:1.36.1"
+SANITIZER_IMAGE = "python:3.12.8-slim-bookworm"
+
+
+def sanitizer_sources() -> dict[str, str]:
+    """Ship the shared policy unchanged; no duplicate policy in the sidecar."""
+    library = Path(__file__).parent
+    command = library.parents[1] / "toolbox" / "deploy_trace_collector" / "templates"
+    return {
+        "sanitizer.py": (library / "sanitizer.py").read_text(),
+        "models.py": (library / "models.py").read_text(),
+        "sanitize_otlp.py": (command / "sanitize_otlp.py").read_text(),
+    }
 
 
 class TracingResourceError(RuntimeError):
@@ -80,7 +93,7 @@ def build_collector_resources(
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {"name": f"{name}-config", "namespace": namespace, "labels": labels},
-        "data": {"config.yaml": collector_config_text},
+        "data": {"config.yaml": collector_config_text, **sanitizer_sources()},
     }
 
     pvc = {
@@ -136,6 +149,34 @@ def build_collector_resources(
                     ],
                     "containers": [
                         {
+                            "name": "sanitizer",
+                            "image": SANITIZER_IMAGE,
+                            "command": ["python", "-B", "/opt/forge/sanitize_otlp.py"],
+                            "securityContext": {
+                                "allowPrivilegeEscalation": False,
+                                "readOnlyRootFilesystem": True,
+                                "capabilities": {"drop": ["ALL"]},
+                            },
+                            "resources": {
+                                "requests": {"cpu": "50m", "memory": "64Mi"},
+                                "limits": {"cpu": "500m", "memory": "512Mi"},
+                            },
+                            "readinessProbe": {
+                                "exec": {
+                                    "command": [
+                                        "python",
+                                        "-B",
+                                        "-c",
+                                        "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4319/health', timeout=2)",
+                                    ]
+                                },
+                                "periodSeconds": 5,
+                            },
+                            "volumeMounts": [
+                                {"name": "sanitizer", "mountPath": "/opt/forge", "readOnly": True}
+                            ],
+                        },
+                        {
                             "name": "collector",
                             "image": settings.collector_image,
                             "args": ["--config=/etc/otel/config.yaml"],
@@ -186,6 +227,23 @@ def build_collector_resources(
                         },
                     ],
                     "volumes": [
+                        {
+                            "name": "sanitizer",
+                            "configMap": {
+                                "name": f"{name}-config",
+                                "items": [
+                                    {"key": "sanitize_otlp.py", "path": "sanitize_otlp.py"},
+                                    {
+                                        "key": "sanitizer.py",
+                                        "path": "projects/cluster/library/tracing/sanitizer.py",
+                                    },
+                                    {
+                                        "key": "models.py",
+                                        "path": "projects/cluster/library/tracing/models.py",
+                                    },
+                                ],
+                            },
+                        },
                         {
                             "name": "spool",
                             "persistentVolumeClaim": {"claimName": pvc_name(identity.capture_id)},

@@ -174,7 +174,24 @@ def redact_anyvalue(any_value: Any) -> Any:
     """
     if not isinstance(any_value, dict):
         return redact_value(any_value)
-    for key in ("stringValue", "bytesValue"):
+    # Opaque bytes cannot be reviewed as text (OTLP JSON base64-encodes them).
+    if "bytesValue" in any_value:
+        return {"stringValue": REDACTED_STATUS}
+    if "arrayValue" in any_value:
+        return {
+            "arrayValue": {
+                "values": [redact_anyvalue(v) for v in any_value["arrayValue"].get("values", [])]
+            }
+        }
+    if "kvlistValue" in any_value:
+        return {
+            "kvlistValue": {
+                "values": _sanitize_attributes(
+                    any_value["kvlistValue"].get("values", []), SPAN_ATTRIBUTE_ALLOWLIST
+                )
+            }
+        }
+    for key in ("stringValue",):
         if key in any_value:
             out = dict(any_value)
             out[key] = redact_value(any_value[key])
@@ -200,12 +217,13 @@ def _sanitize_attributes(
 def _sanitize_name(name: Any) -> str:
     if not isinstance(name, str) or _SENSITIVE_NAME_PATTERN.search(name):
         return REDACTED_NAME
-    return name
+    return redact_value(name)
 
 
 def sanitize_span(span: dict[str, Any]) -> dict[str, Any]:
     """Return a sanitized copy of one OTLP JSON span."""
     out = dict(span)
+    out.pop("traceState", None)
     out["name"] = _sanitize_name(span.get("name"))
     out["attributes"] = _sanitize_attributes(span.get("attributes"), SPAN_ATTRIBUTE_ALLOWLIST)
 
@@ -235,6 +253,7 @@ def sanitize_span(span: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(link, dict):
             continue
         link_out = dict(link)
+        link_out.pop("traceState", None)
         link_out["attributes"] = _sanitize_attributes(
             link.get("attributes"), SPAN_ATTRIBUTE_ALLOWLIST
         )
@@ -247,7 +266,7 @@ def sanitize_span(span: dict[str, Any]) -> dict[str, Any]:
 def _sanitize_event_name(name: Any) -> str:
     if not isinstance(name, str) or _SENSITIVE_NAME_PATTERN.search(name):
         return REDACTED_EVENT
-    return name
+    return redact_value(name)
 
 
 def sanitize_resource(resource: dict[str, Any]) -> dict[str, Any]:
@@ -263,6 +282,9 @@ def sanitize_scope(scope: dict[str, Any]) -> dict[str, Any]:
     """Keep scope name/version (instrumentation identity), drop free-form attrs."""
     out = dict(scope)
     out["attributes"] = []
+    for key in ("name", "version"):
+        if key in out:
+            out[key] = _sanitize_name(out[key])
     return out
 
 
@@ -277,12 +299,16 @@ def sanitize_export_request(request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(resource_span, dict):
             continue
         rs_out = dict(resource_span)
+        if "schemaUrl" in rs_out:
+            rs_out["schemaUrl"] = redact_value(rs_out["schemaUrl"])
         rs_out["resource"] = sanitize_resource(resource_span.get("resource") or {})
         scopes = []
         for scope_span in resource_span.get("scopeSpans") or []:
             if not isinstance(scope_span, dict):
                 continue
             ss_out = dict(scope_span)
+            if "schemaUrl" in ss_out:
+                ss_out["schemaUrl"] = redact_value(ss_out["schemaUrl"])
             ss_out["scope"] = sanitize_scope(scope_span.get("scope") or {})
             ss_out["spans"] = [sanitize_span(span) for span in scope_span.get("spans") or []]
             scopes.append(ss_out)

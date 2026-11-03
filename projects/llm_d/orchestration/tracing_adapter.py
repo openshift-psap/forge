@@ -8,7 +8,7 @@ module only injects concrete, llm_d-specific fields.
 Instrumentation target:
 - the standard serving container (``spec.template.containers[main]``).
 
-Only standard vLLM serving is validated end-to-end. Prefill/decode (P/D) and an
+Only standard vLLM serving is currently instrumented; live validation remains a release gate. Prefill/decode (P/D) and an
 injected routing proxy are rejected before rendering: the pure instrumentation
 helpers exist in ``projects.cluster.library.tracing`` and are unit-tested, but no
 smoke test has established that those components emit and propagate spans. The
@@ -133,7 +133,7 @@ def instrument_manifest(
     Returns the manifest (mutated in place for caller convenience) so rendering
     remains a single pass. When tracing is off the manifest is returned unchanged.
 
-    Only standard vLLM serving is validated end-to-end. Prefill/decode (P/D) and
+    Only standard vLLM serving is currently instrumented; live validation remains a release gate. Prefill/decode (P/D) and
     an injected routing proxy are rejected before the manifest is touched: the
     pure helpers exist, but no smoke test has established that those components
     emit and propagate spans. The EPP scheduler is left exactly as rendered and

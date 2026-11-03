@@ -20,7 +20,7 @@ from typing import Any
 SUMMARY_SCHEMA_VERSION = 1
 
 # Bump when the reviewed sanitization allowlist or redaction rules change.
-SANITIZATION_POLICY_VERSION = 1
+SANITIZATION_POLICY_VERSION = 2
 
 
 class TracingConfigError(ValueError):

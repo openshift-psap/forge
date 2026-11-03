@@ -176,3 +176,25 @@ def test_orchestrator_scans_artifact_tree_not_output_dir(tmp_path: Path, monkeyp
 
     report = artifacts_dir / "000__workload" / "reports" / tracing_report.REPORT_HTML_FILENAME
     assert report.is_file()
+
+
+def test_report_failure_notifies_and_marks_result_failed(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from projects.caliper.orchestration.postprocess import CaliperPostprocessOrchestrator
+    from projects.core.library import ci, postprocess, reports_index
+
+    obj = CaliperPostprocessOrchestrator({}, artifacts_dir=tmp_path, output_dir=tmp_path)
+    monkeypatch.setattr(reports_index, "generate_caliper_reports_index", Mock())
+    monkeypatch.setattr(postprocess, "generate_postprocess_status_report", Mock())
+    monkeypatch.setattr(
+        obj, "_generate_trace_reports", Mock(side_effect=ValueError("private payload"))
+    )
+    notify = Mock()
+    monkeypatch.setattr(ci, "add_notification_file", notify)
+    result = {"success": True, "final_status": "success", "steps": obj.steps}
+    obj._generate_reports(result)
+    assert result["success"] is False
+    assert result["steps"][-1]["trace_reports"]["status"] == "failed"
+    notify.assert_called_once()
+    assert "private payload" not in str(notify.call_args)

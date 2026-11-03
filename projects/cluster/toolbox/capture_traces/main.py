@@ -7,9 +7,8 @@ Snapshots the sanitized OTLP spool from a capture's collector, transfers it,
 validates it, partitions traces per benchmark window, and publishes one trace
 bundle per window below the owning Caliper test node.
 
-Sanitization runs here, before anything is written to disk: prompts,
-completions, headers, cookies, URL credentials and exception text never reach
-the archive, reports, or the native endpoint. Records are partitioned by
+The collector sanitizes before its first spool write. Capture reapplies that
+policy before publishing archives. Records are partitioned by
 original trace ID while keeping the native OTLP shape (kinds, events, links,
 status, resource and scope data), so the archive stays replayable.
 
@@ -36,6 +35,7 @@ from pathlib import Path
 
 from projects.caliper.engine.tracing import bundle as bundle_mod
 from projects.caliper.engine.tracing.analysis import (
+    TraceValidationError,
     analyze_quality,
     assign_traces_to_windows,
     build_trace_index,
@@ -333,13 +333,18 @@ def sanitize_and_publish(args, ctx):
         return "Published empty bundles (no spans captured)"
 
     sanitized_path = _sanitize_spool(ctx)
-    index = build_trace_index(_iter_span_records_from_file(sanitized_path))
+    try:
+        index = build_trace_index(_iter_span_records_from_file(sanitized_path))
+    except TraceValidationError:
+        _retain_invalid_capture(ctx, sanitized_path)
+        raise
     quality = analyze_quality(index)
     quality.partial_records = int(getattr(ctx, "partial_records", 0) or 0)
     if ctx.interrupted:
         quality.interrupted = True
 
     assignment = assign_traces_to_windows(index, windows)
+    _publish_unassigned(ctx, sanitized_path, assignment.unassigned)
     observed = observed_services(index)
     total_trace_count = len(index.traces)
     total_span_count = count_spans(index)
@@ -367,7 +372,10 @@ def sanitize_and_publish(args, ctx):
     # A window whose bundle held no assigned spans is recorded empty, and any
     # such window makes the run's status EMPTY. Callers gate full-sampling
     # acceptance on that, so an instrumentation/endpoint miss is not silent.
-    if ctx.interrupted:
+    attribution_failed = any(reason != "outside-window" for _, reason in assignment.unassigned)
+    if attribution_failed:
+        ctx.status = CollectionStatus.FAILED
+    elif ctx.interrupted:
         ctx.status = CollectionStatus.INCOMPLETE
     elif empty_windows:
         ctx.status = CollectionStatus.EMPTY
@@ -379,6 +387,61 @@ def sanitize_and_publish(args, ctx):
     if empty_windows:
         return f"Published {published} bundle(s), {empty_windows} with no assigned spans"
     return f"Published {published} bundle(s)"
+
+
+def _retain_invalid_capture(ctx, sanitized_path):
+    """Preserve conflicting sanitized records without creating an export bundle."""
+    limit = getattr(ctx, "max_bundle_bytes", 0)
+    if limit and sanitized_path.stat().st_size > limit:
+        raise TraceCaptureError("invalid capture exceeds diagnostic size limit")
+    directory = ctx.output_dir / "trace-diagnostics"
+    directory.mkdir(parents=True, exist_ok=True)
+    archive = directory / "invalid.otlp.jsonl.gz"
+    with sanitized_path.open("rb") as source, gzip.open(archive, "wb") as target:
+        shutil.copyfileobj(source, target)
+    write_json(
+        directory / "validation.json",
+        {
+            "reason": "trace-validation-failed",
+            "archive": archive.name,
+            "sha256": _sha256_file(archive),
+        },
+    )
+    ctx.status = CollectionStatus.FAILED
+
+
+def _publish_unassigned(ctx, sanitized_path, unassigned):
+    """Retain unowned data outside test bundles so it is never linked to a run."""
+    diagnostics = ctx.output_dir / "trace-diagnostics"
+    if not unassigned and not diagnostics.exists():
+        return
+    diagnostics.mkdir(parents=True, exist_ok=True)
+    ids = {trace_id for trace_id, _ in unassigned}
+    archive = diagnostics / "unassigned.otlp.jsonl.gz"
+    pending = archive.with_suffix(".tmp")
+    size = 0
+    limit = getattr(ctx, "max_bundle_bytes", 0)
+    try:
+        with gzip.open(pending, "wt", encoding="utf-8") as handle:
+            for record in read_archive_records(sanitized_path):
+                for part in _partition_records([record], ids):
+                    line = json.dumps(part) + "\n"
+                    size += len(line.encode())
+                    if limit and size > limit:
+                        raise TraceCaptureError("unassigned diagnostics exceed max_bundle_bytes")
+                    handle.write(line)
+        pending.replace(archive)
+    finally:
+        pending.unlink(missing_ok=True)
+    write_json(
+        diagnostics / "attribution.json",
+        {
+            "capture_id": ctx.capture_id,
+            "archive": archive.name,
+            "sha256": _sha256_file(archive),
+            "unassigned": [{"trace_id": t, "reason": r} for t, r in unassigned],
+        },
+    )
 
 
 @always

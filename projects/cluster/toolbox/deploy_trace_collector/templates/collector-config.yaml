@@ -14,15 +14,25 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+  otlp/sanitized:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4320
 processors:
   memory_limiter:
     check_interval: 2s
     limit_mib: 512
     spike_limit_mib: 128
-  batch:
-    send_batch_size: 512
-    timeout: 2s
 exporters:
+  otlphttp/sanitize:
+    endpoint: http://127.0.0.1:4319
+    encoding: json
+    compression: none
+    # Propagate failures to producers; never persist or asynchronously queue raw data.
+    sending_queue:
+      enabled: false
+    retry_on_failure:
+      enabled: false
   file:
     path: /var/lib/forge-traces/spool/otlp.jsonl
     # Append on restart so replacing the collector pod never truncates earlier
@@ -42,7 +52,11 @@ service:
     metrics:
       level: none
   pipelines:
-    traces:
+    traces/receive:
       receivers: [otlp]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter]
+      exporters: [otlphttp/sanitize]
+    traces/persist:
+      receivers: [otlp/sanitized]
+      processors: [memory_limiter]
       exporters: [file]

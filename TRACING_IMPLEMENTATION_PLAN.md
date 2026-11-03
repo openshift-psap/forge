@@ -447,3 +447,22 @@ Run affected existing suites in `projects/core/tests`, `projects/cluster/tests`,
 | Performance guidance | Controlled overhead measurements using the same workload and deployment settings |
 
 Keep these decisions attached to test evidence. Do not describe an engine, topology, or recovery scenario as supported merely because the configuration can be rendered.
+
+## Implementation amendment — 2026-10-28
+
+The local pinned-Collector probe on 2026-10-27 accepted synthetic OTLP with
+HTTP 200 and persisted prompt/completion sentinels before capture sanitization.
+The pinned redaction processor only traverses resource/span attributes; it does
+not implement the full reviewed event/link/nested-value policy. To preserve the
+native file format and link identities with one policy implementation, the
+collection path now inserts an in-memory Python sanitizer between the ingress
+Collector pipeline and a loopback-only persistence pipeline. Neither raw queueing
+nor raw persistence is permitted. Forwarding is synchronous and failures return
+to the producer. The native file exporter remains the only spool writer.
+
+The sidecar runs shared policy source mounted through the capture ConfigMap,
+uses only Python's standard library, and has no writable spool mount. The
+reproducible fixture is `projects/cluster/tests/test_tracing_collector_integration.py`;
+operating instructions describe the opt-in local command and remaining live
+release gates. This is an evidence-driven amendment to the original single
+Collector processing step, not an alternative exporter or legacy fallback.

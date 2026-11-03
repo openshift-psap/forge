@@ -160,8 +160,6 @@ def wait_for_ready(args, ctx):
             f"collector did not become ready within {ctx.settings.ready_timeout_seconds}s"
         )
 
-    from projects.cluster.library.tracing.collection import collector_service_name
-
     deployment = oc_get_json(
         "deployment",
         name=collector_service_name(ctx.identity.capture_id),
@@ -184,17 +182,17 @@ def verify_storage(args, ctx):
     with the same volume permissions the collector uses. The artifact reader
     sidecar stays read-only, so it is never used to test writability.
     """
-    deployment = oc_get_json(
-        "deployment",
-        name=collector_service_name(ctx.identity.capture_id),
+    ctx.collector_pod = _collector_pod(ctx)
+    pod = oc_get_json(
+        "pod",
+        name=ctx.collector_pod,
         namespace=ctx.identity.namespace,
     )
-    init_statuses = deployment.get("status", {}).get("initContainerStatuses", []) or []
+    init_statuses = pod.get("status", {}).get("initContainerStatuses", []) or []
     probe = next((s for s in init_statuses if s.get("name") == "spool-probe"), None)
     if not probe or probe.get("state", {}).get("terminated", {}).get("exitCode") != 0:
         raise RuntimeError("spool write probe did not succeed; PVC is not writable")
 
-    ctx.collector_pod = _collector_pod(ctx)
     return "Spool PVC is Bound and writable"
 
 
