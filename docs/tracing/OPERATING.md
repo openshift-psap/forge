@@ -70,16 +70,40 @@ bundle produces a clear *skipped* result, not an empty request.
 
 | Project | Engine | Topology | Status |
 | --- | --- | --- | --- |
-| llm_d | vLLM | vLLM container only (EPP scheduler present, not instrumented) | instrumented; needs OpenShift smoke validation |
+| llm_d | vLLM | Standard serving, with an explicit EPP template when a scheduler is present | instrumented; needs OpenShift smoke validation |
+| llm_d | vLLM | Controller-default scheduler (`scheduler: {}`) | **rejected** with tracing; supply a complete scheduler argument template |
 | rhaiis | vLLM | ServingRuntime (single pod) | instrumented; needs OpenShift smoke validation |
 | llm_d | vLLM | P/D (prefill/decode) | **rejected** (helpers exist; not validated end-to-end) |
 | llm_d | vLLM | routing proxy | **rejected** (helpers exist; not validated end-to-end) |
 | rhaiis | SGLang / TRT-LLM | any | **rejected** until a capability check + smoke test exist |
 
-For llm_d, only the vLLM serving container is instrumented. The EPP scheduler
-container is left exactly as rendered and is **not** instrumented, so llm_d
-traces are single-service and do not show routing decisions. EPP and P/D
-coverage are release gates.
+For llm_d, tracing instruments the standard vLLM serving container and the EPP
+scheduler's `main` container. EPP receives `--tracing=true`, its own deployment
+service name, FORGE capture attributes, the collector's gRPC endpoint, and the
+same parent-based sampling settings as vLLM. Existing scheduler configuration,
+arguments, environment, images, and other containers are preserved. Standard and
+detailed modes both collect routing spans; detailed model-phase flags apply only
+to vLLM. No fixed request-wide `traceparent` is injected.
+
+Use the approximate-prefix-cache or precise-prefix-cache deployment profiles,
+which provide complete EPP arguments. KServe merges container environment by
+name but replaces argument lists. Adding only `--tracing=true` to a
+controller-default scheduler would discard its routing arguments. FORGE therefore
+rejects tracing for `scheduler: {}` or a scheduler template without explicit
+`main` arguments. A simple deployment with no scheduler still supports vLLM
+tracing. See the [controller merge implementation](https://github.com/kserve/kserve/blob/master/pkg/controller/v1alpha2/llmisvc/config_merge.go)
+and [EPP tracing configuration](https://github.com/llm-d/llm-d-router/blob/main/config/charts/routerlib/templates/_deployment.yaml).
+
+At full sampling, each workload must contain both expected service names and
+an EPP parent span for a vLLM span in the same trace. Missing components or
+missing propagation fail collection, retain sanitized bundles and collector
+storage for recovery, and trigger the orchestration failure notification.
+Observed services are scoped to each workload's bundle. At lower sampling,
+partial component visibility can be expected and this acceptance gate is skipped.
+These artifact checks do not establish that an arbitrary serving image emits
+spans; run `tracing-smoke` on the selected images and controller to validate them.
+
+P/D and routing-proxy integration are outside this change and remain rejected.
 
 Requesting tracing for an unsupported engine or topology raises before anything
 is rendered or applied. There is no silent fallback.
@@ -174,11 +198,11 @@ MLflow are not mutated by this repository's tests.
 | Collector image and file contract | Pinned-image replay, restart, flush, and storage tests on OpenShift |
 | Client/server baseline | Actual native endpoint, auth proxy, workspace routing, run linkage, duplicate-ingestion tests |
 | Storage defaults and retention | Expected trace volumes and tested OpenShift storage behavior |
-| Supported producer matrix | Image/controller-specific standard and P/D smoke results |
+| Supported producer matrix | Image/controller-specific standard vLLM and EPP smoke results |
 | Drain deadline and quality interpretation | Producer batching measurements and interrupted-run tests |
 | Sanitization allowlist | Safe diagnostic-field review and sentinel tests for every persisted surface |
 | Performance guidance | Controlled overhead measurements, tracing off vs standard vs detailed |
-| EPP / P-D enablement | Standard and P/D smoke runs proving component spans and context propagation |
+| EPP validation | Standard smoke runs proving both component spans and context propagation |
 
 ## Measured compatibility evidence (Stage 1)
 
@@ -244,6 +268,6 @@ sentinels, sanitizer failure, append after restart, and rejection on a full spoo
 one loopback worker on a disposable SQLite store and scrubs live credentials.
 These tests do not establish OpenShift SCC/storage behavior, deployed
 workspace/auth-proxy compatibility, producer span emission, or tracing overhead.
-EPP and P/D remain unvalidated and are not enabled by these fixes. Their controller
-fields, images, and propagation must be proven on an explicitly authorized test
-cluster before changing the supported topology gate.
+EPP is instrumented through explicit scheduler templates. Its image/controller
+compatibility and propagation must be proven on an explicitly authorized test
+cluster. P/D integration is deferred to a separate change.

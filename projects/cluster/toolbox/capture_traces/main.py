@@ -35,13 +35,13 @@ from pathlib import Path
 
 from projects.caliper.engine.tracing import bundle as bundle_mod
 from projects.caliper.engine.tracing.analysis import (
+    TraceIndex,
     TraceValidationError,
     analyze_quality,
     assign_traces_to_windows,
     build_trace_index,
     count_spans,
     iter_span_records,
-    observed_services,
     read_archive_records,
 )
 from projects.cluster.library.tracing.collection import (
@@ -54,6 +54,7 @@ from projects.cluster.library.tracing.models import (
     CollectionQuality,
     CollectionStatus,
     TraceWindow,
+    build_service_name,
 )
 from projects.cluster.library.tracing.sanitizer import (
     SANITIZATION_POLICY,
@@ -345,15 +346,22 @@ def sanitize_and_publish(args, ctx):
 
     assignment = assign_traces_to_windows(index, windows)
     _publish_unassigned(ctx, sanitized_path, assignment.unassigned)
-    observed = observed_services(index)
     total_trace_count = len(index.traces)
     total_span_count = count_spans(index)
 
     partitioned = _partition_spool(ctx, sanitized_path, assignment)
     published = 0
     empty_windows = 0
+    component_failures = 0
     for window in windows:
         trace_ids = set(assignment.assigned.get(window.test_id, []))
+        window_index = TraceIndex(
+            traces={trace_id: index.traces[trace_id] for trace_id in trace_ids}
+        )
+        observed = sorted(
+            {span.service_name for span in window_index.all_spans() if span.service_name}
+        )
+        component_error = _epp_capture_error(ctx, window, window_index)
         span_count = _publish_bundle(
             ctx,
             window,
@@ -364,7 +372,9 @@ def sanitize_and_publish(args, ctx):
             observed=observed,
             total_trace_count=total_trace_count,
             total_span_count=total_span_count,
+            component_error=component_error,
         )
+        component_failures += bool(component_error)
         published += 1
         if span_count == 0:
             empty_windows += 1
@@ -373,7 +383,7 @@ def sanitize_and_publish(args, ctx):
     # such window makes the run's status EMPTY. Callers gate full-sampling
     # acceptance on that, so an instrumentation/endpoint miss is not silent.
     attribution_failed = any(reason != "outside-window" for _, reason in assignment.unassigned)
-    if attribution_failed:
+    if attribution_failed or component_failures:
         ctx.status = CollectionStatus.FAILED
     elif ctx.interrupted:
         ctx.status = CollectionStatus.INCOMPLETE
@@ -387,6 +397,26 @@ def sanitize_and_publish(args, ctx):
     if empty_windows:
         return f"Published {published} bundle(s), {empty_windows} with no assigned spans"
     return f"Published {published} bundle(s)"
+
+
+def _epp_capture_error(ctx, window: TraceWindow, index: TraceIndex) -> str:
+    """At full sampling, require both services and a propagated EPP parent."""
+    if "epp" not in ctx.instrumentation_roles or ctx.sample_ratio < 1.0:
+        return ""
+    deployment_id = window.deployment_id or ctx.deployment_id
+    epp = build_service_name(deployment_id, "epp")
+    vllm = build_service_name(deployment_id, "vllm")
+    observed = {span.service_name for span in index.all_spans()}
+    missing = {epp, vllm} - observed
+    if missing:
+        return "missing expected services at full sampling: " + ", ".join(sorted(missing))
+    for spans in index.traces.values():
+        by_id = {span.span_id: span for span in spans}
+        for span in spans:
+            parent = by_id.get(span.parent_span_id)
+            if span.service_name == vllm and parent is not None and parent.service_name == epp:
+                return ""
+    return "no EPP-to-vLLM parent relationship at full sampling; check context propagation"
 
 
 def _retain_invalid_capture(ctx, sanitized_path):
@@ -617,7 +647,8 @@ def _publish_bundle(
     observed,
     total_trace_count: int,
     total_span_count: int,
-) -> None:
+    component_error: str = "",
+) -> int:
     bundle_dir = _bundle_dir(ctx, window)
     bundle_dir.mkdir(parents=True, exist_ok=True)
     archive = bundle_dir / bundle_mod.ARCHIVE_FILENAME
@@ -629,7 +660,10 @@ def _publish_bundle(
                 handle.write(json.dumps(record) + "\n")
                 span_count += _count_record_spans(record)
 
-    if ctx.interrupted:
+    if component_error:
+        status = CollectionStatus.FAILED
+        reason = component_error
+    elif ctx.interrupted:
         status = CollectionStatus.INCOMPLETE
         reason = "drain interrupted; partial data retained"
     elif span_count == 0:

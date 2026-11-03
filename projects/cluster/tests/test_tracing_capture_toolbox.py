@@ -72,7 +72,7 @@ class _Ctx:
         self.__dict__.update(kwargs)
 
 
-def _run_publish(tmp_path: Path, windows, records):
+def _run_publish(tmp_path: Path, windows, records, *, roles=None, sample_ratio=1.0):
     spool = tmp_path / "raw-otlp.jsonl"
     spool.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
@@ -85,9 +85,9 @@ def _run_publish(tmp_path: Path, windows, records):
         job_id="job-1",
         deployment_id="llmd-abc",
         mode="standard",
-        sample_ratio=1.0,
+        sample_ratio=sample_ratio,
         collector_image="img",
-        instrumentation_roles=["vllm"],
+        instrumentation_roles=roles or ["vllm"],
         interrupted=False,
         local_spool=spool,
     )

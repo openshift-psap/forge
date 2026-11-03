@@ -41,6 +41,7 @@ TRACING_ENV_KEYS = (
 VLLM_OTLP_ENDPOINT_ARG = "--otlp-traces-endpoint"
 VLLM_DETAILED_ARG = "--collect-detailed-traces"
 ROUTING_PROXY_TRACING_ARG = "--tracing"
+EPP_TRACING_ARG = "--tracing"
 
 _COLLECTOR_SERVICE = "forge-otel-collector"
 OTLP_GRPC_PORT = 4317
@@ -144,6 +145,26 @@ def routing_proxy_tracing_args(args: list[str]) -> list[str]:
         *_strip_cli_arg(list(args), ROUTING_PROXY_TRACING_ARG),
         f"{ROUTING_PROXY_TRACING_ARG}=true",
     ]
+
+
+def epp_tracing_args(args: list[str]) -> list[str]:
+    """Enable EPP tracing while preserving its complete scheduler arguments.
+
+    EPP uses a Go boolean flag. Accept a bare flag or ``=true``; reject explicit
+    overrides rather than silently changing a hand-written tracing policy.
+    """
+    output: list[str] = []
+    for index, arg in enumerate(args):
+        if arg in (EPP_TRACING_ARG, "-tracing"):
+            if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                raise TracingConfigError("EPP tracing requires --tracing=true")
+            continue
+        if arg.startswith((f"{EPP_TRACING_ARG}=", "-tracing=")):
+            if arg.split("=", 1)[1] != "true":
+                raise TracingConfigError("EPP tracing conflicts with tracing.mode")
+            continue
+        output.append(arg)
+    return [*output, f"{EPP_TRACING_ARG}=true"]
 
 
 def apply_env_vars(

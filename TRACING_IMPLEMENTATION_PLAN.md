@@ -2,7 +2,15 @@
 
 Date: 2026-10-27
 
-Status: Proposed implementation plan
+Status: Implemented locally; EPP added for explicit scheduler templates; live validation pending
+
+Scope update (2026-11-03): this change covers standard vLLM serving and EPP.
+P/D and routing-proxy instrumentation are deferred to a separate PR and remain
+rejected when tracing is requested. The P/D stages below describe future work.
+EPP requires a complete explicit scheduler argument template: controller-default
+`scheduler: {}` is rejected to avoid replacing required controller arguments.
+See `docs/tracing/OPERATING.md` and `docs/tracing/VERIFICATION.md` for the current
+support matrix and evidence.
 
 FORGE should collect distributed request traces from its serving workloads, retain them as ordinary test artifacts, and ingest them into MLflow's native tracing endpoint. Each trace must be associated with the same experiment, workspace, and test run as the benchmark that produced it.
 

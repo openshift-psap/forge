@@ -1,10 +1,7 @@
 """llm_d tracing instrumentation rendering tests.
 
-Covers the plan's Rendering row for the validated path: idempotent injection
-into the standard serving container and preservation of existing non-tracing
-args and env. Unsupported cases are rejected: detailed mode for non-vLLM, and
-any P/D or EPP/router topology (instrumentation helpers exist but are not
-validated end-to-end).
+Covers standard vLLM and EPP rendering, configuration conflicts, and disabled
+behavior. P/D and routing proxies are deferred to a separate change.
 """
 
 from __future__ import annotations
@@ -83,8 +80,10 @@ def test_instrument_standard_container_sets_tracing_env():
     assert env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 
 
-def test_pd_topology_is_rejected_before_rendering():
+@pytest.mark.parametrize("prefill", [{}, {"template": {"containers": [{"name": "main"}]}}])
+def test_pd_topology_is_rejected_before_rendering(prefill):
     manifest = _manifest(pd=True)
+    manifest["spec"]["prefill"] = prefill
     before = copy.deepcopy(manifest)
     with pytest.raises(TracingConfigError, match="P/D"):
         instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
@@ -104,21 +103,144 @@ def test_routing_proxy_topology_is_rejected():
     assert manifest == before
 
 
-def test_epp_scheduler_only_is_allowed_and_not_instrumented():
-    """An EPP scheduler present without a routing proxy is allowed but untouched."""
+def _with_epp():
     manifest = _manifest()
     manifest["spec"]["router"] = {
-        "scheduler": {"template": {"containers": [{"name": "main", "env": []}]}},
+        "scheduler": {
+            "template": {
+                "containers": [
+                    {
+                        "name": "main",
+                        "args": ["--pool-name", "pool", "--config-text", "plugins: []\n"],
+                        "env": [{"name": "TOKENIZER_CACHE_DIR", "value": "/tmp/cache"}],
+                        "image": "example/epp:reviewed",
+                    },
+                    {"name": "metrics-sidecar", "args": ["--port=9090"]},
+                ]
+            }
+        },
     }
-    instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
-    # EPP container is left exactly as rendered (no injected tracing env).
-    epp_env = manifest["spec"]["router"]["scheduler"]["template"]["containers"][0].get("env", [])
-    assert all(e.get("name") != "OTEL_SERVICE_NAME" for e in epp_env)
-    # But the serving container is instrumented.
+    return manifest
+
+
+@pytest.mark.parametrize("mode", [TracingMode.STANDARD, TracingMode.DETAILED])
+@pytest.mark.parametrize("ratio", [0.0, 0.5, 1.0])
+def test_epp_and_vllm_share_capture_endpoint_and_sampling(mode, ratio):
+    manifest = _with_epp()
+    before = copy.deepcopy(manifest)
+    settings = TracingSettings(mode=mode, sample_ratio=ratio)
+    instrument_manifest(manifest, settings=settings, identity=_identity(), namespace="ns")
+    containers = manifest["spec"]["router"]["scheduler"]["template"]["containers"]
+    epp = containers[0]
+    original_epp = before["spec"]["router"]["scheduler"]["template"]["containers"][0]
+    assert epp["args"] == [*original_epp["args"], "--tracing=true"]
+    assert epp["image"] == original_epp["image"]
+    assert containers[1] == before["spec"]["router"]["scheduler"]["template"]["containers"][1]
+    epp_env = {entry["name"]: entry["value"] for entry in epp["env"]}
     serving_env = {
-        e["name"]: e["value"] for e in manifest["spec"]["template"]["containers"][0]["env"]
+        entry["name"]: entry["value"]
+        for entry in manifest["spec"]["template"]["containers"][0]["env"]
     }
+    assert epp_env["OTEL_SERVICE_NAME"] == "llmd-abc-epp"
     assert serving_env["OTEL_SERVICE_NAME"] == "llmd-abc-vllm"
+    for key in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_TRACES_SAMPLER", "OTEL_TRACES_SAMPLER_ARG"):
+        assert epp_env[key] == serving_env[key]
+    assert epp_env["OTEL_TRACES_SAMPLER"] == "parentbased_traceidratio"
+    assert float(epp_env["OTEL_TRACES_SAMPLER_ARG"]) == ratio
+    assert epp_env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "grpc"
+    assert "forge.capture_id=cap-1" in epp_env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert "forge.component.role=epp" in epp_env["OTEL_RESOURCE_ATTRIBUTES"]
+    assert epp_env["TOKENIZER_CACHE_DIR"] == "/tmp/cache"
+    assert not any("detailed" in arg for arg in epp["args"])
+
+
+@pytest.mark.parametrize("flag", ["--tracing", "--tracing=true", "-tracing=true"])
+def test_epp_reinjection_is_idempotent(flag):
+    manifest = _with_epp()
+    manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["args"].append(flag)
+    instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
+    once = copy.deepcopy(manifest)
+    instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
+    assert manifest == once
+    assert (
+        manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["args"].count(
+            "--tracing=true"
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize("args", [["--tracing=false"], ["-tracing=false"], ["--tracing", "false"]])
+def test_epp_tracing_flag_conflict_leaves_manifest_unchanged(args):
+    manifest = _with_epp()
+    manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["args"].extend(args)
+    before = copy.deepcopy(manifest)
+    with pytest.raises(TracingConfigError, match="EPP tracing"):
+        instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
+    assert manifest == before
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": "http://other:4317"},
+        {"name": "OTEL_SERVICE_NAME", "value": "other"},
+        {"name": "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "value": "http://other:4317"},
+        {"name": "OTEL_EXPORTER_OTLP_PROTOCOL", "value": "http/protobuf"},
+        {
+            "name": "OTEL_TRACES_SAMPLER_ARG",
+            "valueFrom": {"configMapKeyRef": {"name": "c", "key": "ratio"}},
+        },
+    ],
+)
+def test_epp_exporter_conflicts_leave_manifest_unchanged(entry):
+    manifest = _with_epp()
+    manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["env"].append(entry)
+    before = copy.deepcopy(manifest)
+    with pytest.raises(TracingConfigError):
+        instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
+    assert manifest == before
+
+
+@pytest.mark.parametrize("scheduler", [{}, {"template": {"containers": [{"name": "main"}]}}])
+def test_default_scheduler_args_are_never_replaced_by_tracing_only(scheduler):
+    manifest = _manifest()
+    manifest["spec"]["router"] = {"scheduler": scheduler}
+    before = copy.deepcopy(manifest)
+    with pytest.raises(TracingConfigError, match="complete args"):
+        instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
+    assert manifest == before
+
+
+def test_disabled_epp_manifest_is_unchanged():
+    manifest = _with_epp()
+    before = copy.deepcopy(manifest)
+    instrument_manifest(
+        manifest,
+        settings=TracingSettings(mode=TracingMode.OFF),
+        identity=_identity(),
+        namespace="ns",
+    )
+    assert manifest == before
+
+
+def test_capture_records_the_roles_of_the_rendered_manifest(monkeypatch, tmp_path):
+    import yaml
+
+    from projects.cluster.library.tracing import lifecycle
+    from projects.llm_d.orchestration import test_phase, tracing_adapter
+
+    monkeypatch.setattr(tracing_adapter, "resolve_tracing", _settings)
+    monkeypatch.setattr(test_phase.runtime_config, "get_job_name", lambda: "job-1")
+    monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
+    monkeypatch.setattr(test_phase, "_tracing_capture_id", lambda: "cap-1")
+    calls = []
+    monkeypatch.setattr(lifecycle, "start_capture", lambda **kw: calls.append(kw))
+    path = tmp_path / "manifest.yaml"
+    for manifest, roles in [(_manifest(), ["vllm"]), (_with_epp(), ["vllm", "epp"])]:
+        path.write_text(yaml.safe_dump(manifest))
+        test_phase._start_trace_capture("llmd-abc", manifest_path=path)
+        assert calls[-1]["roles"] == roles
 
 
 def test_instrumentation_is_idempotent():

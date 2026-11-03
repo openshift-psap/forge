@@ -379,7 +379,7 @@ def run_finalizers(
     return primary_exc, finalizer_exc
 
 
-def _start_trace_capture(deployment_id: str):
+def _start_trace_capture(deployment_id: str, *, manifest_path: Path):
     """Deploy the trace collector for this capture, or return None when disabled.
 
     A startup failure raises: requested tracing must fail setup rather than run
@@ -393,6 +393,7 @@ def _start_trace_capture(deployment_id: str):
 
     from projects.cluster.library.tracing import lifecycle
 
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     session = lifecycle.start_capture(
         job_id=runtime_config.get_job_name(),
         capture_id=_tracing_capture_id(),
@@ -401,9 +402,7 @@ def _start_trace_capture(deployment_id: str):
         deployment_id=deployment_id,
         output_root=env.ARTIFACT_DIR,
         settings=settings,
-        # Only standard vLLM is validated end-to-end; EPP/P-D instrumentation is
-        # rejected before rendering, so the summary must not claim those roles.
-        roles=["vllm"],
+        roles=tracing_adapter.instrumentation_roles(manifest),
     )
     return session
 
@@ -548,7 +547,7 @@ def do_test() -> int:
 
         # Start the trace collector before the instrumented serving pods, so no
         # spans are lost at startup. Tracing off is a no-op.
-        capture_session = _start_trace_capture(actual_llmisvc_name)
+        capture_session = _start_trace_capture(actual_llmisvc_name, manifest_path=manifest_path)
 
         # Step 2: Deploy using the actual name from the manifest
         endpoint_url = deploy_inference_service_from_manifest(manifest_path, actual_llmisvc_name)
