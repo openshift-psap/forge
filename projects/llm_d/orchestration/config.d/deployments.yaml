@@ -76,9 +76,6 @@ profiles:
     scheduler_manifest: manifests/deployments/approximate-prefix-cache.yaml
     replicas: 4
     tensor_parallelism: 2
-    vllm_extra:
-      args:
-        max_model_len: 40960
 
   release-precise-prefix-cache:
     scheduler_manifest: manifests/deployments/precise-prefix-cache.yaml
@@ -88,7 +85,6 @@ profiles:
       benchflow.io/prefix-caching: precise
     vllm_extra:
       args:
-        max_model_len: 40960
         prefix_caching_hash_algo: sha256_cbor
         block_size: 64
         # The serving image expands VLLM_ADDITIONAL_ARGS through `eval`; literal
@@ -109,9 +105,11 @@ profiles:
     scheduler: {}
     replicas: 4
     tensor_parallelism: 2
-    vllm_extra:
-      args:
-        max_model_len: 40960
+
+  default-3.6GA:
+    scheduler_manifest: manifests/deployments/default-3.6GA.yaml
+    replicas: 4
+    tensor_parallelism: 2
 
 # Template flavor configurations with name-based extraction
 templates:
