@@ -77,9 +77,9 @@ praxis:
   version: "0.6"
   replicas: 1
   payload_processing:
-    replicas: null
-    cpu_limit: null
-    memory_limit: null
+    replicas: 4
+    cpu_limit: 4
+    memory_limit: 2Gi
 
 artifacts:
   capture_namespace_events: true
