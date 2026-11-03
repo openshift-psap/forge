@@ -142,7 +142,9 @@ def get_test_workload_keys() -> list[str]:
     if workload_keys:
         return workload_keys
     workload_keys = config.project.get_config("tests.rhaiis.workload_keys", [])
-    return workload_keys or [get_test_workload_key()]
+    if not workload_keys:
+        workload_keys = get_test_workload_key()
+    return [workload_keys] if isinstance(workload_keys, str) else list(workload_keys)
 
 
 def get_vaults() -> list[str]:

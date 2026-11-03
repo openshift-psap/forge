@@ -174,16 +174,12 @@ def test_profiler_failure_does_not_skip_performance_benchmarks(monkeypatch, tmp_
 
 
 def test_profiler_failure_reaches_ci_entrypoint(monkeypatch) -> None:
-    from projects.core.library import ci, config
+    from projects.core.library import ci
     from projects.rhaiis.orchestration import test_phase, test_rhaiis
 
-    monkeypatch.setattr(
-        config,
-        "project",
-        SimpleNamespace(get_config=lambda key, default=None: default),
-    )
     monkeypatch.setattr(test_phase, "run", lambda **kwargs: 1)
-    requested = SimpleNamespace(model_key="model", workload_key="profile4", namespace="test")
+    monkeypatch.setattr(test_rhaiis.runtime_config, "get_test_workload_keys", lambda: ["profile4"])
+    requested = SimpleNamespace(model_key="model", namespace="test")
 
     with pytest.raises(ci.CIError, match="RHAIIS test phase failed") as error:
         test_rhaiis.test.__wrapped__(requested)
@@ -191,16 +187,24 @@ def test_profiler_failure_reaches_ci_entrypoint(monkeypatch) -> None:
     assert error.value.category == ci.ExitCategory.TEST_FAILURE
 
 
-def test_successful_rhaiis_phase_reaches_ci_entrypoint(monkeypatch) -> None:
+def test_ci_quick_selector_reaches_ci_entrypoint(monkeypatch) -> None:
     from projects.core.library import config
     from projects.rhaiis.orchestration import test_phase, test_rhaiis
 
+    values = {
+        "tests.rhaiis.model_key": "model",
+        "tests.rhaiis.workload_key": "profile1",
+        "rhaiis.namespace": "test",
+        "runtime.benchmark_key": "ci-quick",
+        "workloads.benchmarks": {"ci-quick": {"workload_key": "ci-quick"}},
+    }
     monkeypatch.setattr(
         config,
         "project",
-        SimpleNamespace(get_config=lambda key, default=None: default),
+        SimpleNamespace(get_config=lambda key, default=None: values.get(key, default)),
     )
-    monkeypatch.setattr(test_phase, "run", lambda **kwargs: 0)
-    requested = SimpleNamespace(model_key="model", workload_key="profile1", namespace="test")
+    calls = []
+    monkeypatch.setattr(test_phase, "run", lambda **kwargs: calls.append(kwargs) or 0)
 
-    assert test_rhaiis.test.__wrapped__(requested) == 0
+    assert test_rhaiis.test() == 0
+    assert calls == [{"model_key": "model", "workload_keys": ["ci-quick"], "namespace": "test"}]

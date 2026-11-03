@@ -93,7 +93,8 @@ def test(
         config.project.apply_preset(name)
 
     model_key = model or runtime_config.get_test_model_key()
-    workload_key = workload or runtime_config.get_test_workload_key()
+    workload_keys = [workload] if workload else runtime_config.get_test_workload_keys()
+    workload_key = workload_keys[0]
     namespace = namespace or runtime_config.get_namespace()
 
     # Apply CLI overrides to config so test_phase reads them via runtime_config
@@ -113,7 +114,8 @@ def test(
     )
 
     if dry_run:
-        _print_dry_run(model_key, workload_key, namespace, deployment_name)
+        for selected_workload in workload_keys:
+            _print_dry_run(model_key, selected_workload, namespace, deployment_name)
         return
 
     from projects.rhaiis.orchestration import test_phase
@@ -121,7 +123,7 @@ def test(
     try:
         test_phase.run(
             model_key=model_key,
-            workload_keys=[workload_key],
+            workload_keys=workload_keys,
             namespace=namespace,
             deployment_name=deployment_name,
         )
@@ -213,8 +215,11 @@ def _print_dry_run(
     )
     click.echo(f"  Image pull secret: {deploy_cfg.get('image_pull_secret') or '(none)'}")
     click.echo(f"  Service account: {deploy_cfg.get('service_account_name') or '(none)'}")
-    click.echo(f"  Rates: {workload_cfg.get('rates', [1])}")
-    click.echo(f"  Max seconds: {workload_cfg.get('max_seconds', 180)}")
+    if benchconf_ref := workload_cfg.get("benchconf"):
+        click.echo(f"  BenchConf: {benchconf_ref}")
+    else:
+        click.echo(f"  Rates: {workload_cfg.get('rates', [1])}")
+        click.echo(f"  Max seconds: {workload_cfg.get('max_seconds', 180)}")
 
 
 @cli.command()
