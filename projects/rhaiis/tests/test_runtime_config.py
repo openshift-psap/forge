@@ -107,3 +107,25 @@ def test_text_completion_models_define_request_type() -> None:
     for model_key in ("gpt-oss-120b", "gpt-oss-20b", "google-translategemma-12b"):
         request_type = models[model_key]["benchmarks"]["guidellm"]["args"]["request_type"]
         assert request_type == "/v1/completions"
+
+
+def test_benchmark_selector_and_legacy_workload_selection(monkeypatch) -> None:
+    workloads_path = Path(__file__).resolve().parents[1] / "orchestration/config.d/workloads.yaml"
+    values = {
+        "workloads": yaml.safe_load(workloads_path.read_text()),
+        "runtime": {"benchmark_key": ["concurrent-1k-1k", "concurrent-8k-1k"]},
+        "tests": {"rhaiis": {"workload_keys": ["profile2"], "workload_key": "profile1"}},
+    }
+    monkeypatch.setattr(runtime_config.config, "project", _FakeProject(values))
+
+    assert runtime_config.get_test_workload_keys() == ["profile1", "profile4"]
+
+    values["runtime"]["benchmark_key"] = "ci-quick"
+    assert runtime_config.get_test_workload_keys() == ["ci-quick"]
+
+    values["runtime"]["benchmark_key"] = []
+    assert runtime_config.get_test_workload_keys() == ["profile2"]
+
+    values["tests"]["rhaiis"]["workload_keys"] = []
+    values["tests"]["rhaiis"]["workload_key"] = ["profile1", "profile4"]
+    assert runtime_config.get_test_workload_keys() == ["profile1", "profile4"]

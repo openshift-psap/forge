@@ -214,7 +214,7 @@ def test_llmisvc_launch_benchmarks_captures_and_cleans_up(
         _config(
             {
                 "inference_playbooks.namespace": "target-namespace",
-                "inference_playbooks.workload": "profile1",
+                "inference_playbooks.workload": "ci-quick",
             }
         ),
     )
@@ -305,7 +305,7 @@ def test_lws_launch_uses_leader_service_and_target_rdma_override(
         _config(
             {
                 "inference_playbooks.namespace": "target-namespace",
-                "inference_playbooks.workload": "profile1",
+                "inference_playbooks.workload": "ci-quick",
                 "inference_playbooks.rdma_resource": "example.com/roce",
                 "inference_playbooks.lws_ready_timeout_seconds": 14400,
                 "model_cache": {
@@ -474,7 +474,7 @@ def test_cleanup_failure_does_not_mask_deployment_failure(
     monkeypatch.setattr(
         test_phase.config,
         "project",
-        _config({"inference_playbooks.workload": "profile1"}),
+        _config({"inference_playbooks.workload": "ci-quick"}),
     )
 
     def fail_deploy():
@@ -495,11 +495,11 @@ def test_cleanup_failure_does_not_mask_deployment_failure(
         )
 
 
-def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ci_quick_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         test_phase.config,
         "project",
-        _config({"inference_playbooks.workload": "profile1"}),
+        _config({"inference_playbooks.workload": "ci-quick"}),
     )
     monkeypatch.setattr(test_phase.env, "NextArtifactDir", lambda _name: nullcontext())
     calls = []
@@ -507,17 +507,17 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     kpi_labels = test_phase._benchmark_kpi_labels(
         "test-recipe",
         {"model_name": "moonshotai/Kimi-K3", **_kpi_recipe_metadata()},
-        "profile1",
+        "ci-quick",
     )
     assert kpi_labels == {
         "model_name": "moonshotai/Kimi-K3",
         "product_version": "v1.0.0",
         "deployment_profile": "tp1",
-        "guidellm_loadshape": "profile1",
+        "guidellm_loadshape": "ci-quick",
         "gpu_type": "NVIDIA-H200",
         "platform": "OCP",
         "test_harness": "forge-inference-playbooks",
-        "benchmark_key": "profile1",
+        "benchmark_key": "ci-quick",
     }
     monkeypatch.setattr(
         test_phase,
@@ -541,16 +541,11 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
         kpi_labels,
     )
 
-    assert len(calls) == 2
-    assert "--max-seconds=75" in calls[0]["guidellm_args"]
-    assert "--rate=1,50,100,200,300" in calls[1]["guidellm_args"]
-    assert "--max-seconds=275" in calls[1]["guidellm_args"]
-    assert "--rampup=35" in calls[1]["guidellm_args"]
-    assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[1]["guidellm_args"]
-    assert metadata == [
-        ({"phase": "warmup", "skip": True}, kpi_labels),
-        ({"phase": "benchmark"}, kpi_labels),
-    ]
+    assert len(calls) == 1
+    assert "--rate=1,5" in calls[0]["guidellm_args"]
+    assert "--max-seconds=60" in calls[0]["guidellm_args"]
+    assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[0]["guidellm_args"]
+    assert metadata == [({"phase": "benchmark"}, kpi_labels)]
 
 
 def test_validate_recipe_catalog_rejects_pvc_without_source(tmp_path: Path) -> None:

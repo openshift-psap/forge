@@ -50,7 +50,8 @@ def maybe_install_custom_version(_cfg) -> None:
             "--target",
             str(install_dir),
             spec,
-        ]
+        ],
+        timeout=600,
     )
     sys.path.insert(0, str(install_dir))
     for module_name in [m for m in sys.modules if m == "benchconf" or m.startswith("benchconf.")]:
@@ -98,6 +99,7 @@ def resolve_config_path(benchconf_ref: str) -> Path:
             "benchconf package is required for benchconf-based benchmarks. "
             "Install with: pip install 'benchconf @ git+https://github.com/openshift-psap/benchconf'"
         ) from exc
+    logger.info("Loaded benchconf from %s", benchconf.__file__)
 
     parts = benchconf_ref.split("/")
     if len(parts) != 2:

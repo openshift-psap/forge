@@ -1,0 +1,5 @@
+enabled: true
+custom_version:
+  enabled: false
+  repo: git+https://github.com/openshift-psap/benchconf
+  version: main
