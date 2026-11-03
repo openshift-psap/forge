@@ -361,7 +361,12 @@ def run_regression_analysis(
 
     except Exception as e:
         logger.exception("Regression analysis failed")
-        return {"status": "failed", "error": str(e)}
+        return {
+            "status": "failed",
+            "error": str(e),
+            "current_version": current_version,
+            "compare_version": compare_version,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +541,7 @@ def send_regression_notification(
     if missing_profiles:
         incomplete_line = (
             f"*Incomplete:* profile(s) {', '.join(missing_profiles)} could not be compared "
-            "(missing data on one side).\n"
+            "(no common concurrency or no usable metrics).\n"
         )
 
     header = (

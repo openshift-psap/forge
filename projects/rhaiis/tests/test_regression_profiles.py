@@ -152,3 +152,20 @@ def test_run_regression_analysis_reports_missing_profiles(tmp_path):
 
     assert analysis["status"] == "completed"
     assert analysis["missing_profiles"] == ["profile6"]
+
+
+def test_run_regression_analysis_failure_includes_versions(tmp_path):
+    """A failed analysis still carries the version pair for the notification."""
+    analysis = run_regression_analysis(
+        current_csv_path=tmp_path / "missing-current.csv",
+        consolidated_csv_path=tmp_path / "missing-consolidated.csv",
+        compare_version="baseline",
+        current_version="current",
+        output_file=tmp_path / "analysis.json",
+        profile_map=PROFILE_MAP,
+        metrics=METRICS,
+    )
+
+    assert analysis["status"] == "failed"
+    assert analysis["current_version"] == "current"
+    assert analysis["compare_version"] == "baseline"
