@@ -228,7 +228,8 @@
                     "Throughput Scaling": "📈 Scaling",
                     "Latency vs Throughput": "⚖️ Latency Trade-off",
                 } %}
-                {%- for plot_name, png_path, html_path in plots %}
+                {%- for plot_entry in plots %}
+                {%- set plot_name = plot_entry[0] %}
                 {%- set tab_title = tab_mapping.get(plot_name, plot_name) %}
                 {%- set active_class = " active" if loop.index0 == 0 else "" %}
                 <button class='tab-header{{ active_class }}' onclick="showTab('tabs-container-{{ container_id[0] }}', 'tab-{{ container_id[0] }}-{{ loop.index0 }}', this)">{{ tab_title }}</button>
@@ -243,7 +244,11 @@
                 "Latency vs Throughput": "Trade-off analysis between latency and throughput performance.",
             } %}
 
-            {%- for plot_name, png_path, html_path in plots %}
+            {%- for plot_entry in plots %}
+            {%- set plot_name = plot_entry[0] %}
+            {%- set png_path = plot_entry[1] %}
+            {%- set html_path = plot_entry[2] %}
+            {%- set sub_plots = plot_entry[3] if plot_entry|length > 3 else [] %}
             {%- set active_class = " active" if loop.index0 == 0 else "" %}
             {%- set description = descriptions.get(plot_name, plot_name + " performance analysis.") %}
             <div id='tab-{{ container_id[0] }}-{{ loop.index0 }}' class='tab-content{{ active_class }}' style='height: auto; min-height: auto;'>
@@ -251,6 +256,11 @@
                     <h4>{{ plot_name }}</h4>
                     <p>{{ description }}</p>
                     {{ embed_plot_for_report(png_path, html_path, plot_name, output_dir) }}
+                    {%- for sub_png_path, sub_html_path in sub_plots %}
+                    <div style='margin-top: 30px;'>
+                        {{ embed_plot_for_report(sub_png_path, sub_html_path, plot_name + " (cumulated)", output_dir) }}
+                    </div>
+                    {%- endfor %}
                 </div>
             </div>
             {%- endfor %}
@@ -265,12 +275,21 @@
             "Throughput Scaling": "Throughput scaling behavior and efficiency analysis.",
             "Latency vs Throughput": "Trade-off analysis between latency and throughput performance.",
         } %}
-        {%- for plot_name, png_path, html_path in plots %}
+        {%- for plot_entry in plots %}
+        {%- set plot_name = plot_entry[0] %}
+        {%- set png_path = plot_entry[1] %}
+        {%- set html_path = plot_entry[2] %}
+        {%- set sub_plots = plot_entry[3] if plot_entry|length > 3 else [] %}
         {%- set description = descriptions.get(plot_name, plot_name + " performance analysis.") %}
         <div style='padding:20px; margin-bottom:30px; height: auto; min-height: auto;'>
             <h4>📊 {{ plot_name }}</h4>
             <p>{{ description }}</p>
             {{ embed_plot_for_report(png_path, html_path, plot_name, output_dir) }}
+            {%- for sub_png_path, sub_html_path in sub_plots %}
+            <div style='margin-top: 30px;'>
+                {{ embed_plot_for_report(sub_png_path, sub_html_path, plot_name + " (cumulated)", output_dir) }}
+            </div>
+            {%- endfor %}
         </div>
         {%- endfor %}
         {%- endif %}
