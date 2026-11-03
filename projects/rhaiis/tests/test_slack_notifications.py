@@ -131,4 +131,44 @@ def test_regression_notification_notes_same_version(monkeypatch) -> None:
     )
 
     assert len(messages) == 1
-    assert "*Note:* same version on both sides" in messages[0]
+    assert "*Note:* the same version is used on both sides." in messages[0]
+
+
+def test_regression_notification_reports_missing_profiles(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "completed",
+        "regressions": [],
+        "improvements": [],
+        "total_comparisons": 2,
+        "missing_profiles": ["profile6"],
+        "current_version": "1.0",
+        "compare_version": "0.9",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*Incomplete:* profile(s) profile6 could not be compared" in messages[0]
+
+
+def test_regression_notification_reports_failed_analysis(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "failed",
+        "error": "boom",
+        "current_version": "1.0",
+        "compare_version": "0.9",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*Performance comparison failed*" in messages[0]
+    assert "*Reason:* boom\n" in messages[0]

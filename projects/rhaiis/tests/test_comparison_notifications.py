@@ -46,7 +46,7 @@ def test_standalone_analysis_reports_missing_credentials(monkeypatch) -> None:
 
     assert "credentials" in captured["reason"]
     assert captured["model"] == "org/model"
-    assert captured["accelerator"] == "nvidia"
+    assert captured["accelerator"] == "H200"
     assert captured["job_id"] == "job-1"
     assert captured["tp"] == "2"
 

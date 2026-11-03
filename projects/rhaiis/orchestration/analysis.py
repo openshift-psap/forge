@@ -74,7 +74,6 @@ def run_standalone_analysis(
     accelerator = (
         accelerator_key.split("_")[0].upper() if "_" in accelerator_key else accelerator_key.upper()
     )
-    display_accelerator = config.project.get_config("rhaiis.accelerator", "") or accelerator
     model_id = model_cfg.get("hf_model_id", "")
     tp = str(
         engine_args.get("tensor-parallel-size")
@@ -90,7 +89,7 @@ def run_standalone_analysis(
         _notify_comparison_skipped(
             "AWS credentials are not available; cannot read the consolidated CSV",
             model=model_id,
-            accelerator=display_accelerator,
+            accelerator=accelerator,
             job_id=run_uuid,
             tp=tp,
             dp=dp,
@@ -131,7 +130,7 @@ def run_standalone_analysis(
                 f"No data in consolidated CSV for version={version}, "
                 f"model={model_id}, accelerator={accelerator}, TP={tp}",
                 model=model_id,
-                accelerator=display_accelerator,
+                accelerator=accelerator,
                 job_id=run_uuid,
                 tp=tp,
                 dp=dp,
@@ -158,7 +157,7 @@ def run_standalone_analysis(
         _notify_comparison_skipped(
             f"Standalone analysis failed: {e}",
             model=model_id,
-            accelerator=display_accelerator,
+            accelerator=accelerator,
             job_id=run_uuid,
             tp=tp,
             dp=dp,

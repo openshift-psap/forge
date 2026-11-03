@@ -5,7 +5,12 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from projects.rhaiis.postprocess.regression import METRICS, PROFILE_MAP, compare_runs
+from projects.rhaiis.postprocess.regression import (
+    METRICS,
+    PROFILE_MAP,
+    compare_runs,
+    run_regression_analysis,
+)
 
 WORKLOADS_YAML = Path(__file__).parent.parent / "orchestration" / "config.d" / "workloads.yaml"
 
@@ -121,3 +126,29 @@ def test_compare_runs_respects_restrict_profiles(tmp_path):
 
     assert skip_reason == ""
     assert {r.profile for r in results} == {"profile7"}
+
+
+def test_run_regression_analysis_reports_missing_profiles(tmp_path):
+    """A restricted profile with data on only one side is reported, not silently dropped."""
+    current_csv = _write_csv(
+        tmp_path / "current.csv",
+        [_row(128, 128, "current"), _row(8000, 800, "current")],
+    )
+    consolidated_csv = _write_csv(
+        tmp_path / "consolidated.csv",
+        [_row(8000, 800, "baseline")],
+    )
+
+    analysis = run_regression_analysis(
+        current_csv_path=Path(current_csv),
+        consolidated_csv_path=Path(consolidated_csv),
+        compare_version="baseline",
+        current_version="current",
+        output_file=tmp_path / "analysis.json",
+        profile_map=PROFILE_MAP,
+        metrics=METRICS,
+        restrict_profiles=["profile6", "profile7"],
+    )
+
+    assert analysis["status"] == "completed"
+    assert analysis["missing_profiles"] == ["profile6"]

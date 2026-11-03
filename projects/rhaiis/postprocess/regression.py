@@ -307,6 +307,8 @@ def run_regression_analysis(
         else:
             regressions = [r for r in results if r.is_regression]
             improvements = [r for r in results if r.is_improvement]
+            compared_profiles = {r.profile for r in results}
+            missing_profiles = sorted(set(restrict_profiles or []) - compared_profiles)
 
             analysis = {
                 "status": "completed",
@@ -315,6 +317,7 @@ def run_regression_analysis(
                 "total_comparisons": len(results),
                 "regression_count": len(regressions),
                 "improvement_count": len(improvements),
+                "missing_profiles": missing_profiles,
                 "regressions": [
                     {
                         "profile": r.profile,
@@ -526,9 +529,14 @@ def send_regression_notification(
 
     same_version_line = ""
     if current_version and current_version == compare_version:
-        same_version_line = (
-            "*Note:* same version on both sides — this compares the current run "
-            "against previously published rows of that version.\n"
+        same_version_line = "*Note:* the same version is used on both sides.\n"
+
+    incomplete_line = ""
+    missing_profiles = analysis_result.get("missing_profiles") or []
+    if missing_profiles:
+        incomplete_line = (
+            f"*Incomplete:* profile(s) {', '.join(missing_profiles)} could not be compared "
+            "(missing data on one side).\n"
         )
 
     header = (
@@ -540,9 +548,20 @@ def send_regression_notification(
         f"{parallelism_line}"
         f"*Versions:* {current_version} vs {compare_version} (baseline)\n"
         f"{same_version_line}"
+        f"{incomplete_line}"
     )
 
-    if status == "skipped":
+    if status == "failed":
+        reason = analysis_result.get("error", "unknown error")
+        logger.info("Regression analysis failed: %s", reason)
+        message = (
+            f":warning: *Performance comparison failed*\n"
+            f"{header}"
+            f"*Reason:* {reason}\n"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+        )
+    elif status == "skipped":
         reason = analysis_result.get(
             "reason", "No common concurrency levels between current and baseline"
         )
