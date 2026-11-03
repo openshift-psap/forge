@@ -137,7 +137,7 @@ def collect_step_failure_summaries(artifact_dir: Path | None) -> list[str]:
         except Exception:
             continue
 
-        if not exit_status.records or exit_status.is_success:
+        if not exit_status.records or exit_status.is_success or exit_status.is_skipped:
             continue
 
         primary = exit_status.primary

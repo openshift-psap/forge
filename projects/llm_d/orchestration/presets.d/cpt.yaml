@@ -42,6 +42,7 @@ cpt-release-testing-rhoai:
   - concurrent-1k-1k
   - heavy-heterogeneous
   - multi-turn
+  - concurrent-8k-1k
   model_cache.pvc.size: 300Gi
 
 cpt-release-testing-gpt-oss-120b:

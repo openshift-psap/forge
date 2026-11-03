@@ -54,7 +54,8 @@ def maybe_install_custom_version(_cfg) -> None:
         timeout=600,
     )
     sys.path.insert(0, str(install_dir))
-    sys.modules.pop("benchconf", None)
+    for module_name in [m for m in sys.modules if m == "benchconf" or m.startswith("benchconf.")]:
+        del sys.modules[module_name]
 
 
 def save_version() -> None:
