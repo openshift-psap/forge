@@ -71,17 +71,23 @@ def run(
     namespace: str,
     deployment_name: str | None = None,
 ) -> int:
-    run_postprocess = not _standalone_only_analysis(workload_keys)
+    from projects.core.library import config
+
+    postprocess_enabled = not _standalone_only_analysis(workload_keys)
+    if not postprocess_enabled:
+        # no Caliper-parsable artifacts are produced, so postprocessing would
+        # only fail the run; disable it before wrapping the test
+        config.project.set_config("caliper.postprocess.enabled", False)
+
     ret = run_and_postprocess(
         do_test,
         model_key=model_key,
         workload_keys=workload_keys,
         namespace=namespace,
         deployment_name=deployment_name,
-        run_postprocess=run_postprocess,
     )
 
-    if not run_postprocess:
+    if not postprocess_enabled:
         # no postprocessing ran, so any *__postprocessing directory in the
         # artifact tree is stale — don't sync it to the consolidated dashboard
         logger.info("Postprocessing was skipped: not syncing the dashboard CSV")

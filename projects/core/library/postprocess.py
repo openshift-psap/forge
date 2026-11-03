@@ -266,22 +266,20 @@ def generate_postprocess_status_report(
             temp_yaml.unlink()
 
 
-def run_and_postprocess(test_func, *args, run_postprocess: bool = True, **kwargs):
+def run_and_postprocess(test_func, *args, **kwargs):
     """
     Wrapper that runs a test function and handles outcome tracking with Caliper postprocessing.
 
     This wrapper:
     1. Executes the provided test function with given arguments
     2. Captures test outcomes (success, failure, exception details)
-    3. Runs Caliper postprocessing with the test outcome (unless ``run_postprocess`` is false)
+    3. Runs Caliper postprocessing with the test outcome
     4. Returns 1 if postprocessing fails when test succeeds
     5. Properly chains exceptions if both test and postprocess fail
 
     Args:
         test_func: Callable test function to execute
         *args: Positional arguments to pass to test_func
-        run_postprocess: Set to false for test phases that produce no Caliper-parsable
-            artifacts (e.g. analysis-only runs), so postprocessing cannot fail them
         **kwargs: Keyword arguments to pass to test_func
 
     Returns:
@@ -293,92 +291,73 @@ def run_and_postprocess(test_func, *args, run_postprocess: bool = True, **kwargs
     """
     artifact_base_dir = Path(env.ARTIFACT_DIR).resolve()
 
+    exc_msg: str | None = None
+    ret: int | None = None
+    original_exc: BaseException | None = None  # Store the test exception
+    interrupted: bool = False
+
     try:
         ret = test_func(*args, **kwargs)
+        return ret
     except (KeyboardInterrupt, BaseException) as e:
         # Import here to avoid circular dependencies
         from projects.core.library.run import SignalInterrupt
 
-        interrupted = isinstance(e, KeyboardInterrupt | SignalInterrupt)
-        if interrupted:
+        # Check if this is an interrupt
+        if isinstance(e, KeyboardInterrupt | SignalInterrupt):
+            interrupted = True
             logger.info("==> Test interrupted - skipping Caliper post-processing")
 
-        outcome = None if interrupted else TestPhaseOutcome("FAILED", str(e))
-        result = _run_postprocess_for_outcome(
-            artifact_base_dir,
-            outcome,
-            interrupted=interrupted,
-            original_exc=e,
-            run_postprocess=run_postprocess,
-        )
-        if result is not None:
-            return result
+        exc_msg = str(e)
+        original_exc = e  # Capture before the name is cleared
         raise
+    finally:
+        # Skip post-processing when interrupted to avoid blocking on finalizers
+        if interrupted:
+            logger.info("==> Skipping Caliper post-processing due to interrupt")
+            outcome = None
+        elif exc_msg is not None:
+            outcome = TestPhaseOutcome("FAILED", exc_msg)
+        elif ret is None or ret == 0:
+            if ret is None:
+                logger.warning("Test function returned None instead of 0, assuming success")
+            outcome = TestPhaseOutcome("SUCCESS")
+        elif isinstance(ret, tuple) and len(ret) == 3:
+            phase = "SUCCESS" if ret[1] == ExitCategory.SUCCESS else "FAILED"
+            outcome = TestPhaseOutcome(phase, ret[2], exit_category=ret[1])
+        else:
+            outcome = TestPhaseOutcome("FAILED", f"exit_code={ret}")
 
-    outcome = _test_outcome_from_return(ret)
-    result = _run_postprocess_for_outcome(
-        artifact_base_dir,
-        outcome,
-        interrupted=False,
-        original_exc=None,
-        run_postprocess=run_postprocess,
-    )
-    if result is not None:
-        return result
-    return ret
+        # Run postprocessing and check status for failures
+        try:
+            status = (
+                run_postprocess_after_test(artifact_base_dir, test_outcome=outcome)
+                if not interrupted
+                else dict(success=False, final_status="Test interrupted")
+            )
 
+            # Handle None status when postprocessing is disabled - treat as unsuccessful
+            if status is None or not status.get("success", False):
+                if status is None:
+                    final_status = "postprocessing disabled"
+                else:
+                    final_status = status.get("final_status", "unknown")
+                result = _handle_postprocess_failure(status, original_exc, final_status)
+                if result is None:
+                    # Let original test exception propagate through outer flow
+                    pass
+                else:
+                    return result
 
-def _test_outcome_from_return(ret: int | None) -> TestPhaseOutcome:
-    if ret is None or ret == 0:
-        if ret is None:
-            logger.warning("Test function returned None instead of 0, assuming success")
-        return TestPhaseOutcome("SUCCESS")
+        except Exception as postprocess_exc:
+            logger.exception("Caliper postprocess after test failed with exception")
+            if original_exc is not None:
+                raise postprocess_exc from original_exc
 
-    if isinstance(ret, tuple) and len(ret) == 3:
-        phase = "SUCCESS" if ret[1] == ExitCategory.SUCCESS else "FAILED"
-        return TestPhaseOutcome(phase, ret[2], exit_category=ret[1])
-
-    return TestPhaseOutcome("FAILED", f"exit_code={ret}")
-
-
-def _run_postprocess_for_outcome(
-    artifact_base_dir: Path,
-    outcome: TestPhaseOutcome | None,
-    *,
-    interrupted: bool,
-    original_exc: BaseException | None,
-    run_postprocess: bool,
-) -> tuple[int, ExitCategory, str] | None:
-    """Run Caliper postprocessing; return a failure tuple, or None to keep the test result."""
-    if not run_postprocess:
-        logger.info("Caliper post-processing skipped for this test phase")
-        return None
-
-    try:
-        status = (
-            run_postprocess_after_test(artifact_base_dir, test_outcome=outcome)
-            if not interrupted
-            else dict(success=False, final_status="Test interrupted")
-        )
-
-        if status is not None and status.get("success", False):
-            return None
-
-        # Handle None status when postprocessing is disabled - treat as unsuccessful
-        final_status = (
-            "postprocessing disabled" if status is None else status.get("final_status", "unknown")
-        )
-        return _handle_postprocess_failure(status, original_exc, final_status)
-
-    except Exception as postprocess_exc:
-        logger.exception("Caliper postprocess after test failed with exception")
-        if original_exc is not None:
-            raise postprocess_exc from original_exc
-
-        logger.error(
-            "Test succeeded but postprocessing failed with exception - returning exit code 1"
-        )
-        return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing exception: {postprocess_exc}"
+            logger.error(
+                "Test succeeded but postprocessing failed with exception - returning exit code 1"
+            )
+            return 1, ExitCategory.INTERNAL_ERROR, f"Postprocessing exception: {postprocess_exc}"
 
 
 def _handle_postprocess_failure(
