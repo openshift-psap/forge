@@ -224,6 +224,9 @@ def render_inference_service_from_parts(
     # Apply Kueue configuration if enabled
     _apply_kueue_configuration(rendered_manifest, deployment_profile)
 
+    # Apply workload node selector if configured
+    _apply_workload_node_selector(rendered_manifest, deployment_profile)
+
     # Apply hostpath model configuration if configured
     if model_hostpath:
         _apply_hostpath_model_configuration(rendered_manifest, model_hostpath, source_uri)
@@ -801,6 +804,30 @@ def _apply_hostpath_model_configuration(
     # Apply to prefill pod template for P/D deployments
     if "prefill" in manifest["spec"]:
         _configure_pod_template(manifest["spec"]["prefill"]["template"])
+
+
+def _apply_workload_node_selector(
+    manifest: dict[str, Any],
+    deployment_profile: dict[str, Any],
+) -> None:
+    """Inject a nodeSelector into the workload pod templates: serving and prefill.
+
+    The router/scheduler pod keeps its own placement knob
+    (``platform.inference_service.scheduler.node_selector``).
+
+    Args:
+        manifest: The rendered LLMInferenceService manifest to modify in-place.
+        deployment_profile: The resolved deployment profile (defaults merged in).
+    """
+    node_selector = deployment_profile.get("node_selector")
+    if not node_selector:
+        return
+
+    manifest["spec"]["template"]["nodeSelector"] = dict(node_selector)
+
+    # Prefill pod template (P/D deployments)
+    if "prefill" in manifest["spec"]:
+        manifest["spec"]["prefill"]["template"]["nodeSelector"] = dict(node_selector)
 
 
 def _apply_image_pull_secrets(
