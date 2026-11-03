@@ -34,7 +34,7 @@ def _require_proto() -> Any:
     except ImportError as exc:  # pragma: no cover - depends on optional deps
         raise OtlpEncodingError(
             "OpenTelemetry protobuf definitions are required for native trace export. "
-            "Install with: pip install -e '.[caliper]'"
+            "Install with: pip install -e '.[tracing]'"
         ) from exc
     return ExportTraceServiceRequest
 

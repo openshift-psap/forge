@@ -59,6 +59,10 @@ testing = [
     "jsonpath_ng>=1.5.0",
     "requests>=2.25.0",
     "pandas>=2.0",
+    # Native trace tests encode real OTLP and run a disposable SQL-backed server.
+    "opentelemetry-proto>=1.20.0",
+    "protobuf>=4.25.0",
+    "mlflow==3.12.0",
 ]
 caliper = [
     "opensearch-py>=2.4.0",

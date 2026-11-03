@@ -189,3 +189,30 @@ The result is `TypeError: unsupported operand type(s) for /: 'NoneType' and 'str
 at `projects/core/library/config.py:536`. Neither that Caliper test nor the
 environment implementation is changed by this feature. The isolated suite
 results above avoid this pre-existing cross-suite state leak.
+
+## CI test dependency correction — 2026-11-03
+
+The [first PR workflow run](https://github.com/openshift-psap/forge/actions/runs/41621532059)
+passed all 13 DSL cases but failed nine tracing tests and ten fixture setups.
+The workflow installs only `.[testing]`, which did not include MLflow or the OTLP
+protobuf definitions. The two missing-dependency failures were reproduced in a
+fresh Python 3.12 virtual environment installed with that extra.
+
+The testing extra includes `mlflow==3.12.0`, `opentelemetry-proto`, and `protobuf`.
+The fixture starts the local server with `sys.executable -m mlflow`, ensuring the
+server uses the test environment. The missing-OTLP error points to `.[tracing]`.
+Runtime dependencies remain optional.
+
+After reinstalling only `.[testing]` in that environment, the exact workflow
+commands passed:
+
+```sh
+python -m pytest --collect-only -vv -o addopts='-ra --strict-markers --strict-config'
+# 638 tests collected in 25.36s
+python -m pytest -vv -o addopts='-ra --strict-markers --strict-config'
+# 636 passed, 2 skipped, 1 warning in 94.19s
+```
+
+This uses Python 3.12.4 and pytest 9.2.0. The two skipped cases require the
+separate Podman opt-in; both passed in the earlier container run. The warning
+comes from Dash's pytest plugin. Ruff lint/format and diff checks pass.

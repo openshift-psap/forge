@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -96,6 +97,8 @@ def mlflow_server(tmp_path_factory: pytest.TempPathFactory, mlflow_env_session_s
     env = {key: value for key, value in os.environ.items() if key not in _MLFLOW_ENV_KEYS}
     process = subprocess.Popen(
         [
+            sys.executable,
+            "-m",
             "mlflow",
             "server",
             "--workers",
