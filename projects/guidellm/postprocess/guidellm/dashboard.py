@@ -538,6 +538,46 @@ def _turn_metric_values(
     }
 
 
+_SUM_CURVE_KEYS = frozenset(
+    {
+        "output_tok_per_sec",
+        "total_tok_per_sec",
+        "request_concurrency",
+        "measured_rps",
+        "intended_concurrency",
+        "successful_requests",
+        "errored_requests",
+    }
+)
+
+
+def _aggregate_replica_curve(curve_data: list[list[float]], curve_key: str) -> list[list[float]]:
+    """Aggregate duplicate x-values from multi-replica curves.
+
+    For throughput/count metrics (in _SUM_CURVE_KEYS): sum across replicas.
+    For latency/per-request metrics: mean across replicas.
+    The x-axis (intended_concurrency) is always summed to represent total concurrency.
+    """
+    from collections import OrderedDict
+
+    groups: OrderedDict[float, list[float]] = OrderedDict()
+    x_counts: OrderedDict[float, int] = OrderedDict()
+    for x, y in curve_data:
+        groups.setdefault(x, []).append(y)
+        x_counts[x] = x_counts.get(x, 0) + 1
+
+    if all(count == 1 for count in x_counts.values()):
+        return curve_data
+
+    use_sum = curve_key in _SUM_CURVE_KEYS
+    result = []
+    for x, ys in groups.items():
+        cumulated_x = x * len(ys)
+        agg_y = sum(ys) if use_sum else sum(ys) / len(ys)
+        result.append([cumulated_x, agg_y])
+    return result
+
+
 def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRecord]:
     """Generate curve KPIs for dashboard metrics."""
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -615,6 +655,8 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
 
             if not curve_data:
                 continue
+
+            curve_data = _aggregate_replica_curve(curve_data, curve_key)
 
             kpi_labels = dict(labels)
             kpi_labels.update(metadata_labels)
