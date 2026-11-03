@@ -785,7 +785,7 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
     benchmark = runtime_config.get_benchmark_config()
 
     burnin_rate = burnin_cfg.get("rate", 200)
-    burnin_duration = burnin_cfg.get("max_seconds", 200)
+    burnin_duration = burnin_cfg.get("max_seconds", 60)
     job_name_prefix = burnin_cfg.get("job_name_prefix", "guidellm-burnin")
 
     logger.info(
@@ -824,22 +824,19 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
     fs_group = workload.get("fs_group") if workload else None
 
     with env.NextArtifactDir("burnin"):
-        try:
-            run_guidellm_benchmark_command.run(
-                endpoint_url=endpoint_url,
-                name=job_name_prefix,
-                namespace=namespace,
-                image=benchmark.get("image") if benchmark else None,
-                timeout=burnin_duration + 300,  # Buffer for pod startup and result collection
-                pvc_size=benchmark.get("pvc_size") if benchmark else "1Gi",
-                guidellm_args=burnin_args,
-                config_path=burnin_config_path,
-                fs_group=fs_group,
-                use_pvc=benchmark.get("use_pvc") if benchmark else False,
-            )
-            logger.info("Burn-in phase completed successfully")
-        except Exception:
-            logger.warning("Burn-in phase failed; continuing with benchmark", exc_info=True)
+        run_guidellm_benchmark_command.run(
+            endpoint_url=endpoint_url,
+            name=job_name_prefix,
+            namespace=namespace,
+            image=benchmark.get("image") if benchmark else None,
+            timeout=burnin_duration + 300,  # Buffer for pod startup and result collection
+            pvc_size=benchmark.get("pvc_size") if benchmark else "1Gi",
+            guidellm_args=burnin_args,
+            config_path=burnin_config_path,
+            fs_group=fs_group,
+            use_pvc=benchmark.get("use_pvc") if benchmark else False,
+        )
+        logger.info("Burn-in phase completed successfully")
 
 
 def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, datetime] | None:
