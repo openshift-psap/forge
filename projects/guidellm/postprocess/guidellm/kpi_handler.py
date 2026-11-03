@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +18,26 @@ from projects.caliper.engine.kpi import (
 from projects.caliper.engine.model import UnifiedRunModel
 
 logger = logging.getLogger(__name__)
+
+_SUM_KPI_IDS = frozenset({"guidellm_throughput_curve"})
+
+
+def _aggregate_replica_curve(values: list[list], kpi_id: str) -> list[list]:
+    """Aggregate duplicate x-values from multi-replica curve KPIs.
+
+    Throughput KPIs (_SUM_KPI_IDS): sum y-values across replicas.
+    Latency KPIs: mean y-values across replicas.
+    X-axis is always summed to represent total concurrency.
+    """
+    groups: OrderedDict[float, list[float]] = OrderedDict()
+    for x, y in values:
+        groups.setdefault(x, []).append(y)
+
+    if all(len(ys) == 1 for ys in groups.values()):
+        return values
+
+    use_sum = kpi_id in _SUM_KPI_IDS
+    return [[x * len(ys), sum(ys) if use_sum else sum(ys) / len(ys)] for x, ys in groups.items()]
 
 
 class GuideLLMKpiHandler:
@@ -208,6 +228,7 @@ class GuideLLMKpiHandler:
                 if raw_values:
                     coordinate_pairs = [[x, y] for x, y in raw_values]
                     values = sorted(coordinate_pairs, key=lambda point: point[0])
+                    values = _aggregate_replica_curve(values, kpi_id)
                 else:
                     values = []
 
