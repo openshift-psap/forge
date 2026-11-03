@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from projects.core.dsl import entrypoint, execute_tasks, retry, task
@@ -19,6 +20,7 @@ def run(
     tenant_namespace: str = "models-as-a-service",
     tenant_name: str = "default-tenant",
     ingress_namespace: str = "openshift-ingress",
+    payload_processing_config: dict | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
 
@@ -27,8 +29,56 @@ def run(
         tenant_namespace: Namespace of the MaasTenantConfig resource.
         tenant_name: Name of the MaasTenantConfig resource.
         ingress_namespace: Namespace where payload-processing deployments live.
+        payload_processing_config: Scaling/resource config for payload-processing deployments
+            (replicas, cpu_limit, memory_limit). Applied via spec.payloadProcessing on the CR.
     """
     return execute_tasks(locals())
+
+
+@task
+def configure_payload_processing(args, ctx):
+    """Patch MaasTenantConfig with payload processing scaling/resource config.
+
+    Non-None values are set on the CR; None values are removed (null in merge patch).
+    """
+    if not args.activate:
+        return "Skipped: praxis is being deactivated"
+
+    cfg = args.payload_processing_config
+    if not cfg:
+        return "No payload processing config to apply"
+
+    payload_processing = {}
+
+    payload_processing["replicas"] = cfg.get("replicas")
+
+    limits = {}
+    if cfg.get("cpu_limit") is not None:
+        limits["cpu"] = str(cfg["cpu_limit"])
+    if cfg.get("memory_limit") is not None:
+        limits["memory"] = str(cfg["memory_limit"])
+
+    if limits:
+        limits.setdefault("cpu", None)
+        limits.setdefault("memory", None)
+        payload_processing["resources"] = {"limits": limits}
+    else:
+        payload_processing["resources"] = None
+
+    patch = json.dumps({"spec": {"payloadProcessing": payload_processing}})
+
+    oc(
+        "patch",
+        "maastenantconfig",
+        args.tenant_name,
+        "-n",
+        args.tenant_namespace,
+        "--type=merge",
+        "-p",
+        patch,
+    )
+
+    return f"Patched MaasTenantConfig {args.tenant_name} payloadProcessing: {payload_processing}"
 
 
 @task

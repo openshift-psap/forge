@@ -301,9 +301,11 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
 
     if ep_name == "maas/praxis":
         logger.info("Activating praxis for endpoint %s", ep_name)
+        praxis_cfg = config.project.get_config("platform.praxis")
         enable_maas_praxis_command.run(
             activate=True,
             tenant_namespace=maas_cfg["tenant_namespace"],
+            payload_processing_config=praxis_cfg.get("payload_processing"),
         )
     elif ep_name == "maas":
         logger.info("Deactivating praxis for endpoint %s", ep_name)
@@ -321,9 +323,13 @@ def _test_endpoint(
     maas_cfg,
     model_name,
     run_benchmark,
-    benchmark_start,
     completed_endpoints,
 ):
+    from projects.cluster.library.prom.collection import capture_prometheus
+    from projects.kserve.toolbox.capture_sim_state import (
+        main as capture_sim_state_command,
+    )
+
     _toggle_praxis_for_endpoint(ep_name, maas_cfg)
 
     _smoke_test(
@@ -335,10 +341,9 @@ def _test_endpoint(
     )
 
     if not run_benchmark:
-        return benchmark_start
+        return
 
-    if benchmark_start is None:
-        benchmark_start = datetime.now(UTC)
+    benchmark_start = datetime.now(UTC)
 
     test_dir = env.ARTIFACT_DIR
     payload_name = config.project.get_config("test.payload")
@@ -352,16 +357,52 @@ def _test_endpoint(
         },
     )
     update_test_labels_with_timing(test_dir, "benchmark", "start")
+
+    primary_exc = None
+    finalizer_exc = None
+
+    def _run_finalizer(description, callback, **kwargs):
+        nonlocal finalizer_exc
+        try:
+            callback(**kwargs)
+        except Exception:
+            if primary_exc is None:
+                logger.exception("Finalizer failed: %s", description)
+                finalizer_exc = finalizer_exc or sys.exc_info()
+            else:
+                logger.exception("Ignoring %s failure after primary test failure", description)
+
     try:
         _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path)
     except Exception as e:
+        primary_exc = sys.exc_info()
         update_test_labels_with_status(test_dir, False, str(e))
-        raise
+    finally:
+        sim_name = maas_cfg["llmisvc_name"]
+        _run_finalizer(
+            "capturing sim state",
+            capture_sim_state_command.run,
+            namespace=test_namespace,
+            name=sim_name,
+        )
+
+        benchmark_end = datetime.now(UTC)
+
+        def _capture_prom():
+            with env.NextArtifactDir("prometheus_metrics"):
+                capture_prometheus(benchmark_start, benchmark_end)
+
+        _run_finalizer("capturing Prometheus metrics", _capture_prom)
+
+    if primary_exc is not None:
+        raise primary_exc[1].with_traceback(primary_exc[2])
+
+    if finalizer_exc is not None:
+        raise finalizer_exc[1].with_traceback(finalizer_exc[2])
+
     update_test_labels_with_timing(test_dir, "benchmark", "end")
     update_test_labels_with_status(test_dir, True, f"Endpoint {ep_name} completed successfully")
     completed_endpoints.append(ep_name)
-
-    return benchmark_start
 
 
 def _deploy_maas_sim(test_namespace, maas_cfg):
@@ -483,66 +524,20 @@ def _run_endpoint_benchmarking(
     run_benchmark,
     completed_endpoints,
 ):
-    """Run smoke tests and benchmarks for each endpoint, then capture sim state and metrics."""
-    from projects.cluster.library.prom.collection import capture_prometheus
-    from projects.kserve.toolbox.capture_sim_state import (
-        main as capture_sim_state_command,
-    )
+    """Run smoke tests and benchmarks for each endpoint."""
 
-    benchmark_start = None
-    primary_exc = None
-    finalizer_exc = None
-
-    def _run_finalizer(description, callback, **kwargs):
-        nonlocal finalizer_exc
-        try:
-            callback(**kwargs)
-        except Exception:
-            if primary_exc is None:
-                logger.exception("Finalizer failed: %s", description)
-                finalizer_exc = finalizer_exc or sys.exc_info()
-            else:
-                logger.exception("Ignoring %s failure after primary test failure", description)
-
-    try:
-        for ep_name, ep_url, api_key_path in endpoints:
-            with env.NextArtifactDir(ep_name.replace("/", "_")):
-                benchmark_start = _test_endpoint(
-                    ep_name,
-                    ep_url,
-                    api_key_path,
-                    test_namespace,
-                    maas_cfg,
-                    model_name,
-                    run_benchmark,
-                    benchmark_start,
-                    completed_endpoints,
-                )
-    except Exception:
-        primary_exc = sys.exc_info()
-    finally:
-        sim_name = maas_cfg["llmisvc_name"]
-        _run_finalizer(
-            "capturing sim state",
-            capture_sim_state_command.run,
-            namespace=test_namespace,
-            name=sim_name,
-        )
-
-        if run_benchmark and benchmark_start:
-            benchmark_end = datetime.now(UTC)
-
-            def _capture_prom():
-                with env.NextArtifactDir("prometheus_metrics"):
-                    capture_prometheus(benchmark_start, benchmark_end)
-
-            _run_finalizer("capturing Prometheus metrics", _capture_prom)
-
-    if primary_exc is not None:
-        raise primary_exc[1].with_traceback(primary_exc[2])
-
-    if finalizer_exc is not None:
-        raise finalizer_exc[1].with_traceback(finalizer_exc[2])
+    for ep_name, ep_url, api_key_path in endpoints:
+        with env.NextArtifactDir(ep_name.replace("/", "_")):
+            _test_endpoint(
+                ep_name,
+                ep_url,
+                api_key_path,
+                test_namespace,
+                maas_cfg,
+                model_name,
+                run_benchmark,
+                completed_endpoints,
+            )
 
 
 def do_test_praxis():
@@ -576,7 +571,7 @@ def do_test_praxis():
     try:
         endpoints, model_name, maas_endpoint = _prepare_test_endpoints(test_namespace, maas_cfg)
 
-        with env.NextArtifactDir("endpoint_benchmarking"):
+        with env.NextArtifactDir("benchmarking"):
             _run_endpoint_benchmarking(
                 endpoints,
                 test_namespace,

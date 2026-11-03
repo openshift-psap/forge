@@ -76,6 +76,10 @@ sim:
 praxis:
   version: "0.6"
   replicas: 1
+  payload_processing:
+    replicas: null
+    cpu_limit: null
+    memory_limit: null
 
 artifacts:
   capture_namespace_events: true
