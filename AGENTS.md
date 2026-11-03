@@ -175,6 +175,11 @@ Orchestration is the **upper layer** — CI phases, config, presets.
 3. **Manifests and templates live with their toolbox command.**
    Put them in `projects/NAME/toolbox/COMMAND_NAME/templates/` — keeps the command self-contained.
 
+4. **Scope: project toolbox scripts only.**
+   This isolation rule applies to project toolbox scripts (`projects/NAME/toolbox/`).
+   Shared integration layers (e.g., `projects/caliper/orchestration/`) may import from
+   `projects.core.library` for framework integration (env, vault, config, CI).
+
 ### Forbidden
 
 ```python

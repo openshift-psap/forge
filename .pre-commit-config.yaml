@@ -5,3 +5,12 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: validate-intent-files
+        name: Validate intent files
+        entry: scripts/validate_intent_files.py
+        language: script
+        files: '\.intent\.md$'
+        exclude: '(^|/)index\.intent\.md$'
