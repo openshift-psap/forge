@@ -33,8 +33,8 @@ payloads:
 
 sweeps:
   small: [2, 4]
-  medium: [1, 4, 16, 32, 64]
-  full: [1, 4, 16, 32, 64, 128, 256, 512, 1024, 10000]
+  medium: [4, 16, 32, 64, 96, 128]
+  full: [8, 32, 64, 256, 512, 1024]
 
 benchmarks:
   warmup:
