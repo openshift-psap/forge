@@ -876,6 +876,8 @@ def _get_step_status_section(artifact_dir: Path | None, mlflow_run_url: str | No
 
         if not exit_status.records:
             exit_status_emoji = "❓"
+        elif exit_status.is_skipped:
+            exit_status_emoji = "⏭️"
         elif exit_status.is_success:
             exit_status_emoji = "✅"
         else:
@@ -1393,7 +1395,9 @@ def _read_step_exit_status(
                 return "🔄", StepStatus.ONGOING, exit_status
             return "❓", StepStatus.UNKNOWN, exit_status
 
-        if exit_status.is_success:
+        if exit_status.is_skipped:
+            return "⏭️", StepStatus.SKIPPED, exit_status
+        elif exit_status.is_success:
             return "✅", StepStatus.SUCCESS, exit_status
         else:
             return "❌", StepStatus.FAILURE, exit_status

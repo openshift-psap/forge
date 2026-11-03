@@ -30,6 +30,7 @@ EXIT_STATUS_FILENAME = "exit_status.yaml"
 
 class ExitCategory(StrEnum):
     SUCCESS = "success"
+    SKIPPED = "skipped"
     TEST_FAILURE = "test_failure"
     INFRA_FAILURE = "infra_failure"
     SIGNAL_ABORT = "signal_abort"
@@ -112,7 +113,13 @@ class ExitStatus:
 
     @property
     def is_success(self) -> bool:
-        return bool(self.records) and all(r.return_code == 0 for r in self.records)
+        return bool(self.records) and all(
+            r.return_code == 0 and r.category == ExitCategory.SUCCESS for r in self.records
+        )
+
+    @property
+    def is_skipped(self) -> bool:
+        return bool(self.records) and all(r.category == ExitCategory.SKIPPED for r in self.records)
 
     @property
     def primary(self) -> ExitRecord | None:
@@ -281,7 +288,7 @@ def safe_ci_entrypoint(command_func):
             )
             logger.info("### ")
 
-            save_exit_status(0, ExitCategory.SUCCESS, None)
+            save_exit_status(0, ExitCategory.SKIPPED, f"skip.{command_func.__name__} is set")
             sys.exit(0)
 
         exit_code, category, reason = _run_ci_function(command_func, args, kwargs)

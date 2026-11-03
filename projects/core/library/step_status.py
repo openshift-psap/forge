@@ -9,6 +9,7 @@ class StepStatus(StrEnum):
     """Status of a step execution."""
 
     SUCCESS = "success"
+    SKIPPED = "skipped"
     FAILURE = "failure"
     ONGOING = "ongoing"
     UNKNOWN = "unknown"
