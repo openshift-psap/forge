@@ -68,7 +68,7 @@ sim:
     - simulated-model-2
     - simulated-model-3
     - simulated-model-4
-  time_to_first_token: "800ms"
+  time_to_first_token: "1000ms"
   inter_token_latency: "30ms"
   mode: random
   max_num_seqs: 10240
