@@ -256,9 +256,9 @@
                     <h4>{{ plot_name }}</h4>
                     <p>{{ description }}</p>
                     {{ embed_plot_for_report(png_path, html_path, plot_name, output_dir) }}
-                    {%- for sub_png_path, sub_html_path in sub_plots %}
+                    {%- for sub_title, sub_png_path, sub_html_path in sub_plots %}
                     <div style='margin-top: 30px;'>
-                        {{ embed_plot_for_report(sub_png_path, sub_html_path, plot_name + " (cumulated)", output_dir) }}
+                        {{ embed_plot_for_report(sub_png_path, sub_html_path, sub_title, output_dir) }}
                     </div>
                     {%- endfor %}
                 </div>
@@ -285,9 +285,9 @@
             <h4>📊 {{ plot_name }}</h4>
             <p>{{ description }}</p>
             {{ embed_plot_for_report(png_path, html_path, plot_name, output_dir) }}
-            {%- for sub_png_path, sub_html_path in sub_plots %}
+            {%- for sub_title, sub_png_path, sub_html_path in sub_plots %}
             <div style='margin-top: 30px;'>
-                {{ embed_plot_for_report(sub_png_path, sub_html_path, plot_name + " (cumulated)", output_dir) }}
+                {{ embed_plot_for_report(sub_png_path, sub_html_path, sub_title, output_dir) }}
             </div>
             {%- endfor %}
         </div>
