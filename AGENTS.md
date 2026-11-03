@@ -11,7 +11,8 @@ Key paths:
 - `projects/NAME/toolbox` — lower layer of the test harness (toolbox of scripts altering the state of the cluster, using the DSL language)
 - `projects/NAME/test` — unit testing of the test harness
 - `projects/core/dsl/` — shared DSL (task execution, k8s utilities, shell helpers)
-- `fournos/gitops/` — Tekton pipelines and GitOps base workflows
+- `fournos/gitops/` — Tekton pipelines and GitOps base workflows (irrelevant for most Forge work — do not explore unless explicitly asked)
+- `projects/fournos_launcher/` — Fournos launcher orchestration (irrelevant for most Forge work — do not explore unless explicitly asked)
 - `docs/` — project documentation
 
 ## Security: Secret Handling (CRITICAL)
