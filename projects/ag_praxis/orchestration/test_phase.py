@@ -58,7 +58,7 @@ def _resolve_benchmark_config(benchmark_key: str) -> dict:
 
 
 def _execute_benchmark(
-    test_namespace, endpoint_url, benchmark, artifact_suffix, api_key_file_path=None
+    test_namespace, endpoint_url, benchmark, artifact_suffix, api_key_file_path=None, ep_name=None
 ):
     """Run a resolved benchmark config."""
     from projects.guidellm.library import benchconf as benchconf_lib
@@ -76,9 +76,13 @@ def _execute_benchmark(
 
     guidellm_args = build_guidellm_args(benchmark)
 
+    job_name = benchmark.get("job_name")
+    if ep_name:
+        job_name = f"{job_name}-{ep_name.replace('/', '-')}"
+
     run_guidellm_benchmark_command.run(
         endpoint_url=endpoint_url,
-        name=benchmark.get("job_name"),
+        name=job_name,
         namespace=test_namespace,
         image=benchmark.get("image"),
         timeout=benchmark.get("timeout_seconds"),
@@ -95,12 +99,12 @@ def _execute_benchmark(
     )
 
 
-def _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key):
+def _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key, ep_name=None):
     """Resolve a named benchmark and run it."""
 
     with env.NextArtifactDir("benchmark"):
         benchmark = _resolve_benchmark_config(benchmark_key)
-        _execute_benchmark(test_namespace, endpoint_url, benchmark, benchmark_key)
+        _execute_benchmark(test_namespace, endpoint_url, benchmark, benchmark_key, ep_name=ep_name)
 
 
 def _build_benchmark_config(payload_name, sweep_name):
@@ -185,14 +189,14 @@ def _write_benchmark_dry_run(endpoint_url):
     logger.info("Benchmark dry-run config written to %s", dest)
 
 
-def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None):
+def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None, ep_name=None):
     """Run the warmup (if enabled) then the main GuideLLM benchmark."""
     if config.project.get_config("test.run_warmup"):
         warmup_key = config.project.get_config("workloads.warmup_benchmark_key")
         if warmup_key:
             logger.info("Running warmup benchmark: %s", warmup_key)
             with env.NextArtifactDir("warmup"):
-                _run_guidellm_benchmark(test_namespace, endpoint_url, warmup_key)
+                _run_guidellm_benchmark(test_namespace, endpoint_url, warmup_key, ep_name=ep_name)
 
     payload_name = config.project.get_config("test.payload")
     sweep_name = config.project.get_config("test.sweep")
@@ -216,6 +220,7 @@ def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None
             run_benchmark,
             suffix,
             api_key_file_path=api_key_file_path,
+            ep_name=ep_name,
         )
 
 
@@ -374,7 +379,7 @@ def _test_endpoint(
                 logger.exception("Ignoring %s failure after primary test failure", description)
 
     try:
-        _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path)
+        _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name)
     except Exception as e:
         primary_exc = sys.exc_info()
         update_test_labels_with_status(test_dir, False, str(e))
