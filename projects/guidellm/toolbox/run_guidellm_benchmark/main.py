@@ -1033,21 +1033,6 @@ def _extract_from_sidecar_pod(
             entry["replica"] = replica_suffix.lstrip("-")
         extracted_files.append(entry)
 
-    # Signal sidecar to exit
-    logger.info("Creating done file to signal sidecar to exit on %s...", pod_name)
-    oc(
-        "exec",
-        "-n",
-        ctx.target_namespace,
-        pod_name,
-        "-c",
-        "guidellm-sidecar",
-        "--",
-        "touch",
-        "/results/done",
-        check=True,
-    )
-
     return extracted_files
 
 
@@ -1079,6 +1064,24 @@ def extract_results_from_sidecar(args, ctx, results_dir: Path):
             "runs": extracted_files,
         },
     )
+
+    # Signal the sidecars only after index.json is written: they exit as soon
+    # as /results/done exists, so signaling first would leave a failed write
+    # impossible to retry.
+    for pod_name in pod_names:
+        logger.info("Creating done file to signal sidecar to exit on %s...", pod_name)
+        oc(
+            "exec",
+            "-n",
+            ctx.target_namespace,
+            pod_name,
+            "-c",
+            "guidellm-sidecar",
+            "--",
+            "touch",
+            "/results/done",
+            check=True,
+        )
 
     return f"Extracted results for {ctx.benchmark_name} from {len(pod_names)} sidecar pod(s)"
 
