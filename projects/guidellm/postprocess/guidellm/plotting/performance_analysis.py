@@ -345,31 +345,29 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
                 "input_tokens_per_request": record.metrics.get("input_tokens_per_request", 0.0),
                 "output_tokens_per_request": record.metrics.get("output_tokens_per_request", 0.0),
                 "total_tokens_per_request": record.metrics.get("total_tokens_per_request", 0.0),
-                # Latency metrics from curves (convert seconds to ms where needed)
-                "request_latency_median_ms": _safe_get_curve_value(
+                # Latency metrics from curves (all in seconds)
+                "request_latency_median_s": _safe_get_curve_value(
                     curves, "request_latency_median", i, 0.0
-                )
-                * 1000,
-                "request_latency_p95_ms": _safe_get_curve_value(
+                ),
+                "request_latency_p95_s": _safe_get_curve_value(
                     curves, "request_latency_p95", i, 0.0
-                )
-                * 1000,
-                "ttft_median_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
-                "ttft_p10_ms": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
-                "ttft_p25_ms": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
-                "ttft_p50_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),  # p50 = median
-                "ttft_p75_ms": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
-                "ttft_p90_ms": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
-                "ttft_p95_ms": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
-                "itl_median_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),
-                "itl_p10_ms": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
-                "itl_p25_ms": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
-                "itl_p50_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),  # p50 = median
-                "itl_p75_ms": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
-                "itl_p90_ms": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
-                "itl_p95_ms": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
-                "tpot_median_ms": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
-                "tpot_p95_ms": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
+                ),
+                "ttft_median_s": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
+                "ttft_p10_s": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
+                "ttft_p25_s": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
+                "ttft_p50_s": _safe_get_curve_value(curves, "ttft_median", i, 0.0),  # p50 = median
+                "ttft_p75_s": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
+                "ttft_p90_s": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
+                "ttft_p95_s": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
+                "itl_median_s": _safe_get_curve_value(curves, "itl_median", i, 0.0),
+                "itl_p10_s": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
+                "itl_p25_s": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
+                "itl_p50_s": _safe_get_curve_value(curves, "itl_median", i, 0.0),  # p50 = median
+                "itl_p75_s": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
+                "itl_p90_s": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
+                "itl_p95_s": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
+                "tpot_median_s": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
+                "tpot_p95_s": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
                 # Output token throughput percentiles (not in curves currently, use zeros)
                 "output_tokens_per_second_p10": 0.0,
                 "output_tokens_per_second_p25": 0.0,
@@ -472,8 +470,8 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
             size="tokens_per_second",
             hover_data={
                 "strategy": True,
-                "request_latency_median_ms": ":.1f",
-                "ttft_median_ms": ":.1f",
+                "request_latency_median_s": ":.1f",
+                "ttft_median_s": ":.1f",
                 "tokens_per_second": ":.0f",
                 "request_concurrency": ":.1f",
                 "replica_index": True,
@@ -518,20 +516,20 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
         fig = px.scatter(
             df,
             x="request_rate",
-            y="request_latency_median_ms",
+            y="request_latency_median_s",
             color="test_configuration",
             size="tokens_per_second",
             hover_data={
                 "strategy": True,
                 "intended_concurrency": ":.1f",
                 "request_concurrency": ":.1f",
-                "ttft_median_ms": ":.1f",
+                "ttft_median_s": ":.1f",
                 "replica_index": True,
             },
             title=title,
             labels={
                 "request_rate": "Request Rate (req/s)",
-                "request_latency_median_ms": "Latency (ms)",
+                "request_latency_median_s": "Latency (s)",
                 "test_configuration": "Configuration",
             },
             category_orders={"test_configuration": config_order},
@@ -684,8 +682,8 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
             y_label="Tokens per Second",
             extra_hover_cols={
                 "request_rate": ":.1f",
-                "ttft_median_ms": ":.1f",
-                "request_latency_median_ms": ":.1f",
+                "ttft_median_s": ":.1f",
+                "request_latency_median_s": ":.1f",
                 "request_concurrency": ":.1f",
             },
         )
@@ -827,17 +825,17 @@ def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
             logger.info("⚠️  No data available for TTFT analysis plot")
             return None
 
-        if "ttft_median_ms" not in df.columns:
-            logger.warning("⚠️  TTFT column 'ttft_median_ms' not found in dataframe")
+        if "ttft_median_s" not in df.columns:
+            logger.warning("⚠️  TTFT column 'ttft_median_s' not found in dataframe")
             logger.info(f"   Available columns: {list(df.columns)}")
             return None
 
-        ttft_data = df["ttft_median_ms"]
+        ttft_data = df["ttft_median_s"]
         non_zero_count = (ttft_data > 0).sum()
         logger.debug(
             f"   TTFT data: {len(ttft_data)} total points, {non_zero_count} non-zero values"
         )
-        logger.debug(f"   TTFT range: {ttft_data.min():.1f} - {ttft_data.max():.1f} ms")
+        logger.debug(f"   TTFT range: {ttft_data.min():.4f} - {ttft_data.max():.4f} s")
 
         if ttft_data.max() == 0:
             logger.warning("⚠️  All TTFT values are zero - plot may appear empty")
@@ -849,10 +847,10 @@ def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
         fig = _build_line_with_replica_scatter(
             df,
             x_col="intended_concurrency",
-            y_col="ttft_median_ms",
+            y_col="ttft_median_s",
             title=title,
             x_label="Concurrency Level (Requested)",
-            y_label="TTFT P50 (ms)",
+            y_label="TTFT P50 (s)",
             extra_hover_cols={
                 "request_rate": ":.1f",
                 "tokens_per_second": ":.0f",
@@ -1113,8 +1111,14 @@ def _generate_shared_performance_report(
                 "Token Throughput vs Concurrency",
                 create_token_throughput_vs_concurrency_plot,
                 [
-                    create_cumulated_throughput_vs_concurrency_plot,
-                    create_requested_vs_effective_concurrency_plot,
+                    (
+                        "Cumulated Throughput vs Concurrency",
+                        create_cumulated_throughput_vs_concurrency_plot,
+                    ),
+                    (
+                        "Requested vs Effective Concurrency",
+                        create_requested_vs_effective_concurrency_plot,
+                    ),
                 ],
             ),
             ("TTFT Analysis", create_ttft_analysis_plot, []),
@@ -1259,7 +1263,7 @@ def _generate_shared_performance_report(
                             html_rel_path = f"{report_dir_name}/{group_name}/{Path(html_path).name}"
 
                             sub_plots = []
-                            for sub_func in sub_plot_funcs:
+                            for sub_title, sub_func in sub_plot_funcs:
                                 sub_fig = sub_func(df, group_title_context)
                                 if not sub_fig:
                                     continue
@@ -1286,7 +1290,7 @@ def _generate_shared_performance_report(
                                     sub_html_rel = (
                                         f"{report_dir_name}/{group_name}/{Path(sub_html).name}"
                                     )
-                                    sub_plots.append((sub_png_rel, sub_html_rel))
+                                    sub_plots.append((sub_title, sub_png_rel, sub_html_rel))
 
                             group_plots.append((plot_name, png_rel_path, html_rel_path, sub_plots))
                             logger.debug(
@@ -1483,7 +1487,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
     best_efficiency_idx = (
         df["tokens_per_second"] / df["intended_concurrency"].replace(0, 1)
     ).idxmax()
-    best_ttft_idx = df["ttft_median_ms"].idxmin()
+    best_ttft_idx = df["ttft_median_s"].idxmin()
 
     # Configuration analysis
     logger.info("   📊 Computing configuration performance rankings...")
@@ -1492,7 +1496,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
         .agg(
             {
                 "tokens_per_second": "max",
-                "ttft_median_ms": "mean",
+                "ttft_median_s": "mean",
                 "request_rate": "max",
                 "intended_concurrency": "max",
                 "request_concurrency": "max",
@@ -1519,7 +1523,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
             "strategy": df.loc[best_efficiency_idx, "strategy"],
         },
         "best_ttft": {
-            "value": df.loc[best_ttft_idx, "ttft_median_ms"],
+            "value": df.loc[best_ttft_idx, "ttft_median_s"],
             "config": df.loc[best_ttft_idx, "test_configuration"],
             "strategy": df.loc[best_ttft_idx, "strategy"],
         },
