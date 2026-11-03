@@ -22,11 +22,11 @@ def _notify_comparison_skipped(
     dp: str = "",
 ) -> None:
     """Report a comparison that could not run (credentials, S3, data issues)."""
-    from projects.core.library import config
+    from projects.core.library import ci, config
     from projects.rhaiis.postprocess.regression import send_regression_notification
 
     try:
-        send_regression_notification(
+        sent = send_regression_notification(
             {
                 "status": "skipped",
                 "reason": reason,
@@ -42,8 +42,20 @@ def _notify_comparison_skipped(
             tp=tp,
             dp=dp,
         )
-    except Exception:
-        logger.warning("Could not send comparison-skip notification", exc_info=True)
+        error = "" if sent else "Slack notification was not delivered"
+    except Exception as exc:
+        logger.exception("Could not send comparison-skip notification")
+        sent = False
+        error = str(exc)
+
+    if sent:
+        return
+
+    if not ci.add_notification_file(
+        "comparison-notification-failed",
+        f"The RHAIIS comparison notification could not be sent: {error}",
+    ):
+        logger.error("Could not create the comparison-notification-failed notification")
 
 
 def run_standalone_analysis(
@@ -153,7 +165,7 @@ def run_standalone_analysis(
             engine_args=engine_args,
         )
     except Exception as e:
-        logger.warning("Standalone analysis failed", exc_info=True)
+        logger.exception("Standalone analysis failed")
         _notify_comparison_skipped(
             f"Standalone analysis failed: {e}",
             model=model_id,
