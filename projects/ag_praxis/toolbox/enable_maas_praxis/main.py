@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
-from projects.core.dsl import entrypoint, execute_tasks, retry, task
+from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc, oc_get_json
 
 logger = logging.getLogger("DSL")
@@ -30,7 +30,8 @@ def run(
         tenant_name: Name of the MaasTenantConfig resource.
         ingress_namespace: Namespace where payload-processing deployments live.
         payload_processing_config: Scaling/resource config for payload-processing deployments
-            (replicas, cpu_limit, memory_limit). Applied via spec.payloadProcessing on the CR.
+            (replicas, cpu_limit, memory_limit, cpu_request, memory_request).
+            Applied via spec.payloadProcessing on the CR.
     """
     return execute_tasks(locals())
 
@@ -58,10 +59,27 @@ def configure_payload_processing(args, ctx):
     if cfg.get("memory_limit") is not None:
         limits["memory"] = str(cfg["memory_limit"])
 
-    if limits:
-        limits.setdefault("cpu", None)
-        limits.setdefault("memory", None)
-        payload_processing["resources"] = {"limits": limits}
+    requests = {}
+    if cfg.get("cpu_request") is not None:
+        requests["cpu"] = str(cfg["cpu_request"])
+    if cfg.get("memory_request") is not None:
+        requests["memory"] = str(cfg["memory_request"])
+
+    if limits or requests:
+        resources = {}
+        if limits:
+            limits.setdefault("cpu", None)
+            limits.setdefault("memory", None)
+            resources["limits"] = limits
+        else:
+            resources["limits"] = None
+        if requests:
+            requests.setdefault("cpu", None)
+            requests.setdefault("memory", None)
+            resources["requests"] = requests
+        else:
+            resources["requests"] = None
+        payload_processing["resources"] = resources
     else:
         payload_processing["resources"] = None
 
@@ -141,6 +159,34 @@ def wait_for_deployment_images(args, ctx):
 
     action = "activated" if args.activate else "deactivated"
     return f"Praxis {action}: all deployments ready with expected images"
+
+
+@task
+def log_deployment_status(args, ctx):
+    """Log the current status of payload-processing deployments."""
+    oc(
+        "get",
+        "deployments",
+        "-n",
+        args.ingress_namespace,
+        "-owide",
+        log_stdout=True,
+    )
+    return "Logged deployment status"
+
+
+@always
+@task
+def capture_state(args, ctx):
+    """Capture MaaS praxis state for debugging (runs even on failure)."""
+    from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
+
+    capture_maas_praxis_command.run(
+        ingress_namespace=args.ingress_namespace,
+        tenant_namespace=args.tenant_namespace,
+        tenant_name=args.tenant_name,
+    )
+    return "Captured MaaS praxis state"
 
 
 if __name__ == "__main__":

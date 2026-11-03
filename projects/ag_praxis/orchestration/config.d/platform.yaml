@@ -78,7 +78,9 @@ praxis:
   replicas: 1
   payload_processing:
     replicas: 4
+    cpu_request: 100m
     cpu_limit: 4
+    memory_request: null
     memory_limit: 2Gi
 
 artifacts:

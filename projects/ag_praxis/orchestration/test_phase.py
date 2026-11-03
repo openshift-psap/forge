@@ -325,6 +325,7 @@ def _test_endpoint(
     run_benchmark,
     completed_endpoints,
 ):
+    from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
     from projects.cluster.library.prom.collection import capture_prometheus
     from projects.kserve.toolbox.capture_sim_state import (
         main as capture_sim_state_command,
@@ -393,6 +394,13 @@ def _test_endpoint(
                 capture_prometheus(benchmark_start, benchmark_end)
 
         _run_finalizer("capturing Prometheus metrics", _capture_prom)
+
+        _run_finalizer(
+            "capturing MaaS praxis state",
+            capture_maas_praxis_command.run,
+            ingress_namespace=maas_cfg["gateway"]["namespace"],
+            tenant_namespace=maas_cfg["tenant_namespace"],
+        )
 
     if primary_exc is not None:
         raise primary_exc[1].with_traceback(primary_exc[2])
