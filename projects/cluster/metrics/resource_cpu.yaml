@@ -11,6 +11,7 @@
   metricName: cpu_usage_percent_by_pod
   description: Cpu usage percent by pod
   unit: ratio
+  legendLabels: [container, pod]
 
 - query: >-
     avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}[5m])) * 100

@@ -11,6 +11,7 @@
   metricName: memory_working_set_bytes_by_pod
   description: Memory working set bytes by pod
   unit: bytes
+  legendLabels: [container, pod]
 
 - query: >-
     avg(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"})
