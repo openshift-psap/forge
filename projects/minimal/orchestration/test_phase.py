@@ -234,6 +234,10 @@ def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> None:
             config_path = benchconf_lib.resolve_config_path(benchconf_ref)
             benchconf_lib.save_version()
 
+        benchmark_args = benchmark.setdefault("args", {})
+        if "model" not in benchmark_args:
+            benchmark_args["model"] = get_model_name()
+
         guidellm_args = build_guidellm_args(benchmark)
         if not any(arg.startswith(("--tokenizer=", "--processor=")) for arg in guidellm_args):
             guidellm_args.append(f"--tokenizer=kind=huggingface_auto,model={get_model_name()}")

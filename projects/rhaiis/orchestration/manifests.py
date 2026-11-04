@@ -95,6 +95,7 @@ def build_inferenceservice(
     model_id: str,
     service_account_name: str = "",
     supplemental_groups: list[int] | None = None,
+    node_selector: dict[str, str] | None = None,
     labels: dict | None = None,
     profiler_ranges: str | None = None,
 ) -> dict[str, Any]:
@@ -157,6 +158,9 @@ def build_inferenceservice(
 
     if supplemental_groups:
         predictor["securityContext"] = {"supplementalGroups": supplemental_groups}
+
+    if node_selector:
+        predictor["nodeSelector"] = dict(node_selector)
 
     return {
         "apiVersion": "serving.kserve.io/v1beta1",

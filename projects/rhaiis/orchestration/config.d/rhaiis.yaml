@@ -61,6 +61,7 @@ deploy:
   image_pull_secrets: []
   service_account_name: ""
   supplemental_groups: []
+  node_selector: {}
   ready_timeout: 3600
   health_check_timeout: 120
 

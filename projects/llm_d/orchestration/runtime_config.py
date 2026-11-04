@@ -619,6 +619,15 @@ def get_smoke_request() -> dict[str, Any]:
     return copy.deepcopy(config.project.get_config(f"workloads.smoke_requests.{smoke_request_key}"))
 
 
+def get_burnin_config() -> dict[str, Any]:
+    """Get the burn-in phase configuration.
+
+    Returns:
+        Dictionary with burn-in settings (enabled, rate, max_seconds, job_name_prefix)
+    """
+    return copy.deepcopy(config.project.get_config("burnin", {}))
+
+
 def get_run_specs() -> list[RunSpec]:
     model_names = _normalize_string_or_list(_get_runtime_value("model_name"), "runtime.model_name")
     profile_names = _normalize_string_or_list(

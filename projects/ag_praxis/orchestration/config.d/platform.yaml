@@ -50,7 +50,7 @@ rhoai:
 maas:
   namespace: default
   repo_url: https://github.com/opendatahub-io/models-as-a-service
-  repo_ref: main
+  repo_ref: 7a652d9aa3b7320f3b0e81ad49e3190a713cc9b1
   operator_type: rhoai
   tenant_namespace: models-as-a-service
   maas_gateway_label: maas-gateway

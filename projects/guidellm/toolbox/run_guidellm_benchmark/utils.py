@@ -247,6 +247,13 @@ def _build_run_args(
         else:
             passthrough.append(arg)
 
+    if not validate_backend and not model:
+        raise ValueError(
+            "A model name is required when validate_backend is disabled, "
+            "because guidellm cannot auto-discover the model from the backend. "
+            "Pass --model=<name> in the benchmark args or the workload config."
+        )
+
     new_args: list[str] = []
 
     backend_spec = f"kind={backend_type},target={endpoint_url}"

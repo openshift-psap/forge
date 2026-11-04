@@ -163,3 +163,6 @@ temp/
 
 # FORGE launcher configuration (personal settings)
 projects/core/launcher/launcher_config.yaml
+
+# FORGE fournos secret sync file
+secrets.yaml
