@@ -2,6 +2,7 @@ groups:
   comprehensive:
     - report_performance_analysis
     - report_prometheus_metrics
+    - report_payload_resources
 
   release_regression:
     - report_deployment_profile
@@ -16,3 +17,4 @@ groups:
     - report_performance_analysis
     - report_deployment_profile
     - report_prometheus_metrics
+    - report_payload_resources

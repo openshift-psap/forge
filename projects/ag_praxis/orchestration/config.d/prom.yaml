@@ -19,9 +19,22 @@ capture:
     params:
       namespace: "@test.namespace"
     groups:
-      resources:
+      resource_load-generator:
         enabled: true
         files: [resource_cpu, resource_memory, resource_network, workload]
         variables:
           NAMESPACE: "{namespace}"
           POD_NAME: ".*"
+      resource_ingress:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, workload]
+        variables:
+          NAMESPACE: "openshift-ingress"
+          POD_NAME: ".*"
+          POD_NAME_EXCLUDE: "payload-.*"
+      resource_payload:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        variables:
+          NAMESPACE: "openshift-ingress"
+          POD_NAME: "payload-.*"
