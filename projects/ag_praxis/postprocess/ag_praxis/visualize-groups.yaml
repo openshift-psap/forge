@@ -1,0 +1,18 @@
+groups:
+  comprehensive:
+    - report_performance_analysis
+    - report_prometheus_metrics
+
+  release_regression:
+    - report_deployment_profile
+
+  overview:
+    - report_performance_analysis
+
+  prometheus_only:
+    - report_prometheus_metrics
+
+  all:
+    - report_performance_analysis
+    - report_deployment_profile
+    - report_prometheus_metrics
