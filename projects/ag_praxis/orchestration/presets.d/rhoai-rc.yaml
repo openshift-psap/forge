@@ -13,5 +13,5 @@ rhoai-3.6-ea2:
 rhoai-nightly:
   platform.rhoai.custom_catalog.enabled: true
   platform.operators.rhods-operator.channel: beta
-  cpt.kpi.labels.product_version: RHOAI-3.6.0-nightly.2026-10-20T113243
-  platform.rhoai.custom_catalog.image: quay.io/rhoai/rhoai-fbc-fragment@sha256:94b2c6b7951649b601a64345cd3a42b046a611c2b9d5c79c6209b33347c2074f
+  cpt.kpi.labels.product_version: RHOAI-3.6.0-nightly.2026-11-02T08:06:04Z
+  platform.rhoai.custom_catalog.image: quay.io/rhoai/rhoai-fbc-fragment@sha256:a0a8b51b53bc0df6d40b3df5ce556124bb6cbba81bd6137534e5593e94b1feb9
