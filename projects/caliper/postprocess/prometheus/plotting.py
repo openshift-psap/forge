@@ -41,6 +41,7 @@ _FALLBACK_FORMAT = UnitFormat(axis_suffix="", tick_format="", value_scale=1.0)
 
 SUPPRESSED_LABEL_KEYS = frozenset({"id", "image", "name"})
 MAX_LABEL_VALUE_LEN = 64
+MAX_SHORT_NAME_LEN = 64
 
 
 def create_metric_figure(metric: MetricTimeSeries) -> go.Figure:
@@ -88,11 +89,18 @@ def build_legend_info(metric: MetricTimeSeries) -> LegendInfo:
     all_labels = [s.labels for s in metric.series]
     common = _find_common_labels(all_labels)
 
+    legend_keys = metric.legend_labels if metric.legend_labels else None
+
     entries = []
     for series in metric.series:
         distinguishing = {k: v for k, v in series.labels.items() if k not in common}
-        display_labels = _filter_display_labels(distinguishing)
+        if legend_keys:
+            display_labels = {k: v for k, v in distinguishing.items() if k in legend_keys}
+        else:
+            display_labels = _filter_display_labels(distinguishing)
         short_name = _build_short_name(display_labels, metric.metric_name)
+        if len(short_name) > MAX_SHORT_NAME_LEN:
+            short_name = short_name[: MAX_SHORT_NAME_LEN - 1] + "…"
         entries.append(LegendEntry(short_name=short_name, full_labels=dict(series.labels)))
 
     return LegendInfo(common_labels=common, entries=entries)
