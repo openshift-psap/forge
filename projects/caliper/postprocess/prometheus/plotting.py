@@ -31,9 +31,9 @@ class LegendInfo:
 UNIT_FORMATTERS: dict[str, UnitFormat] = {
     "ratio": UnitFormat(axis_suffix="%", tick_format=".1f", value_scale=1.0),
     "percent": UnitFormat(axis_suffix="%", tick_format=".1f", value_scale=1.0),
-    "bytes": UnitFormat(axis_suffix="MB", tick_format=".1f", value_scale=1 / (1024 * 1024)),
+    "bytes": UnitFormat(axis_suffix="MiB", tick_format=".1f", value_scale=1 / (1024 * 1024)),
     "MiB": UnitFormat(axis_suffix="MiB", tick_format=".1f", value_scale=1.0),
-    "bytes/s": UnitFormat(axis_suffix="MB/s", tick_format=".2f", value_scale=1 / (1024 * 1024)),
+    "bytes/s": UnitFormat(axis_suffix="MiB/s", tick_format=".2f", value_scale=1 / (1024 * 1024)),
     "count": UnitFormat(axis_suffix="", tick_format="d", value_scale=1.0),
 }
 
@@ -103,6 +103,8 @@ def build_legend_info(metric: MetricTimeSeries) -> LegendInfo:
             short_name = short_name[: MAX_SHORT_NAME_LEN - 1] + "…"
         entries.append(LegendEntry(short_name=short_name, full_labels=dict(series.labels)))
 
+    entries = _resolve_name_collisions(entries, common)
+
     return LegendInfo(common_labels=common, entries=entries)
 
 
@@ -138,3 +140,112 @@ def _build_short_name(distinguishing: dict[str, str], metric_name: str) -> str:
         return next(iter(distinguishing.values()))
 
     return ", ".join(f"{k}={v}" for k, v in sorted(distinguishing.items()))
+
+
+def _resolve_name_collisions(
+    entries: list[LegendEntry], common: dict[str, str]
+) -> list[LegendEntry]:
+    """Add suffixes to colliding short names so every legend entry is unique."""
+    from collections import defaultdict
+
+    groups: dict[str, list[int]] = defaultdict(list)
+    for i, entry in enumerate(entries):
+        groups[entry.short_name].append(i)
+
+    has_collisions = any(len(indices) > 1 for indices in groups.values())
+    if not has_collisions:
+        return entries
+
+    resolved = list(entries)
+    for name, indices in groups.items():
+        if len(indices) <= 1:
+            continue
+
+        group_entries = [entries[i] for i in indices]
+        all_keys: set[str] = set()
+        for e in group_entries:
+            all_keys.update(k for k in e.full_labels if k not in common)
+
+        varying_keys = sorted(
+            k for k in all_keys if len({e.full_labels.get(k) for e in group_entries}) > 1
+        )
+
+        for idx in indices:
+            entry = entries[idx]
+            if varying_keys:
+                suffix = ", ".join(
+                    f"{k}={entry.full_labels[k]}" for k in varying_keys if k in entry.full_labels
+                )
+                new_name = f"{name} ({suffix})" if suffix else name
+            else:
+                new_name = f"{name} ({indices.index(idx) + 1})"
+
+            if len(new_name) > MAX_SHORT_NAME_LEN:
+                new_name = new_name[: MAX_SHORT_NAME_LEN - 1] + "…"
+
+            resolved[idx] = LegendEntry(short_name=new_name, full_labels=entry.full_labels)
+
+    return resolved
+
+
+def create_combined_figure(
+    usage_metric: MetricTimeSeries,
+    limit_metric: MetricTimeSeries,
+    title: str,
+) -> go.Figure:
+    fmt = UNIT_FORMATTERS.get(usage_metric.unit, _FALLBACK_FORMAT)
+    fig = go.Figure()
+
+    usage_legend = build_legend_info(usage_metric)
+    for labeled_series, entry in zip(usage_metric.series, usage_legend.entries, strict=True):
+        y_values = [v * fmt.value_scale for v in labeled_series.values]
+        hover_text = _build_hover_text(entry, usage_legend, "usage")
+        fig.add_trace(
+            go.Scatter(
+                x=labeled_series.timestamps,
+                y=y_values,
+                mode="lines",
+                name=f"usage: {entry.short_name}",
+                hovertemplate="%{x}<br>%{y}<br>" + hover_text + "<extra></extra>",
+            )
+        )
+
+    limit_legend = build_legend_info(limit_metric)
+    for labeled_series, entry in zip(limit_metric.series, limit_legend.entries, strict=True):
+        y_values = [v * fmt.value_scale for v in labeled_series.values]
+        hover_text = _build_hover_text(entry, limit_legend, "limit")
+        fig.add_trace(
+            go.Scatter(
+                x=labeled_series.timestamps,
+                y=y_values,
+                mode="lines",
+                name=f"limit: {entry.short_name}",
+                line=dict(dash="dash"),
+                hovertemplate="%{x}<br>%{y}<br>" + hover_text + "<extra></extra>",
+            )
+        )
+
+    y_title = title
+    if fmt.axis_suffix:
+        y_title = f"{title} ({fmt.axis_suffix})"
+
+    tick_format = fmt.tick_format
+    if tick_format == "d":
+        tick_format = ".2f"
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time",
+        yaxis_title=y_title,
+        yaxis_tickformat=tick_format,
+    )
+
+    return fig
+
+
+def _build_hover_text(entry: LegendEntry, legend: LegendInfo, prefix: str) -> str:
+    distinguishing = {k: v for k, v in entry.full_labels.items() if k not in legend.common_labels}
+    hover_lines = [f"{k}={v}" for k, v in sorted(distinguishing.items())]
+    if hover_lines:
+        return prefix + "<br>" + "<br>".join(hover_lines)
+    return f"{prefix}: {entry.short_name}"

@@ -45,13 +45,13 @@ def generate_group_report(
     plot_sections: list[str] = []
 
     if group_result.variables:
-        plot_sections.append(_render_variables_section(group_result.variables))
+        plot_sections.append(render_variables_section(group_result.variables))
 
     for idx, metric in enumerate(group_result.metrics):
         section_html = _render_metric_section(metric, report_dir, report_dir_name, idx)
         plot_sections.append(section_html)
 
-    report_html = _assemble_report(display_title, plot_sections)
+    report_html = assemble_report(display_title, plot_sections)
     report_filename = create_report_filename(report_dir_name, report_number, report_title, "html")
     report_path = output_dir / report_filename
     report_path.write_text(report_html, encoding="utf-8")
@@ -127,7 +127,7 @@ def _render_metric_section(
     return f'<div class="metric-section"><h2>{title}</h2>{query_html}{link_html}{inline_plot}{legend_html}</div>'
 
 
-def _render_variables_section(variables: dict[str, str]) -> str:
+def render_variables_section(variables: dict[str, str]) -> str:
     rows = "\n".join(
         f"<tr><td><b>{html_module.escape(k)}</b></td><td>{html_module.escape(v)}</td></tr>"
         for k, v in sorted(variables.items())
@@ -195,7 +195,7 @@ def _render_legend_html(legend) -> str:
     return f"<details><summary>Legend details ({series_count} series)</summary>{inner}</details>"
 
 
-def _assemble_report(display_title: str, sections: list[str]) -> str:
+def assemble_report(display_title: str, sections: list[str]) -> str:
     sections_joined = "\n".join(sections)
     escaped_title = html_module.escape(display_title)
     return (

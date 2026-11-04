@@ -6,8 +6,11 @@ from projects.caliper.postprocess.prometheus.parser import LabeledSeries, Metric
 from projects.caliper.postprocess.prometheus.plotting import (
     UNIT_FORMATTERS,
     build_legend_info,
+    create_combined_figure,
     create_metric_figure,
 )
+
+_ = create_combined_figure  # referenced in tests below; keep import
 
 
 def _make_metric(
@@ -152,19 +155,19 @@ def test_unit_percent_axis():
     assert "%" in fig.layout.yaxis.title.text
 
 
-def test_unit_bytes_scales_to_mb():
-    one_mb = 1024 * 1024
+def test_unit_bytes_scales_to_mib():
+    one_mib = 1024 * 1024
     series = [
         LabeledSeries(
             labels={},
             timestamps=[datetime(2026, 1, 1, tzinfo=UTC)],
-            values=[float(one_mb)],
+            values=[float(one_mib)],
         ),
     ]
     metric = _make_metric(unit="bytes", series=series)
     fig = create_metric_figure(metric)
     assert fig.data[0].y[0] == 1.0
-    assert "MB" in fig.layout.yaxis.title.text
+    assert "MiB" in fig.layout.yaxis.title.text
 
 
 def test_unit_mib_axis():
@@ -176,7 +179,7 @@ def test_unit_mib_axis():
 def test_unit_bytes_per_second_axis():
     metric = _make_metric(unit="bytes/s")
     fig = create_metric_figure(metric)
-    assert "MB/s" in fig.layout.yaxis.title.text
+    assert "MiB/s" in fig.layout.yaxis.title.text
 
 
 def test_unit_count_axis():
@@ -303,8 +306,11 @@ def test_all_distinguishing_suppressed_falls_back_to_metric_name():
     metric = _make_metric(series=series, metric_name="cpu_usage")
     fig = create_metric_figure(metric)
 
-    assert fig.data[0].name == "cpu_usage"
-    assert fig.data[1].name == "cpu_usage"
+    trace_names = [t.name for t in fig.data]
+    assert trace_names == [
+        "cpu_usage (id=/cgroup/a, name=k8s_a)",
+        "cpu_usage (id=/cgroup/b, name=k8s_b)",
+    ]
 
 
 def test_legend_labels_selects_specific_keys():
@@ -315,7 +321,7 @@ def test_legend_labels_selects_specific_keys():
             values=[1.0],
         ),
         LabeledSeries(
-            labels={"namespace": "ns", "pod": "pod-b", "container": "sidecar", "id": "/cgroup/b"},
+            labels={"namespace": "ns", "pod": "pod-b", "container": "worker", "id": "/cgroup/b"},
             timestamps=[datetime(2026, 1, 1, tzinfo=UTC)],
             values=[2.0],
         ),
@@ -325,8 +331,8 @@ def test_legend_labels_selects_specific_keys():
 
     trace_names = {t.name for t in fig.data}
     assert "container=main, pod=pod-a" in trace_names
-    assert "container=sidecar, pod=pod-b" in trace_names
-    assert not any("id" in t.name for t in fig.data)
+    assert "container=worker, pod=pod-b" in trace_names
+    assert not any("id=" in t.name for t in fig.data)
 
 
 def test_legend_labels_single_key_uses_value_only():
@@ -357,9 +363,79 @@ def test_short_name_truncated_at_64_chars():
             timestamps=[datetime(2026, 1, 1, tzinfo=UTC)],
             values=[1.0],
         ),
+        LabeledSeries(
+            labels={"pod": "short"},
+            timestamps=[datetime(2026, 1, 1, tzinfo=UTC)],
+            values=[2.0],
+        ),
     ]
-    metric = _make_metric(series=series)
+    metric = _make_metric(series=series, legend_labels=["pod"])
     fig = create_metric_figure(metric)
 
-    assert len(fig.data[0].name) == 64
-    assert fig.data[0].name.endswith("…")
+    long_trace = [t for t in fig.data if t.name != "short"][0]
+    assert len(long_trace.name) == 64
+    assert long_trace.name.endswith("…")
+
+
+def test_combined_figure_has_usage_and_limit_traces():
+    ts = [datetime(2026, 1, 1, tzinfo=UTC)]
+    usage = _make_metric(
+        unit="count",
+        metric_name="cpu_usage_cores",
+        series=[
+            LabeledSeries(labels={"pod": "pod-a"}, timestamps=ts, values=[0.5]),
+            LabeledSeries(labels={"pod": "pod-b"}, timestamps=ts, values=[0.8]),
+        ],
+    )
+    limits = _make_metric(
+        unit="count",
+        metric_name="cpu_limits",
+        series=[
+            LabeledSeries(labels={"pod": "pod-a"}, timestamps=ts, values=[2.0]),
+            LabeledSeries(labels={"pod": "pod-b"}, timestamps=ts, values=[2.0]),
+        ],
+    )
+    fig = create_combined_figure(usage, limits, "CPU Usage vs Limits")
+
+    assert len(fig.data) == 4
+    names = [t.name for t in fig.data]
+    assert any(n.startswith("usage:") for n in names)
+    assert any(n.startswith("limit:") for n in names)
+
+
+def test_combined_figure_limits_are_dashed():
+    ts = [datetime(2026, 1, 1, tzinfo=UTC)]
+    usage = _make_metric(
+        unit="count",
+        metric_name="cpu_usage",
+        series=[LabeledSeries(labels={"pod": "a"}, timestamps=ts, values=[1.0])],
+    )
+    limits = _make_metric(
+        unit="count",
+        metric_name="cpu_limits",
+        series=[LabeledSeries(labels={"pod": "a"}, timestamps=ts, values=[2.0])],
+    )
+    fig = create_combined_figure(usage, limits, "CPU")
+
+    limit_traces = [t for t in fig.data if t.name.startswith("limit:")]
+    assert all(t.line.dash == "dash" for t in limit_traces)
+
+    usage_traces = [t for t in fig.data if t.name.startswith("usage:")]
+    assert all(t.line.dash is None for t in usage_traces)
+
+
+def test_combined_figure_title():
+    ts = [datetime(2026, 1, 1, tzinfo=UTC)]
+    usage = _make_metric(
+        unit="count",
+        metric_name="cpu_usage",
+        series=[LabeledSeries(labels={}, timestamps=ts, values=[1.0])],
+    )
+    limits = _make_metric(
+        unit="count",
+        metric_name="cpu_limits",
+        series=[LabeledSeries(labels={}, timestamps=ts, values=[2.0])],
+    )
+    fig = create_combined_figure(usage, limits, "CPU Usage vs Limits")
+
+    assert fig.layout.title.text == "CPU Usage vs Limits"
