@@ -1,15 +1,19 @@
 # params:
 #   NAMESPACE: Target namespace
 #   POD_NAME: Pod name regex for the resource capture
+#   POD_NAME_EXCLUDE: Pod name regex to exclude (default: ^$ matches nothing)
+
+- param_defaults:
+    POD_NAME_EXCLUDE: "^$"
 
 - query: >-
-    container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}
+    container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}
   metricName: memory_working_set_bytes_by_pod
   description: Memory working set bytes by pod
   unit: bytes
 
 - query: >-
-    avg(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"})
+    avg(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"})
   metricName: avg_memory_working_set_bytes
   description: Avg memory working set bytes
   unit: bytes

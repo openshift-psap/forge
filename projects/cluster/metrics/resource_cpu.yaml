@@ -1,15 +1,19 @@
 # params:
 #   NAMESPACE: Target namespace
 #   POD_NAME: Pod name regex for the resource capture
+#   POD_NAME_EXCLUDE: Pod name regex to exclude (default: ^$ matches nothing)
+
+- param_defaults:
+    POD_NAME_EXCLUDE: "^$"
 
 - query: >-
-    rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[5m]) * 100
+    rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}[5m]) * 100
   metricName: cpu_usage_percent_by_pod
   description: Cpu usage percent by pod
   unit: ratio
 
 - query: >-
-    avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[5m])) * 100
+    avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}[5m])) * 100
   metricName: avg_cpu_usage_percent
   description: Avg cpu usage percent
   unit: ratio

@@ -1,15 +1,19 @@
 # params:
 #   NAMESPACE: Target namespace
 #   POD_NAME: Pod name regex for the resource capture
+#   POD_NAME_EXCLUDE: Pod name regex to exclude (default: ^$ matches nothing)
+
+- param_defaults:
+    POD_NAME_EXCLUDE: "^$"
 
 - query: >-
-    rate(container_network_receive_bytes_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[5m])
+    rate(container_network_receive_bytes_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}[5m])
   metricName: network_receive_bytes_per_second
   description: Network receive bytes per second
   unit: bytes/s
 
 - query: >-
-    rate(container_network_transmit_bytes_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[5m])
+    rate(container_network_transmit_bytes_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}[5m])
   metricName: network_transmit_bytes_per_second
   description: Network transmit bytes per second
   unit: bytes/s
