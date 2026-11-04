@@ -22,6 +22,7 @@ class MetricTimeSeries:
     unit: str
     source_file: str
     query: str
+    legend_labels: list[str]
     series: list[LabeledSeries]
 
 
@@ -58,6 +59,7 @@ def parse_capture_group(capture_dir: str | Path) -> CaptureGroupResult:
         source_info = source_map.get(metric_name)
         source_file = source_info.source_file if source_info else ""
         query = source_info.query if source_info else ""
+        legend_labels = source_info.legend_labels if source_info else []
 
         if status != "ok":
             metrics.append(
@@ -67,6 +69,7 @@ def parse_capture_group(capture_dir: str | Path) -> CaptureGroupResult:
                     unit=unit,
                     source_file=source_file,
                     query=query,
+                    legend_labels=legend_labels,
                     series=[],
                 )
             )
@@ -86,6 +89,7 @@ def parse_capture_group(capture_dir: str | Path) -> CaptureGroupResult:
                 unit=unit,
                 source_file=source_file,
                 query=query,
+                legend_labels=legend_labels,
                 series=series,
             )
         )
@@ -114,6 +118,7 @@ def filter_by_source_file(
 class _MetricSourceInfo:
     source_file: str
     query: str
+    legend_labels: list[str]
 
 
 def _build_metric_source_map(profiles_dir: Path) -> dict[str, _MetricSourceInfo]:
@@ -134,6 +139,7 @@ def _build_metric_source_map(profiles_dir: Path) -> dict[str, _MetricSourceInfo]
                 mapping[entry["metricName"]] = _MetricSourceInfo(
                     source_file=source_name,
                     query=entry.get("query", ""),
+                    legend_labels=entry.get("legendLabels", []),
                 )
 
     return mapping
