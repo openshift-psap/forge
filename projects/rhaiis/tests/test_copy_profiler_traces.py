@@ -49,7 +49,7 @@ def test_list_trace_files_retries_then_succeeds():
     args = _make_args(flush_timeout=30, flush_poll_interval=10)
     context = _make_context()
 
-    missing = FakeCommandResult(stdout="NO_RANK0_TRACES\n")
+    missing = FakeCommandResult(stdout="")
     found = FakeCommandResult(stdout="/tmp/trace_rank0_pid1.json\n")
 
     call_count = 0
@@ -83,7 +83,7 @@ def test_list_trace_files_raises_after_timeout():
     args = _make_args(flush_timeout=20, flush_poll_interval=10)
     context = _make_context()
 
-    missing = FakeCommandResult(stdout="NO_RANK0_TRACES\n")
+    missing = FakeCommandResult(stdout="")
 
     # monotonic() calls: deadline setup (1000.0 → deadline=1020.0),
     # check iter1 (1005.0 < 1020 → sleep), check iter2 (1015.0 < 1020 → sleep),
@@ -142,7 +142,7 @@ def test_list_trace_files_found_near_deadline():
     args = _make_args(flush_timeout=30, flush_poll_interval=10)
     context = _make_context()
 
-    missing = FakeCommandResult(stdout="NO_RANK0_TRACES\n")
+    missing = FakeCommandResult(stdout="")
     found = FakeCommandResult(stdout="/tmp/trace_rank0_late.json\n")
 
     call_count = 0
