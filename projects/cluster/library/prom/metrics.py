@@ -35,6 +35,9 @@ def load_profile_metadata(*paths: str | Path) -> list[MetricMetadata]:
             if not isinstance(entry, dict):
                 raise ValueError(f"{path}: each entry must be a mapping")
 
+            if "param_defaults" in entry:
+                continue
+
             metric_name = entry.get("metricName")
             if not metric_name:
                 raise ValueError(f"{path}: entry missing required field 'metricName'")
