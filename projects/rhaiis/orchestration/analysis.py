@@ -12,39 +12,36 @@ from projects.core.library import env
 logger = logging.getLogger(__name__)
 
 
-def _notify_comparison_skipped(
-    reason: str,
+def _notify_comparison_outcome(
+    analysis_result: dict,
     *,
     model: str,
     accelerator: str,
     job_id: str,
     tp: str = "",
     dp: str = "",
+    report_url: str = "",
 ) -> None:
-    """Report a comparison that could not run (credentials, S3, data issues)."""
+    """Send a comparison notification; make delivery failures visible in CI."""
     from projects.core.library import ci, config
     from projects.rhaiis.postprocess.regression import send_regression_notification
 
     try:
         sent = send_regression_notification(
-            {
-                "status": "skipped",
-                "reason": reason,
-                "current_version": config.project.get_config("tests.rhaiis.version", ""),
-                "compare_version": config.project.get_config("tests.rhaiis.compare_version", ""),
-            },
+            analysis_result,
             model=model,
             accelerator=accelerator,
             job_id=job_id,
             slack_user=config.project.get_config("tests.rhaiis.slack_user", ""),
             owner=config.project.get_config("ci_job.owner", "") or "",
             notification_vault="psap-forge-notifications",
+            report_url=report_url,
             tp=tp,
             dp=dp,
         )
         error = "" if sent else "Slack notification was not delivered"
     except Exception as exc:
-        logger.exception("Could not send comparison-skip notification")
+        logger.exception("Could not send comparison notification")
         sent = False
         error = str(exc)
 
@@ -56,6 +53,33 @@ def _notify_comparison_skipped(
         f"The RHAIIS comparison notification could not be sent: {error}",
     ):
         logger.error("Could not create the comparison-notification-failed notification")
+
+
+def _notify_comparison_skipped(
+    reason: str,
+    *,
+    model: str,
+    accelerator: str,
+    job_id: str,
+    tp: str = "",
+    dp: str = "",
+) -> None:
+    """Report a comparison that could not run (credentials, S3, data issues)."""
+    from projects.core.library import config
+
+    _notify_comparison_outcome(
+        {
+            "status": "skipped",
+            "reason": reason,
+            "current_version": config.project.get_config("tests.rhaiis.version", ""),
+            "compare_version": config.project.get_config("tests.rhaiis.compare_version", ""),
+        },
+        model=model,
+        accelerator=accelerator,
+        job_id=job_id,
+        tp=tp,
+        dp=dp,
+    )
 
 
 def run_standalone_analysis(
@@ -166,8 +190,13 @@ def run_standalone_analysis(
         )
     except Exception as e:
         logger.exception("Standalone analysis failed")
-        _notify_comparison_skipped(
-            f"Standalone analysis failed: {e}",
+        _notify_comparison_outcome(
+            {
+                "status": "failed",
+                "error": f"Standalone analysis failed: {e}",
+                "current_version": version,
+                "compare_version": compare_version,
+            },
             model=model_id,
             accelerator=accelerator,
             job_id=run_uuid,
@@ -196,7 +225,6 @@ def run_regression_check(
     from projects.core.library import config
     from projects.rhaiis.postprocess.regression import METRICS, PROFILE_MAP, run_regression_analysis
 
-    owner = config.project.get_config("ci_job.owner", "") or ""
     s3_cfg = config.project.get_config("rhaiis.s3", {})
     csv_dashboard_cfg = config.project.get_config("caliper.postprocess.csv_dashboard", {})
     s3_bucket = s3_cfg.get("bucket", "")
@@ -253,8 +281,6 @@ def run_regression_check(
             restrict_profiles=restrict_profiles,
         )
 
-        slack_user = config.project.get_config("tests.rhaiis.slack_user", "")
-
         report_url = ""
         if analysis.get("regression_count", 0) > 0 or analysis.get("improvement_count", 0) > 0:
             agent_cfg = config.project.get_config("rhaiis.agent_analysis", {})
@@ -270,19 +296,14 @@ def run_regression_check(
                     engine_args=engine_args,
                 )
 
-        from projects.rhaiis.postprocess.regression import send_regression_notification
-
-        send_regression_notification(
+        _notify_comparison_outcome(
             analysis,
             model=model_cfg.get("hf_model_id", ""),
             accelerator=accelerator,
             job_id=run_uuid,
-            slack_user=slack_user,
-            owner=owner,
-            notification_vault="psap-forge-notifications",
-            report_url=report_url,
             tp=str(tp),
             dp=str(dp),
+            report_url=report_url,
         )
     except Exception:
         logger.warning("Regression analysis failed; continuing", exc_info=True)

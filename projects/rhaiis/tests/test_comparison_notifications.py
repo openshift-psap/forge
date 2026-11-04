@@ -129,3 +129,69 @@ def test_comparison_skip_reports_notification_exception(monkeypatch) -> None:
 
     assert len(recorded) == 1
     assert "vault unavailable" in recorded[0][1]
+
+
+def test_standalone_analysis_reports_failure_status(monkeypatch, tmp_path) -> None:
+    _mock_config(
+        monkeypatch,
+        {
+            "tests.rhaiis.version": "v2",
+            "tests.rhaiis.compare_version": "v1",
+            "rhaiis.s3": {"bucket": "b", "vault": "v"},
+            "caliper.postprocess.csv_dashboard": {"s3_key": "k"},
+        },
+    )
+    monkeypatch.setattr(
+        "projects.caliper.cli.s3_export.get_aws_credentials",
+        lambda *args, **kwargs: str(tmp_path / "creds"),
+    )
+
+    def fail_client(*args, **kwargs):
+        raise RuntimeError("S3 unavailable")
+
+    monkeypatch.setattr("projects.caliper.cli.s3_export.create_s3_client", fail_client)
+
+    captured: dict = {}
+
+    def capture(analysis_result, **kwargs):
+        captured["analysis_result"] = analysis_result
+        captured.update(kwargs)
+
+    monkeypatch.setattr(analysis, "_notify_comparison_outcome", capture)
+
+    analysis.run_standalone_analysis(
+        {"hf_model_id": "org/model"},
+        "h200_hera2",
+        {"tensor-parallel-size": 2},
+        run_uuid="job-1",
+    )
+
+    assert captured["analysis_result"]["status"] == "failed"
+    assert "S3 unavailable" in captured["analysis_result"]["error"]
+    assert captured["analysis_result"]["current_version"] == "v2"
+    assert captured["analysis_result"]["compare_version"] == "v1"
+
+
+def test_notify_comparison_outcome_forwards_report_url(monkeypatch) -> None:
+    _mock_config(monkeypatch, {})
+    captured: dict = {}
+
+    def fake_send(analysis_result, **kwargs):
+        captured["analysis_result"] = analysis_result
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "projects.rhaiis.postprocess.regression.send_regression_notification", fake_send
+    )
+
+    analysis._notify_comparison_outcome(
+        {"status": "completed"},
+        model="m",
+        accelerator="H200",
+        job_id="job-1",
+        report_url="https://report",
+    )
+
+    assert captured["analysis_result"] == {"status": "completed"}
+    assert captured["report_url"] == "https://report"
