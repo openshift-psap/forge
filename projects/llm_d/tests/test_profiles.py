@@ -1006,3 +1006,19 @@ def test_render_applies_workload_node_selector_to_prefill_pods() -> None:
     assert manifest["spec"]["prefill"]["template"]["nodeSelector"] == {
         "kubernetes.io/hostname": "gpu-node-1"
     }
+
+
+def test_render_workload_node_selector_leaves_scheduler_untouched() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config(
+        "deployments.defaults.node_selector", {"kubernetes.io/hostname": "gpu-node-1"}
+    )
+
+    manifest = _render_with_profile("intelligentrouting-tp1-x1")
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+    assert manifest["spec"]["router"]["scheduler"]["template"]["nodeSelector"] == {
+        "nvidia.com/gpu.present": "true"
+    }
