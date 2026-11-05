@@ -551,30 +551,52 @@ _SUM_CURVE_KEYS = frozenset(
 )
 
 
-def _aggregate_replica_curve(curve_data: list[list[float]], curve_key: str) -> list[list[float]]:
+def _compute_x_scale(intended_concurrency: list) -> dict[float, float]:
+    """Map each unique intended_concurrency value to its cumulated x based on replica count."""
+    from collections import Counter
+
+    counts = Counter(float(v) for v in intended_concurrency if v is not None)
+    return {x: x * count for x, count in counts.items()}
+
+
+def _aggregate_replica_curve(
+    curve_data: list[list[float]],
+    curve_key: str,
+    x_scale: dict[float, float] | None = None,
+) -> list[list[float]]:
     """Aggregate duplicate x-values from multi-replica curves.
 
     For throughput/count metrics (in _SUM_CURVE_KEYS): sum across replicas.
     For latency/per-request metrics: mean across replicas.
     The x-axis (intended_concurrency) is always summed to represent total concurrency.
+    Colliding cumulated x-values are resolved with the same aggregation rule.
+
+    When x_scale is provided, it is used for the x mapping instead of deriving
+    per-curve replica counts, keeping x-values aligned across metrics.
     """
     from collections import OrderedDict
 
     groups: OrderedDict[float, list[float]] = OrderedDict()
-    x_counts: OrderedDict[float, int] = OrderedDict()
     for x, y in curve_data:
         groups.setdefault(x, []).append(y)
-        x_counts[x] = x_counts.get(x, 0) + 1
 
-    if all(count == 1 for count in x_counts.values()):
+    if x_scale is None and all(len(ys) == 1 for ys in groups.values()):
         return curve_data
 
     use_sum = curve_key in _SUM_CURVE_KEYS
-    result = []
+
+    cumulated: OrderedDict[float, list[float]] = OrderedDict()
     for x, ys in groups.items():
-        cumulated_x = x * len(ys)
+        cumulated_x = x_scale[x] if x_scale and x in x_scale else x * len(ys)
         agg_y = sum(ys) if use_sum else sum(ys) / len(ys)
-        result.append([cumulated_x, agg_y])
+        cumulated.setdefault(cumulated_x, []).append(agg_y)
+
+    result = []
+    for cx, agg_ys in cumulated.items():
+        final_y = sum(agg_ys) if use_sum else sum(agg_ys) / len(agg_ys)
+        result.append([cx, final_y])
+
+    result.sort(key=lambda p: p[0])
     return result
 
 
@@ -616,6 +638,12 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
             "run_path": record.test_base_path,
         }
 
+        # Derive x-scale once from intended_concurrency for all curves
+        intended_concurrency_values = curves.get("intended_concurrency", [])
+        x_scale = (
+            _compute_x_scale(intended_concurrency_values) if intended_concurrency_values else None
+        )
+
         # Create curve KPI for each metric
         for suffix, curve_key, _, unit, higher_is_better in DASHBOARD_METRICS:
             curve_values = curves.get(curve_key, [])
@@ -624,7 +652,6 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
 
             # Create [intended_concurrency, metric_value] pairs using intended concurrency from strategy
             curve_data = []
-            intended_concurrency_values = curves.get("intended_concurrency", [])
 
             # Track data quality for warnings
             total_values = len([v for v in curve_values if v is not None])
@@ -656,7 +683,7 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
             if not curve_data:
                 continue
 
-            curve_data = _aggregate_replica_curve(curve_data, curve_key)
+            curve_data = _aggregate_replica_curve(curve_data, curve_key, x_scale)
 
             kpi_labels = dict(labels)
             kpi_labels.update(metadata_labels)
