@@ -38,3 +38,9 @@ capture:
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: "payload-.*"
+      worker_node:
+        enabled: true
+        files: [worker_node]
+      control_plane:
+        enabled: true
+        files: [control_plane]
