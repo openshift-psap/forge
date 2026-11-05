@@ -307,6 +307,8 @@ def run_regression_analysis(
         else:
             regressions = [r for r in results if r.is_regression]
             improvements = [r for r in results if r.is_improvement]
+            compared_profiles = {r.profile for r in results}
+            missing_profiles = sorted(set(restrict_profiles or []) - compared_profiles)
 
             analysis = {
                 "status": "completed",
@@ -315,6 +317,7 @@ def run_regression_analysis(
                 "total_comparisons": len(results),
                 "regression_count": len(regressions),
                 "improvement_count": len(improvements),
+                "missing_profiles": missing_profiles,
                 "regressions": [
                     {
                         "profile": r.profile,
@@ -358,7 +361,12 @@ def run_regression_analysis(
 
     except Exception as e:
         logger.exception("Regression analysis failed")
-        return {"status": "failed", "error": str(e)}
+        return {
+            "status": "failed",
+            "error": str(e),
+            "current_version": current_version,
+            "compare_version": compare_version,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +532,18 @@ def send_regression_notification(
     mlflow_url = _build_mlflow_run_url()
     mlflow_line = f"*MLflow:* <{mlflow_url}|View Run>\n" if mlflow_url else ""
 
+    same_version_line = ""
+    if current_version and current_version == compare_version:
+        same_version_line = "*Note:* the same version is used on both sides.\n"
+
+    incomplete_line = ""
+    missing_profiles = analysis_result.get("missing_profiles") or []
+    if missing_profiles:
+        incomplete_line = (
+            f"*Incomplete:* profile(s) {', '.join(missing_profiles)} could not be compared "
+            "(no common concurrency or no usable metrics).\n"
+        )
+
     header = (
         f"{user_line}"
         f"{owner_line}"
@@ -532,9 +552,21 @@ def send_regression_notification(
         f"*Accelerator:* {accelerator}\n"
         f"{parallelism_line}"
         f"*Versions:* {current_version} vs {compare_version} (baseline)\n"
+        f"{same_version_line}"
+        f"{incomplete_line}"
     )
 
-    if status == "skipped":
+    if status == "failed":
+        reason = analysis_result.get("error", "unknown error")
+        logger.info("Regression analysis failed: %s", reason)
+        message = (
+            f":warning: *Performance comparison failed*\n"
+            f"{header}"
+            f"*Reason:* {reason}\n"
+            f"{dashboard_line}"
+            f"{mlflow_line}"
+        )
+    elif status == "skipped":
         reason = analysis_result.get(
             "reason", "No common concurrency levels between current and baseline"
         )
