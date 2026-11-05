@@ -1,0 +1,115 @@
+# Worker-node resource metrics.
+# No params required — queries are cluster-scoped, filtered by kube_node_role{role="worker"}.
+
+- query: >-
+    sum(kube_node_status_capacity{resource="cpu"}
+    * on(node) group_left()
+    kube_node_role{role="worker"})
+  metricName: worker_cpu_capacity
+  description: Total CPU capacity of worker nodes
+  unit: cores
+
+- query: >-
+    sum(
+      (1 - rate(node_cpu_seconds_total{mode="idle"}[2m]))
+      * on(namespace, pod) group_left(node)
+      node_namespace_pod:kube_pod_info:{pod=~"node-exporter.+"}
+      * on(node) group_left()
+      kube_node_role{role="worker"}
+    )
+  metricName: worker_cpu_usage
+  description: CPU usage on worker nodes
+  unit: cores
+
+- query: >-
+    sum(
+      kube_pod_resource_request{resource="cpu"}
+      * on(node) group_left()
+      kube_node_role{role="worker"}
+    )
+  metricName: worker_cpu_requests
+  description: Total CPU requests on worker nodes
+  unit: cores
+
+- query: >-
+    sum(kube_node_status_capacity{resource="memory"}
+    * on(node) group_left()
+    kube_node_role{role="worker"})
+  metricName: worker_memory_capacity
+  description: Total memory capacity of worker nodes
+  unit: bytes
+
+- query: >-
+    sum(
+      (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="worker"},
+        "instance", "$1", "node", "(.*)"
+      )
+    )
+  metricName: worker_memory_usage
+  description: Memory usage on worker nodes
+  unit: bytes
+
+- query: >-
+    sum(
+      kube_pod_resource_request{resource="memory"}
+      * on(node) group_left()
+      kube_node_role{role="worker"}
+    )
+  metricName: worker_memory_requests
+  description: Total memory requests on worker nodes
+  unit: bytes
+
+- query: >-
+    sum(
+      rate(node_disk_read_bytes_total[5m])
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="worker"},
+        "instance", "$1", "node", "(.*)"
+      )
+    ) by (instance)
+  metricName: worker_disk_read
+  description: Disk read throughput per worker node
+  unit: bytes/s
+
+- query: >-
+    sum(
+      rate(node_disk_written_bytes_total[5m])
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="worker"},
+        "instance", "$1", "node", "(.*)"
+      )
+    ) by (instance)
+  metricName: worker_disk_write
+  description: Disk write throughput per worker node
+  unit: bytes/s
+
+- query: >-
+    sum(
+      rate(node_network_receive_bytes_total{device!="lo"}[5m])
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="worker"},
+        "instance", "$1", "node", "(.*)"
+      )
+    ) by (instance)
+  metricName: worker_network_rx
+  description: Network receive throughput per worker node
+  unit: bytes/s
+
+- query: >-
+    sum(
+      rate(node_network_transmit_bytes_total{device!="lo"}[5m])
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="worker"},
+        "instance", "$1", "node", "(.*)"
+      )
+    ) by (instance)
+  metricName: worker_network_tx
+  description: Network transmit throughput per worker node
+  unit: bytes/s
