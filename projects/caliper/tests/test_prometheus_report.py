@@ -18,11 +18,11 @@ def _make_group(metrics: list[MetricTimeSeries] | None = None) -> CaptureGroupRe
     if metrics is None:
         metrics = [
             MetricTimeSeries(
-                metric_name="cpu_usage_percent_by_pod",
-                description="Cpu usage percent by pod",
-                unit="ratio",
+                metric_name="cpu_usage_by_pod",
+                description="Cpu usage by pod",
+                unit="cores",
                 source_file="resource_cpu",
-                query="rate(container_cpu_usage_seconds_total[5m]) * 100",
+                query="rate(container_cpu_usage_seconds_total[5m])",
                 legend_labels=["container", "pod"],
                 series=[
                     LabeledSeries(
@@ -71,7 +71,7 @@ def test_generate_group_report_contains_metric_titles(tmp_path):
     report_path = generate_group_report(group, tmp_path)
     content = report_path.read_text(encoding="utf-8")
 
-    assert "Cpu usage percent by pod" in content
+    assert "Cpu usage by pod" in content
     assert "Memory working set bytes by pod" in content
 
 
@@ -88,7 +88,7 @@ def test_render_embeddable_returns_valid_result(tmp_path):
     metric = MetricTimeSeries(
         metric_name="avg_cpu",
         description="Avg cpu usage",
-        unit="ratio",
+        unit="cores",
         source_file="resource_cpu",
         query="",
         legend_labels=[],

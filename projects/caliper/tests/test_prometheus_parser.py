@@ -24,16 +24,16 @@ def capture_dir(tmp_path):
         yaml.safe_dump(
             [
                 {
-                    "query": 'rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}"}[5m]) * 100',
-                    "metricName": "cpu_usage_percent_by_pod",
-                    "description": "Cpu usage percent by pod",
-                    "unit": "ratio",
+                    "query": 'rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}"}[5m])',
+                    "metricName": "cpu_usage_by_pod",
+                    "description": "Cpu usage by pod",
+                    "unit": "cores",
                 },
                 {
-                    "query": 'avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}"}[5m])) * 100',
-                    "metricName": "avg_cpu_usage_percent",
-                    "description": "Avg cpu usage percent",
-                    "unit": "ratio",
+                    "query": 'avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}"}[5m]))',
+                    "metricName": "avg_cpu_usage",
+                    "description": "Avg cpu usage",
+                    "unit": "cores",
                 },
             ]
         )
@@ -52,51 +52,51 @@ def capture_dir(tmp_path):
         )
     )
 
-    prom_dir.joinpath("cpu_usage_percent_by_pod.json").write_text(
+    prom_dir.joinpath("cpu_usage_by_pod.json").write_text(
         json.dumps(
             [
                 {
                     "timestamp": "2026-01-01T00:00:00Z",
                     "labels": {"pod": "pod-a"},
                     "value": 12.5,
-                    "metricName": "cpu_usage_percent_by_pod",
+                    "metricName": "cpu_usage_by_pod",
                 },
                 {
                     "timestamp": "2026-01-01T00:01:00Z",
                     "labels": {"pod": "pod-a"},
                     "value": 15.0,
-                    "metricName": "cpu_usage_percent_by_pod",
+                    "metricName": "cpu_usage_by_pod",
                 },
                 {
                     "timestamp": "2026-01-01T00:00:00Z",
                     "labels": {"pod": "pod-b"},
                     "value": 8.0,
-                    "metricName": "cpu_usage_percent_by_pod",
+                    "metricName": "cpu_usage_by_pod",
                 },
                 {
                     "timestamp": "2026-01-01T00:01:00Z",
                     "labels": {"pod": "pod-b"},
                     "value": 9.5,
-                    "metricName": "cpu_usage_percent_by_pod",
+                    "metricName": "cpu_usage_by_pod",
                 },
             ]
         )
     )
 
-    prom_dir.joinpath("avg_cpu_usage_percent.json").write_text(
+    prom_dir.joinpath("avg_cpu_usage.json").write_text(
         json.dumps(
             [
                 {
                     "timestamp": "2026-01-01T00:00:00Z",
                     "labels": {},
                     "value": 10.25,
-                    "metricName": "avg_cpu_usage_percent",
+                    "metricName": "avg_cpu_usage",
                 },
                 {
                     "timestamp": "2026-01-01T00:01:00Z",
                     "labels": {},
                     "value": 12.25,
-                    "metricName": "avg_cpu_usage_percent",
+                    "metricName": "avg_cpu_usage",
                 },
             ]
         )
@@ -119,15 +119,15 @@ def capture_dir(tmp_path):
         "timestamp": "2026-01-01T00:05:00+00:00",
         "variables": {"NAMESPACE": "forge-praxis", "POD_NAME": ".*"},
         "results": {
-            "cpu_usage_percent_by_pod": {
+            "cpu_usage_by_pod": {
                 "status": "ok",
-                "description": "Cpu usage percent by pod",
-                "unit": "ratio",
+                "description": "Cpu usage by pod",
+                "unit": "cores",
             },
-            "avg_cpu_usage_percent": {
+            "avg_cpu_usage": {
                 "status": "ok",
-                "description": "Avg cpu usage percent",
-                "unit": "ratio",
+                "description": "Avg cpu usage",
+                "unit": "cores",
             },
             "memory_working_set_bytes_by_pod": {
                 "status": "ok",
@@ -151,9 +151,9 @@ def test_parse_capture_group(capture_dir):
     assert result.variables == {"NAMESPACE": "forge-praxis", "POD_NAME": ".*"}
     assert len(result.metrics) == 3
 
-    cpu_by_pod = next(m for m in result.metrics if m.metric_name == "cpu_usage_percent_by_pod")
+    cpu_by_pod = next(m for m in result.metrics if m.metric_name == "cpu_usage_by_pod")
     assert cpu_by_pod.source_file == "resource_cpu"
-    assert cpu_by_pod.unit == "ratio"
+    assert cpu_by_pod.unit == "cores"
     assert "container_cpu_usage_seconds_total" in cpu_by_pod.query
     assert len(cpu_by_pod.series) == 2
 
@@ -167,7 +167,7 @@ def test_parse_capture_group(capture_dir):
 
 def test_parse_single_series_no_labels(capture_dir):
     result = parse_capture_group(capture_dir)
-    avg_cpu = next(m for m in result.metrics if m.metric_name == "avg_cpu_usage_percent")
+    avg_cpu = next(m for m in result.metrics if m.metric_name == "avg_cpu_usage")
     assert len(avg_cpu.series) == 1
     assert avg_cpu.series[0].labels == {}
     assert avg_cpu.series[0].values == [10.25, 12.25]

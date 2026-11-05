@@ -35,6 +35,7 @@ UNIT_FORMATTERS: dict[str, UnitFormat] = {
     "MiB": UnitFormat(axis_suffix="MiB", tick_format=".1f", value_scale=1.0),
     "bytes/s": UnitFormat(axis_suffix="MiB/s", tick_format=".2f", value_scale=1 / (1024 * 1024)),
     "count": UnitFormat(axis_suffix="", tick_format="d", value_scale=1.0),
+    "cores": UnitFormat(axis_suffix="cores", tick_format=".2f", value_scale=1.0),
 }
 
 _FALLBACK_FORMAT = UnitFormat(axis_suffix="", tick_format="", value_scale=1.0)

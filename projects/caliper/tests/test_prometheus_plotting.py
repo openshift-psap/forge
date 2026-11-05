@@ -14,7 +14,7 @@ _ = create_combined_figure  # referenced in tests below; keep import
 
 
 def _make_metric(
-    unit: str = "percent",
+    unit: str = "cores",
     series: list[LabeledSeries] | None = None,
     metric_name: str = "test_metric",
     description: str = "Test metric description",
@@ -36,7 +36,7 @@ def _make_metric(
         description=description,
         unit=unit,
         source_file="resource_cpu",
-        query="rate(container_cpu_usage_seconds_total[5m]) * 100",
+        query="rate(container_cpu_usage_seconds_total[5m])",
         legend_labels=legend_labels or [],
         series=series,
     )
@@ -138,9 +138,9 @@ def test_all_labels_common_uses_metric_name():
 
 
 def test_title_from_description():
-    metric = _make_metric(description="Cpu usage percent by pod")
+    metric = _make_metric(description="Cpu usage by pod")
     fig = create_metric_figure(metric)
-    assert fig.layout.title.text == "Cpu usage percent by pod"
+    assert fig.layout.title.text == "Cpu usage by pod"
 
 
 def test_unit_ratio_axis():
@@ -188,6 +188,13 @@ def test_unit_count_axis():
     assert fig.layout.yaxis.tickformat == "d"
 
 
+def test_unit_cores_axis():
+    metric = _make_metric(unit="cores")
+    fig = create_metric_figure(metric)
+    assert "cores" in fig.layout.yaxis.title.text
+    assert fig.layout.yaxis.tickformat == ".2f"
+
+
 def test_unknown_unit_fallback():
     metric = _make_metric(unit="widgets")
     fig = create_metric_figure(metric)
@@ -196,7 +203,7 @@ def test_unknown_unit_fallback():
 
 
 def test_all_builtin_units_present():
-    expected = {"ratio", "percent", "bytes", "MiB", "bytes/s", "count"}
+    expected = {"ratio", "percent", "bytes", "MiB", "bytes/s", "count", "cores"}
     assert set(UNIT_FORMATTERS.keys()) == expected
 
 

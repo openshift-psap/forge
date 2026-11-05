@@ -8,7 +8,7 @@ Generate a single plotly figure from a `MetricTimeSeries`, with unit-aware axis 
 - `build_legend_info(metric)` — given a `MetricTimeSeries`, return a `LegendInfo` containing `common_labels` (dict of labels shared by all series) and `entries` (list of `LegendEntry` with `short_name` and `full_labels` dict); the short names match the trace names used by `create_metric_figure`
 - `LegendInfo` — dataclass holding `common_labels` (dict) and `entries` (list of `LegendEntry`)
 - `LegendEntry` — dataclass holding `short_name` (str) and `full_labels` (dict)
-- `UNIT_FORMATTERS` — dict mapping unit family strings to formatting config (axis label suffix, value scaling, tick format); built-in families: `ratio`, `percent`, `bytes`, `MiB`, `bytes/s`, `count`; unknown units fall back to raw numeric display
+- `UNIT_FORMATTERS` — dict mapping unit family strings to formatting config (axis label suffix, value scaling, tick format); built-in families: `ratio`, `percent`, `bytes`, `MiB`, `bytes/s`, `count`, `cores`; unknown units fall back to raw numeric display
 
 ## Side Effects & State
 - Stateless: no disk I/O, no global state, no side effects
