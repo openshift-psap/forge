@@ -318,6 +318,7 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
     }
     curves = {curve_key: [] for _, curve_key, _, _, _ in DASHBOARD_METRICS}
     run_uuids: dict[int, str] = {}
+    error_breakdown: list[dict[str, int]] = []
     for benchmark in benchmarks:
         metrics = benchmark.get("metrics", {})
         strategy = benchmark.get("config", {}).get("strategy", {}) or benchmark.get(
@@ -404,7 +405,15 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
         }
         for key in curves:
             curves[key].append(values.get(key))
+
+        point_errors: dict[str, int] = {}
+        for req in benchmark.get("requests", {}).get("errored", []):
+            error_msg = req.get("info", {}).get("error") or "unknown"
+            point_errors[error_msg] = point_errors.get(error_msg, 0) + 1
+        error_breakdown.append(point_errors)
+
     extra["run_uuids"] = run_uuids
+    extra["error_breakdown"] = error_breakdown
 
     per_turn = _extract_per_turn_curves(benchmarks)
     if per_turn:
