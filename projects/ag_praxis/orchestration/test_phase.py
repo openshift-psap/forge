@@ -336,19 +336,6 @@ def _test_endpoint(
         main as capture_sim_state_command,
     )
 
-    _toggle_praxis_for_endpoint(ep_name, maas_cfg)
-
-    _smoke_test(
-        test_namespace,
-        ep_url,
-        ep_name,
-        model_name,
-        api_key_file_path=api_key_path,
-    )
-
-    if not run_benchmark:
-        return
-
     benchmark_start = datetime.now(UTC)
 
     test_dir = env.ARTIFACT_DIR
@@ -379,7 +366,18 @@ def _test_endpoint(
                 logger.exception("Ignoring %s failure after primary test failure", description)
 
     try:
-        _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name)
+        _toggle_praxis_for_endpoint(ep_name, maas_cfg)
+
+        _smoke_test(
+            test_namespace,
+            ep_url,
+            ep_name,
+            model_name,
+            api_key_file_path=api_key_path,
+        )
+
+        if run_benchmark:
+            _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name)
     except Exception as e:
         primary_exc = sys.exc_info()
         update_test_labels_with_status(test_dir, False, f"Endpoint test failed: {e}")
@@ -410,6 +408,9 @@ def _test_endpoint(
     if primary_exc is not None:
         # primary test status already tracked in the 'except' block
         raise primary_exc[1].with_traceback(primary_exc[2])
+
+    if not run_benchmark:
+        return
 
     if finalizer_exc is not None:
         update_test_labels_with_status(
@@ -521,13 +522,13 @@ def _prepare_test_endpoints(test_namespace, maas_cfg):
     logger.info("MaaS external endpoint: %s", maas_endpoint)
     logger.info("SVC endpoint: %s", svc_endpoint)
 
-    all_endpoints = [
-        ("svc", svc_endpoint, None),
-        ("maas", maas_endpoint, api_key_file_path),
-        ("maas/praxis", maas_endpoint, api_key_file_path),
-    ]
+    endpoint_map = {
+        "svc": (svc_endpoint, None),
+        "maas": (maas_endpoint, api_key_file_path),
+        "maas/praxis": (maas_endpoint, api_key_file_path),
+    }
     selected = config.project.get_config("test.endpoints")
-    endpoints = [(n, u, k) for n, u, k in all_endpoints if n in selected]
+    endpoints = [(name, *endpoint_map[name]) for name in selected if name in endpoint_map]
 
     return endpoints, model_name, maas_endpoint
 
