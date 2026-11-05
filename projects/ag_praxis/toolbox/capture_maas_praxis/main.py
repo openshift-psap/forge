@@ -146,6 +146,47 @@ def capture_pods(args, ctx):
 
 
 @task
+def capture_pod_logs(args, ctx):
+    """Capture logs for payload-processing pods."""
+    artifacts = args.artifact_dir / "artifacts" / "logs"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    for deploy_name in DEPLOYMENTS_TO_CAPTURE:
+        selector = f"app={deploy_name}"
+        results.append(
+            _capture(
+                f"{deploy_name} logs",
+                artifacts / f"{deploy_name}.log",
+                "logs",
+                "-l",
+                selector,
+                "-n",
+                args.ingress_namespace,
+                "--all-containers",
+                "--prefix",
+                "--tail=2000",
+            )
+        )
+        results.append(
+            _capture(
+                f"{deploy_name} previous logs",
+                artifacts / f"{deploy_name}_previous.log",
+                "logs",
+                "-l",
+                selector,
+                "-n",
+                args.ingress_namespace,
+                "--all-containers",
+                "--prefix",
+                "--previous",
+                "--tail=2000",
+            )
+        )
+    return "; ".join(results)
+
+
+@task
 def capture_maas_tenant_config(args, ctx):
     """Capture the MaasTenantConfig resource."""
     artifacts = args.artifact_dir / "artifacts"
