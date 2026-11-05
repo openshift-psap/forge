@@ -382,8 +382,10 @@ def _test_endpoint(
         _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name)
     except Exception as e:
         primary_exc = sys.exc_info()
-        update_test_labels_with_status(test_dir, False, str(e))
+        update_test_labels_with_status(test_dir, False, f"Endpoint test failed: {e}")
     finally:
+        benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
+
         sim_name = maas_cfg["llmisvc_name"]
         _run_finalizer(
             "capturing sim state",
@@ -391,8 +393,6 @@ def _test_endpoint(
             namespace=test_namespace,
             name=sim_name,
         )
-
-        benchmark_end = datetime.now(UTC)
 
         def _capture_prom():
             with env.NextArtifactDir("prometheus_metrics"):
@@ -408,12 +408,15 @@ def _test_endpoint(
         )
 
     if primary_exc is not None:
+        # primary test status already tracked in the 'except' block
         raise primary_exc[1].with_traceback(primary_exc[2])
 
     if finalizer_exc is not None:
+        update_test_labels_with_status(
+            test_dir, False, f"Endpoint test finalizer failed: {finalizer_exc[1]}"
+        )
         raise finalizer_exc[1].with_traceback(finalizer_exc[2])
 
-    update_test_labels_with_timing(test_dir, "benchmark", "end")
     update_test_labels_with_status(test_dir, True, f"Endpoint {ep_name} completed successfully")
     completed_endpoints.append(ep_name)
 
@@ -617,7 +620,19 @@ def do_test_praxis():
 
 def _run_cleanup(test_namespace, maas_cfg, primary_exc):
     """Run cleanup finalizers after test phase."""
+    from projects.kserve.toolbox.capture_sim_state import (
+        main as capture_sim_state_command,
+    )
+
     finalizer_exc = None
+
+    sim_name = maas_cfg["llmisvc_name"]
+    try:
+        capture_sim_state_command.run(namespace=test_namespace, name=sim_name)
+    except Exception:
+        logger.exception("Failed to capture sim state before cleanup")
+        if primary_exc is None:
+            finalizer_exc = sys.exc_info()
 
     if not config.project.get_config("test.skip_cleanup"):
         try:
@@ -625,7 +640,7 @@ def _run_cleanup(test_namespace, maas_cfg, primary_exc):
         except Exception:
             if primary_exc is None:
                 logger.exception("Finalizer failed: cleaning up MaaS sim")
-                finalizer_exc = sys.exc_info()
+                finalizer_exc = finalizer_exc or sys.exc_info()
             else:
                 logger.exception("Ignoring cleanup failure after primary test failure")
 
