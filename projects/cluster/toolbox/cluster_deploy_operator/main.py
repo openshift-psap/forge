@@ -175,27 +175,41 @@ def wait_for_package_manifest(args, ctx):
     """Wait for the operator PackageManifest to become available"""
 
     result = shell.run(
-        f"oc get packagemanifest {args.package_name} -n {args.source_namespace} -o json",
+        f"oc get packagemanifest -n {args.source_namespace} -lcatalog={args.source_name} -o json",
         check=False,
         log_stdout=False,
     )
     if not result.success:
-        return (False, f"PackageManifest {args.package_name} not found in {args.source_namespace}")
-
-    # Save the package manifest to a file instead of storing in context
-    try:
-        package_data = json.loads(result.stdout)
-        package_manifest_file = (
-            args.artifact_dir / "src" / f"{args.package_name}-packagemanifest.json"
+        return (
+            False,
+            f"PackageManifest for catalog {args.source_name} not found in {args.source_namespace}",
         )
-        with open(package_manifest_file, "w") as f:
-            json.dump(package_data, f, indent=2)
-        ctx.package_manifest_file = package_manifest_file
-    except json.JSONDecodeError:
-        logger.warning("Failed to parse PackageManifest JSON")
-        ctx.package_manifest_file = None
 
-    return f"PackageManifest {args.package_name} is available"
+    try:
+        all_manifests = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return (False, f"Failed to parse PackageManifest JSON from catalog {args.source_name}")
+
+    matching = [
+        item
+        for item in all_manifests.get("items", [])
+        if item.get("metadata", {}).get("name") == args.package_name
+    ]
+
+    if not matching:
+        return (
+            False,
+            f"PackageManifest {args.package_name} not found in catalog {args.source_name}",
+        )
+
+    package_data = matching[0]
+
+    package_manifest_file = args.artifact_dir / "src" / f"{args.package_name}-packagemanifest.json"
+    with open(package_manifest_file, "w") as f:
+        json.dump(package_data, f, indent=2)
+    ctx.package_manifest_file = package_manifest_file
+
+    return f"PackageManifest {args.package_name} is available (catalog: {args.source_name})"
 
 
 @task
@@ -584,12 +598,12 @@ def capture_package_manifest(args, ctx):
     """Capture PackageManifest YAML and JSON"""
 
     shell.run(
-        f"oc get packagemanifest {args.package_name} -n {args.source_namespace} -o yaml",
+        f"oc get packagemanifest -n {args.source_namespace} -lcatalog={args.source_name} -o yaml",
         stdout_dest=args.artifact_dir / "artifacts" / "packagemanifest.yaml",
         check=False,
     )
     shell.run(
-        f"oc get packagemanifest {args.package_name} -n {args.source_namespace} -o json",
+        f"oc get packagemanifest -n {args.source_namespace} -lcatalog={args.source_name} -o json",
         stdout_dest=args.artifact_dir / "artifacts" / "packagemanifest.json",
         check=False,
     )

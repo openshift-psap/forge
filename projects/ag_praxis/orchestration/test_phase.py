@@ -58,7 +58,7 @@ def _resolve_benchmark_config(benchmark_key: str) -> dict:
 
 
 def _execute_benchmark(
-    test_namespace, endpoint_url, benchmark, artifact_suffix, api_key_file_path=None
+    test_namespace, endpoint_url, benchmark, artifact_suffix, api_key_file_path=None, ep_name=None
 ):
     """Run a resolved benchmark config."""
     from projects.guidellm.library import benchconf as benchconf_lib
@@ -76,9 +76,13 @@ def _execute_benchmark(
 
     guidellm_args = build_guidellm_args(benchmark)
 
+    job_name = benchmark.get("job_name")
+    if ep_name:
+        job_name = f"{job_name}-{ep_name.replace('/', '-')}"
+
     run_guidellm_benchmark_command.run(
         endpoint_url=endpoint_url,
-        name=benchmark.get("job_name"),
+        name=job_name,
         namespace=test_namespace,
         image=benchmark.get("image"),
         timeout=benchmark.get("timeout_seconds"),
@@ -95,12 +99,12 @@ def _execute_benchmark(
     )
 
 
-def _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key):
+def _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key, ep_name=None):
     """Resolve a named benchmark and run it."""
 
     with env.NextArtifactDir("benchmark"):
         benchmark = _resolve_benchmark_config(benchmark_key)
-        _execute_benchmark(test_namespace, endpoint_url, benchmark, benchmark_key)
+        _execute_benchmark(test_namespace, endpoint_url, benchmark, benchmark_key, ep_name=ep_name)
 
 
 def _build_benchmark_config(payload_name, sweep_name):
@@ -185,14 +189,14 @@ def _write_benchmark_dry_run(endpoint_url):
     logger.info("Benchmark dry-run config written to %s", dest)
 
 
-def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None):
+def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None, ep_name=None):
     """Run the warmup (if enabled) then the main GuideLLM benchmark."""
     if config.project.get_config("test.run_warmup"):
         warmup_key = config.project.get_config("workloads.warmup_benchmark_key")
         if warmup_key:
             logger.info("Running warmup benchmark: %s", warmup_key)
             with env.NextArtifactDir("warmup"):
-                _run_guidellm_benchmark(test_namespace, endpoint_url, warmup_key)
+                _run_guidellm_benchmark(test_namespace, endpoint_url, warmup_key, ep_name=ep_name)
 
     payload_name = config.project.get_config("test.payload")
     sweep_name = config.project.get_config("test.sweep")
@@ -216,6 +220,7 @@ def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None
             run_benchmark,
             suffix,
             api_key_file_path=api_key_file_path,
+            ep_name=ep_name,
         )
 
 
@@ -301,9 +306,11 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
 
     if ep_name == "maas/praxis":
         logger.info("Activating praxis for endpoint %s", ep_name)
+        praxis_cfg = config.project.get_config("platform.praxis")
         enable_maas_praxis_command.run(
             activate=True,
             tenant_namespace=maas_cfg["tenant_namespace"],
+            payload_processing_config=praxis_cfg.get("payload_processing"),
         )
     elif ep_name == "maas":
         logger.info("Deactivating praxis for endpoint %s", ep_name)
@@ -311,6 +318,108 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
             activate=False,
             tenant_namespace=maas_cfg["tenant_namespace"],
         )
+
+
+def _test_endpoint(
+    ep_name,
+    ep_url,
+    api_key_path,
+    test_namespace,
+    maas_cfg,
+    model_name,
+    run_benchmark,
+    completed_endpoints,
+):
+    from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
+    from projects.cluster.library.prom.collection import capture_prometheus
+    from projects.kserve.toolbox.capture_sim_state import (
+        main as capture_sim_state_command,
+    )
+
+    benchmark_start = datetime.now(UTC)
+
+    test_dir = env.ARTIFACT_DIR
+    payload_name = config.project.get_config("test.payload")
+    sweep_name = config.project.get_config("test.sweep")
+    create_test_metadata(
+        test_dir,
+        {"endpoint": ep_name},
+        kpi_labels={
+            "model_name": model_name,
+            "guidellm_loadshape": f"{payload_name}_{sweep_name}",
+        },
+    )
+    update_test_labels_with_timing(test_dir, "benchmark", "start")
+
+    primary_exc = None
+    finalizer_exc = None
+
+    def _run_finalizer(description, callback, **kwargs):
+        nonlocal finalizer_exc
+        try:
+            callback(**kwargs)
+        except Exception:
+            if primary_exc is None:
+                logger.exception("Finalizer failed: %s", description)
+                finalizer_exc = finalizer_exc or sys.exc_info()
+            else:
+                logger.exception("Ignoring %s failure after primary test failure", description)
+
+    try:
+        _toggle_praxis_for_endpoint(ep_name, maas_cfg)
+
+        _smoke_test(
+            test_namespace,
+            ep_url,
+            ep_name,
+            model_name,
+            api_key_file_path=api_key_path,
+        )
+
+        if run_benchmark:
+            _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name)
+    except Exception as e:
+        primary_exc = sys.exc_info()
+        update_test_labels_with_status(test_dir, False, f"Endpoint test failed: {e}")
+    finally:
+        benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
+
+        sim_name = maas_cfg["llmisvc_name"]
+        _run_finalizer(
+            "capturing sim state",
+            capture_sim_state_command.run,
+            namespace=test_namespace,
+            name=sim_name,
+        )
+
+        def _capture_prom():
+            with env.NextArtifactDir("prometheus_metrics"):
+                capture_prometheus(benchmark_start, benchmark_end)
+
+        _run_finalizer("capturing Prometheus metrics", _capture_prom)
+
+        _run_finalizer(
+            "capturing MaaS praxis state",
+            capture_maas_praxis_command.run,
+            ingress_namespace=maas_cfg["gateway"]["namespace"],
+            tenant_namespace=maas_cfg["tenant_namespace"],
+        )
+
+    if primary_exc is not None:
+        # primary test status already tracked in the 'except' block
+        raise primary_exc[1].with_traceback(primary_exc[2])
+
+    if not run_benchmark:
+        return
+
+    if finalizer_exc is not None:
+        update_test_labels_with_status(
+            test_dir, False, f"Endpoint test finalizer failed: {finalizer_exc[1]}"
+        )
+        raise finalizer_exc[1].with_traceback(finalizer_exc[2])
+
+    update_test_labels_with_status(test_dir, True, f"Endpoint {ep_name} completed successfully")
+    completed_endpoints.append(ep_name)
 
 
 def _deploy_maas_sim(test_namespace, maas_cfg):
@@ -396,6 +505,58 @@ def _validate_benchmark_rates():
             )
 
 
+def _prepare_test_endpoints(test_namespace, maas_cfg):
+    """Deploy sim, register model, resolve gateway, create API key, and build endpoint list."""
+    svc_endpoint = _deploy_maas_sim(test_namespace, maas_cfg)
+
+    model_name = config.project.get_config("platform.sim.model_name")
+    _register_maas_model(test_namespace, maas_cfg, model_name)
+
+    maas_gateway_url, maas_curl_connect_to = _resolve_maas_gateway_url()
+    llmisvc_name = maas_cfg["llmisvc_name"]
+    subscription_name = f"{test_namespace}-{llmisvc_name}-subscription"
+    api_key_file_path = _create_maas_api_key(
+        test_namespace, maas_gateway_url, maas_curl_connect_to, subscription_name
+    )
+    maas_endpoint = f"{maas_gateway_url}/{test_namespace}/{llmisvc_name}"
+    logger.info("MaaS external endpoint: %s", maas_endpoint)
+    logger.info("SVC endpoint: %s", svc_endpoint)
+
+    endpoint_map = {
+        "svc": (svc_endpoint, None),
+        "maas": (maas_endpoint, api_key_file_path),
+        "maas/praxis": (maas_endpoint, api_key_file_path),
+    }
+    selected = config.project.get_config("test.endpoints")
+    endpoints = [(name, *endpoint_map[name]) for name in selected if name in endpoint_map]
+
+    return endpoints, model_name, maas_endpoint
+
+
+def _run_endpoint_benchmarking(
+    endpoints,
+    test_namespace,
+    maas_cfg,
+    model_name,
+    run_benchmark,
+    completed_endpoints,
+):
+    """Run smoke tests and benchmarks for each endpoint."""
+
+    for ep_name, ep_url, api_key_path in endpoints:
+        with env.NextArtifactDir(ep_name.replace("/", "_")):
+            _test_endpoint(
+                ep_name,
+                ep_url,
+                api_key_path,
+                test_namespace,
+                maas_cfg,
+                model_name,
+                run_benchmark,
+                completed_endpoints,
+            )
+
+
 def do_test_praxis():
     logger.info("=== AG Praxis Project Test Phase ===")
     from projects.cluster.library.prom.collection import (
@@ -420,85 +581,31 @@ def do_test_praxis():
 
     _register_namespace_in_gateway(test_namespace, maas_gw["name"], maas_gw["namespace"])
 
+    run_benchmark = config.project.get_config("test.run_benchmark")
     primary_exc = None
-    benchmark_times = None
     completed_endpoints = []
 
     try:
-        svc_endpoint = _deploy_maas_sim(test_namespace, maas_cfg)
+        endpoints, model_name, maas_endpoint = _prepare_test_endpoints(test_namespace, maas_cfg)
 
-        model_name = config.project.get_config("platform.sim.model_name")
-        _register_maas_model(test_namespace, maas_cfg, model_name)
+        with env.NextArtifactDir("benchmarking"):
+            _run_endpoint_benchmarking(
+                endpoints,
+                test_namespace,
+                maas_cfg,
+                model_name,
+                run_benchmark,
+                completed_endpoints,
+            )
 
-        maas_gateway_url, maas_curl_connect_to = _resolve_maas_gateway_url()
-        llmisvc_name = maas_cfg["llmisvc_name"]
-        subscription_name = f"{test_namespace}-{llmisvc_name}-subscription"
-        api_key_file_path = _create_maas_api_key(
-            test_namespace, maas_gateway_url, maas_curl_connect_to, subscription_name
-        )
-        maas_endpoint = f"{maas_gateway_url}/{test_namespace}/{llmisvc_name}"
-        logger.info("MaaS external endpoint: %s", maas_endpoint)
-        logger.info("SVC endpoint: %s", svc_endpoint)
-
-        all_endpoints = [
-            ("svc", svc_endpoint, None),
-            ("maas", maas_endpoint, api_key_file_path),
-            ("maas/praxis", maas_endpoint, api_key_file_path),
-        ]
-        selected = config.project.get_config("test.endpoints")
-        endpoints = [(n, u, k) for n, u, k in all_endpoints if n in selected]
-
-        run_benchmark = config.project.get_config("test.run_benchmark")
-        benchmark_start = None
-
-        for ep_name, ep_url, api_key_path in endpoints:
-            with env.NextArtifactDir(ep_name.replace("/", "_")):
-                _toggle_praxis_for_endpoint(ep_name, maas_cfg)
-
-                _smoke_test(
-                    test_namespace,
-                    ep_url,
-                    ep_name,
-                    model_name,
-                    api_key_file_path=api_key_path,
-                )
-
-                if run_benchmark:
-                    if benchmark_start is None:
-                        benchmark_start = datetime.now(UTC)
-                    test_dir = env.ARTIFACT_DIR
-                    payload_name = config.project.get_config("test.payload")
-                    sweep_name = config.project.get_config("test.sweep")
-                    create_test_metadata(
-                        test_dir,
-                        {"endpoint": ep_name},
-                        kpi_labels={
-                            "model_name": model_name,
-                            "guidellm_loadshape": f"{payload_name}_{sweep_name}",
-                        },
-                    )
-                    update_test_labels_with_timing(test_dir, "benchmark", "start")
-                    try:
-                        _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path)
-                    except Exception as e:
-                        update_test_labels_with_status(test_dir, False, str(e))
-                        raise
-                    update_test_labels_with_timing(test_dir, "benchmark", "end")
-                    update_test_labels_with_status(
-                        test_dir, True, f"Endpoint {ep_name} completed successfully"
-                    )
-                    completed_endpoints.append(ep_name)
-
-        if run_benchmark and benchmark_start:
-            benchmark_times = (benchmark_start, datetime.now(UTC))
-        elif not run_benchmark:
+        if not run_benchmark:
             _write_benchmark_dry_run(maas_endpoint)
 
     except Exception:
         primary_exc = sys.exc_info()
         logger.exception("Test phase failed")
 
-    finalizer_exc = _run_finalizers(test_namespace, maas_cfg, primary_exc, benchmark_times)
+    finalizer_exc = _run_cleanup(test_namespace, maas_cfg, primary_exc)
 
     if primary_exc is not None:
         raise primary_exc[1].with_traceback(primary_exc[2])
@@ -512,52 +619,31 @@ def do_test_praxis():
     return 0, ExitCategory.SUCCESS, reason
 
 
-def _run_finalizers(test_namespace, maas_cfg, primary_exc, benchmark_times):
-    """Run finalizers: capture sim state, Prometheus metrics, cleanup."""
-    from projects.cluster.library.prom.collection import capture_prometheus
+def _run_cleanup(test_namespace, maas_cfg, primary_exc):
+    """Run cleanup finalizers after test phase."""
     from projects.kserve.toolbox.capture_sim_state import (
         main as capture_sim_state_command,
     )
 
     finalizer_exc = None
 
-    def _run_finalizer(description, callback, **kwargs):
-        nonlocal finalizer_exc
-        try:
-            callback(**kwargs)
-        except Exception:
-            if primary_exc is None:
-                logger.exception("Finalizer failed: %s", description)
-                finalizer_exc = finalizer_exc or sys.exc_info()
-            else:
-                logger.exception("Ignoring %s failure after primary test failure", description)
-
     sim_name = maas_cfg["llmisvc_name"]
-
-    def _capture_sim_state():
-        capture_sim_state_command.run(
-            namespace=test_namespace,
-            name=sim_name,
-        )
-
-    _run_finalizer("capturing sim state", _capture_sim_state)
-
-    if benchmark_times:
-        start_time, end_time = benchmark_times
-
-        def _capture_prom():
-            with env.NextArtifactDir("prometheus_metrics"):
-                capture_prometheus(start_time, end_time)
-
-        _run_finalizer("capturing Prometheus metrics", _capture_prom)
+    try:
+        capture_sim_state_command.run(namespace=test_namespace, name=sim_name)
+    except Exception:
+        logger.exception("Failed to capture sim state before cleanup")
+        if primary_exc is None:
+            finalizer_exc = sys.exc_info()
 
     if not config.project.get_config("test.skip_cleanup"):
-        _run_finalizer(
-            "cleaning up MaaS sim",
-            _cleanup_maas_sim,
-            test_namespace=test_namespace,
-            maas_cfg=maas_cfg,
-        )
+        try:
+            _cleanup_maas_sim(test_namespace=test_namespace, maas_cfg=maas_cfg)
+        except Exception:
+            if primary_exc is None:
+                logger.exception("Finalizer failed: cleaning up MaaS sim")
+                finalizer_exc = finalizer_exc or sys.exc_info()
+            else:
+                logger.exception("Ignoring cleanup failure after primary test failure")
 
     return finalizer_exc
 

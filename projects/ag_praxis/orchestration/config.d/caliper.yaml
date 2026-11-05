@@ -32,7 +32,7 @@ replot:
 postprocess:
   enabled: true
   artifacts_dir: null
-  plugin_module: projects.guidellm.postprocess.guidellm.plugin
+  plugin_module: projects.ag_praxis.postprocess.ag_praxis.plugin
   postprocess_config: null
   parse:
     enabled: true
@@ -42,7 +42,7 @@ postprocess:
     output_dir: reports
     reports: []
     report_group: comprehensive
-    visualize_config: projects/guidellm/postprocess/guidellm/visualize-groups.yaml
+    visualize_config: projects/ag_praxis/postprocess/ag_praxis/visualize-groups.yaml
 
   kpi:
     enabled: true
