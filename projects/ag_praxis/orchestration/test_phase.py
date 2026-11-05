@@ -99,12 +99,21 @@ def _execute_benchmark(
     )
 
 
-def _run_guidellm_benchmark(test_namespace, endpoint_url, benchmark_key, ep_name=None):
-    """Resolve a named benchmark and run it."""
+def _run_guidellm_warmup(
+    test_namespace, endpoint_url, benchmark_key, ep_name=None, api_key_file_path=None
+):
+    """Resolve a named warmup benchmark and run it."""
 
     with env.NextArtifactDir("benchmark"):
         benchmark = _resolve_benchmark_config(benchmark_key)
-        _execute_benchmark(test_namespace, endpoint_url, benchmark, benchmark_key, ep_name=ep_name)
+        _execute_benchmark(
+            test_namespace,
+            endpoint_url,
+            benchmark,
+            benchmark_key,
+            api_key_file_path=api_key_file_path,
+            ep_name=ep_name,
+        )
 
 
 def _build_benchmark_config(payload_name, sweep_name):
@@ -196,7 +205,13 @@ def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None
         if warmup_key:
             logger.info("Running warmup benchmark: %s", warmup_key)
             with env.NextArtifactDir("warmup"):
-                _run_guidellm_benchmark(test_namespace, endpoint_url, warmup_key, ep_name=ep_name)
+                _run_guidellm_warmup(
+                    test_namespace,
+                    endpoint_url,
+                    warmup_key,
+                    ep_name=ep_name,
+                    api_key_file_path=api_key_file_path,
+                )
 
     payload_name = config.project.get_config("test.payload")
     sweep_name = config.project.get_config("test.sweep")
