@@ -41,6 +41,7 @@ class _PlotRegistry:
             generate_comprehensive_performance_report,
             generate_deployment_profile_report,
         )
+        from .plotting.request_status import generate_request_status_report
 
         self._registry = {
             "report_performance_analysis": {
@@ -58,6 +59,14 @@ class _PlotRegistry:
                     "report_title": "GuideLLM Deployment Profile Analysis",
                 },
                 "description": "performance analysis comparing different product versions/models under identical test conditions",
+            },
+            "report_request_status": {
+                "function": generate_request_status_report,
+                "type": "report",
+                "kwargs": {
+                    "report_title": "GuideLLM Request Status",
+                },
+                "description": "request status breakdown showing successful and errored requests by category",
             },
         }
         return self._registry
