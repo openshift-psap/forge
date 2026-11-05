@@ -37,7 +37,9 @@ def _aggregate_replica_curve(values: list[list], kpi_id: str) -> list[list]:
         return values
 
     use_sum = kpi_id in _SUM_KPI_IDS
-    return [[x * len(ys), sum(ys) if use_sum else sum(ys) / len(ys)] for x, ys in groups.items()]
+    result = [[x * len(ys), sum(ys) if use_sum else sum(ys) / len(ys)] for x, ys in groups.items()]
+    result.sort(key=lambda p: p[0])
+    return result
 
 
 class GuideLLMKpiHandler:

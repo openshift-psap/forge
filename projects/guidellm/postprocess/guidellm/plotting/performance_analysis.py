@@ -470,8 +470,8 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
             size="tokens_per_second",
             hover_data={
                 "strategy": True,
-                "request_latency_median_s": ":.1f",
-                "ttft_median_s": ":.1f",
+                "request_latency_median_s": ":.3f",
+                "ttft_median_s": ":.3f",
                 "tokens_per_second": ":.0f",
                 "request_concurrency": ":.1f",
                 "replica_index": True,
@@ -523,7 +523,8 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
                 "strategy": True,
                 "intended_concurrency": ":.1f",
                 "request_concurrency": ":.1f",
-                "ttft_median_s": ":.1f",
+                "ttft_median_s": ":.3f",
+                "request_latency_median_s": ":.3f",
                 "replica_index": True,
             },
             title=title,
@@ -554,6 +555,7 @@ def _build_line_with_replica_scatter(
     x_label: str,
     y_label: str,
     extra_hover_cols: dict[str, str],
+    y_hover_format: str = ":.1f",
 ):
     """Build a plotly figure with mean trend line and individual replica markers.
 
@@ -566,6 +568,20 @@ def _build_line_with_replica_scatter(
     config_order = df["test_configuration"].drop_duplicates().tolist()
     colors = px.colors.qualitative.Set1
     color_map = {cfg: colors[i % len(colors)] for i, cfg in enumerate(config_order)}
+
+    hover_cols = [(col, fmt) for col, fmt in extra_hover_cols.items() if col in df.columns]
+    hover_col_names = [col for col, _ in hover_cols]
+    if hover_cols:
+        hover_suffix = "<br>" + "<br>".join(
+            f"{col}: %{{customdata[{i}]{fmt}}}" for i, (col, fmt) in enumerate(hover_cols)
+        )
+    else:
+        hover_suffix = ""
+
+    def _customdata(source_df):
+        if not hover_col_names:
+            return None
+        return source_df[hover_col_names].values
 
     fig = go.Figure()
 
@@ -587,10 +603,12 @@ def _build_line_with_replica_scatter(
                     name=f"{cfg} (mean)",
                     line=dict(color=color, width=2),
                     marker=dict(size=8, symbol="diamond"),
+                    customdata=_customdata(mean_df),
                     hovertemplate=(
                         f"<b>{cfg} (mean)</b><br>"
                         f"{x_label}: %{{x}}<br>"
-                        f"{y_label}: %{{y:.1f}}<extra></extra>"
+                        f"{y_label}: %{{y{y_hover_format}}}"
+                        f"{hover_suffix}<extra></extra>"
                     ),
                 )
             )
@@ -608,10 +626,12 @@ def _build_line_with_replica_scatter(
                         legendgroup=replicas_legend,
                         showlegend=bool(ri == replica_indices[0]),
                         marker=dict(color=color, size=6, opacity=0.6),
+                        customdata=_customdata(ri_df),
                         hovertemplate=(
                             f"<b>{cfg} replica {ri}</b><br>"
                             f"{x_label}: %{{x}}<br>"
-                            f"{y_label}: %{{y:.1f}}<extra></extra>"
+                            f"{y_label}: %{{y{y_hover_format}}}"
+                            f"{hover_suffix}<extra></extra>"
                         ),
                     )
                 )
@@ -624,6 +644,13 @@ def _build_line_with_replica_scatter(
                     name=cfg,
                     line=dict(color=color, width=2),
                     marker=dict(size=8),
+                    customdata=_customdata(cfg_df),
+                    hovertemplate=(
+                        f"<b>{cfg}</b><br>"
+                        f"{x_label}: %{{x}}<br>"
+                        f"{y_label}: %{{y{y_hover_format}}}"
+                        f"{hover_suffix}<extra></extra>"
+                    ),
                 )
             )
 
@@ -682,8 +709,8 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
             y_label="Tokens per Second",
             extra_hover_cols={
                 "request_rate": ":.1f",
-                "ttft_median_s": ":.1f",
-                "request_latency_median_s": ":.1f",
+                "ttft_median_s": ":.3f",
+                "request_latency_median_s": ":.3f",
                 "request_concurrency": ":.1f",
             },
         )
@@ -856,6 +883,7 @@ def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
                 "tokens_per_second": ":.0f",
                 "request_concurrency": ":.1f",
             },
+            y_hover_format=":.3f",
         )
 
         logger.info("✅ TTFT analysis plot created successfully")
