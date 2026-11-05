@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 PROMETHEUS_REPORT_ID = "report_prometheus_metrics"
 RESOURCE_REPORT_ID = "report_payload_resources"
+OVERHEAD_REPORT_ID = "report_overhead_analysis"
 
 
 class AgPraxisPlugin(GuideLLMPlugin):
@@ -28,6 +29,11 @@ class AgPraxisPlugin(GuideLLMPlugin):
             "type": "report",
             "description": "CPU/memory usage vs limits for payload pods",
         }
+        PLOT_REGISTRY[OVERHEAD_REPORT_ID] = {
+            "function": None,
+            "type": "report",
+            "description": "Endpoint overhead analysis comparing svc, maas, and maas/praxis",
+        }
 
     def visualize(
         self,
@@ -38,9 +44,10 @@ class AgPraxisPlugin(GuideLLMPlugin):
         visualize_config: dict[str, Any] | None,
     ) -> list[str]:
         wanted = list(dict.fromkeys(report_ids or ()))
-        our_ids = {PROMETHEUS_REPORT_ID, RESOURCE_REPORT_ID}
+        our_ids = {PROMETHEUS_REPORT_ID, RESOURCE_REPORT_ID, OVERHEAD_REPORT_ID}
         prom_requested = PROMETHEUS_REPORT_ID in wanted
         resource_requested = RESOURCE_REPORT_ID in wanted
+        overhead_requested = OVERHEAD_REPORT_ID in wanted
         parent_ids = [r for r in wanted if r not in our_ids] or None
 
         paths = super().visualize(model, output_dir, parent_ids, group_id, visualize_config)
@@ -57,7 +64,40 @@ class AgPraxisPlugin(GuideLLMPlugin):
             if not resource_paths:
                 logger.info("No resource_payload capture data found in test artifacts")
 
+        if overhead_requested:
+            overhead_paths = _generate_overhead_reports(model, output_dir / "overhead")
+            paths.extend(overhead_paths)
+            if not overhead_paths:
+                logger.info("No overhead analysis data found in test artifacts")
+
         return paths
+
+
+def _generate_overhead_reports(model: UnifiedRunModel, output_dir: Path) -> list[str]:
+    from projects.ag_praxis.postprocess.ag_praxis.overhead_report import (
+        generate_overhead_report,
+    )
+
+    guidellm_records = [
+        r
+        for r in model.unified_result_records
+        if r.run_identity.get("guidellm")
+        and not r.metrics.get("no_benchmarks_found")
+        and r.distinguishing_labels.get("endpoint")
+    ]
+
+    if not guidellm_records:
+        return []
+
+    try:
+        report_path = generate_overhead_report(guidellm_records, output_dir)
+        if report_path:
+            logger.info("Generated overhead report: %s", report_path)
+            return [str(report_path)]
+    except Exception:
+        logger.warning("Failed to generate overhead report", exc_info=True)
+
+    return []
 
 
 def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list[str]:
