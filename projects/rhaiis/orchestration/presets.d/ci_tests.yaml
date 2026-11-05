@@ -26,9 +26,53 @@ sglang-ci-quick:
   tests.rhaiis.model_key: qwen3-0_6b
   tests.rhaiis.workload_key: ci-quick
   tests.rhaiis.workload_keys: ["ci-quick"]
-  tests.rhaiis.version: "sglang-ci-quick-deleteme"
+  tests.rhaiis.version: "sglang-ci-quick"
   tests.rhaiis.warmup: false
   rhaiis.profiler.enabled: false
   caliper.postprocess.csv_dashboard.enabled: false
   rhaiis.agent_analysis.enabled: false
   tests.rhaiis.slack_notify_always: true
+
+cpu-smoke:
+  tests.rhaiis.model_key: tinyllama-cpu
+  tests.rhaiis.workload_key: cpu-smoke
+  rhaiis.accelerator: cpu
+  rhaiis.cpu_flavor: rhaiis
+  rhaiis.deploy.cpu_request: "4"
+  rhaiis.deploy.memory_request: "16Gi"
+  rhaiis.deploy.storage_pvc: ""
+  rhaiis.deploy.node_selector:
+    rhaiis.io/cpu-benchmark: "true"
+
+vanilla-cpu-smoke:
+  tests.rhaiis.model_key: tinyllama-cpu
+  tests.rhaiis.workload_key: cpu-smoke
+  rhaiis.accelerator: cpu
+  rhaiis.cpu_flavor: vanilla
+  rhaiis.deploy.cpu_request: "4"
+  rhaiis.deploy.memory_request: "16Gi"
+  rhaiis.deploy.storage_pvc: ""
+  rhaiis.deploy.node_selector:
+    rhaiis.io/cpu-benchmark: "true"
+
+cpu-balanced:
+  tests.rhaiis.model_key: llama31-8b-w8a8-cpu
+  tests.rhaiis.workload_key: cpu-balanced
+  rhaiis.accelerator: cpu
+  rhaiis.cpu_flavor: rhaiis
+  rhaiis.deploy.cpu_request: "16"
+  rhaiis.deploy.memory_request: "64Gi"
+  rhaiis.deploy.node_selector:
+    rhaiis.io/cpu-benchmark: "true"
+  rhaiis.accelerator_env_vars.cpu.VLLM_CPU_KVCACHE_SPACE: "24"
+
+vanilla-cpu-balanced:
+  tests.rhaiis.model_key: llama31-8b-w8a8-cpu
+  tests.rhaiis.workload_key: cpu-balanced
+  rhaiis.accelerator: cpu
+  rhaiis.cpu_flavor: vanilla
+  rhaiis.deploy.cpu_request: "16"
+  rhaiis.deploy.memory_request: "64Gi"
+  rhaiis.deploy.node_selector:
+    rhaiis.io/cpu-benchmark: "true"
+  rhaiis.accelerator_env_vars.cpu.VLLM_CPU_KVCACHE_SPACE: "24"
