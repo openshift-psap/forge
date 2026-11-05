@@ -823,11 +823,19 @@ def _apply_workload_node_selector(
     if not node_selector:
         return
 
-    manifest["spec"]["template"]["nodeSelector"] = dict(node_selector)
+    # Merge with any selector already on the template so a future
+    # profile-provided one is not silently dropped; the configured
+    # entries win on conflicts.
+    template = manifest["spec"]["template"]
+    template["nodeSelector"] = {**template.get("nodeSelector", {}), **node_selector}
 
     # Prefill pod template (P/D deployments)
     if "prefill" in manifest["spec"]:
-        manifest["spec"]["prefill"]["template"]["nodeSelector"] = dict(node_selector)
+        prefill_template = manifest["spec"]["prefill"]["template"]
+        prefill_template["nodeSelector"] = {
+            **prefill_template.get("nodeSelector", {}),
+            **node_selector,
+        }
 
 
 def _apply_image_pull_secrets(
