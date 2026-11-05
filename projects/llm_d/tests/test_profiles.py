@@ -15,6 +15,7 @@ from projects.core.library import env
 from projects.llm_d.orchestration import ci as llmd_ci
 from projects.llm_d.orchestration import runtime_config, test_phase
 from projects.llm_d.orchestration.render_inference_service import (
+    _apply_workload_node_selector,
     render_inference_service_from_parts,
 )
 from projects.rhoai.library import deploy as rhoai_deploy
@@ -1022,3 +1023,31 @@ def test_render_workload_node_selector_leaves_scheduler_untouched() -> None:
     assert manifest["spec"]["router"]["scheduler"]["template"]["nodeSelector"] == {
         "nvidia.com/gpu.present": "true"
     }
+
+
+def test_workload_node_selector_merges_with_existing_template_selector() -> None:
+    manifest = {
+        "spec": {
+            "template": {"nodeSelector": {"zone": "a", "kubernetes.io/hostname": "old"}},
+            "prefill": {"template": {"nodeSelector": {"zone": "b"}}},
+        }
+    }
+
+    _apply_workload_node_selector(manifest, {"node_selector": {"kubernetes.io/hostname": "new"}})
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {
+        "zone": "a",
+        "kubernetes.io/hostname": "new",
+    }
+    assert manifest["spec"]["prefill"]["template"]["nodeSelector"] == {
+        "zone": "b",
+        "kubernetes.io/hostname": "new",
+    }
+
+
+def test_workload_node_selector_handles_null_template_selector() -> None:
+    manifest = {"spec": {"template": {"nodeSelector": None}}}
+
+    _apply_workload_node_selector(manifest, {"node_selector": {"zone": "a"}})
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"zone": "a"}
