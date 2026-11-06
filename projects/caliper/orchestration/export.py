@@ -485,6 +485,7 @@ def precreate_mlflow_run(
     tracking_uri = secrets_data.get("tracking_uri", "")
 
     prev_workspace = os.environ.get("MLFLOW_WORKSPACE")
+    tracking_uri_was_configured = "MLFLOW_TRACKING_URI" in os.environ
     prev_tracking_uri = mlflow.get_tracking_uri()
     try:
         with mlflow_connection_env(secrets_data):
@@ -506,6 +507,16 @@ def precreate_mlflow_run(
         else:
             os.environ.pop("MLFLOW_WORKSPACE", None)
         mlflow.set_tracking_uri(prev_tracking_uri)
+        if not tracking_uri_was_configured:
+            # mlflow.set_tracking_uri() publishes the URI in os.environ so that
+            # subprocesses inherit it. When no tracking URI was configured before the
+            # export, prev_tracking_uri is mlflow's synthesized default
+            # (sqlite:///mlflow.db resolved against the cwd): restoring it would leak
+            # that default to every subprocess spawned later (e.g. the replot
+            # `caliper artifacts import`, where it would override the MLflow URL and
+            # the secrets). Drop it instead — get_tracking_uri() re-synthesizes the
+            # same default on demand.
+            os.environ.pop("MLFLOW_TRACKING_URI", None)
 
     meta = MlflowDestination(
         run_id=run_id,
