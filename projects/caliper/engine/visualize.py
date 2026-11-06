@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from projects.caliper.engine.label_filters import parse_filter_pairs
+from projects.caliper.engine.model import ReportFile
 from projects.caliper.engine.parse import run_parse
 
 
@@ -70,7 +71,7 @@ def run_visualize(
     use_cache: bool,
     cache_path: Path | None,
     verbose_parsing: bool = False,
-) -> list[str]:
+) -> list[ReportFile]:
     # Validate visualization configuration BEFORE parsing to avoid wasted work
     cfg = resolve_visualize_config(base_dir, visualize_config_path)
     ids = resolve_report_ids(

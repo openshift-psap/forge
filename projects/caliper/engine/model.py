@@ -80,6 +80,25 @@ class RegressionFinding:
     status: str
 
 
+@dataclass
+class ReportFile:
+    """Metadata for a generated report file."""
+
+    source: str  # directory name: "guidellm", "prometheus_metrics", etc.
+    scope: str  # "global" or test node name e.g. "000__maas_praxis"
+    title: str  # short display title: "Performance Analysis"
+    path: str  # relative path from output_dir
+
+    def to_dict(self) -> dict[str, str]:
+        return {"source": self.source, "scope": self.scope, "title": self.title, "path": self.path}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, str]) -> ReportFile:
+        return cls(
+            source=data["source"], scope=data["scope"], title=data["title"], path=data["path"]
+        )
+
+
 class PostProcessingPlugin(ABC):
     """Project plugin: parse required; other hooks optional with defaults."""
 
@@ -94,8 +113,8 @@ class PostProcessingPlugin(ABC):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
-    ) -> list[str]:
-        """Write plots/HTML; return list of created file paths."""
+    ) -> list[ReportFile]:
+        """Write plots/HTML; return list of ReportFile metadata."""
         return []
 
     def compute_kpis(

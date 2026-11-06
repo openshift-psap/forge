@@ -399,12 +399,12 @@ def visualize_cmd(
                 {
                     "success": True,
                     "plugin_module": mod,
-                    "output_files": paths,
+                    "output_files": [rf.to_dict() for rf in paths],
                     "output_dir": str(output_dir),
                     "generated_files": len(paths),
                 }
             )
-            click.echo("Wrote: " + ", ".join(paths))
+            click.echo("Wrote: " + ", ".join(rf.path for rf in paths))
 
     except Exception as e:  # noqa: BLE001
         import traceback
