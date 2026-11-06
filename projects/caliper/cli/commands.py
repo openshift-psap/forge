@@ -1590,7 +1590,7 @@ def artifacts_censor(
     required=True,
     help="Directory where downloaded artifacts will be saved.",
 )
-@click.option("--mlflow-tracking-uri", envvar="MLFLOW_TRACKING_URI")
+@click.option("--mlflow-tracking-uri")
 @click.option("--artifact-path", default="")
 @click.option("--timeout", default=300, type=click.IntRange(min=1))
 @click.option("--mlflow-insecure-tls", is_flag=True)
