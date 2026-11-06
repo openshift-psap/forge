@@ -28,7 +28,7 @@ def _merge_replica_curves(
         return [], []
 
     grouped: dict[float, list[float]] = {}
-    for conc, lat in zip(concurrencies, latencies):
+    for conc, lat in zip(concurrencies, latencies, strict=True):
         if conc not in grouped:
             grouped[conc] = []
         grouped[conc].append(lat)
@@ -336,7 +336,7 @@ def generate_overhead_report(
         return None
 
     report_title = "Overhead Analysis"
-    display_title = create_report_title_display(report_title, report_number)
+    display_title = create_report_title_display(report_title)
 
     report_html = assemble_report(display_title, sections)
 
@@ -349,11 +349,7 @@ def generate_overhead_report(
         "</style>",
     )
 
-    report_dir_name = "overhead_analysis"
-    if report_number is not None:
-        report_dir_name = f"report_{report_number:02d}_{report_dir_name}"
-
-    report_filename = create_report_filename(report_dir_name, report_number, report_title, "html")
+    report_filename = create_report_filename(report_title, report_number)
     report_path = output_dir / report_filename
     report_path.write_text(report_html, encoding="utf-8")
 

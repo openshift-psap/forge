@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from projects.caliper.engine.model import BaseTestNode, UnifiedRunModel
+from projects.caliper.engine.model import BaseTestNode, ReportFile, UnifiedRunModel
 from projects.caliper.postprocess.prometheus.parser import parse_capture_group
 from projects.caliper.postprocess.prometheus.report import generate_group_report
 from projects.guidellm.postprocess.guidellm.plugin import PLOT_REGISTRY, GuideLLMPlugin
@@ -42,7 +42,7 @@ class AgPraxisPlugin(GuideLLMPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
-    ) -> list[str]:
+    ) -> list[ReportFile]:
         wanted = list(dict.fromkeys(report_ids or ()))
         our_ids = {PROMETHEUS_REPORT_ID, RESOURCE_REPORT_ID, OVERHEAD_REPORT_ID}
         prom_requested = PROMETHEUS_REPORT_ID in wanted
@@ -50,30 +50,30 @@ class AgPraxisPlugin(GuideLLMPlugin):
         overhead_requested = OVERHEAD_REPORT_ID in wanted
         parent_ids = [r for r in wanted if r not in our_ids] or None
 
-        paths = super().visualize(model, output_dir, parent_ids, group_id, visualize_config)
+        reports = super().visualize(model, output_dir, parent_ids, group_id, visualize_config)
 
         if prom_requested:
-            prom_paths = _generate_prometheus_reports(model, output_dir / "prometheus")
-            paths.extend(prom_paths)
-            if not prom_paths:
+            prom_reports = _generate_prometheus_reports(model, output_dir)
+            reports.extend(prom_reports)
+            if not prom_reports:
                 logger.info("No Prometheus capture data found in test artifacts")
 
         if resource_requested:
-            resource_paths = _generate_resource_reports(model, output_dir / "resources")
-            paths.extend(resource_paths)
-            if not resource_paths:
+            resource_reports = _generate_resource_reports(model, output_dir)
+            reports.extend(resource_reports)
+            if not resource_reports:
                 logger.info("No resource_payload capture data found in test artifacts")
 
         if overhead_requested:
-            overhead_paths = _generate_overhead_reports(model, output_dir / "overhead")
-            paths.extend(overhead_paths)
-            if not overhead_paths:
+            overhead_reports = _generate_overhead_reports(model, output_dir)
+            reports.extend(overhead_reports)
+            if not overhead_reports:
                 logger.info("No overhead analysis data found in test artifacts")
 
-        return paths
+        return reports
 
 
-def _generate_overhead_reports(model: UnifiedRunModel, output_dir: Path) -> list[str]:
+def _generate_overhead_reports(model: UnifiedRunModel, output_dir: Path) -> list[ReportFile]:
     from projects.ag_praxis.postprocess.ag_praxis.overhead_report import (
         generate_overhead_report,
     )
@@ -89,23 +89,32 @@ def _generate_overhead_reports(model: UnifiedRunModel, output_dir: Path) -> list
     if not guidellm_records:
         return []
 
+    source_dir = output_dir / "global" / "overhead_analysis"
     try:
-        report_path = generate_overhead_report(guidellm_records, output_dir)
+        report_path = generate_overhead_report(guidellm_records, source_dir)
         if report_path:
             logger.info("Generated overhead report: %s", report_path)
-            return [str(report_path)]
+            rel_path = str(Path(report_path).relative_to(output_dir))
+            return [
+                ReportFile(
+                    source="overhead_analysis",
+                    scope="global",
+                    title="Overhead Analysis",
+                    path=rel_path,
+                )
+            ]
     except Exception:
         logger.warning("Failed to generate overhead report", exc_info=True)
 
     return []
 
 
-def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list[str]:
+def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list[ReportFile]:
     from projects.ag_praxis.postprocess.ag_praxis.resource_report import (
         generate_resource_report,
     )
 
-    paths: list[str] = []
+    reports: list[ReportFile] = []
 
     for node in model.test_nodes:
         capture_dirs = find_prometheus_capture_dirs(node)
@@ -113,16 +122,24 @@ def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list
             continue
 
         node_name = Path(node.directory).name
-        node_output_dir = output_dir / node_name
+        source_dir = output_dir / node_name / "resource_usage_vs_limits"
 
         for capture_dir in capture_dirs:
             try:
                 group_result = parse_capture_group(capture_dir)
                 if "payload" not in group_result.group_name:
                     continue
-                report_path = generate_resource_report(group_result, node_output_dir)
+                report_path = generate_resource_report(group_result, source_dir)
                 if report_path:
-                    paths.append(str(report_path))
+                    rel_path = str(Path(report_path).relative_to(output_dir))
+                    reports.append(
+                        ReportFile(
+                            source="resource_usage_vs_limits",
+                            scope=node_name,
+                            title=group_result.group_name,
+                            path=rel_path,
+                        )
+                    )
                     logger.info("Generated resource report: %s", report_path)
             except Exception:
                 logger.warning(
@@ -131,11 +148,11 @@ def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list
                     exc_info=True,
                 )
 
-    return paths
+    return reports
 
 
-def _generate_prometheus_reports(model: UnifiedRunModel, output_dir: Path) -> list[str]:
-    paths: list[str] = []
+def _generate_prometheus_reports(model: UnifiedRunModel, output_dir: Path) -> list[ReportFile]:
+    reports: list[ReportFile] = []
 
     for node in model.test_nodes:
         capture_dirs = find_prometheus_capture_dirs(node)
@@ -143,13 +160,21 @@ def _generate_prometheus_reports(model: UnifiedRunModel, output_dir: Path) -> li
             continue
 
         node_name = Path(node.directory).name
-        node_output_dir = output_dir / node_name
+        source_dir = output_dir / node_name / "prometheus_metrics"
 
         for capture_dir in capture_dirs:
             try:
                 group_result = parse_capture_group(capture_dir)
-                report_path = generate_group_report(group_result, node_output_dir)
-                paths.append(str(report_path))
+                report_path = generate_group_report(group_result, source_dir)
+                rel_path = str(Path(report_path).relative_to(output_dir))
+                reports.append(
+                    ReportFile(
+                        source="prometheus_metrics",
+                        scope=node_name,
+                        title=group_result.group_name,
+                        path=rel_path,
+                    )
+                )
                 logger.info("Generated Prometheus report: %s", report_path)
             except Exception:
                 logger.warning(
@@ -158,7 +183,7 @@ def _generate_prometheus_reports(model: UnifiedRunModel, output_dir: Path) -> li
                     exc_info=True,
                 )
 
-    return paths
+    return reports
 
 
 def find_prometheus_capture_dirs(test_node: BaseTestNode) -> list[Path]:
