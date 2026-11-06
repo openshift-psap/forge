@@ -22,3 +22,4 @@ groups:
     - report_performance_analysis
     - report_deployment_profile
     - report_request_status
+    - report_request_scatter

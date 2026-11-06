@@ -585,6 +585,11 @@ class GuideLLMParser:
             "failed_requests": [],
             "request_concurrency": [],  # Effective concurrency to curves
             "intended_concurrency": [],  # Intended concurrency to curves
+            "output_tokens_per_second_p10": [],
+            "output_tokens_per_second_p25": [],
+            "output_tokens_per_second_p50": [],
+            "output_tokens_per_second_p75": [],
+            "output_tokens_per_second_p90": [],
         }
 
         for benchmark in sorted_benchmarks:
@@ -611,6 +616,11 @@ class GuideLLMParser:
             curves["intended_concurrency"].append(
                 benchmark.intended_concurrency
             )  # Add intended concurrency per rate point
+            curves["output_tokens_per_second_p10"].append(benchmark.output_tokens_per_second_p10)
+            curves["output_tokens_per_second_p25"].append(benchmark.output_tokens_per_second_p25)
+            curves["output_tokens_per_second_p50"].append(benchmark.output_tokens_per_second_p50)
+            curves["output_tokens_per_second_p75"].append(benchmark.output_tokens_per_second_p75)
+            curves["output_tokens_per_second_p90"].append(benchmark.output_tokens_per_second_p90)
 
         # Add request_rate and performance curves to metrics
         metrics["request_rate"] = request_rates

@@ -369,14 +369,21 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
                 "itl_p95_s": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
                 "tpot_median_s": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
                 "tpot_p95_s": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
-                # Output token throughput percentiles (not in curves currently, use zeros)
-                "output_tokens_per_second_p10": 0.0,
-                "output_tokens_per_second_p25": 0.0,
-                "output_tokens_per_second_p50": _safe_get_curve_value(
-                    curves, "output_tokens_per_second", i, 0.0
+                "output_tokens_per_second_p10": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p10", i, 0.0
                 ),
-                "output_tokens_per_second_p75": 0.0,
-                "output_tokens_per_second_p90": 0.0,
+                "output_tokens_per_second_p25": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p25", i, 0.0
+                ),
+                "output_tokens_per_second_p50": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p50", i, 0.0
+                ),
+                "output_tokens_per_second_p75": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p75", i, 0.0
+                ),
+                "output_tokens_per_second_p90": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p90", i, 0.0
+                ),
             }
             data.append(row)
 
