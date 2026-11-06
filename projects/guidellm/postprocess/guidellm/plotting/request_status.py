@@ -13,6 +13,7 @@ from projects.caliper.engine.parameter_matrix import (
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import (
+    compute_report_stem,
     create_report_filename,
     create_report_title_display,
     save_figure,
@@ -285,7 +286,7 @@ def generate_request_status_report(
 ) -> str | None:
     """Generate a request status report: successful requests plot, then per-config error plots."""
     try:
-        display_title = create_report_title_display(report_title, report_number)
+        display_title = create_report_title_display(report_title)
         logger.info("Generating %s ...", display_title)
 
         guidellm_records = [
@@ -297,7 +298,7 @@ def generate_request_status_report(
             return None
 
         report_dir_name = (
-            f"report_{report_number:02d}_{report_title.lower().replace(' ', '_').replace('-', '_')}"
+            compute_report_stem(report_title, report_number)
             if report_number is not None
             else "request_status"
         )
@@ -456,9 +457,7 @@ def generate_request_status_report(
 </body>
 </html>"""
 
-        main_filename = create_report_filename(
-            report_title.lower().replace(" ", "_"), report_number, report_title, "html"
-        )
+        main_filename = create_report_filename(report_title, report_number)
         main_path = output_dir / main_filename
         main_path.write_text(main_html, encoding="utf-8")
 

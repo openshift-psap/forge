@@ -12,6 +12,7 @@ from projects.caliper.engine.model import (
     BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
+    ReportFile,
     UnifiedRunModel,
 )
 
@@ -47,6 +48,7 @@ class _PlotRegistry:
             "report_performance_analysis": {
                 "function": generate_comprehensive_performance_report,
                 "type": "report",
+                "title": "Performance Analysis",
                 "kwargs": {
                     "report_title": "GuideLLM Performance Analysis",
                 },
@@ -55,6 +57,7 @@ class _PlotRegistry:
             "report_deployment_profile": {
                 "function": generate_deployment_profile_report,
                 "type": "report",
+                "title": "Deployment Profile Analysis",
                 "kwargs": {
                     "report_title": "GuideLLM Deployment Profile Analysis",
                 },
@@ -63,6 +66,7 @@ class _PlotRegistry:
             "report_request_status": {
                 "function": generate_request_status_report,
                 "type": "report",
+                "title": "Request Status",
                 "kwargs": {
                     "report_title": "GuideLLM Request Status",
                 },
@@ -185,14 +189,13 @@ class GuideLLMPlugin(PostProcessingPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
-    ) -> list[str]:
+    ) -> list[ReportFile]:
         """Generate visualization reports for GuideLLM benchmarks."""
-        output_dir.mkdir(parents=True, exist_ok=True)
-        paths: list[str] = []
-        # Preserve caller-supplied order while removing duplicates
+        source_dir = output_dir / "global" / "guidellm"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        reports: list[ReportFile] = []
         wanted = list(dict.fromkeys(report_ids or ()))
 
-        # Filter to only GuideLLM records with benchmarks
         guidellm_records = [
             r
             for r in model.unified_result_records
@@ -200,9 +203,8 @@ class GuideLLMPlugin(PostProcessingPlugin):
         ]
 
         if not guidellm_records:
-            return paths
+            return reports
 
-        # Generate reports using the registry
         invalid_reports: list[str] = []
         report_counter = 0
 
@@ -214,18 +216,25 @@ class GuideLLMPlugin(PostProcessingPlugin):
 
             plot_config = PLOT_REGISTRY[report_name]
             function = plot_config["function"]
-            kwargs = plot_config.get("kwargs", {}).copy()  # Copy to avoid modifying the registry
+            kwargs = plot_config.get("kwargs", {}).copy()
 
-            # Add automatic report numbering for report types
             if plot_config["type"] == "report":
                 kwargs["report_number"] = report_counter
                 report_counter += 1
 
             try:
-                # Call the generator function with records, output_dir, and any additional kwargs
-                path = function(guidellm_records, output_dir, **kwargs)
+                path = function(guidellm_records, source_dir, **kwargs)
                 if path:
-                    paths.append(path)
+                    title = plot_config.get("title", report_name)
+                    rel_path = str(Path(path).relative_to(output_dir))
+                    reports.append(
+                        ReportFile(
+                            source="guidellm",
+                            scope="global",
+                            title=title,
+                            path=rel_path,
+                        )
+                    )
                     logger.info("Generated %s: %s", report_name, path)
                 else:
                     logger.warning("Failed to generate %s", report_name)
@@ -233,7 +242,6 @@ class GuideLLMPlugin(PostProcessingPlugin):
                 logger.exception("Error generating %s", report_name)
                 raise
 
-        # Check for invalid report names and raise error if found
         if invalid_reports:
             available_reports = list(PLOT_REGISTRY.keys())
             raise ValueError(
@@ -241,7 +249,7 @@ class GuideLLMPlugin(PostProcessingPlugin):
                 f"Available types in this plugin: {sorted(available_reports)}"
             )
 
-        return paths
+        return reports
 
     def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
         """Compute KPI values using dataclasses with status details."""
