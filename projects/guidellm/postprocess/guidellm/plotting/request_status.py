@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re  # noqa: F401
 from pathlib import Path
 from typing import Any
 
@@ -34,19 +35,23 @@ def _extract_status_data(
         curves = record.metrics.get("performance_curves", {})
         concurrency_list = curves.get("intended_concurrency", [])
         successful_list = curves.get("successful_requests", [])
-        error_breakdown_list = record.metrics.get("error_breakdown", [])
+        raw_breakdown = record.metrics.get("error_breakdown", [])
+        error_breakdown_list = [_normalize_breakdown(pt) for pt in raw_breakdown]
 
         if not concurrency_list:
             continue
 
         legend_name = create_legend_name(record, varying_params)
 
+        order = sorted(range(len(concurrency_list)), key=lambda i: concurrency_list[i])
         result.append(
             {
                 "legend_name": legend_name,
-                "concurrency": concurrency_list,
-                "successful": successful_list,
-                "error_breakdown": error_breakdown_list,
+                "concurrency": [concurrency_list[i] for i in order],
+                "successful": [successful_list[i] for i in order] if successful_list else [],
+                "error_breakdown": (
+                    [error_breakdown_list[i] for i in order] if error_breakdown_list else []
+                ),
             }
         )
 
@@ -203,6 +208,27 @@ def create_error_breakdown_plot(status_entry: dict[str, Any], title_context: str
     except Exception as e:
         logger.warning("Failed to create error breakdown plot: %s", e)
         return None
+
+
+_NORMALIZE_ERROR_RE = re.compile(r"(\w+Error)\(['\"][\d]+['\"]\)")
+
+
+def _normalize_error(error_msg: str) -> str:
+    """Collapse error repr strings that differ only by a numeric argument.
+
+    ``LocalProtocolError('2371')`` and ``LocalProtocolError('999')`` both
+    become ``LocalProtocolError(<number>)``.
+    """
+    return _NORMALIZE_ERROR_RE.sub(r"\1(<number>)", error_msg)
+
+
+def _normalize_breakdown(point_errors: dict[str, int]) -> dict[str, int]:
+    """Normalize error keys in a single breakdown dict, merging collapsed duplicates."""
+    merged: dict[str, int] = {}
+    for msg, count in point_errors.items():
+        key = _normalize_error(msg)
+        merged[key] = merged.get(key, 0) + count
+    return merged
 
 
 def _shorten_error(error_msg: str) -> str:
