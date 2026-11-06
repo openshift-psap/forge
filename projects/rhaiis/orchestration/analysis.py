@@ -414,6 +414,8 @@ def run_agent_analysis(
         model,
         current_version,
         compare_version,
+        regressions=analysis.get("regressions", []),
+        improvements=analysis.get("improvements", []),
     )
     html_path = Path(env.ARTIFACT_DIR) / f"agent_analysis_{run_uuid}.html"
     html_path.write_text(html_content, encoding="utf-8")
