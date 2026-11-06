@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from projects.caliper.postprocess.helpers.visualization_utils import (
-    create_report_filename,
     create_report_title_display,
     save_figure,
 )
@@ -33,13 +32,10 @@ def generate_group_report(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    report_title = f"Prometheus Metrics: {group_result.group_name}"
-    display_title = create_report_title_display(report_title, report_number)
+    display_title = create_report_title_display(f"Prometheus Metrics: {group_result.group_name}")
+    file_stem = group_result.group_name.removeprefix("capture_prometheus_metrics_")
 
-    report_dir_name = report_title.lower().replace(" ", "_").replace(":", "").replace("-", "_")
-    if report_number is not None:
-        report_dir_name = f"report_{report_number:02d}_{report_dir_name}"
-    report_dir = output_dir / report_dir_name
+    report_dir = output_dir / file_stem
     report_dir.mkdir(parents=True, exist_ok=True)
 
     plot_sections: list[str] = []
@@ -48,12 +44,11 @@ def generate_group_report(
         plot_sections.append(render_variables_section(group_result.variables))
 
     for idx, metric in enumerate(group_result.metrics):
-        section_html = _render_metric_section(metric, report_dir, report_dir_name, idx)
+        section_html = _render_metric_section(metric, report_dir, file_stem, idx)
         plot_sections.append(section_html)
 
     report_html = assemble_report(display_title, plot_sections)
-    report_filename = create_report_filename(report_dir_name, report_number, report_title, "html")
-    report_path = output_dir / report_filename
+    report_path = output_dir / f"{file_stem}.html"
     report_path.write_text(report_html, encoding="utf-8")
 
     return report_path
