@@ -913,16 +913,16 @@ class CaliperPostprocessOrchestrator:
                     try:
                         path_obj = Path(rf_copy["path"])
                         if path_obj.is_absolute():
-                            rf_copy["path"] = str(path_obj.relative_to(self.output_dir))
+                            rf_copy["path"] = str(path_obj.relative_to(output_dir))
                     except (ValueError, KeyError):
                         pass
                     relative_report_files.append(rf_copy)
 
                 # Calculate relative output_dir path from base_directory
                 try:
-                    relative_output_dir = str(self.output_dir.relative_to(env.ARTIFACT_DIR))
+                    relative_output_dir = output_dir.relative_to(env.ARTIFACT_DIR)
                 except ValueError:
-                    relative_output_dir = str(self.output_dir)
+                    relative_output_dir = output_dir
 
                 self.visualize_failed = False
                 self._add_step(
@@ -932,7 +932,7 @@ class CaliperPostprocessOrchestrator:
                         completed_at=time.time(),
                         plugin_module=status_data.get("plugin_module", "unknown"),
                         output_files=relative_report_files,
-                        output_dir=relative_output_dir,
+                        output_dir=str(relative_output_dir),
                         generated_files=status_data.get(
                             "generated_files", len(relative_report_files)
                         ),
