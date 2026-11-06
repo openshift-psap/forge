@@ -12,6 +12,8 @@ ownership, and the filter that drops every span named ``GET``.
 
 from __future__ import annotations
 
+import hashlib
+
 from projects.cluster.library.tracing.models import (
     CaptureIdentity,
     InstrumentationRole,
@@ -46,6 +48,25 @@ EPP_TRACING_ARG = "--tracing"
 _COLLECTOR_SERVICE = "forge-otel-collector"
 OTLP_GRPC_PORT = 4317
 OTLP_HTTP_PORT = 4318
+
+
+# A Service name is a DNS-1035 label: at most 63 characters.
+_SERVICE_NAME_MAX = 63
+_CAPTURE_DIGEST_LENGTH = 8
+_CAPTURE_JOB_SLUG_MAX = _SERVICE_NAME_MAX - len(_COLLECTOR_SERVICE) - 1 - 1 - _CAPTURE_DIGEST_LENGTH
+
+
+def build_capture_id(job_id: str, namespace: str) -> str:
+    """Return the capture identity for one job in one namespace.
+
+    The job slug is bounded so the derived collector Service name stays a
+    valid DNS-1035 label; the digest keeps truncated job names distinct.
+    """
+    from projects.core.dsl.utils import slugify_identifier
+
+    digest = hashlib.sha256(f"{job_id}:{namespace}".encode()).hexdigest()
+    base = slugify_identifier(job_id, max_length=_CAPTURE_JOB_SLUG_MAX)
+    return f"{base}-{digest[:_CAPTURE_DIGEST_LENGTH]}"
 
 
 def collector_service_name(capture_id: str) -> str:

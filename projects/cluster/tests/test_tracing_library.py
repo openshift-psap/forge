@@ -16,6 +16,8 @@ from projects.cluster.library.tracing.instrumentation import (
     TRACES_SAMPLER_ARG_ENV,
     apply_env_vars,
     apply_vllm_additional_args,
+    build_capture_id,
+    collector_service_name,
     entrypoint_has_cli_arg,
     routing_proxy_tracing_args,
     tracing_environment,
@@ -410,3 +412,24 @@ def test_wait_for_ready_polls_before_deadline(monkeypatch):
     ctx = _Ctx()
     result = deploy_main.wait_for_ready.__wrapped__(ctx, ctx)
     assert result[0] is False
+
+
+def test_capture_id_keeps_the_collector_service_name_valid():
+    """A long job name must still yield a DNS-1035 Service name."""
+    import re
+
+    capture_id = build_capture_id("forge-llm-d-" + "x" * 80, "forge-llm-d")
+    service = collector_service_name(capture_id)
+
+    assert len(service) <= 63
+    assert re.fullmatch(r"[a-z]([-a-z0-9]*[a-z0-9])?", service)
+
+
+def test_capture_id_is_distinct_per_job():
+    """Separate jobs in one namespace must not share a collector."""
+    first = build_capture_id("forge-llm-d-20261106-095538", "forge-llm-d")
+    second = build_capture_id("forge-llm-d-20261106-101500", "forge-llm-d")
+
+    assert first != second
+    assert first.startswith("forge-llm-d-20261106-095538-")
+    assert build_capture_id("forge-llm-d-20261106-095538", "forge-llm-d") == first

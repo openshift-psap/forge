@@ -135,9 +135,11 @@ def test_manual_tracing_env_is_rejected():
         )
 
 
-def _session(sample_ratio: float):
-    """A minimal capture session exposing the settings the finalizer reads."""
-    return type("S", (), {"settings": _settings(sample_ratio=sample_ratio)})()
+def _session(sample_ratio: float, *, windows: tuple = ("window",)):
+    """A minimal capture session exposing what the finalizer reads."""
+    return type(
+        "S", (), {"settings": _settings(sample_ratio=sample_ratio), "windows": list(windows)}
+    )()
 
 
 def _patch_lifecycle(monkeypatch, status_value: str):
@@ -147,7 +149,7 @@ def _patch_lifecycle(monkeypatch, status_value: str):
 
     cleaned = {}
     monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus(status_value))
-    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleaned.setdefault("called", True))
+    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **kw: cleaned.setdefault("called", kw))
     return test_phase, cleaned
 
 
@@ -174,7 +176,7 @@ def test_completed_capture_cleans_up(monkeypatch):
 
     test_phase._finalize_trace_capture(_session(0.5))
 
-    assert cleaned.get("called") is True
+    assert cleaned.get("called") == {"force": False}
     assert test_phase._warnings == []
 
 
@@ -230,5 +232,47 @@ def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
 
     test_phase._finalize_trace_capture(_session(0.1))
 
-    assert cleaned.get("called") is True
+    assert cleaned.get("called") == {"force": False}
     assert test_phase._warnings == []
+
+
+def test_missing_benchmark_window_removes_the_collector(monkeypatch):
+    """A run that failed before any benchmark must not leave the collector behind."""
+    notifications = []
+    from projects.cluster.library.tracing import lifecycle
+    from projects.core.library import ci
+
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    )
+    test_phase, cleaned = _patch_lifecycle(monkeypatch, "empty")
+    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: pytest.fail("nothing to capture"))
+    test_phase._warnings.clear()
+
+    test_phase._finalize_trace_capture(_session(1.0, windows=()))
+
+    assert cleaned.get("called") == {"force": True}
+    assert notifications == []
+    assert test_phase._warnings == []
+
+
+def test_cleanup_failure_is_notified(monkeypatch):
+    notifications = []
+    from projects.cluster.library.tracing import lifecycle
+    from projects.core.library import ci
+
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    )
+    test_phase, _cleaned = _patch_lifecycle(monkeypatch, "collected")
+
+    def failing_cleanup(*_a, **_k):
+        raise RuntimeError("delete failed")
+
+    monkeypatch.setattr(lifecycle, "cleanup", failing_cleanup)
+    test_phase._warnings.clear()
+
+    test_phase._finalize_trace_capture(_session(0.5))
+
+    assert notifications == ["tracing-cleanup-failed"]
+    assert "Trace collector cleanup failed" in test_phase._warnings

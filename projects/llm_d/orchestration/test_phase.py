@@ -357,18 +357,18 @@ def run_finalizers(
                 capture_prometheus(start_time, end_time, runtime_params=runtime_params)
 
         finalizer_exc = _run_finalizer("capturing Prometheus metrics", _capture_prom)
+    else:
+        logging.error("No benchmark times received, cannot capture the Prometheus metrics.")
 
-        # Collect trace bundles for this test window before cleanup removes the
-        # serving resources and the collector spool.
+    # Reconcile a started collector before cleanup removes the serving
+    # resources, including when the test failed before the benchmark.
+    if capture_session is not None:
         finalizer_exc = _run_finalizer(
             "capturing traces",
             _capture_traces_finalizer,
-            llmisvc_name=llmisvc_name,
             benchmark_times=benchmark_times,
             capture_session=capture_session,
         )
-    else:
-        logging.error("No benchmark times received, cannot capture the Prometheus metrics.")
 
     finalizer_exc = _run_finalizer(
         "cleaning up runtime resources",
@@ -392,13 +392,17 @@ def _start_trace_capture(deployment_id: str, *, manifest_path: Path):
         return None
 
     from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.instrumentation import build_capture_id
 
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    job_id = _tracing_job_id()
+    namespace = runtime_config.get_namespace()
     session = lifecycle.start_capture(
-        job_id=runtime_config.get_job_name(),
-        capture_id=_tracing_capture_id(),
+        job_id=job_id,
+        capture_id=build_capture_id(job_id, namespace),
         project="llm_d",
-        namespace=runtime_config.get_namespace(),
+        namespace=namespace,
         deployment_id=deployment_id,
         output_root=env.ARTIFACT_DIR,
         settings=settings,
@@ -407,10 +411,14 @@ def _start_trace_capture(deployment_id: str, *, manifest_path: Path):
     return session
 
 
+def _tracing_job_id() -> str:
+    """Return the FournosJob name, or the local job name outside CI."""
+    return config.project.get_config("ci_job.fjob_name", None) or runtime_config.get_job_name()
+
+
 def _capture_traces_finalizer(
-    llmisvc_name: str | None,
-    benchmark_times: tuple[datetime, datetime],
-    capture_session: Any = None,
+    benchmark_times: tuple[datetime, datetime] | None,
+    capture_session: Any,
 ) -> None:
     """Record the benchmark window, capture trace bundles, and clean up.
 
@@ -418,33 +426,18 @@ def _capture_traces_finalizer(
     failure is surfaced through a notification and re-raised so the finalizer
     reports it, while the primary test exception is preserved by the caller.
     After a verified capture the collector and spool are removed; a failed
-    capture leaves them in place for recovery.
+    capture leaves them in place for recovery. Without a benchmark window there
+    is nothing to capture, so the collector is removed.
     """
-    from projects.llm_d.orchestration import tracing_adapter
-
-    settings = tracing_adapter.resolve_tracing()
-    if not settings.enabled:
-        return
-
     from projects.cluster.library.tracing import lifecycle
 
-    session = capture_session
-    if session is None:
-        # The collector was never started (for example a reused deployment or an
-        # earlier failure). Rebuild the identity so recovery still has a target
-        # rather than silently skipping requested collection.
-        identity = tracing_adapter.capture_identity_for_run(
-            job_id=runtime_config.get_job_name(),
-            capture_id=_tracing_capture_id(),
-            namespace=runtime_config.get_namespace(),
-            deployment_id=llmisvc_name or "llmisvc-unknown",
-        )
-        session = lifecycle.CaptureSession(
-            identity=identity,
-            settings=settings,
-            output_root=env.ARTIFACT_DIR,
-        )
+    if benchmark_times is None:
+        logger.info("No benchmark window recorded; removing the trace collector")
+        lifecycle.cleanup(capture_session, force=True)
+        return
 
+    settings = capture_session.settings
+    session = capture_session
     start_time, end_time = benchmark_times
     lifecycle.record_window(
         session,
@@ -547,7 +540,8 @@ def do_test() -> int:
 
         # Start the trace collector before the instrumented serving pods, so no
         # spans are lost at startup. Tracing off is a no-op.
-        capture_session = _start_trace_capture(actual_llmisvc_name, manifest_path=manifest_path)
+        if not dry_run:
+            capture_session = _start_trace_capture(actual_llmisvc_name, manifest_path=manifest_path)
 
         # Step 2: Deploy using the actual name from the manifest
         endpoint_url = deploy_inference_service_from_manifest(manifest_path, actual_llmisvc_name)
@@ -818,25 +812,6 @@ def _prepare_model_cache() -> None:
     prepare_model_cache()
 
 
-def _tracing_capture_id() -> str:
-    """Return the stable deployment-capture identity for this job.
-
-    Derived from the job name and a short digest of the namespace so sequential
-    workloads of one reused deployment share a capture, while separate jobs do
-    not. The value is an explicit ID recorded in metadata, never derived from a
-    truncated Kubernetes name.
-    """
-    import hashlib
-
-    job = runtime_config.get_job_name() or "local"
-    namespace = runtime_config.get_namespace()
-    digest = hashlib.sha256(f"{job}:{namespace}".encode()).hexdigest()[:8]
-    from projects.core.dsl.utils import slugify_identifier
-
-    base = slugify_identifier(job, max_length=40)
-    return f"{base}-{digest}"
-
-
 def _build_inference_service_manifest() -> Path:
     """Build and write the LLMInferenceService manifest."""
 
@@ -873,10 +848,13 @@ def _build_inference_service_manifest() -> Path:
 
     tracing_settings = tracing_adapter.resolve_tracing()
     if tracing_settings.enabled:
+        from projects.cluster.library.tracing.instrumentation import build_capture_id
+
         engine = deployment_profile.get("engine", "vllm")
+        job_id = _tracing_job_id()
         identity = tracing_adapter.capture_identity_for_run(
-            job_id=runtime_config.get_job_name(),
-            capture_id=_tracing_capture_id(),
+            job_id=job_id,
+            capture_id=build_capture_id(job_id, namespace),
             namespace=namespace,
             deployment_id=manifest["metadata"]["name"],
         )

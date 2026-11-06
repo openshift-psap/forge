@@ -231,9 +231,8 @@ def test_capture_records_the_roles_of_the_rendered_manifest(monkeypatch, tmp_pat
     from projects.llm_d.orchestration import test_phase, tracing_adapter
 
     monkeypatch.setattr(tracing_adapter, "resolve_tracing", _settings)
-    monkeypatch.setattr(test_phase.runtime_config, "get_job_name", lambda: "job-1")
+    monkeypatch.setattr(test_phase, "_tracing_job_id", lambda: "job-1")
     monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
-    monkeypatch.setattr(test_phase, "_tracing_capture_id", lambda: "cap-1")
     calls = []
     monkeypatch.setattr(lifecycle, "start_capture", lambda **kw: calls.append(kw))
     path = tmp_path / "manifest.yaml"
@@ -333,40 +332,23 @@ def test_resolve_tracing_reads_configured_mode(monkeypatch):
     assert settings.enabled
 
 
+def _capture_session(sample_ratio: float = 1.0):
+    """A minimal capture session exposing the settings the finalizer reads."""
+    settings = TracingSettings(mode=TracingMode.STANDARD, sample_ratio=sample_ratio)
+    return type("S", (), {"settings": settings})()
+
+
 def _finalizer_deps(monkeypatch, status_value: str):
     """Wire the llm_d capture finalizer against a fake lifecycle."""
-    from projects.cluster.library.tracing.models import CaptureIdentity, CollectionStatus
-    from projects.llm_d.orchestration import test_phase, tracing_adapter
-
-    settings = TracingSettings(mode=TracingMode.STANDARD, sample_ratio=1.0)
-    monkeypatch.setattr(tracing_adapter, "resolve_tracing", lambda: settings)
-    monkeypatch.setattr(
-        tracing_adapter,
-        "capture_identity_for_run",
-        lambda **_kw: CaptureIdentity(
-            job_id="job-1",
-            capture_id="cap-1",
-            project="llm_d",
-            namespace="ns",
-            deployment_id="llmd-abc",
-        ),
-    )
-    monkeypatch.setattr(test_phase.runtime_config, "get_job_name", lambda: "job-1")
-    monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
-    monkeypatch.setattr(test_phase, "_current_test_id", lambda: "test-1")
-
     from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.models import CollectionStatus
+    from projects.llm_d.orchestration import test_phase
 
+    monkeypatch.setattr(test_phase, "_current_test_id", lambda: "test-1")
     captured = {}
-
-    def fake_capture(session, **_kw):
-        return CollectionStatus(status_value)
-
-    monkeypatch.setattr(lifecycle, "capture", fake_capture)
+    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus(status_value))
     monkeypatch.setattr(lifecycle, "record_window", lambda *a, **k: None)
-    monkeypatch.setattr(
-        lifecycle, "cleanup", lambda *_a, **_k: captured.setdefault("cleaned", True)
-    )
+    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **kw: captured.setdefault("cleaned", kw))
     return test_phase, lifecycle, captured
 
 
@@ -384,7 +366,7 @@ def test_incomplete_capture_fails_requested_tracing(monkeypatch, tmp_path):
     test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "incomplete")
     with pytest.raises(RuntimeError, match="incomplete"):
         test_phase._capture_traces_finalizer(
-            "llmisvc-1", (_utc(0), _utc(10)), capture_session=object()
+            (_utc(0), _utc(10)), capture_session=_capture_session()
         )
 
     assert notifications and notifications[0][0] == "tracing-collection-incomplete"
@@ -400,9 +382,9 @@ def test_completed_capture_cleans_up(monkeypatch):
     )
     test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "collected")
 
-    test_phase._capture_traces_finalizer("llmisvc-1", (_utc(0), _utc(10)), capture_session=object())
+    test_phase._capture_traces_finalizer((_utc(0), _utc(10)), capture_session=_capture_session())
 
-    assert captured.get("cleaned") is True
+    assert captured.get("cleaned") == {}
     assert notifications == []
 
 
@@ -424,7 +406,7 @@ def test_empty_capture_at_full_sampling_fails_tracing(monkeypatch):
 
     with pytest.raises(RuntimeError, match="empty-at-full-sampling"):
         test_phase._capture_traces_finalizer(
-            "llmisvc-1", (_utc(0), _utc(10)), capture_session=object()
+            (_utc(0), _utc(10)), capture_session=_capture_session()
         )
 
     assert notifications == ["tracing-collection-empty-at-full-sampling"]
@@ -433,23 +415,58 @@ def test_empty_capture_at_full_sampling_fails_tracing(monkeypatch):
 
 def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
     """A low-sample capture with no spans is an expected empty outcome."""
-    from projects.cluster.library.tracing import lifecycle
-    from projects.cluster.library.tracing.models import CollectionStatus
-    from projects.llm_d.orchestration import test_phase, tracing_adapter
+    test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "empty")
 
-    settings = TracingSettings(mode=TracingMode.STANDARD, sample_ratio=0.1)
-    monkeypatch.setattr(tracing_adapter, "resolve_tracing", lambda: settings)
-    monkeypatch.setattr(test_phase.runtime_config, "get_job_name", lambda: "job-1")
-    monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
-    monkeypatch.setattr(test_phase, "_current_test_id", lambda: "test-1")
-    monkeypatch.setattr(lifecycle, "record_window", lambda *a, **k: None)
-    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus.EMPTY)
-    cleaned = {}
-    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleaned.setdefault("called", True))
-    monkeypatch.setattr(
-        lifecycle, "CaptureSession", lambda **kw: type("S", (), {"settings": settings, **kw})()
+    test_phase._capture_traces_finalizer(
+        (_utc(0), _utc(10)), capture_session=_capture_session(sample_ratio=0.1)
     )
 
-    test_phase._capture_traces_finalizer("llmisvc-1", (_utc(0), _utc(10)), capture_session=object())
+    assert captured.get("cleaned") == {}
 
-    assert cleaned.get("called") is True
+
+def test_missing_benchmark_window_removes_the_collector(monkeypatch):
+    """A test that failed before the benchmark must not leave the collector behind."""
+    notifications = []
+    from projects.core.library import ci
+
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    )
+    test_phase, lifecycle, captured = _finalizer_deps(monkeypatch, "empty")
+    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: pytest.fail("nothing to capture"))
+
+    test_phase._capture_traces_finalizer(None, capture_session=_capture_session())
+
+    assert captured.get("cleaned") == {"force": True}
+    assert notifications == []
+
+
+def test_finalizers_reconcile_traces_when_the_test_failed_before_the_benchmark(monkeypatch):
+    """The trace finalizer runs whenever a collector was started."""
+    from projects.llm_d.orchestration import test_phase
+
+    calls = []
+    monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
+    monkeypatch.setattr(
+        test_phase.runtime_config,
+        "get_platform_config",
+        lambda: {"artifacts": {"capture_namespace_events": False}},
+    )
+    for name in (
+        "capture_inference_service_state",
+        "write_endpoint_url",
+        "capture_namespace_events_after_test",
+    ):
+        monkeypatch.setattr(test_phase, name, lambda **_kw: None)
+    monkeypatch.setattr(test_phase, "cleanup_test_resources", lambda **_kw: calls.append("cleanup"))
+    monkeypatch.setattr(
+        test_phase,
+        "_capture_traces_finalizer",
+        lambda **kw: calls.append(("traces", kw["benchmark_times"])),
+    )
+
+    test_phase.run_finalizers(
+        None, "llmisvc-1", None, None, benchmark_times=None, capture_session=object()
+    )
+
+    assert calls == [("traces", None), "cleanup"]

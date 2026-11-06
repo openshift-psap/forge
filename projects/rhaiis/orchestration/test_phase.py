@@ -50,17 +50,6 @@ def _tracing_job_id() -> str:
     return os.environ.get("FJOB_NAME") or _cfg.project.get_config("ci_job.fjob_name", "") or "local"
 
 
-def _tracing_capture_id(job_id: str, namespace: str) -> str:
-    """Return the stable deployment-capture identity for this job/namespace pair."""
-    import hashlib
-
-    from projects.core.dsl.utils import slugify_identifier
-
-    digest = hashlib.sha256(f"{job_id}:{namespace}".encode()).hexdigest()[:8]
-    base = slugify_identifier(job_id or "local", max_length=40)
-    return f"{base}-{digest}"
-
-
 def _start_trace_capture(*, deployment_name: str, namespace: str):
     """Start a deployment capture when tracing is enabled; return the session or None."""
     from projects.rhaiis.orchestration import tracing_adapter
@@ -70,10 +59,12 @@ def _start_trace_capture(*, deployment_name: str, namespace: str):
         return None
 
     from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.instrumentation import build_capture_id
 
+    job_id = _tracing_job_id()
     return lifecycle.start_capture(
-        job_id=_tracing_job_id(),
-        capture_id=_tracing_capture_id(_tracing_job_id(), namespace),
+        job_id=job_id,
+        capture_id=build_capture_id(job_id, namespace),
         project="rhaiis",
         namespace=namespace,
         deployment_id=deployment_name,
@@ -104,12 +95,18 @@ def _finalize_trace_capture(capture_session) -> None:
 
     Capture failures are surfaced through a notification; the collector and
     spool are only removed after a verified capture, so a failed capture keeps
-    its recovery state. Never raises: the benchmark outcome is preserved.
+    its recovery state. Without a benchmark window there is nothing to capture,
+    so the collector is removed. Never raises: the benchmark outcome is preserved.
     """
     if capture_session is None:
         return
 
     from projects.cluster.library.tracing import lifecycle
+
+    if not capture_session.windows:
+        logger.info("No benchmark window recorded; removing the trace collector")
+        _cleanup_trace_collector(capture_session, force=True)
+        return
 
     try:
         status = lifecycle.capture(capture_session)
@@ -143,10 +140,23 @@ def _finalize_trace_capture(capture_session) -> None:
         _warnings.append(f"Trace collection {reason}")
         return
 
+    _cleanup_trace_collector(capture_session)
+
+
+def _cleanup_trace_collector(capture_session, *, force: bool = False) -> None:
+    """Remove the collector, notifying when its resources may be left behind."""
+    from projects.cluster.library.tracing import lifecycle
+
     try:
-        lifecycle.cleanup(capture_session)
+        lifecycle.cleanup(capture_session, force=force)
     except Exception:
-        logger.warning("Trace collector cleanup failed", exc_info=True)
+        from projects.core.library.ci import add_notification_file
+
+        logger.exception("Trace collector cleanup failed")
+        add_notification_file(
+            "tracing-cleanup-failed",
+            "Trace collector cleanup failed; its resources may remain in the namespace.",
+        )
         _warnings.append("Trace collector cleanup failed")
 
 
@@ -363,9 +373,12 @@ def _run_test(
 
         tracing_settings = tracing_adapter.resolve_tracing()
         if tracing_settings.enabled:
+            from projects.cluster.library.tracing.instrumentation import build_capture_id
+
+            job_id = _tracing_job_id()
             tracing_identity = tracing_adapter.capture_identity_for_run(
-                job_id=_tracing_job_id(),
-                capture_id=_tracing_capture_id(_tracing_job_id(), namespace),
+                job_id=job_id,
+                capture_id=build_capture_id(job_id, namespace),
                 namespace=namespace,
                 deployment_id=deployment_name,
             )
