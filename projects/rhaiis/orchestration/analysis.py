@@ -6,6 +6,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 from projects.core.library import env
 
@@ -335,6 +336,7 @@ def run_agent_analysis(
         markdown_to_html,
         request_agent_analysis,
         send_followup,
+        validate_pr_analysis_scope,
     )
 
     threshold = severity_threshold or AGENT_SEVERITY_THRESHOLD
@@ -378,6 +380,8 @@ def run_agent_analysis(
     tp = str(ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or 1)
     model = model_cfg.get("hf_model_id", "")
     agent_model = config.project.get_config("rhaiis.agent_analysis.model")
+    thread_id = f"forge-rhaiis-{uuid4().hex}"
+    logger.info("Using agent thread %s for job %s", thread_id, run_uuid)
 
     agent_response = request_agent_analysis(
         model=model,
@@ -390,6 +394,7 @@ def run_agent_analysis(
         job_id=run_uuid,
         improvements=notable_improvements or None,
         agent_url=agent_url,
+        thread_id=thread_id,
     )
     if not agent_response:
         ci.add_notification_file(
@@ -398,15 +403,45 @@ def run_agent_analysis(
         )
         return ""
 
-    pr_prompt = build_pr_followup_prompt(current_version, compare_version)
-    pr_analysis = send_followup(
+    pr_prompt = build_pr_followup_prompt(
+        current_version,
+        compare_version,
+        job_id=run_uuid,
+        model=model,
+        accelerator=accelerator,
+        tp=tp,
+    )
+    pr_response = send_followup(
         message=pr_prompt,
         job_id=run_uuid,
         agent_url=agent_url,
         agent_model=agent_model,
+        thread_id=thread_id,
     )
-    if pr_analysis:
-        agent_response = f"{agent_response}\n\n---\n\n## Related Pull Requests\n\n{pr_analysis}"
+    pr_analysis = None
+    pr_warning = None
+    if pr_response:
+        pr_analysis, issue = validate_pr_analysis_scope(
+            pr_response,
+            job_id=run_uuid,
+            model=model,
+            accelerator=accelerator,
+            tp=tp,
+        )
+        if issue:
+            logger.error("PR analysis omitted for job %s: %s", run_uuid, issue)
+            ci.add_notification_file(
+                "rhaiis-pr-analysis-scope",
+                "Related PR analysis was omitted because its job, model, or TP scope "
+                "could not be verified. Inspect the agent follow-up trace.",
+            )
+            pr_warning = "PR analysis was omitted because it did not match this report's scope."
+    else:
+        ci.add_notification_file(
+            "rhaiis-pr-analysis-unavailable",
+            "Related PR analysis did not return a response. Inspect the agent follow-up trace.",
+        )
+        pr_warning = "PR analysis was unavailable for this job."
 
     html_content = markdown_to_html(
         agent_response,
@@ -416,6 +451,8 @@ def run_agent_analysis(
         compare_version,
         regressions=analysis.get("regressions", []),
         improvements=analysis.get("improvements", []),
+        pr_analysis=pr_analysis,
+        pr_warning=pr_warning,
     )
     html_path = Path(env.ARTIFACT_DIR) / f"agent_analysis_{run_uuid}.html"
     html_path.write_text(html_content, encoding="utf-8")
