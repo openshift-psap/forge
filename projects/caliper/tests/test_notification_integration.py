@@ -49,7 +49,20 @@ def test_notification_formatting_success():
                     "status": "success",
                     "completed_at": time.time(),
                     "output_dir": "plots/",
-                    "output_files": ["plot1.png", "plot2.png"],
+                    "output_files": [
+                        {
+                            "source": "guidellm",
+                            "scope": "global",
+                            "title": "Performance Analysis",
+                            "path": "global/guidellm/000__performance_analysis.html",
+                        },
+                        {
+                            "source": "guidellm",
+                            "scope": "global",
+                            "title": "Request Status",
+                            "path": "global/guidellm/001__request_status.html",
+                        },
+                    ],
                     "log_file": "logs/002_visualize.log",
                 }
             },
@@ -90,9 +103,11 @@ def test_notification_formatting_success():
         in notification_text
     )
 
-    # Verify file links are included
-    assert "📊 [plot1.png](https://example.com/artifacts/plots/plot1.png)" in notification_text
-    assert "📊 [plot2.png](https://example.com/artifacts/plots/plot2.png)" in notification_text
+    # Verify structured report links are included (grouped by scope/source)
+    assert "**Global**" in notification_text
+    assert "**Guidellm**:" in notification_text
+    assert "📄 [Performance Analysis]" in notification_text
+    assert "📄 [Request Status]" in notification_text
 
     print("✅ Success notification formatting test passed")
 
