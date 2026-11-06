@@ -16,6 +16,7 @@ from projects.caliper.engine.parameter_matrix import (
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import (
+    compute_report_stem,
     create_report_filename,
     create_report_title_display,
     save_figure,
@@ -1136,7 +1137,7 @@ def _generate_shared_performance_report(
     """
     try:
         # Create report identifier using core utilities
-        display_title = create_report_title_display(report_title, report_number)
+        display_title = create_report_title_display(report_title)
 
         logger.info(f"\n🚀 Starting {display_title} generation...")
         logger.info("=" * 70)
@@ -1201,7 +1202,7 @@ def _generate_shared_performance_report(
 
         # Create dedicated directory for this report
         if report_number is not None:
-            report_dir_name = f"report_{report_number:02d}_{report_title.lower().replace(' ', '_').replace(':', '').replace('-', '_')}"
+            report_dir_name = compute_report_stem(report_title, report_number)
         else:
             report_dir_name = "performance_analysis"
 
@@ -1394,9 +1395,7 @@ def _generate_shared_performance_report(
         )
 
         # Save the main HTML report
-        main_html_filename = create_report_filename(
-            report_title.lower().replace(" ", "_"), report_number, report_title, "html"
-        )
+        main_html_filename = create_report_filename(report_title, report_number)
         main_html_path = output_dir / main_html_filename
 
         with open(main_html_path, "w", encoding="utf-8") as f:
