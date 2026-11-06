@@ -12,6 +12,7 @@ from projects.guidellm.postprocess.guidellm.dashboard import _extract_dashboard_
 from projects.guidellm.postprocess.guidellm.plotting.request_status import (
     _build_error_table_html,
     _extract_status_data,
+    _normalize_error,  # noqa: F401
     _shorten_error,
     create_error_breakdown_plot,  # noqa: F401
     create_successful_requests_plot,  # noqa: F401
@@ -160,7 +161,7 @@ def test_extract_status_data() -> None:
     assert len(data) == 1
     assert data[0]["concurrency"] == [4, 8]
     assert data[0]["successful"] == [10, 20]
-    assert data[0]["error_breakdown"][0]["HTTPStatusError('500')"] == 2
+    assert data[0]["error_breakdown"][0]["HTTPStatusError(<number>)"] == 2
 
 
 @needs_plotly
@@ -293,3 +294,64 @@ def test_build_error_table_html_no_errors() -> None:
     }
     html = _build_error_table_html(entry)
     assert html == ""
+
+
+def test_normalize_error_collapses_numeric_arg() -> None:
+    assert _normalize_error("LocalProtocolError('2371')") == "LocalProtocolError(<number>)"
+    assert _normalize_error("LocalProtocolError('999')") == "LocalProtocolError(<number>)"
+
+
+def test_normalize_error_preserves_non_numeric() -> None:
+    msg = "ConnectError('Connection refused')"
+    assert _normalize_error(msg) == msg
+
+
+def test_normalize_error_preserves_plain_string() -> None:
+    assert _normalize_error("unknown") == "unknown"
+
+
+def test_extract_status_data_sorts_by_concurrency() -> None:
+    record = UnifiedResultRecord(
+        test_base_path="/test",
+        distinguishing_labels={"facet": "default"},
+        metrics={
+            "performance_curves": {
+                "intended_concurrency": [8, 2, 4],
+                "successful_requests": [20, 5, 10],
+            },
+            "error_breakdown": [
+                {"SomeError": 3},
+                {"SomeError": 1},
+                {"SomeError": 2},
+            ],
+        },
+        run_identity={"guidellm": True},
+        parse_notes=[],
+    )
+    data = _extract_status_data([record])
+    assert data[0]["concurrency"] == [2, 4, 8]
+    assert data[0]["successful"] == [5, 10, 20]
+    assert data[0]["error_breakdown"][0] == {"SomeError": 1}
+    assert data[0]["error_breakdown"][2] == {"SomeError": 3}
+
+
+def test_extract_status_data_normalizes_errors() -> None:
+    record = UnifiedResultRecord(
+        test_base_path="/test",
+        distinguishing_labels={"facet": "default"},
+        metrics={
+            "performance_curves": {
+                "intended_concurrency": [4],
+                "successful_requests": [10],
+            },
+            "error_breakdown": [
+                {"LocalProtocolError('2371')": 2, "LocalProtocolError('999')": 3},
+            ],
+        },
+        run_identity={"guidellm": True},
+        parse_notes=[],
+    )
+    data = _extract_status_data([record])
+    bd = data[0]["error_breakdown"][0]
+    assert "LocalProtocolError(<number>)" in bd
+    assert bd["LocalProtocolError(<number>)"] == 5

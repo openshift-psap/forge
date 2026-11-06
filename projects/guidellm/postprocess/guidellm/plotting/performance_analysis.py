@@ -700,12 +700,19 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
         subtitle = " | ".join(subtitle_parts)
         title = f"Token Throughput vs Concurrency{title_context}<br><sub>{subtitle}</sub>"
 
+        has_replicas = "replica_index" in df.columns and (df["replica_index"] > 0).any()
+        x_label = (
+            "Cumulated Concurrency Level (Requested)"
+            if has_replicas
+            else "Concurrency Level (Requested)"
+        )
+
         fig = _build_line_with_replica_scatter(
             df,
             x_col="intended_concurrency",
             y_col="tokens_per_second",
             title=title,
-            x_label="Concurrency Level (Requested)",
+            x_label=x_label,
             y_label="Tokens per Second",
             extra_hover_cols={
                 "request_rate": ":.1f",
@@ -808,12 +815,15 @@ def create_requested_vs_effective_concurrency_plot(df: pd.DataFrame, title_conte
         if df.empty:
             return None
 
+        has_replicas = "replica_index" in df.columns and (df["replica_index"] > 0).any()
+        x_label = "Cumulated Requested Concurrency" if has_replicas else "Requested Concurrency"
+
         fig = _build_line_with_replica_scatter(
             df,
             x_col="intended_concurrency",
             y_col="request_concurrency",
             title=f"Requested vs Effective Concurrency{title_context}",
-            x_label="Requested Concurrency",
+            x_label=x_label,
             y_label="Effective Concurrency",
             extra_hover_cols={
                 "request_rate": ":.1f",

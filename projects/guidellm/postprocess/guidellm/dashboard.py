@@ -194,6 +194,13 @@ def enrich_guidellm_parse_result(
             **metrics.get("performance_curves", {}),
             **curves,
         }
+        merged_curves, merged_breakdown = _merge_replica_performance_curves(
+            metrics["performance_curves"],
+            metrics.get("error_breakdown"),
+        )
+        metrics["performance_curves"] = merged_curves
+        if merged_breakdown is not None:
+            metrics["error_breakdown"] = merged_breakdown
         records.append(
             UnifiedResultRecord(
                 test_base_path=record.test_base_path,
@@ -607,6 +614,79 @@ def _aggregate_replica_curve(
 
     result.sort(key=lambda p: p[0])
     return result
+
+
+_PARSER_SUM_CURVE_KEYS = frozenset(
+    {
+        "tokens_per_second",
+        "input_tokens_per_second",
+        "output_tokens_per_second",
+        "completed_requests",
+        "failed_requests",
+        "request_concurrency",
+        "intended_concurrency",
+    }
+)
+
+
+def _merge_replica_performance_curves(
+    curves: dict[str, list], error_breakdown: list[dict[str, int]] | None = None
+) -> tuple[dict[str, list], list[dict[str, int]] | None]:
+    """Merge duplicate intended_concurrency entries from replicas in performance_curves.
+
+    Concurrency is multiplied by replica count. Throughput/count metrics are summed;
+    latency metrics are averaged. error_breakdown dicts at the same concurrency
+    are merged (counts summed).
+    """
+    concurrencies = curves.get("intended_concurrency", [])
+    if not concurrencies:
+        return curves, error_breakdown
+
+    from collections import Counter, OrderedDict
+
+    counts = Counter(concurrencies)
+    if all(c == 1 for c in counts.values()):
+        return curves, error_breakdown
+
+    # Group indices by concurrency value, preserving order
+    groups: OrderedDict[float, list[int]] = OrderedDict()
+    for i, conc in enumerate(concurrencies):
+        groups.setdefault(conc, []).append(i)
+
+    merged_curves: dict[str, list] = {}
+    for key, values in curves.items():
+        if not values:
+            merged_curves[key] = []
+            continue
+
+        merged_list = []
+        use_sum = key in _PARSER_SUM_CURVE_KEYS or key in _SUM_CURVE_KEYS
+        for conc, indices in groups.items():
+            replica_count = len(indices)
+            vals = [values[i] for i in indices if i < len(values) and values[i] is not None]
+            if not vals:
+                merged_list.append(None)
+                continue
+            if key == "intended_concurrency":
+                merged_list.append(conc * replica_count)
+            elif use_sum:
+                merged_list.append(sum(vals))
+            else:
+                merged_list.append(sum(vals) / len(vals))
+        merged_curves[key] = merged_list
+
+    merged_breakdown = None
+    if error_breakdown is not None:
+        merged_breakdown = []
+        for _conc, indices in groups.items():
+            merged_point: dict[str, int] = {}
+            for i in indices:
+                if i < len(error_breakdown):
+                    for msg, count in error_breakdown[i].items():
+                        merged_point[msg] = merged_point.get(msg, 0) + count
+            merged_breakdown.append(merged_point)
+
+    return merged_curves, merged_breakdown
 
 
 def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRecord]:
