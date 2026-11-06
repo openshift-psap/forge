@@ -409,6 +409,13 @@ class GuideLLMParser:
         output_tokens_per_second_p90 = get_metric_value("output_tokens_per_second", "p90")
 
         # Calculate requests completed and tokens per request
+        totals = (
+            benchmark_data.get("scheduler_metrics", {}).get("requests_made", {})
+            or benchmark_data.get("request_totals", {})
+            or benchmark_data.get("run_stats", {}).get("requests_made", {})
+            or metrics.get("request_totals", {})
+        )
+        failed_requests = int(totals.get("errored", 0))
         completed_requests = int(request_rate * duration) if request_rate > 0 else 0
         input_tokens_per_request = (
             (input_tokens_per_second / request_rate) if request_rate > 0 else 0.0
@@ -436,7 +443,7 @@ class GuideLLMParser:
             request_concurrency=intended_concurrency,
             intended_concurrency=int(intended_concurrency),
             completed_requests=completed_requests,
-            failed_requests=0,  # Could extract from unsuccessful metrics if needed
+            failed_requests=failed_requests,
             # Token metrics per request
             input_tokens_per_request=input_tokens_per_request,
             output_tokens_per_request=output_tokens_per_request,
