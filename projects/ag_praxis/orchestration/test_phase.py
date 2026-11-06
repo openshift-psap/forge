@@ -225,7 +225,7 @@ def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None
         per_replica_rate = round(rate / replica_count)
         run_benchmark = dict(benchmark)
         run_benchmark["rate"] = per_replica_rate
-        suffix = f"{payload_name}_{sweep_name}_rate{rate}"
+        suffix = f"{payload_name}_{sweep_name}_rate{replica_count}x{per_replica_rate}"
         logger.info(
             "Running rate=%s (per_replica=%s, replicas=%s)", rate, per_replica_rate, replica_count
         )
