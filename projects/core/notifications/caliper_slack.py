@@ -206,10 +206,39 @@ def format_interesting_changes(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines).lstrip("\n")
 
 
+def _unwrap_scalar(value: Any) -> float | None:
+    """Unwrap a KPI value to a plain float.
+
+    The analyze engine reports some fields (e.g. ``current_value``) as a
+    nested ``{"value": x, "comparison_keys": {...}}`` object rather than a
+    plain number. Accept either shape so a schema change here can't crash
+    the whole job via an unhandled ``float(dict)`` TypeError.
+    """
+    if isinstance(value, dict):
+        value = value.get("value")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _relative_change_pct(row: dict[str, Any]) -> float:
+    """Relative change, as a percent, for *row*.
+
+    The analyze engine reports the fraction under ``details.relative_change``
+    (e.g. ``0.0349`` for +3.49%), not a top-level ``relative_change_pct``.
+    """
+    details = row.get("details") or {}
+    fraction = _unwrap_scalar(details.get("relative_change"))
+    return (fraction or 0.0) * 100.0
+
+
 def _is_improvement(row: dict[str, Any]) -> bool:
     if row.get("verdict") == "REGRESSION":
         return False
-    pct = float(row.get("relative_change_pct") or 0.0)
+    pct = _relative_change_pct(row)
     higher_is_better = bool(row.get("higher_is_better", True))
     threshold = _DEFAULT_INTERESTING_PCT
     if higher_is_better:
@@ -228,13 +257,14 @@ def _group_key(labels: dict[str, Any]) -> str:
 def _format_change_line(row: dict[str, Any]) -> str:
     kpi_id = str(row.get("kpi_id") or "kpi")
     name = kpi_id.replace("mcp_gw_", "").replace("_", " ")
-    pct = float(row.get("relative_change_pct") or 0.0)
-    baseline = row.get("baseline_mean")
-    current = row.get("current_value")
+    pct = _relative_change_pct(row)
+    details = row.get("details") or {}
+    baseline = _unwrap_scalar(details.get("baseline_mean"))
+    current = _unwrap_scalar(row.get("current_value"))
     unit = _guess_unit(kpi_id)
 
-    baseline_s = format_kpi_value(float(baseline), unit) if baseline is not None else "n/a"
-    current_s = format_kpi_value(float(current), unit) if current is not None else "n/a"
+    baseline_s = format_kpi_value(baseline, unit) if baseline is not None else "n/a"
+    current_s = format_kpi_value(current, unit) if current is not None else "n/a"
 
     if row.get("verdict") == "REGRESSION":
         direction = "dropped" if pct < 0 else "increased"

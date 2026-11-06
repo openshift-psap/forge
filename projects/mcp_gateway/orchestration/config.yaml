@@ -15,11 +15,11 @@ nightly:
     experiment: "mcp-gw-cpt-ghcr"
     version_pattern: "-v(.+?)-\\d{8}-\\d{6}$"
     strip_prefix: "sha-"
-  cluster: "avis-cluster"
+  cluster: "agentic-cpt-8xa100"
   version_key: "infrastructure.mcp_gateway_version"
   pipeline: "forge-full"
   preset: "demo"
-  owner: "ashtakb"
+  owner: "ashtarkb"
 
 vaults:
   all: []
@@ -28,7 +28,21 @@ vaults:
   - psap-forge-mlflow-export
   - psap-forge-aws-s3-export
   prepare: []
+  prepare-optional: []
+  preflight: []
+  preflight-optional: []
   test: []
+  test-optional: []
+  pre-cleanup: []
+  pre-cleanup-optional: []
+  post-cleanup: []
+  post-cleanup-optional: []
+  export-artifacts: []
+  export-artifacts-optional: []
+  nightly: []
+  nightly-optional: []
+  replot: []
+  replot-optional: []
 
 notifications:
   slack:
@@ -59,6 +73,9 @@ metrics:
     - network_tx_bytes
 
 caliper:
+  replot:
+    url: null  # Set via /replot.url directive
+    keep: false  # Set to true to keep download directory after replotting
   postprocess:
     enabled: true
     artifacts_dir: null

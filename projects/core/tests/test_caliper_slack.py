@@ -31,38 +31,34 @@ from projects.core.notifications.caliper_slack import (
 from projects.core.notifications.provider import NotificationContext
 
 
+def _result_row(row: dict, verdict: str) -> dict:
+    """Build a result row matching the real (nested) analyze engine schema.
+
+    ``current_value`` is a ``{"value": x, "comparison_keys": {...}}`` object
+    and ``baseline_mean``/``relative_change`` live under ``details``, not at
+    the top level. ``relative_change`` is a fraction (e.g. -0.083 for -8.3%).
+    """
+    return {
+        "kpi_id": row["kpi_id"],
+        "labels": row.get("labels", {"num_servers": "1", "users": "16", "target": "gateway"}),
+        "current_value": {"value": row["current"], "comparison_keys": {}},
+        "higher_is_better": row.get("higher_is_better", True),
+        "verdict": verdict,
+        "baseline_values": {"mcp_gateway_version=0.6.2": row["baseline"]},
+        "details": {
+            "algorithm": "SCALAR_RELATIVE_CHANGE",
+            "baseline_mean": row["baseline"],
+            "relative_change": row["pct"] / 100.0,
+        },
+    }
+
+
 def _report(*, regressions: list[dict] | None = None, improvements: list[dict] | None = None):
     results = []
     for row in regressions or []:
-        results.append(
-            {
-                "kpi_id": row["kpi_id"],
-                "labels": row.get(
-                    "labels", {"num_servers": "1", "users": "16", "target": "gateway"}
-                ),
-                "current_value": row["current"],
-                "baseline_mean": row["baseline"],
-                "relative_change_pct": row["pct"],
-                "higher_is_better": row.get("higher_is_better", True),
-                "verdict": "REGRESSION",
-                "baseline_values": {"mcp_gateway_version=0.6.2": row["baseline"]},
-            }
-        )
+        results.append(_result_row(row, "REGRESSION"))
     for row in improvements or []:
-        results.append(
-            {
-                "kpi_id": row["kpi_id"],
-                "labels": row.get(
-                    "labels", {"num_servers": "1", "users": "16", "target": "gateway"}
-                ),
-                "current_value": row["current"],
-                "baseline_mean": row["baseline"],
-                "relative_change_pct": row["pct"],
-                "higher_is_better": row.get("higher_is_better", True),
-                "verdict": "PASS",
-                "baseline_values": {"mcp_gateway_version=0.6.2": row["baseline"]},
-            }
-        )
+        results.append(_result_row(row, "PASS"))
     return {
         "analysis": {
             "status": "REGRESSION_DETECTED" if regressions else "PASS",
@@ -262,11 +258,14 @@ def test_should_notify_skips_quiet_success(tmp_path: Path, fake_config):
                 {
                     "kpi_id": "mcp_gw_tool_call_rps",
                     "labels": {},
-                    "current_value": 101,
-                    "baseline_mean": 100,
-                    "relative_change_pct": 1.0,
+                    "current_value": {"value": 101, "comparison_keys": {}},
                     "higher_is_better": True,
                     "verdict": "PASS",
+                    "details": {
+                        "algorithm": "SCALAR_RELATIVE_CHANGE",
+                        "baseline_mean": 100,
+                        "relative_change": 0.01,
+                    },
                 }
             ],
             "overall": {
