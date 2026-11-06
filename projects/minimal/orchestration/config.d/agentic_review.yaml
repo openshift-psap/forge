@@ -1,7 +1,10 @@
 # this is to configure the agentic _REVIEW_ module of Forge
 enabled: true
 model_key: qwen-3-6-35b
-on_failure:
+vault_name: psap-models-corp-rh
+vault_content: agent-models.yaml
+failure_review:
   enabled: true
 config_review:
   enabled: true
+
