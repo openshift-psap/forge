@@ -72,11 +72,9 @@ def main(ctx, presets):
     """Minimal sample testing project CI operations for FORGE."""
     ctx.ensure_object(types.SimpleNamespace)
 
-    presets_list = list(presets)
-    if presets_list and "," in presets_list[0]:
-        lst = presets_list.pop(0)
-        presets_list = lst.split(",") + presets_list
+    presets_list = [p for preset in presets for p in preset.split(",")]
 
+    if presets_list:
         logger.info(f"Setting preset configuration from CLI: {presets_list}")
 
     init(presets_list)
