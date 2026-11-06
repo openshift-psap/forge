@@ -42,6 +42,7 @@ class _PlotRegistry:
             generate_comprehensive_performance_report,
             generate_deployment_profile_report,
         )
+        from .plotting.request_scatter import generate_request_scatter_report
         from .plotting.request_status import generate_request_status_report
 
         self._registry = {
@@ -71,6 +72,15 @@ class _PlotRegistry:
                     "report_title": "GuideLLM Request Status",
                 },
                 "description": "request status breakdown showing successful and errored requests by category",
+            },
+            "report_request_scatter": {
+                "function": generate_request_scatter_report,
+                "type": "report",
+                "title": "Request Scatter",
+                "kwargs": {
+                    "report_title": "GuideLLM Request Scatter",
+                },
+                "description": "per-request latency over time scatter plot colored by concurrency level",
             },
         }
         return self._registry
