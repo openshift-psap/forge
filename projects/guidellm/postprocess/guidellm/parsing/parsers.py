@@ -571,9 +571,19 @@ class GuideLLMParser:
             "input_tokens_per_second": [],
             "output_tokens_per_second": [],
             "ttft_median": [],
+            "ttft_p10": [],
+            "ttft_p25": [],
+            "ttft_p50": [],
+            "ttft_p75": [],
+            "ttft_p90": [],
             "ttft_p95": [],
             "ttft_p99": [],
             "itl_median": [],
+            "itl_p10": [],
+            "itl_p25": [],
+            "itl_p50": [],
+            "itl_p75": [],
+            "itl_p90": [],
             "itl_p95": [],
             "itl_p99": [],
             "tpot_median": [],
@@ -598,9 +608,19 @@ class GuideLLMParser:
             curves["input_tokens_per_second"].append(benchmark.input_tokens_per_second)
             curves["output_tokens_per_second"].append(benchmark.output_tokens_per_second)
             curves["ttft_median"].append(benchmark.ttft_median)
+            curves["ttft_p10"].append(benchmark.ttft_p10)
+            curves["ttft_p25"].append(benchmark.ttft_p25)
+            curves["ttft_p50"].append(benchmark.ttft_p50)
+            curves["ttft_p75"].append(benchmark.ttft_p75)
+            curves["ttft_p90"].append(benchmark.ttft_p90)
             curves["ttft_p95"].append(benchmark.ttft_p95)
             curves["ttft_p99"].append(benchmark.ttft_p99)
             curves["itl_median"].append(benchmark.itl_median)
+            curves["itl_p10"].append(benchmark.itl_p10)
+            curves["itl_p25"].append(benchmark.itl_p25)
+            curves["itl_p50"].append(benchmark.itl_p50)
+            curves["itl_p75"].append(benchmark.itl_p75)
+            curves["itl_p90"].append(benchmark.itl_p90)
             curves["itl_p95"].append(benchmark.itl_p95)
             curves["itl_p99"].append(benchmark.itl_p99)
             curves["tpot_median"].append(benchmark.tpot_median)

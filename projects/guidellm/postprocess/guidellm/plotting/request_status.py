@@ -305,9 +305,35 @@ def generate_request_status_report(
         report_dir = output_dir / report_dir_name
         report_dir.mkdir(exist_ok=True)
 
-        from .performance_analysis import embed_plot_for_report
+        from .performance_analysis import (
+            create_dataframe_from_records,
+            create_requested_vs_effective_concurrency_plot,
+            embed_plot_for_report,
+        )
 
         sections: list[str] = []
+
+        # --- Requested vs Effective Concurrency ---
+        df = create_dataframe_from_records(guidellm_records)
+        concurrency_fig = create_requested_vs_effective_concurrency_plot(df, title_context)
+        if concurrency_fig is not None:
+            conc_dir = report_dir / "concurrency"
+            conc_dir.mkdir(exist_ok=True)
+            png_path = save_figure(
+                concurrency_fig, conc_dir, "requested_vs_effective", as_image=True
+            )
+            html_path = save_figure(
+                concurrency_fig, conc_dir, "requested_vs_effective", as_image=False
+            )
+            if html_path:
+                png_rel = (
+                    f"{report_dir_name}/concurrency/{Path(png_path).name}" if png_path else None
+                )
+                html_rel = f"{report_dir_name}/concurrency/{Path(html_path).name}"
+                plot_content = embed_plot_for_report(
+                    png_rel, html_rel, "Requested vs Effective Concurrency", output_dir
+                )
+                sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
 
         # --- Successful requests plot (all configs together) ---
         success_fig = create_successful_requests_plot(guidellm_records, title_context)
