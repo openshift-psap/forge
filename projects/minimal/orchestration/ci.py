@@ -31,10 +31,15 @@ from projects.core.library.replot import caliper_replot_entrypoint
 logger = logging.getLogger(__name__)
 
 
-def init():
+def init(presets=None):
     env.init()
     run.init()
     run.register_signal_callback(_signal_callback)
+
+    # Set presets configuration if provided
+    if presets:
+        config.write_variables_override(presets=presets)
+
     config.init(pathlib.Path(__file__).parent)
 
 
@@ -60,12 +65,21 @@ def _signal_callback(sig, frame, log_file):
 
 
 @click.group(cls=ci_lib.HelpfulGroup)
+@click.option("--presets", multiple=True, help="Set preset configuration before starting")
 @click.pass_context
 @ci_lib.safe_ci_function
-def main(ctx):
+def main(ctx, presets):
     """Minimal sample testing project CI operations for FORGE."""
     ctx.ensure_object(types.SimpleNamespace)
-    init()
+
+    presets_list = list(presets)
+    if presets_list and "," in presets_list[0]:
+        lst = presets_list.pop(0)
+        presets_list = lst.split(",") + presets_list
+
+        logger.info(f"Setting preset configuration from CLI: {presets_list}")
+
+    init(presets_list)
 
     if ctx.invoked_subcommand == "resolve-fournos-config":
         logger.info("No need to initialize the vaults for the resolve step")
