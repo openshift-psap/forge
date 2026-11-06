@@ -6,6 +6,7 @@ import csv
 import json
 import logging
 import re
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -190,12 +191,13 @@ def enrich_guidellm_parse_result(
                 metrics["mlflow_run_id"] = job_mlflow_destination["run_id"]
             if not metrics.get("mlflow_experiment_id"):
                 metrics["mlflow_experiment_id"] = job_mlflow_destination["experiment_id"]
-        metrics["performance_curves"] = {
+        combined_curves = {
             **metrics.get("performance_curves", {}),
             **curves,
         }
+        original_concurrencies = combined_curves.get("intended_concurrency", [])
         merged_curves, merged_breakdown, merged_scatter = _merge_replica_performance_curves(
-            metrics["performance_curves"],
+            combined_curves,
             metrics.get("error_breakdown"),
             metrics.get("request_scatter"),
         )
@@ -204,6 +206,12 @@ def enrich_guidellm_parse_result(
             metrics["error_breakdown"] = merged_breakdown
         if merged_scatter is not None:
             metrics["request_scatter"] = merged_scatter
+        request_rate = metrics.get("request_rate", [])
+        if request_rate and len(request_rate) == len(original_concurrencies):
+            rate_groups: OrderedDict[float, list[float]] = OrderedDict()
+            for conc, rate in zip(original_concurrencies, request_rate, strict=True):
+                rate_groups.setdefault(conc, []).append(rate)
+            metrics["request_rate"] = [sum(rates) for rates in rate_groups.values()]
         records.append(
             UnifiedResultRecord(
                 test_base_path=record.test_base_path,
