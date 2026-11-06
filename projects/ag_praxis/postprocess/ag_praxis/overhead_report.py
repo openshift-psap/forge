@@ -28,7 +28,7 @@ def _merge_replica_curves(
         return [], []
 
     grouped: dict[float, list[float]] = {}
-    for conc, lat in zip(concurrencies, latencies):
+    for conc, lat in zip(concurrencies, latencies, strict=True):
         if conc not in grouped:
             grouped[conc] = []
         grouped[conc].append(lat)
@@ -103,8 +103,12 @@ def _extract_sim_config(config_path: Path) -> dict[str, Any] | None:
     }
 
 
-def _find_config_yaml(record: UnifiedResultRecord) -> Path | None:
+def _find_config_yaml(
+    record: UnifiedResultRecord, base_directory: str | None = None
+) -> Path | None:
     test_base = Path(record.test_base_path)
+    if not test_base.is_absolute() and base_directory:
+        test_base = Path(base_directory) / test_base
     config_path = test_base / "config.yaml"
     if config_path.is_file():
         return config_path
@@ -270,6 +274,7 @@ def generate_overhead_report(
     records: list[UnifiedResultRecord],
     output_dir: str | Path,
     report_number: int | None = None,
+    base_directory: str | None = None,
 ) -> Path | None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -298,7 +303,7 @@ def generate_overhead_report(
 
     sim_config = None
     for record in records:
-        config_path = _find_config_yaml(record)
+        config_path = _find_config_yaml(record, base_directory)
         if config_path:
             sim_config = _extract_sim_config(config_path)
             if sim_config:
@@ -351,7 +356,7 @@ def generate_overhead_report(
         sections.append(_render_error_section("No concurrency levels found in performance curves"))
 
     report_title = "Overhead Analysis"
-    display_title = create_report_title_display(report_title, report_number)
+    display_title = create_report_title_display(report_title)
 
     report_html = assemble_report(display_title, sections)
 
@@ -364,11 +369,7 @@ def generate_overhead_report(
         "</style>",
     )
 
-    report_dir_name = "overhead_analysis"
-    if report_number is not None:
-        report_dir_name = f"report_{report_number:02d}_{report_dir_name}"
-
-    report_filename = create_report_filename(report_dir_name, report_number, report_title, "html")
+    report_filename = create_report_filename(report_title, report_number)
     report_path = output_dir / report_filename
     report_path.write_text(report_html, encoding="utf-8")
 
