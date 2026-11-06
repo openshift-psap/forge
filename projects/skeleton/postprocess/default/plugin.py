@@ -12,6 +12,7 @@ from projects.caliper.engine.model import (
     BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
+    ReportFile,
     UnifiedRunModel,
 )
 
@@ -50,34 +51,31 @@ class SkeletonDefaultPlugin(PostProcessingPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
-    ) -> list[str]:
+    ) -> list[ReportFile]:
         """Generate visualization reports."""
         logger.info("Starting skeleton plugin visualization")
-        logger.info(f"Output directory: {output_dir}")
-        logger.info(f"Requested report IDs: {report_ids}")
-        logger.info(f"Group ID: {group_id}")
-        logger.info(f"Available plot types: {list(self.plots.keys())}")
-        logger.info(f"Model contains {len(model.unified_result_records)} result records")
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        paths: list[str] = []
+        source_dir = output_dir / "global" / "skeleton"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        reports: list[ReportFile] = []
         wanted = frozenset(report_ids or ())
         invalid_plots: list[str] = []
 
-        logger.info(f"Will generate plots for: {sorted(wanted)}")
-
         for report_id in wanted:
             if report_id in self.plots:
-                logger.info(f"Generating plot: {report_id}")
                 plot_class = self.plots[report_id]
-                path = plot_class.generate(model, output_dir)
-                logger.info(f"Generated plot file: {path}")
-                paths.append(path)
+                path = plot_class.generate(model, source_dir)
+                reports.append(
+                    ReportFile(
+                        source="skeleton",
+                        scope="global",
+                        title=report_id,
+                        path=path,
+                    )
+                )
             else:
                 logger.warning(f"Requested plot type '{report_id}' not available in this plugin")
                 invalid_plots.append(report_id)
 
-        # Check for invalid plot types and raise error if found
         if invalid_plots:
             available_types = list(self.plots.keys())
             raise ValueError(
@@ -85,10 +83,8 @@ class SkeletonDefaultPlugin(PostProcessingPlugin):
                 f"Available types in this plugin: {sorted(available_types)}"
             )
 
-        logger.info(
-            f"Skeleton plugin visualization completed. Generated {len(paths)} files: {paths}"
-        )
-        return paths
+        logger.info(f"Skeleton plugin visualization completed. Generated {len(reports)} files")
+        return reports
 
     def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
         """Compute KPI values from the unified model."""
