@@ -425,9 +425,8 @@ def _capture_traces_finalizer(
     Runs before cleanup so the collector spool is still available. A capture
     failure is surfaced through a notification and re-raised so the finalizer
     reports it, while the primary test exception is preserved by the caller.
-    After a verified capture the collector and spool are removed; a failed
-    capture leaves them in place for recovery. Without a benchmark window there
-    is nothing to capture, so the collector is removed.
+    The collector and spool are always removed afterwards; without a benchmark
+    window there is nothing to capture, so the collector is removed directly.
     """
     from projects.cluster.library.tracing import lifecycle
 
@@ -454,9 +453,14 @@ def _capture_traces_finalizer(
         add_notification_file(
             "tracing-capture-failed",
             "Requested trace collection failed for this test; see the test logs. "
-            "Artifacts, recovery state, and collector resources were preserved.",
+            "The trace collector was removed.",
         )
+        lifecycle.cleanup(session, force=True)
         raise RuntimeError("requested trace collection failed") from exc
+
+    # Nothing recovers a preserved collector, so it is removed whatever the
+    # capture outcome; any published bundles are already in the artifacts.
+    lifecycle.cleanup(session, force=True)
 
     # An empty capture is expected at low sampling or for a tiny workload, but
     # at full sampling it means instrumentation or the collector endpoint is
@@ -464,21 +468,16 @@ def _capture_traces_finalizer(
     empty_at_full_sampling = status.value == "empty" and settings.sample_ratio >= 1.0
     if status.value in ("failed", "incomplete") or empty_at_full_sampling:
         # A drain timeout still yields a valid partial bundle, but requested
-        # tracing is not successful and must be reported as such. The collector
-        # and spool stay in place for recovery.
+        # tracing is not successful and must be reported as such.
         from projects.core.library.ci import add_notification_file
 
         reason = "empty-at-full-sampling" if empty_at_full_sampling else status.value
         add_notification_file(
             f"tracing-collection-{reason}",
             "Requested trace collection did not complete successfully; partial "
-            "bundles were retained and the collector was preserved for recovery.",
+            "bundles were retained in the artifacts.",
         )
         raise RuntimeError(f"requested trace collection {reason}")
-
-    # Only remove the collector and spool after a verified capture; a failed
-    # capture preserved them above for recovery.
-    lifecycle.cleanup(session)
 
 
 def _current_test_id() -> str:

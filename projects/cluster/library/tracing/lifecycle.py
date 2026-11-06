@@ -1,7 +1,7 @@
 """Capture lifecycle composition for project orchestration.
 
 Resolves tracing settings, deploys the collector, persists benchmark windows,
-captures traces, and reconciles before cleanup. Only orchestration calls this:
+captures traces, and removes the collector. Only orchestration calls this:
 it reads project configuration and hands explicit typed inputs to the toolbox
 commands. Shared helpers and toolbox commands never import project
 orchestration.

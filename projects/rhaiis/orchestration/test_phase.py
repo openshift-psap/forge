@@ -93,10 +93,9 @@ def _record_trace_window(capture_session, *, artifact_dir: Path, start, end) -> 
 def _finalize_trace_capture(capture_session) -> None:
     """Capture then clean up the collector for a started capture.
 
-    Capture failures are surfaced through a notification; the collector and
-    spool are only removed after a verified capture, so a failed capture keeps
-    its recovery state. Without a benchmark window there is nothing to capture,
-    so the collector is removed. Never raises: the benchmark outcome is preserved.
+    Capture failures are surfaced through a notification. The collector and
+    spool are always removed afterwards, since nothing recovers a preserved
+    collector. Never raises: the benchmark outcome is preserved.
     """
     if capture_session is None:
         return
@@ -105,7 +104,7 @@ def _finalize_trace_capture(capture_session) -> None:
 
     if not capture_session.windows:
         logger.info("No benchmark window recorded; removing the trace collector")
-        _cleanup_trace_collector(capture_session, force=True)
+        _cleanup_trace_collector(capture_session)
         return
 
     try:
@@ -116,11 +115,15 @@ def _finalize_trace_capture(capture_session) -> None:
         add_notification_file(
             "tracing-capture-failed",
             "Requested trace collection failed for this test; see the test logs. "
-            "Artifacts, recovery state, and collector resources were preserved.",
+            "The trace collector was removed.",
         )
         _warnings.append("Trace collection failed")
-        logger.exception("Trace collection failed; preserving collector for recovery")
+        logger.exception("Trace collection failed")
+        _cleanup_trace_collector(capture_session)
         return
+
+    # Any published bundles are already in the artifacts.
+    _cleanup_trace_collector(capture_session)
 
     # An empty capture is expected at low sampling or for a tiny workload, but
     # at full sampling it means instrumentation or the collector endpoint is
@@ -135,20 +138,17 @@ def _finalize_trace_capture(capture_session) -> None:
         add_notification_file(
             f"tracing-collection-{reason}",
             "Requested trace collection did not complete successfully; partial "
-            "bundles were retained and the collector was preserved for recovery.",
+            "bundles were retained in the artifacts.",
         )
         _warnings.append(f"Trace collection {reason}")
-        return
-
-    _cleanup_trace_collector(capture_session)
 
 
-def _cleanup_trace_collector(capture_session, *, force: bool = False) -> None:
+def _cleanup_trace_collector(capture_session) -> None:
     """Remove the collector, notifying when its resources may be left behind."""
     from projects.cluster.library.tracing import lifecycle
 
     try:
-        lifecycle.cleanup(capture_session, force=force)
+        lifecycle.cleanup(capture_session, force=True)
     except Exception:
         from projects.core.library.ci import add_notification_file
 

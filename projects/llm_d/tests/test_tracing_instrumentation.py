@@ -353,7 +353,7 @@ def _finalizer_deps(monkeypatch, status_value: str):
 
 
 def test_incomplete_capture_fails_requested_tracing(monkeypatch, tmp_path):
-    """A drain timeout must fail tracing and preserve the collector for recovery."""
+    """A drain timeout must fail tracing and still remove the collector."""
     notifications = []
     from projects.core.library import ci
 
@@ -370,7 +370,7 @@ def test_incomplete_capture_fails_requested_tracing(monkeypatch, tmp_path):
         )
 
     assert notifications and notifications[0][0] == "tracing-collection-incomplete"
-    assert not captured.get("cleaned"), "collector must be preserved for recovery"
+    assert captured.get("cleaned") == {"force": True}, "collector must not be left behind"
 
 
 def test_completed_capture_cleans_up(monkeypatch):
@@ -384,7 +384,7 @@ def test_completed_capture_cleans_up(monkeypatch):
 
     test_phase._capture_traces_finalizer((_utc(0), _utc(10)), capture_session=_capture_session())
 
-    assert captured.get("cleaned") == {}
+    assert captured.get("cleaned") == {"force": True}
     assert notifications == []
 
 
@@ -410,7 +410,7 @@ def test_empty_capture_at_full_sampling_fails_tracing(monkeypatch):
         )
 
     assert notifications == ["tracing-collection-empty-at-full-sampling"]
-    assert not captured.get("cleaned"), "collector must be preserved for recovery"
+    assert captured.get("cleaned") == {"force": True}, "collector must not be left behind"
 
 
 def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
@@ -421,7 +421,7 @@ def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
         (_utc(0), _utc(10)), capture_session=_capture_session(sample_ratio=0.1)
     )
 
-    assert captured.get("cleaned") == {}
+    assert captured.get("cleaned") == {"force": True}
 
 
 def test_missing_benchmark_window_removes_the_collector(monkeypatch):
@@ -470,3 +470,26 @@ def test_finalizers_reconcile_traces_when_the_test_failed_before_the_benchmark(m
     )
 
     assert calls == [("traces", None), "cleanup"]
+
+
+def test_capture_exception_still_removes_the_collector(monkeypatch):
+    notifications = []
+    from projects.core.library import ci
+
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    )
+    test_phase, lifecycle, captured = _finalizer_deps(monkeypatch, "collected")
+
+    def failing_capture(*_a, **_k):
+        raise RuntimeError("spool transfer failed")
+
+    monkeypatch.setattr(lifecycle, "capture", failing_capture)
+
+    with pytest.raises(RuntimeError, match="requested trace collection failed"):
+        test_phase._capture_traces_finalizer(
+            (_utc(0), _utc(10)), capture_session=_capture_session()
+        )
+
+    assert notifications == ["tracing-capture-failed"]
+    assert captured.get("cleaned") == {"force": True}

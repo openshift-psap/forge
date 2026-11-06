@@ -153,7 +153,7 @@ def _patch_lifecycle(monkeypatch, status_value: str):
     return test_phase, cleaned
 
 
-def test_incomplete_capture_is_a_warning_and_preserves_collector(monkeypatch):
+def test_incomplete_capture_is_a_warning_and_removes_collector(monkeypatch):
     notifications = []
     from projects.core.library import ci
 
@@ -167,7 +167,7 @@ def test_incomplete_capture_is_a_warning_and_preserves_collector(monkeypatch):
 
     assert notifications == ["tracing-collection-incomplete"]
     assert "Trace collection incomplete" in test_phase._warnings
-    assert not cleaned.get("called"), "collector must be preserved for recovery"
+    assert cleaned.get("called") == {"force": True}, "collector must not be left behind"
 
 
 def test_completed_capture_cleans_up(monkeypatch):
@@ -176,7 +176,7 @@ def test_completed_capture_cleans_up(monkeypatch):
 
     test_phase._finalize_trace_capture(_session(0.5))
 
-    assert cleaned.get("called") == {"force": False}
+    assert cleaned.get("called") == {"force": True}
     assert test_phase._warnings == []
 
 
@@ -223,7 +223,7 @@ def test_empty_capture_at_full_sampling_is_a_warning(monkeypatch):
     test_phase._finalize_trace_capture(_session(1.0))
 
     assert notifications == ["tracing-collection-empty-at-full-sampling"]
-    assert not cleaned.get("called"), "collector must be preserved for recovery"
+    assert cleaned.get("called") == {"force": True}, "collector must not be left behind"
 
 
 def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
@@ -232,7 +232,7 @@ def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
 
     test_phase._finalize_trace_capture(_session(0.1))
 
-    assert cleaned.get("called") == {"force": False}
+    assert cleaned.get("called") == {"force": True}
     assert test_phase._warnings == []
 
 
@@ -276,3 +276,26 @@ def test_cleanup_failure_is_notified(monkeypatch):
 
     assert notifications == ["tracing-cleanup-failed"]
     assert "Trace collector cleanup failed" in test_phase._warnings
+
+
+def test_capture_exception_still_removes_the_collector(monkeypatch):
+    notifications = []
+    from projects.cluster.library.tracing import lifecycle
+    from projects.core.library import ci
+
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    )
+    test_phase, cleaned = _patch_lifecycle(monkeypatch, "collected")
+
+    def failing_capture(*_a, **_k):
+        raise RuntimeError("spool transfer failed")
+
+    monkeypatch.setattr(lifecycle, "capture", failing_capture)
+    test_phase._warnings.clear()
+
+    test_phase._finalize_trace_capture(_session(1.0))
+
+    assert notifications == ["tracing-capture-failed"]
+    assert "Trace collection failed" in test_phase._warnings
+    assert cleaned.get("called") == {"force": True}

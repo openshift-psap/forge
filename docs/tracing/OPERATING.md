@@ -96,8 +96,8 @@ and [EPP tracing configuration](https://github.com/llm-d/llm-d-router/blob/main/
 
 At full sampling, each workload must contain both expected service names and
 an EPP parent span for a vLLM span in the same trace. Missing components or
-missing propagation fail collection, retain sanitized bundles and collector
-storage for recovery, and trigger the orchestration failure notification.
+missing propagation fail collection, retain sanitized bundles, and trigger the
+orchestration failure notification.
 Observed services are scoped to each workload's bundle. At lower sampling,
 partial component visibility can be expected and this acceptance gate is skipped.
 These artifact checks do not establish that an arbitrary serving image emits
@@ -151,9 +151,11 @@ endpoint.
 
 ## Recovery and cleanup
 
-- On capture failure the collector and spool are **preserved** for recovery, and
-  a notification is written. Fix the cause, then re-run capture, or force-remove
-  the resources explicitly:
+- The collector and spool are **always removed** after capture, whatever its
+  outcome, and also when the test failed before any benchmark window was
+  recorded. A failed capture still fails requested tracing and writes a
+  notification; any published bundles and diagnostics are already in the
+  artifacts. Resources left by an interrupted run can be removed explicitly:
 
   `./bin/run_toolbox cluster cleanup_trace_collector --namespace NS --capture-id CAP --force`
 
@@ -165,13 +167,12 @@ endpoint.
 - `collector.settle_timeout_seconds` bounds the post-benchmark drain. When it
   expires the valid partial data is still published, but the bundle is marked
   `incomplete` with `time.drain_outcome: timeout`, requested tracing fails, a
-  notification is written, and the collector is preserved for recovery.
+  notification is written.
 - A benchmark window whose bundle holds no assigned spans is recorded `empty`,
   and any such window makes the run's status `empty`. That is accepted at low
   sampling (an expected outcome), but at `sample_ratio: 1.0` it fails requested
-  tracing with a `tracing-collection-empty-at-full-sampling` notification and
-  preserves the collector: it means instrumentation or the collector endpoint is
-  misconfigured.
+  tracing with a `tracing-collection-empty-at-full-sampling` notification: it
+  means instrumentation or the collector endpoint is misconfigured.
 - `collector.max_bundle_bytes` bounds each published bundle. Exceeding it fails
   the capture before a bundle is written, so reduce `sample_ratio` or raise the
   budget deliberately.
@@ -243,7 +244,7 @@ Unassigned traces are retained in `trace-diagnostics/unassigned.otlp.jsonl.gz`
 at the capture root, with per-trace IDs/reasons and a checksum in
 `attribution.json`. These files are ordinary diagnostics, not discoverable
 native-export bundles. Missing roots and ambiguous ownership fail collection
-at every sampling ratio and preserve the collector. Outside-window traces
+at every sampling ratio. Outside-window traces
 (such as warmup) remain diagnostic-only without failing a valid measured window.
 Conflicting captures retain `invalid.otlp.jsonl.gz` and `validation.json` before
 raising. The configured bundle size limit also bounds diagnostic archives.
