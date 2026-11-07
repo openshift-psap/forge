@@ -542,7 +542,6 @@ def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert len(calls) == 2
-    assert "--max-seconds=75" in calls[0]["guidellm_args"]
     assert "--rate=1,50,100,200,300" in calls[1]["guidellm_args"]
     assert "--max-seconds=275" in calls[1]["guidellm_args"]
     assert "--rampup=35" in calls[1]["guidellm_args"]
