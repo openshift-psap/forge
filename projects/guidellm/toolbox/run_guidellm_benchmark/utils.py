@@ -175,7 +175,11 @@ def _convert_data_spec(data_spec: str) -> str:
 
 
 def _build_run_args(
-    endpoint_url: str, old_args: list[str], *, validate_backend: bool = True
+    endpoint_url: str,
+    old_args: list[str],
+    *,
+    validate_backend: bool = True,
+    scenario_config: bool = False,
 ) -> list[str]:
     """Transform config-derived CLI args into ``guidellm run`` arguments."""
     backend_type = "openai_http"
@@ -294,7 +298,7 @@ def _build_run_args(
                 profile_spec += f",rampup_duration={int(f) if f == int(f) else f}"
             new_args.append(f"--profile={profile_spec}")
             new_args.extend(["--override", f"profile.{rate_key}", ",".join(map(str, parsed_rates))])
-    else:
+    elif profile_spec is not None or warmup or rampup or not scenario_config:
         if profile_spec is None:
             profile_spec = f"kind={rate_type}"
         if warmup:
@@ -363,7 +367,12 @@ def _build_multi_run_script(
         lines.append(_build_config_heredoc(config_content))
 
     for run in runs:
-        run_args = _build_run_args(endpoint_url, run.args, validate_backend=validate_backend)
+        run_args = _build_run_args(
+            endpoint_url,
+            run.args,
+            validate_backend=validate_backend,
+            scenario_config=bool(config_content),
+        )
         if config_content:
             run_args.append(f"--config={_CONFIG_FILE_PATH}")
 
