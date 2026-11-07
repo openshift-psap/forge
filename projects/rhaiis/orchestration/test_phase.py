@@ -387,6 +387,7 @@ def _run_test(
                             "Could not create profiler failure notification for %s", wl_key
                         )
             elif warmup_enabled and wl_key in optional_phase_workload_keys:
+                logger.info("Running warmup for workload=%s", wl_key)
                 _run_warmup_step(**step_kwargs)
 
         # Phase 2: benchmark + post-processing for ALL workloads
@@ -776,17 +777,13 @@ def _run_warmup_step(
 ) -> None:
     """Run a short warmup benchmark to prime KV cache and CUDA kernels."""
     from projects.core.library import config
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
+        run as run_guidellm_benchmark,
+    )
 
     warmup_cfg = config.project.get_config("rhaiis.warmup", {})
     warmup_rate = warmup_cfg.get("rate", 200)
     warmup_max_seconds = int(workload.get("warmup", warmup_cfg.get("max_seconds", 60)))
-    if warmup_max_seconds <= 0:
-        logger.info("Skipping warmup for workload=%s because its duration is zero", workload_key)
-        return
-
-    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
-        run as run_guidellm_benchmark,
-    )
 
     guidellm_args = runtime_config.build_guidellm_args(
         benchmark_cfg=benchmark_cfg,

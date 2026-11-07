@@ -495,7 +495,7 @@ def test_cleanup_failure_does_not_mask_deployment_failure(
         )
 
 
-def test_profile1_zero_warmup_skips_priming_run(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_profile1_uses_forge_workload_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         test_phase.config,
         "project",
@@ -541,12 +541,16 @@ def test_profile1_zero_warmup_skips_priming_run(monkeypatch: pytest.MonkeyPatch)
         kpi_labels,
     )
 
-    assert len(calls) == 1
-    assert "--rate=1,50,100,200,300" in calls[0]["guidellm_args"]
-    assert "--max-seconds=275" in calls[0]["guidellm_args"]
-    assert "--rampup=35" in calls[0]["guidellm_args"]
-    assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[0]["guidellm_args"]
-    assert metadata == [({"phase": "benchmark"}, kpi_labels)]
+    assert len(calls) == 2
+    assert "--max-seconds=75" in calls[0]["guidellm_args"]
+    assert "--rate=1,50,100,200,300" in calls[1]["guidellm_args"]
+    assert "--max-seconds=275" in calls[1]["guidellm_args"]
+    assert "--rampup=35" in calls[1]["guidellm_args"]
+    assert "--data=prompt_tokens=1000,output_tokens=1000" in calls[1]["guidellm_args"]
+    assert metadata == [
+        ({"phase": "warmup", "skip": True}, kpi_labels),
+        ({"phase": "benchmark"}, kpi_labels),
+    ]
 
 
 def test_validate_recipe_catalog_rejects_pvc_without_source(tmp_path: Path) -> None:
