@@ -1,6 +1,9 @@
 groups:
   comprehensive:
     - report_performance_analysis
+    - report_request_status
+    - report_request_scatter
+    - report_overhead_analysis
     - report_prometheus_metrics
     - report_payload_resources
 
@@ -15,6 +18,9 @@ groups:
 
   all:
     - report_performance_analysis
+    - report_request_status
+    - report_request_scatter
     - report_deployment_profile
+    - report_overhead_analysis
     - report_prometheus_metrics
     - report_payload_resources

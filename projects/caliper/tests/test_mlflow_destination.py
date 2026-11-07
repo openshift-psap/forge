@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -237,3 +241,96 @@ def test_multi_run_export_reuses_job_marker_run_id(tmp_path: Path, monkeypatch: 
     )
 
     assert captured["mlflow_run_id"] == "job-run"
+
+
+class _StubMlflow:
+    """Minimal mlflow stand-in reproducing the tracking-URI semantics under test.
+
+    ``set_tracking_uri`` publishes the URI in ``os.environ`` (real mlflow does this
+    "so that subprocess can inherit it"), and ``get_tracking_uri`` synthesizes
+    ``sqlite:///<cwd>/mlflow.db`` when nothing is configured — the default that
+    must not leak into the environment.
+    """
+
+    def __init__(self) -> None:
+        self._uri: str | None = None
+        self._active_run = None
+
+    def get_tracking_uri(self) -> str:
+        if self._uri is not None:
+            return self._uri
+        if env_uri := os.environ.get("MLFLOW_TRACKING_URI"):
+            return env_uri
+        return "sqlite:///" + os.path.abspath("mlflow.db")
+
+    def set_tracking_uri(self, uri: str | None) -> None:
+        self._uri = uri
+        if uri is not None:
+            os.environ["MLFLOW_TRACKING_URI"] = uri
+        else:
+            os.environ.pop("MLFLOW_TRACKING_URI", None)
+
+    def set_experiment(self, _name: str) -> None:
+        pass
+
+    @contextmanager
+    def start_run(self, run_name: str | None = None):  # noqa: ANN201
+        del run_name  # unused
+        self._active_run = SimpleNamespace(
+            info=SimpleNamespace(run_id="run-123", experiment_id="264")
+        )
+        try:
+            yield self._active_run
+        finally:
+            self._active_run = None
+
+    def active_run(self):  # noqa: ANN201
+        return self._active_run
+
+
+def _write_secrets(tmp_path: Path) -> Path:
+    secrets_path = tmp_path / "mlflow-secret.yaml"
+    secrets_path.write_text("tracking_uri: https://mlflow.example\n", encoding="utf-8")
+    return secrets_path
+
+
+def test_precreate_mlflow_run_does_not_leak_the_default_tracking_uri(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Restoring mlflow's synthesized default must not publish it into os.environ."""
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    secrets_path = _write_secrets(tmp_path)
+
+    try:
+        with patch.dict("sys.modules", {"mlflow": _StubMlflow()}):
+            destination = export.precreate_mlflow_run(
+                secrets_path=secrets_path, experiment="forge", workspace="forge"
+            )
+            leaked_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    finally:
+        os.environ.pop("MLFLOW_TRACKING_URI", None)
+
+    assert destination.run_id == "run-123"
+    assert leaked_uri is None, (
+        "precreate_mlflow_run leaked mlflow's synthesized default tracking URI "
+        f"into the environment: {leaked_uri}"
+    )
+
+
+def test_precreate_mlflow_run_restores_an_explicit_tracking_uri(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A tracking URI that was explicitly configured before is restored as-is."""
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://explicit.example")
+    secrets_path = _write_secrets(tmp_path)
+
+    try:
+        with patch.dict("sys.modules", {"mlflow": _StubMlflow()}):
+            export.precreate_mlflow_run(
+                secrets_path=secrets_path, experiment="forge", workspace="forge"
+            )
+            restored_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    finally:
+        os.environ.pop("MLFLOW_TRACKING_URI", None)
+
+    assert restored_uri == "https://explicit.example"

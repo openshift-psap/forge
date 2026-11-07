@@ -91,11 +91,6 @@ def run_artifacts_import(
 
     if not mlflow_tracking_uri:
         mlflow_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-        if not mlflow_tracking_uri:
-            raise ValueError(
-                "MLflow tracking URI is required: --mlflow-tracking-uri, MLFLOW_TRACKING_URI, "
-                "or provide a complete --from-mlflow-url"
-            )
 
     # Load secrets if provided or try to load from vault
     connection_config = {}
@@ -123,6 +118,16 @@ def run_artifacts_import(
             click.echo("  ⚠️  No vault secrets found, proceeding without authentication")
     else:
         click.echo("  ℹ️  No secrets file specified, proceeding without authentication")
+
+    # Precedence: CLI (--mlflow-tracking-uri / --from-mlflow-url) > env > secret
+    if not mlflow_tracking_uri:
+        mlflow_tracking_uri = connection_config.get("tracking_uri")
+
+    if not mlflow_tracking_uri:
+        raise ValueError(
+            "MLflow tracking URI is required: --mlflow-tracking-uri, MLFLOW_TRACKING_URI, "
+            "--mlflow-secrets tracking_uri, or provide a complete --from-mlflow-url"
+        )
 
     # Set up insecure TLS if needed
     if mlflow_insecure_tls:
@@ -286,6 +291,7 @@ def run_artifacts_import(
 
     # Execute download with proper connection context
     if connection_config:
+        connection_config["tracking_uri"] = mlflow_tracking_uri
         with mlflow_connection_env(connection_config):
             _download_artifacts()
     else:

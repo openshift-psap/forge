@@ -87,7 +87,7 @@ class VisualizeStepResult(BaseStepResult):
     """Visualize step result."""
 
     plugin_module: str | None = None
-    output_files: list[str] = field(default_factory=list)
+    output_files: list[dict[str, str]] = field(default_factory=list)
     output_dir: str | None = None
     generated_files: int = 0
     error: str | None = None

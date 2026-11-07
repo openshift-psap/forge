@@ -6,6 +6,7 @@ import csv
 import json
 import logging
 import re
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -190,10 +191,27 @@ def enrich_guidellm_parse_result(
                 metrics["mlflow_run_id"] = job_mlflow_destination["run_id"]
             if not metrics.get("mlflow_experiment_id"):
                 metrics["mlflow_experiment_id"] = job_mlflow_destination["experiment_id"]
-        metrics["performance_curves"] = {
+        combined_curves = {
             **metrics.get("performance_curves", {}),
             **curves,
         }
+        original_concurrencies = combined_curves.get("intended_concurrency", [])
+        merged_curves, merged_breakdown, merged_scatter = _merge_replica_performance_curves(
+            combined_curves,
+            metrics.get("error_breakdown"),
+            metrics.get("request_scatter"),
+        )
+        metrics["performance_curves"] = merged_curves
+        if merged_breakdown is not None:
+            metrics["error_breakdown"] = merged_breakdown
+        if merged_scatter is not None:
+            metrics["request_scatter"] = merged_scatter
+        request_rate = metrics.get("request_rate", [])
+        if request_rate and len(request_rate) == len(original_concurrencies):
+            rate_groups: OrderedDict[float, list[float]] = OrderedDict()
+            for conc, rate in zip(original_concurrencies, request_rate, strict=True):
+                rate_groups.setdefault(conc, []).append(rate)
+            metrics["request_rate"] = [sum(rates) for rates in rate_groups.values()]
         records.append(
             UnifiedResultRecord(
                 test_base_path=record.test_base_path,
@@ -318,6 +336,8 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
     }
     curves = {curve_key: [] for _, curve_key, _, _, _ in DASHBOARD_METRICS}
     run_uuids: dict[int, str] = {}
+    error_breakdown: list[dict[str, int]] = []
+    request_scatter: list[dict[str, Any]] = []
     for benchmark in benchmarks:
         metrics = benchmark.get("metrics", {})
         strategy = benchmark.get("config", {}).get("strategy", {}) or benchmark.get(
@@ -404,7 +424,37 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
         }
         for key in curves:
             curves[key].append(values.get(key))
+
+        point_errors: dict[str, int] = {}
+        for req in benchmark.get("requests", {}).get("errored", []):
+            error_msg = req.get("info", {}).get("error") or "unknown"
+            point_errors[error_msg] = point_errors.get(error_msg, 0) + 1
+        error_breakdown.append(point_errors)
+
+        bench_start = (
+            benchmark.get("scheduler_metrics", {}).get("start_time")
+            or benchmark.get("start_time")
+            or 0
+        )
+        scatter_times: list[float] = []
+        scatter_latencies: list[float] = []
+        for req in benchmark.get("requests", {}).get("successful", []):
+            t = req.get("request_start_time")
+            lat = req.get("request_latency")
+            if t is not None and lat is not None:
+                scatter_times.append(t - bench_start)
+                scatter_latencies.append(lat)
+        request_scatter.append(
+            {
+                "concurrency": intended_concurrency,
+                "start_times": scatter_times,
+                "latencies": scatter_latencies,
+            }
+        )
+
     extra["run_uuids"] = run_uuids
+    extra["error_breakdown"] = error_breakdown
+    extra["request_scatter"] = request_scatter
 
     per_turn = _extract_per_turn_curves(benchmarks)
     if per_turn:
@@ -538,6 +588,163 @@ def _turn_metric_values(
     }
 
 
+_SUM_CURVE_KEYS = frozenset(
+    {
+        "output_tok_per_sec",
+        "total_tok_per_sec",
+        "request_concurrency",
+        "measured_rps",
+        "intended_concurrency",
+        "successful_requests",
+        "errored_requests",
+    }
+)
+
+
+def _compute_x_scale(intended_concurrency: list) -> dict[float, float]:
+    """Map each unique intended_concurrency value to its cumulated x based on replica count."""
+    from collections import Counter
+
+    counts = Counter(float(v) for v in intended_concurrency if v is not None)
+    return {x: x * count for x, count in counts.items()}
+
+
+def _aggregate_replica_curve(
+    curve_data: list[list[float]],
+    curve_key: str,
+    x_scale: dict[float, float] | None = None,
+) -> list[list[float]]:
+    """Aggregate duplicate x-values from multi-replica curves.
+
+    For throughput/count metrics (in _SUM_CURVE_KEYS): sum across replicas.
+    For latency/per-request metrics: mean across replicas.
+    The x-axis (intended_concurrency) is always summed to represent total concurrency.
+    Colliding cumulated x-values are resolved with the same aggregation rule.
+
+    When x_scale is provided, it is used for the x mapping instead of deriving
+    per-curve replica counts, keeping x-values aligned across metrics.
+    """
+    from collections import OrderedDict
+
+    groups: OrderedDict[float, list[float]] = OrderedDict()
+    for x, y in curve_data:
+        groups.setdefault(x, []).append(y)
+
+    if x_scale is None and all(len(ys) == 1 for ys in groups.values()):
+        return curve_data
+
+    use_sum = curve_key in _SUM_CURVE_KEYS
+
+    cumulated: OrderedDict[float, list[float]] = OrderedDict()
+    for x, ys in groups.items():
+        cumulated_x = x_scale[x] if x_scale and x in x_scale else x * len(ys)
+        agg_y = sum(ys) if use_sum else sum(ys) / len(ys)
+        cumulated.setdefault(cumulated_x, []).append(agg_y)
+
+    result = []
+    for cx, agg_ys in cumulated.items():
+        final_y = sum(agg_ys) if use_sum else sum(agg_ys) / len(agg_ys)
+        result.append([cx, final_y])
+
+    result.sort(key=lambda p: p[0])
+    return result
+
+
+_PARSER_SUM_CURVE_KEYS = frozenset(
+    {
+        "tokens_per_second",
+        "input_tokens_per_second",
+        "output_tokens_per_second",
+        "completed_requests",
+        "failed_requests",
+        "request_concurrency",
+        "intended_concurrency",
+    }
+)
+
+
+def _merge_replica_performance_curves(
+    curves: dict[str, list],
+    error_breakdown: list[dict[str, int]] | None = None,
+    request_scatter: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, list], list[dict[str, int]] | None, list[dict[str, Any]] | None]:
+    """Merge duplicate intended_concurrency entries from replicas in performance_curves.
+
+    Concurrency is multiplied by replica count. Throughput/count metrics are summed;
+    latency metrics are averaged. error_breakdown dicts at the same concurrency
+    are merged (counts summed). request_scatter lists at the same concurrency
+    are concatenated.
+    """
+    concurrencies = curves.get("intended_concurrency", [])
+    if not concurrencies:
+        return curves, error_breakdown, request_scatter
+
+    from collections import Counter, OrderedDict
+
+    counts = Counter(concurrencies)
+    if all(c == 1 for c in counts.values()):
+        return curves, error_breakdown, request_scatter
+
+    # Group indices by concurrency value, preserving order
+    groups: OrderedDict[float, list[int]] = OrderedDict()
+    for i, conc in enumerate(concurrencies):
+        groups.setdefault(conc, []).append(i)
+
+    merged_curves: dict[str, list] = {}
+    for key, values in curves.items():
+        if not values:
+            merged_curves[key] = []
+            continue
+
+        merged_list = []
+        use_sum = key in _PARSER_SUM_CURVE_KEYS or key in _SUM_CURVE_KEYS
+        for conc, indices in groups.items():
+            replica_count = len(indices)
+            vals = [values[i] for i in indices if i < len(values) and values[i] is not None]
+            if not vals:
+                merged_list.append(None)
+                continue
+            if key == "intended_concurrency":
+                merged_list.append(conc * replica_count)
+            elif use_sum:
+                merged_list.append(sum(vals))
+            else:
+                merged_list.append(sum(vals) / len(vals))
+        merged_curves[key] = merged_list
+
+    merged_breakdown = None
+    if error_breakdown is not None:
+        merged_breakdown = []
+        for _conc, indices in groups.items():
+            merged_point: dict[str, int] = {}
+            for i in indices:
+                if i < len(error_breakdown):
+                    for msg, count in error_breakdown[i].items():
+                        merged_point[msg] = merged_point.get(msg, 0) + count
+            merged_breakdown.append(merged_point)
+
+    merged_scatter = None
+    if request_scatter is not None:
+        merged_scatter = []
+        for conc, indices in groups.items():
+            replica_count = len(indices)
+            combined_times: list[float] = []
+            combined_latencies: list[float] = []
+            for i in indices:
+                if i < len(request_scatter):
+                    combined_times.extend(request_scatter[i].get("start_times", []))
+                    combined_latencies.extend(request_scatter[i].get("latencies", []))
+            merged_scatter.append(
+                {
+                    "concurrency": conc * replica_count,
+                    "start_times": combined_times,
+                    "latencies": combined_latencies,
+                }
+            )
+
+    return merged_curves, merged_breakdown, merged_scatter
+
+
 def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRecord]:
     """Generate curve KPIs for dashboard metrics."""
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -576,6 +783,12 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
             "run_path": record.test_base_path,
         }
 
+        # Derive x-scale once from intended_concurrency for all curves
+        intended_concurrency_values = curves.get("intended_concurrency", [])
+        x_scale = (
+            _compute_x_scale(intended_concurrency_values) if intended_concurrency_values else None
+        )
+
         # Create curve KPI for each metric
         for suffix, curve_key, _, unit, higher_is_better in DASHBOARD_METRICS:
             curve_values = curves.get(curve_key, [])
@@ -584,7 +797,6 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
 
             # Create [intended_concurrency, metric_value] pairs using intended concurrency from strategy
             curve_data = []
-            intended_concurrency_values = curves.get("intended_concurrency", [])
 
             # Track data quality for warnings
             total_values = len([v for v in curve_values if v is not None])
@@ -615,6 +827,8 @@ def compute_dashboard_kpis(model: UnifiedRunModel, *, prefix: str) -> list[KpiRe
 
             if not curve_data:
                 continue
+
+            curve_data = _aggregate_replica_curve(curve_data, curve_key, x_scale)
 
             kpi_labels = dict(labels)
             kpi_labels.update(metadata_labels)

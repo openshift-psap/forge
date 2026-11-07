@@ -32,7 +32,8 @@ payloads:
     output_tokens: 4000
 
 sweeps:
-  small: [2, 4]
+  smoke: [2, 4]
+  small: [8, 16, 32, 64]
   medium: [4, 16, 32, 64, 96, 128]
   large: [32, 64, 128, 196, 256, 360, 512]
   full: [64, 128, 256, 512, 1024]
