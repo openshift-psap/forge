@@ -69,9 +69,10 @@ prometheus_metrics = [
     "pyyaml>=6.0",
 ]
 agentic_review = [
-    "httpx",
-    "langchain-openai",
-    "langchain-core",
+    "nooa",
+    "langchain_core",
+    "langchain_openai",
+    "urllib3",
 ]
 benchconf = [
     "benchconf @ git+https://github.com/openshift-psap/benchconf@main",

@@ -54,7 +54,7 @@ def generate_config_html_report(
     report_path = output_dir / report_filename
 
     # Import clean_content_for_html_report function from report_utils
-    from projects.core.agentic.report_utils import clean_content_for_html_report
+    from projects.core.agentic_review.report_utils import clean_content_for_html_report
 
     # Build interactions content
     interactions_html = ""

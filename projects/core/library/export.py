@@ -701,25 +701,33 @@ def caliper_agentic_list_vaults() -> list[str]:
         from projects.core.library import config
 
         # Check if agentic features are enabled in the project configuration
-        agentic_config = config.project.get_config("agentic", {})
+        agentic_config = config.project.get_config("agentic_review", {})
 
         if agentic_config.get("enabled", False):
+            # An explicit null value is a config error, not "disabled"
+            for feature in ("failure_review", "config_review"):
+                if feature in agentic_config and agentic_config[feature] is None:
+                    raise ValueError(f"agentic_review.{feature} is configured as null")
+
             # Check if any agentic feature is enabled
-            any_agentic_enabled = agentic_config.get("on_failure", {}).get(
+            any_agentic_enabled = agentic_config.get("failure_review", {}).get(
                 "enabled", False
             ) or agentic_config.get("config_review", {}).get("enabled", False)
 
             if any_agentic_enabled:
                 # Add the models vault for agentic operations
-                models_vault = "psap-models-corp-rh"
+                models_vault = agentic_config.get("vault_name")
+                if not models_vault:
+                    raise ValueError("agentic_review.vault_name not configured")
                 agentic_vaults.append(models_vault)
                 logger.info(f"Added agentic models vault: {models_vault}")
 
         # Add other agentic-related vaults here in the future
 
+    except ValueError:
+        raise
     except Exception as e:
         logger.error(f"Failed to determine agentic vaults from config: {e}")
-        # Return empty list on error - agentic operations will handle missing vaults gracefully
 
     logger.info(f"Agentic vault list: {agentic_vaults}")
     return agentic_vaults

@@ -15,7 +15,7 @@ This agent provides:
 - Task failure pattern recognition ("==> TASK FAILED:" in DSL logs)
 
 Example usage:
-    from projects.core.agentic.on_failure import run_on_failure_agent, get_failure_explanations
+    from projects.core.agentic_review.on_failure import run_on_failure_agent, get_failure_explanations
 
     # Full analysis with metadata
     result = run_on_failure_agent(Path("/path/to/artifacts"))
@@ -37,6 +37,8 @@ import logging
 import os
 import re
 import sys
+import tempfile
+import traceback
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -44,8 +46,8 @@ from pathlib import Path
 import click
 import yaml
 
-from projects.core.agentic.analysis_utils import extract_structured_analysis
-from projects.core.agentic.artifact_processing import (
+from projects.core.agentic_review.analysis_utils import extract_structured_analysis
+from projects.core.agentic_review.artifact_processing import (
     find_execution_logs,
     find_failure_files,
     list_all_files_in_artifact_dir,
@@ -55,11 +57,14 @@ from projects.core.agentic.artifact_processing import (
     read_failures_file,
     read_run_log,
 )
-from projects.core.agentic.models import create_llm_client, load_model_config
-from projects.core.agentic.on_failure.cli import cli
-from projects.core.agentic.on_failure.report import generate_html_report, text_to_code_block
+from projects.core.agentic_review.failure_review.cli import cli
+from projects.core.agentic_review.failure_review.report import (
+    generate_html_report,
+    text_to_code_block,
+)
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 from projects.core.library import ci as ci_lib
-from projects.core.library import config
+from projects.core.library import config, env
 
 from .queries import (
     FailureAnalysisQueries,
@@ -88,11 +93,17 @@ except ImportError:
     _AGENTIC_AVAILABLE = False
     _MISSING_PACKAGES.append("langchain_core")
 
+try:
+    import nooa  # noqa: F401
+except ImportError:
+    _AGENTIC_AVAILABLE = False
+    _MISSING_PACKAGES.append("nooa")
+
 
 def _is_agentic_dependencies_available():
     """Check if required agentic dependencies are available"""
     if not _AGENTIC_AVAILABLE:
-        logger.info(
+        logger.error(
             f"🤖 Agentic processing disabled - missing packages: {', '.join(_MISSING_PACKAGES)}"
         )
         return False
@@ -100,9 +111,11 @@ def _is_agentic_dependencies_available():
 
 
 @config.requires(
-    agentic_enabled="agentic.enabled",
-    on_failure_enabled="agentic.on_failure.enabled",
-    model_key="agentic.model_key",
+    agentic_enabled="agentic_review.enabled",
+    failure_review_enabled="agentic_review.failure_review.enabled",
+    model_key="agentic_review.model_key",
+    vault_name="agentic_review.vault_name",
+    vault_content="agentic_review.vault_content",
 )
 def _get_agentic_config(_cfg):
     """Get agentic configuration using @config.requires decorator"""
@@ -148,7 +161,7 @@ def agent_review_on_failure(func):
                     f"🤖 Agentic processing disabled - skipping agent review for '{function_name}'"
                 )
                 return func(*args, **kwargs)
-            if not agentic_config.on_failure_enabled:
+            if not agentic_config.failure_review_enabled:
                 logger.info(
                     f"🤖 On-failure agent disabled - skipping agent review for '{function_name}'"
                 )
@@ -162,7 +175,7 @@ def agent_review_on_failure(func):
             logger.info(
                 f"🤖 Exception in CI command '{function_name}': {e} ==> triggering failure agent"
             )
-            _try_run_agent_on_exception()
+            _try_run_agent_on_exception(e)
             raise e
 
         # Success - no agent needed
@@ -197,7 +210,6 @@ def _get_artifact_dir_with_failures():
     # Check for FAILURE files
     failure_files = list(artifact_dir.glob("**/FAILURE.txt"))
     if not failure_files:
-        logger.info(f"🤖 No FAILURE files found in {artifact_dir} - agent review not needed")
         return None
 
     logger.info(f"🤖 Found {len(failure_files)} FAILURE file(s) - agent review will proceed")
@@ -208,6 +220,7 @@ def _run_agent_and_log_results():
     """Run failure agent and log results"""
     artifact_dir = _get_artifact_dir_with_failures()
     if not artifact_dir:
+        logger.info("🤖 No FAILURE.txt files found - agent review not needed")
         return
 
     logger.info(f"🤖 Running failure agent on: {artifact_dir}")
@@ -253,15 +266,39 @@ def _log_single_analysis(analysis, index):
         logger.info(f"   ❌ Failed Step: {structured['failed_step']}")
 
 
-def _try_run_agent_on_exception():
+def _try_run_agent_on_exception(e):
     """Try to run agent when CI command throws exception"""
     artifact_dir = _get_artifact_dir_with_failures()
-    if not artifact_dir:
+    if artifact_dir:
+        try:
+            logger.info("🤖 Running failure agent after exception")
+            run_on_failure_agent(artifact_dir, verbose=False)
+        except Exception as agent_error:
+            logger.error(f"🤖 Exception while running failure agent: {agent_error}")
         return
 
+    _run_agent_on_exception(e)
+
+
+def _run_agent_on_exception(e):
+    """Run the failure agent on the exception itself.
+
+    Used when the CI command raised before any FAILURE.txt file was written:
+    the exception message and traceback become the failure under analysis.
+    """
+    base_artifact_dir = env.BASE_ARTIFACT_DIR
+
     try:
-        logger.info("🤖 Running failure agent after exception")
-        run_on_failure_agent(artifact_dir, verbose=False)
+        logger.info("🤖 No FAILURE.txt found - running failure agent on the exception itself")
+        agent_result = run_on_exception_agent(e, base_artifact_dir, verbose=False)
+        _log_agent_results(
+            {
+                "status": agent_result.get("status"),
+                "failures_found": 1,
+                "successful_analyses": int(agent_result.get("status") == "success"),
+                "analyses": [agent_result],
+            }
+        )
     except Exception as agent_error:
         logger.error(f"🤖 Exception while running failure agent: {agent_error}")
 
@@ -415,7 +452,7 @@ def analyze_single_failure_multi_query(
         ".yml",
         "endpoint.url",
         ".log",
-        "AGENT.md",
+        "agent.md",
     ]
     medium_priority_patterns = [".json", ".conf", ".cfg", ".sh", ".py"]
     low_priority_patterns = [".txt"]
@@ -709,11 +746,11 @@ def process_failure_analysis(base_artifact_dir: Path, llm, verbose: bool = False
     failure_files = find_failure_files(base_artifact_dir)
 
     if not failure_files:
-        logger.warning("No FAILURE files found - bailing out")
+        logger.warning("No FAILURE.txt files found - bailing out")
         return {
             "artifact_dir": str(base_artifact_dir),
             "status": "success",
-            "analysis": "No FAILURE files found in the artifact directory.",
+            "analysis": "No FAILURE.txt files found in the artifact directory.",
             "failures_found": 0,
         }
 
@@ -780,6 +817,50 @@ def get_failure_explanations(base_artifact_dir: Path) -> list[dict]:
     return explanations
 
 
+def _prepare_agent_llm(model_key: str = None):
+    """Validate the agent gating and create the LLM client.
+
+    Returns:
+        Tuple (llm, disable_reason) — exactly one of them is set.
+        disable_reason is None when the agent can run.
+    """
+    # Check if agentic dependencies are available
+    if not _is_agentic_dependencies_available():
+        return None, "missing agentic dependencies"
+
+    # Check if agentic processing is enabled
+    if config.project is not None:
+        agentic_config = _get_agentic_config()
+        if not agentic_config.agentic_enabled:
+            logger.info("🤖 Agentic processing disabled - skipping failure analysis")
+            return None, "agentic processing disabled"
+
+        if not agentic_config.failure_review_enabled:
+            logger.info("🤖 On-failure agent disabled - skipping failure analysis")
+            return None, "failure_review agent disabled"
+
+        if model_key is None:
+            model_key = agentic_config.model_key
+        vault_name = agentic_config.vault_name
+        vault_content = agentic_config.vault_content
+    elif model_key is None:
+        raise ValueError("Configuration not available and no model_key received ...")
+
+    # Load model configuration from vault
+    logger.info("Loading model configuration from vault...")
+    models_config = load_model_config(vault_name=vault_name, content_name=vault_content)
+
+    model_config = models_config.get(model_key)
+    if not model_config:
+        raise ValueError(f"Model key '{model_key}' not found in the vault ...")
+
+    logger.info(f"Loaded configuration for model: {model_config.get('model_id')}")
+
+    # Create LangChain LLM client
+    logger.info("Creating LangChain LLM client...")
+    return create_llm_client(model_config), None
+
+
 def run_on_failure_agent(
     base_artifact_dir: Path, verbose: bool = False, model_key: str = None
 ) -> dict:
@@ -795,55 +876,72 @@ def run_on_failure_agent(
         Dictionary containing analysis results
     """
     try:
-        # Check if agentic dependencies are available
-        if not _is_agentic_dependencies_available():
-            return {"status": "disabled", "reason": "missing agentic dependencies", "analyses": []}
-
-        # Check if agentic processing is enabled
-        if config.project is not None:
-            agentic_config = _get_agentic_config()
-            if not agentic_config.agentic_enabled:
-                logger.info("🤖 Agentic processing disabled - skipping failure analysis")
-                return {
-                    "status": "disabled",
-                    "reason": "agentic processing disabled",
-                    "analyses": [],
-                }
-
-            if not agentic_config.on_failure_enabled:
-                logger.info("🤖 On-failure agent disabled - skipping failure analysis")
-                return {"status": "disabled", "reason": "on_failure agent disabled", "analyses": []}
-
-            if model_key is None:
-                model_key_to_use = agentic_config.model_key
-        else:
-            if model_key is None:
-                raise ValueError("Configuration not available and no model_key received ...")
-            model_key_to_use = model_key
+        llm, disable_reason = _prepare_agent_llm(model_key)
+        if disable_reason:
+            return {"status": "disabled", "reason": disable_reason, "analyses": []}
 
         logger.info("🤖 On Failure Agent starting...")
 
-        # Load model configuration from vault
-        logger.info("Loading model configuration from vault...")
-        models_config = load_model_config(
-            vault_name="psap-models-corp-rh", content_name="agent-models.yaml"
-        )
-
-        model_config = models_config.get(model_key_to_use)
-        if not model_config:
-            raise ValueError(f"Model key '{model_key_to_use}' not found in the vault ...")
-
-        logger.info(f"Loaded configuration for model: {model_config.get('model_id')}")
-
-        # Create LangChain LLM client
-        logger.info("Creating LangChain LLM client...")
-        llm = create_llm_client(model_config)
-
         # Process the failure analysis
-        result = process_failure_analysis(base_artifact_dir, llm, verbose)
-
-        return result
+        return process_failure_analysis(base_artifact_dir, llm, verbose)
 
     except Exception as e:
         logger.exception(f"❌ Agent failed: {e}")
         return {"status": "error", "error": str(e)}
+
+
+def _build_exception_failure_data(e: BaseException, base_artifact_dir: Path) -> dict:
+    """Build a failure_data dict from a raw CI exception.
+
+    Mirrors the structure returned by read_failure_and_log(), with the exception
+    traceback standing in for the task log.
+    """
+    agent_md_content = ""
+    agent_md_file = Path(base_artifact_dir) / "AGENT.md"
+    if agent_md_file.exists():
+        try:
+            agent_md_content = agent_md_file.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception as md_error:
+            logger.warning(f"Failed to read AGENT.md file {agent_md_file}: {md_error}")
+
+    return {
+        "failure_file": "exception (no FAILURE.txt file)",
+        "failure_dir": str(base_artifact_dir),
+        "failure_content": f"CI command raised {type(e).__name__}: {e}",
+        "log_file": "No log file found",
+        "log_type": None,
+        "log_content": "".join(traceback.format_exception(e)),
+        "agent_md_file": str(agent_md_file) if agent_md_content else "No AGENT.md file found",
+        "agent_md_content": agent_md_content,
+    }
+
+
+def run_on_exception_agent(
+    e: BaseException, base_artifact_dir: Path, verbose: bool = False, model_key: str = None
+) -> dict:
+    """
+    Analyze a CI-command exception with the On Failure Agent
+
+    Used when the command raised before any FAILURE.txt file was written: the
+    exception itself (message and traceback) is the failure under analysis.
+
+    Args:
+        e: The exception raised by the CI command
+        base_artifact_dir: Path to the base artifact directory for file lookups and reports
+
+    Returns:
+        Dictionary containing analysis results
+    """
+    try:
+        llm, disable_reason = _prepare_agent_llm(model_key)
+        if disable_reason:
+            return {"status": "disabled", "reason": disable_reason, "analyses": []}
+
+        logger.info("🤖 On Failure Agent starting (exception mode)...")
+
+        failure_data = _build_exception_failure_data(e, base_artifact_dir)
+        return analyze_single_failure_multi_query(failure_data, llm, base_artifact_dir, verbose)
+
+    except Exception as agent_error:
+        logger.exception(f"❌ Agent failed: {agent_error}")
+        return {"status": "error", "error": str(agent_error)}

@@ -27,7 +27,7 @@ CONFIG_OVERRIDES = {
     "caliper.postprocess.enabled": False,
     "cpt.kpi.labels.product_version": "RHOAI-XXX",
     "prom.capture.enabled": False,
-    "agentic.enabled": False,
+    "agentic_review.enabled": False,
     "caliper.export.backend.mlflow.enabled": False,
     "caliper.export.notifications.enabled": False,
 }
