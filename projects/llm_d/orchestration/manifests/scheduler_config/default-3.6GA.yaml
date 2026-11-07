@@ -4,6 +4,8 @@ plugins:
   - type: approx-prefix-cache-producer
   - type: inflight-load-producer
   - type: prefix-cache-affinity-filter
+    parameters:
+      peakPrefillThroughput: 55928
   - type: token-load-scorer
 schedulingProfiles:
   - name: default
