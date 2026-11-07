@@ -58,6 +58,18 @@ class CaliperExportBackendMlflow(BaseModel):
     )
 
 
+class CaliperExportTraces(BaseModel):
+    """``caliper.export.traces`` — native OTLP trace ingestion switch.
+
+    ``enabled`` selects native ingestion of discovered trace bundles when the
+    MLflow backend is active. Disabling it does not remove trace artifacts.
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    enabled: bool = False
+
+
 class CaliperExportBackends(BaseModel):
     """``backend`` mapping (per-backend switch and options)."""
 
@@ -81,6 +93,8 @@ class CaliperOrchestrationExportConfig(BaseModel):
     verbose: bool = False
     dry_run: bool = False
     upload_workers: int = Field(10, ge=1, le=64)
+
+    traces: CaliperExportTraces = Field(default_factory=CaliperExportTraces)
 
     mlflow_experiment: str | None = None
     mlflow_run_id: str | None = None

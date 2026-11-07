@@ -1,0 +1,15 @@
+__multiple: true
+
+# Smoke preset that enables distributed request tracing end-to-end.
+#
+# Standard mode, full sampling, and native MLflow trace export on. An untraced
+# run is unaffected: `tracing.mode` defaults to off and
+# `caliper.export.traces.enabled` defaults to false. Only the vLLM engine is
+# instrumented; SGLang and TRT-LLM reject a tracing request.
+tracing-smoke:
+  extends:
+    - ci-quick
+  rhaiis.engine: vllm
+  tracing.mode: standard
+  tracing.sample_ratio: 1.0
+  caliper.export.traces.enabled: true

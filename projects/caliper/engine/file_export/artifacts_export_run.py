@@ -187,6 +187,7 @@ def run_artifacts_export(
     status_yaml_path: Path | None = None,
     upload_workers: int = 10,
     click_context: Context | None = None,
+    trace_export: Any = None,
 ) -> int:
     """
     Run the multi-backend file export. Returns a process exit code (0 = success,
@@ -301,6 +302,7 @@ def run_artifacts_export(
             upload_workers=upload_workers,
             mlflow_run_metadata=mlflow_run_metadata,
             mlflow_workspace=mlflow_workspace,
+            trace_export=trace_export,
         )
     except Exception as e:  # noqa: BLE001
         traceback.print_exception(e, file=sys.stderr)

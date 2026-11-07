@@ -234,6 +234,8 @@ def run_from_orchestration_config(
     else:
         mlflow_config_data = load_mlflow_config_yaml(Path(raw_cfg).expanduser().resolve())
 
+    trace_export = _build_trace_export_context(export_cfg)
+
     run_dirs = discover_run_dirs(from_path)
 
     # Resume the single pre-created MLflow run persisted at the artifact root.
@@ -282,6 +284,7 @@ def run_from_orchestration_config(
                 child_run_names=naming.get("child_run_names") or {},
                 disable_censoring=disable_censoring,
                 disable_file_export=disable_file_export,
+                trace_export=trace_export,
             )
     else:
         effective_name = (
@@ -293,6 +296,7 @@ def run_from_orchestration_config(
             "mlflow_run_id": mlflow_run_id,
             "mlflow_run_name": effective_name,
             "mlflow_secrets_path": mlflow_secrets_path,
+            "trace_export": trace_export,
         }
         if mlflow_config_data is not None:
             mlflow_kwargs["mlflow_config_data"] = mlflow_config_data
@@ -338,6 +342,22 @@ def run_from_orchestration_config(
         status.censoring_occurred = censoring_occurred
 
     return status
+
+
+def _build_trace_export_context(export_cfg: CaliperOrchestrationExportConfig) -> Any:
+    """Build the native trace ingestion context, or None when disabled.
+
+    Returns None unless ``caliper.export.traces.enabled`` is true. Imported
+    lazily so a tracing-disabled export never imports the tracing modules. The
+    tracking URI, workspace, and credentials are resolved by the export code
+    that already knows them and passed to ingestion explicitly.
+    """
+    if not export_cfg.traces.enabled:
+        return None
+
+    from projects.caliper.engine.tracing.ingest import TraceExportContext
+
+    return TraceExportContext()
 
 
 @requires(
@@ -628,6 +648,7 @@ def _run_multi_run_export(
     child_run_names: dict[Path, str] | None = None,
     disable_censoring: bool = False,
     disable_file_export: bool = False,
+    trace_export: Any = None,
 ) -> None:
     """Export as parent + nested child MLflow runs.
 
@@ -709,11 +730,22 @@ def _run_multi_run_export(
                 "run_url": "http://DRY_RUN_MLFLOW_FAKE_URL/#/experiments/disabled/runs/mock-multi-run-disabled-export",
                 "tracking_uri": "http://DRY_RUN_MLFLOW_FAKE_URL",
             }
+            trace_failures = []
+            if isinstance(ml_meta, dict) and isinstance(ml_meta.get("trace_export"), dict):
+                trace_failures = ml_meta["trace_export"].get("failures", []) or []
+            # Native trace ingestion is a separate outcome; a failure makes the
+            # backend fail even though ordinary artifacts uploaded.
+            status = "failure" if trace_failures else "success"
+            detail_out = detail
+            if trace_failures:
+                detail_out = (
+                    f"{detail} (native trace export failed for {len(trace_failures)} bundle(s))"
+                )
             results = [
                 FileExportBackendResult(
                     backend="mlflow",
-                    status="success",
-                    detail=detail,
+                    status=status,
+                    detail=detail_out,
                     metadata=ml_meta,
                 )
             ]
@@ -735,12 +767,24 @@ def _run_multi_run_export(
                 run_metadata=run_metadata,
                 workspace=workspace,
                 child_run_names=child_run_names or None,
+                trace_export=trace_export,
             )
+            trace_failures = []
+            if isinstance(ml_meta, dict) and isinstance(ml_meta.get("trace_export"), dict):
+                trace_failures = ml_meta["trace_export"].get("failures", []) or []
+            # Native trace ingestion is a separate outcome; a failure makes the
+            # backend fail even though ordinary artifacts uploaded.
+            status = "failure" if trace_failures else "success"
+            detail_out = detail
+            if trace_failures:
+                detail_out = (
+                    f"{detail} (native trace export failed for {len(trace_failures)} bundle(s))"
+                )
             results = [
                 FileExportBackendResult(
                     backend="mlflow",
-                    status="success",
-                    detail=detail,
+                    status=status,
+                    detail=detail_out,
                     metadata=ml_meta,
                 )
             ]

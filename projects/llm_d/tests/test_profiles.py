@@ -840,6 +840,27 @@ def test_render_uses_embedded_scheduler_config() -> None:
     assert "EndpointPickerConfig" in scheduler["template"]["containers"][0]["args"][-1]
 
 
+@pytest.mark.parametrize("profile", ["approximate-prefix-cache", "precise-prefix-cache"])
+def test_tracing_instruments_rendered_epp_profile(profile) -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "Qwen/Qwen3-0.6B")
+    core_config.project.set_config("runtime.deployment_profile", profile)
+    core_config.project.set_config("tracing.mode", "standard")
+    core_config.project.set_config("tracing.sample_ratio", 1.0)
+    manifest = yaml.safe_load(test_phase._build_inference_service_manifest().read_text())
+    epp = manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]
+    assert epp["args"][-1] == "--tracing=true"
+    config_index = epp["args"].index("--config-text")
+    assert "EndpointPickerConfig" in epp["args"][config_index + 1]
+    for flag in ("--pool-name", "--pool-namespace", "--cert-path", "--secure-serving"):
+        assert flag in epp["args"]
+    env_values = {entry["name"]: entry.get("value") for entry in epp["env"]}
+    assert env_values["OTEL_SERVICE_NAME"].endswith("-epp")
+    assert env_values["OTEL_TRACES_SAMPLER_ARG"] == "1"
+    assert env_values["TOKENIZER_CACHE_DIR"] == "/tmp/tokenizer-cache"
+
+
 def test_render_removes_scheduler_when_deployment_requests_null_scheduler() -> None:
     _init_project_config()
     core_config.project.set_config("model_cache.enabled", False)
