@@ -498,8 +498,9 @@ def _run_workload(
                 fs_group=benchmark.get("fs_group"),
             )
 
-    if workload.get("warmup") is not None:
-        run_phase("warmup", [1], workload["warmup"], None)
+    warmup = workload.get("warmup")
+    if warmup is not None and warmup > 0:
+        run_phase("warmup", [1], warmup, None)
     run_phase("benchmark", workload["rates"], workload["max_seconds"], workload.get("rampup"))
 
 

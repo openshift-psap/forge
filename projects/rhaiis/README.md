@@ -70,7 +70,7 @@ Key sections:
 | `rhaiis.deploy` | Deploy settings (replicas, CPU/memory, image_pull_secrets list, storage) |
 | `rhaiis.s3` | S3 bucket, vault, and credentials for dashboard CSV and profiler trace uploads |
 | `rhaiis.agent_analysis` | Optional regression and improvement analysis using the PSAP agent, including its selected model |
-| `rhaiis.warmup` | Warmup benchmark settings applied before each selected workload |
+| `rhaiis.warmup` | Optional priming benchmark settings; a workload warmup of 0 skips the priming run |
 | `rhaiis.profiler` | PyTorch profiler settings (enable, S3 prefix, rates, labels) |
 | `models` | Model definitions (hf_model_id, per-model `vllm_args` overrides) |
 | `workloads` | Benchmark profiles (data shape, rates, max_seconds, rampup, warmup) |
@@ -522,14 +522,14 @@ Full list: `grep "^[a-z]" orchestration/config.d/models.yaml`
 ## Workload profiles
 
 The standard workload profiles run for 275 seconds per rate with a 35-second
-GuideLLM ramp-up and a 75-second warmup pass before each selected workload.
+GuideLLM ramp-up. Their warmup is 0, so no separate priming run is made.
 
 | Key | Prompt tokens | Output tokens | Rates | Max seconds | Rampup | Warmup |
 |-----|--------------|---------------|-------|-------------|---------|--------|
-| `profile1` | 1000 | 1000 | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
-| `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
-| `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 275 | 35 | 75 |
-| `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 275 | 35 | 75 |
+| `profile1` | 1000 | 1000 | 1, 50, 100, 200, 300 | 275 | 35 | 0 |
+| `profile2` | 512 (stdev 128) | 2048 (stdev 512) | 1, 50, 100, 200, 300 | 275 | 35 | 0 |
+| `profile3` | 2048 | 128 | 1, 50, 100, 200, 300 | 275 | 35 | 0 |
+| `profile4` | 8000 | 1000 | 1, 25, 50, 75, 100 | 275 | 35 | 0 |
 
 ## Presets
 
