@@ -15,6 +15,7 @@ from projects.core.library import env
 from projects.llm_d.orchestration import ci as llmd_ci
 from projects.llm_d.orchestration import runtime_config, test_phase
 from projects.llm_d.orchestration.render_inference_service import (
+    _apply_workload_node_selector,
     render_inference_service_from_parts,
 )
 from projects.rhoai.library import deploy as rhoai_deploy
@@ -952,3 +953,101 @@ def test_get_model_uri_detects_scheme() -> None:
     # HF URI → passed through
     core_config.project.set_config("runtime.model_name", "hf://Qwen/Qwen3-0.6B")
     assert runtime_config.get_model_uri() == "hf://Qwen/Qwen3-0.6B"
+
+
+def _render_with_profile(profile: str) -> dict:
+    core_config.project.set_config("runtime.deployment_profile", profile)
+    return render_inference_service_from_parts(
+        config_dir=str(PROJECT_ORCHESTRATION_DIR),
+        namespace="forge-llm-d",
+        inference_service=runtime_config.get_platform_config()["inference_service"],
+        model_name=runtime_config.get_model_name(),
+        model_slug=runtime_config.get_model_slug(),
+        deployment_profile=runtime_config.get_deployment_profile(),
+        model_cache=runtime_config.get_model_cache_config(),
+    )
+
+
+def test_render_applies_workload_node_selector() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config(
+        "deployments.defaults.node_selector", {"kubernetes.io/hostname": "gpu-node-1"}
+    )
+
+    manifest = _render_with_profile("simple-tp1-x1")
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+    # simple deployments have no router at all
+    assert "router" not in manifest["spec"]
+
+
+def test_render_omits_workload_node_selector_by_default() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "Qwen/Qwen3-0.6B")
+
+    manifest = _render_with_profile("simple-tp1-x1")
+
+    assert "nodeSelector" not in manifest["spec"]["template"]
+
+
+def test_render_applies_workload_node_selector_to_prefill_pods() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config(
+        "deployments.defaults.node_selector", {"kubernetes.io/hostname": "gpu-node-1"}
+    )
+
+    manifest = _render_with_profile("pd-d.x1-p.tp1-d.tp1-p.x1")
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+    assert manifest["spec"]["prefill"]["template"]["nodeSelector"] == {
+        "kubernetes.io/hostname": "gpu-node-1"
+    }
+
+
+def test_render_workload_node_selector_leaves_scheduler_untouched() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config(
+        "deployments.defaults.node_selector", {"kubernetes.io/hostname": "gpu-node-1"}
+    )
+
+    manifest = _render_with_profile("intelligentrouting-tp1-x1")
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+    assert manifest["spec"]["router"]["scheduler"]["template"]["nodeSelector"] == {
+        "nvidia.com/gpu.present": "true"
+    }
+
+
+def test_workload_node_selector_merges_with_existing_template_selector() -> None:
+    manifest = {
+        "spec": {
+            "template": {"nodeSelector": {"zone": "a", "kubernetes.io/hostname": "old"}},
+            "prefill": {"template": {"nodeSelector": {"zone": "b"}}},
+        }
+    }
+
+    _apply_workload_node_selector(manifest, {"node_selector": {"kubernetes.io/hostname": "new"}})
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {
+        "zone": "a",
+        "kubernetes.io/hostname": "new",
+    }
+    assert manifest["spec"]["prefill"]["template"]["nodeSelector"] == {
+        "zone": "b",
+        "kubernetes.io/hostname": "new",
+    }
+
+
+def test_workload_node_selector_handles_null_template_selector() -> None:
+    manifest = {"spec": {"template": {"nodeSelector": None}}}
+
+    _apply_workload_node_selector(manifest, {"node_selector": {"zone": "a"}})
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"zone": "a"}
