@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import re
 
-# RHAIIS fieldnames with RHAIIS-specific fields
+# RHAIIS fieldnames with RHAIIS-specific fields.
+# The order must match the consolidated S3 dashboard CSV
+# (s3://psap-dashboard-data/staging/rhaiis-dashboard/consolidated_dashboard.csv)
+# so that per-run artifact rows can be appended positionally during backfills.
 RHAIIS_FIELDNAMES = [
     "run",
     "accelerator",
@@ -13,8 +16,6 @@ RHAIIS_FIELDNAMES = [
     "version",
     "prompt toks",
     "output toks",
-    "turn_index",
-    "turns",
     "TP",
     "measured concurrency",
     "intended concurrency",
@@ -49,7 +50,6 @@ RHAIIS_FIELDNAMES = [
     "itl_mean",
     "itl_p99",
     "runtime_args",
-    "env_vars",
     "guidellm_start_time_ms",
     "guidellm_end_time_ms",
     "image_tag",
@@ -58,11 +58,14 @@ RHAIIS_FIELDNAMES = [
     "dataset",
     "spec_decoding",
     "prefix_caching",
+    "turns",
     "prefix_tokens",
     "prefix_count",
     "request_type",
     "mlflow_run_id",
     "mlflow_experiment_id",
+    "turn_index",
+    "env_vars",
 ]
 
 _SENSITIVE_ENV_VAR_NAME = re.compile(

@@ -173,10 +173,6 @@ def create_configmap(args, ctx):
     with config_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(endpoint_config, f, default_flow_style=False, sort_keys=False)
 
-    variables_path = src_dir / "variables.yaml"
-    with variables_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(ctx.variables, f, default_flow_style=False, sort_keys=False)
-
     metric_profiles_dir = src_dir / "metric_profiles"
     metric_profiles_dir.mkdir(parents=True, exist_ok=True)
 
@@ -190,11 +186,25 @@ def create_configmap(args, ctx):
 
         with p.open("r", encoding="utf-8") as f:
             entries = yaml.safe_load(f)
-        cleaned = [{k: v for k, v in entry.items() if k in KUBE_BURNER_FIELDS} for entry in entries]
+
+        for entry in entries:
+            if isinstance(entry, dict) and "param_defaults" in entry:
+                for k, v in entry["param_defaults"].items():
+                    ctx.variables.setdefault(k, str(v))
+
+        cleaned = [
+            {k: v for k, v in entry.items() if k in KUBE_BURNER_FIELDS}
+            for entry in entries
+            if isinstance(entry, dict) and "metricName" in entry
+        ]
         cleaned_path = kb_profiles_dir / p.name
         with cleaned_path.open("w", encoding="utf-8") as f:
             yaml.safe_dump(cleaned, f, default_flow_style=False, sort_keys=False)
         from_file_args.append(f"--from-file={p.name}={cleaned_path}")
+
+    variables_path = src_dir / "variables.yaml"
+    with variables_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(ctx.variables, f, default_flow_style=False, sort_keys=False)
 
     oc(
         "create",

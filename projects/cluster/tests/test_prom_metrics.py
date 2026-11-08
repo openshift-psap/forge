@@ -132,6 +132,8 @@ class TestLoadProfileMetadata:
         with yaml_file.open("r", encoding="utf-8") as f:
             entries = yaml.safe_load(f)
         for entry in entries:
+            if "param_defaults" in entry:
+                continue
             query = entry["query"]
             assert "{" not in query or "{{" in query, (
                 f"{yaml_file.name}: {entry['metricName']} uses old {{param}} syntax "

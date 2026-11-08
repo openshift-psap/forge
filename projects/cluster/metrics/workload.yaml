@@ -1,9 +1,13 @@
 # params:
 #   NAMESPACE: Target namespace
 #   POD_NAME: Pod name regex for the resource capture
+#   POD_NAME_EXCLUDE: Pod name regex to exclude (default: ^$ matches nothing)
+
+- param_defaults:
+    POD_NAME_EXCLUDE: "^$"
 
 - query: >-
-    count(kube_pod_info{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"})
+    count(kube_pod_info{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"})
   metricName: active_pods
   description: Active pods
   unit: count

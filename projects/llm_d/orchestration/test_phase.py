@@ -754,17 +754,9 @@ def run_smoke_request(*, endpoint_url: str) -> dict[str, object]:
 
 
 def _should_run_burnin() -> bool:
-    """Determine if burn-in phase should run.
-
-    Burn-in runs for performance benchmarks only, not for smoke tests.
-    """
+    """Determine if burn-in phase should run based on the burnin config."""
     burnin_cfg = runtime_config.get_burnin_config()
     if not burnin_cfg.get("enabled", False):
-        return False
-
-    # Skip burn-in for smoke/functional tests
-    benchmark_keys = runtime_config.get_benchmark_keys()
-    if benchmark_keys and benchmark_keys[0] == "smoke":
         return False
 
     return True
@@ -777,7 +769,7 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
     before the main benchmark to ensure stable, representative results.
     """
     if not _should_run_burnin():
-        logger.info("Burn-in phase skipped (disabled or smoke test)")
+        logger.info("Burn-in phase skipped (not enabled)")
         return
 
     burnin_cfg = runtime_config.get_burnin_config()
@@ -796,7 +788,12 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
 
     burnin_args = []
 
-    benchconf_ref = benchmark["benchconf"]
+    benchconf_ref = benchmark.get("benchconf")
+    if not benchconf_ref:
+        raise ValueError(
+            "Burn-in is enabled but the benchmark has no 'benchconf' profile. "
+            "Either disable burn-in or add a 'benchconf' entry to the benchmark configuration."
+        )
     benchconf_lib.maybe_install_custom_version()
     source_config_path = benchconf_lib.resolve_config_path(benchconf_ref)
     source_config = load_yaml(source_config_path)

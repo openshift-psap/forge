@@ -112,3 +112,63 @@ def test_regression_notification_zero_comparisons_is_skip(monkeypatch) -> None:
     assert "*No performance changes detected*" not in messages[0]
     assert "*Performance comparison skipped*" in messages[0]
     assert "*Reason:* No common concurrency levels between current and baseline\n" in messages[0]
+
+
+def test_regression_notification_notes_same_version(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "completed",
+        "regressions": [],
+        "improvements": [],
+        "total_comparisons": 3,
+        "current_version": "vLLM-0.28.0",
+        "compare_version": "vLLM-0.28.0",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*Note:* the same version is used on both sides." in messages[0]
+
+
+def test_regression_notification_reports_missing_profiles(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "completed",
+        "regressions": [],
+        "improvements": [],
+        "total_comparisons": 2,
+        "missing_profiles": ["profile6"],
+        "current_version": "1.0",
+        "compare_version": "0.9",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*Incomplete:* profile(s) profile6 could not be compared" in messages[0]
+
+
+def test_regression_notification_reports_failed_analysis(monkeypatch) -> None:
+    messages = _capture_slack_messages(monkeypatch)
+    analysis_result = {
+        "status": "failed",
+        "error": "boom",
+        "current_version": "1.0",
+        "compare_version": "0.9",
+    }
+
+    assert regression.send_regression_notification(
+        analysis_result,
+        job_id="rhaiis-run-123",
+    )
+
+    assert len(messages) == 1
+    assert "*Performance comparison failed*" in messages[0]
+    assert "*Reason:* boom\n" in messages[0]
