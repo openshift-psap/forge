@@ -117,6 +117,20 @@ def test_default_3_6ga_uses_model_topology(
     gpu_requests = manifest["spec"]["template"]["containers"][0]["resources"]["requests"]
     assert gpu_requests["nvidia.com/gpu"] == str(tensor_parallelism)
 
+    vllm_args = next(
+        item["value"]
+        for item in manifest["spec"]["template"]["containers"][0]["env"]
+        if item["name"] == "VLLM_ADDITIONAL_ARGS"
+    )
+    gemma_args = (
+        "--kv-cache-dtype=fp8",
+        "--reasoning-parser=gemma4",
+        "--tool-call-parser=gemma4",
+        "--enable-auto-tool-choice",
+    )
+    for arg in gemma_args:
+        assert (arg in vllm_args) == (preset == "cpt-release-testing-gemma-4-26b-fp8")
+
     scheduler_args = manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["args"]
     scheduler_config = yaml.safe_load(scheduler_args[-1])
     prefix_affinity = next(

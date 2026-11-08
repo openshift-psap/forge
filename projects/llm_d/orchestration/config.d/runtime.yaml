@@ -1,6 +1,7 @@
 selected_preset: null
 model_name: Qwen/Qwen3-0.6B
 model_topology: null
+model_vllm_args: {}
 deployment_profile: approximate-prefix-cache
 smoke_request_key: default
 benchmark_key: short

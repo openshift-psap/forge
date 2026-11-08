@@ -514,6 +514,10 @@ def get_deployment_profile() -> dict[str, Any]:
             raise ValueError(f"Deployment profile {profile_name} requires a model topology preset")
         profile.update({key: topology[key] for key in ("replicas", "tensor_parallelism")})
 
+    model_vllm_args = config.project.get_config("runtime.model_vllm_args", print=False)
+    if model_vllm_args:
+        profile = deep_merge(profile, {"vllm_extra": {"args": model_vllm_args}})
+
     defaults = copy.deepcopy(deployment_config.get("defaults", {}))
 
     scheduler_manifest = profile.pop("scheduler_manifest", None)
