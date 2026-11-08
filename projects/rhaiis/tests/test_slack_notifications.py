@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
+
+from projects.core.library import config, env
+from projects.core.notifications.provider import NotificationContext
+from projects.rhaiis.orchestration import slack_provider
 from projects.rhaiis.postprocess import regression
 
 
@@ -16,6 +22,45 @@ def _capture_slack_messages(monkeypatch) -> list[str]:
     monkeypatch.setattr(regression, "_get_slack_channel_id", lambda: "C_TEST_CHANNEL")
     monkeypatch.setattr(regression, "_get_bot_mention", lambda: "")
     return messages
+
+
+def test_completion_dashboard_link_selects_custom_shape(monkeypatch, tmp_path) -> None:
+    values = {
+        "tests.rhaiis.model_key": "custom",
+        "models.custom": {
+            "hf_model_id": "google/gemma-4-26B-A4B-it",
+            "vllm_args": {"tensor-parallel-size": 1},
+        },
+        "rhaiis.accelerator": "nvidia",
+        "tests.rhaiis.version": "vLLM-0.31.0-recipe-latency-oriented",
+        "tests.rhaiis.workload_keys": ["custom"],
+        "workloads.custom": {"data": "prompt_tokens=128,output_tokens=16"},
+        "caliper.postprocess.csv_dashboard.enabled": True,
+    }
+    monkeypatch.setattr(
+        config,
+        "project",
+        SimpleNamespace(get_config=lambda key, default=None: values.get(key, default)),
+    )
+    monkeypatch.setattr(env, "BASE_ARTIFACT_DIR", tmp_path)
+    monkeypatch.setattr(slack_provider, "collect_notification_files", lambda _: ("", [], []))
+    monkeypatch.setattr(slack_provider, "collect_step_failure_summaries", lambda _: [])
+    monkeypatch.setattr(regression, "_build_mlflow_run_url", lambda: "")
+
+    message = slack_provider.RhaiisSlackProvider().format_message(
+        NotificationContext(
+            status={"success": True}, finish_reason="success", project_name="rhaiis"
+        )
+    )
+    url = message.split("*Dashboard:* <", 1)[1].split("|", 1)[0]
+    query = parse_qs(urlsplit(url).query)
+
+    assert query["profile"] == ["Custom ISL/OSL"]
+    assert query["custom_isl_osl"] == ["128/16"]
+    assert query["accelerators"] == ["nvidia"]
+    assert query["models"] == ["google/gemma-4-26B-A4B-it"]
+    assert query["versions"] == ["vLLM-0.31.0-recipe-latency-oriented"]
+    assert query["tp_sizes"] == ["1.0"]
 
 
 def test_regression_notification_includes_owner(monkeypatch) -> None:
