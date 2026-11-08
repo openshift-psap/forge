@@ -1,5 +1,6 @@
 selected_preset: null
 model_name: Qwen/Qwen3-0.6B
+model_topology: null
 deployment_profile: approximate-prefix-cache
 smoke_request_key: default
 benchmark_key: short
@@ -17,6 +18,7 @@ kueue:
   local_queue_manifest: manifests/kueue-localqueue.yaml
   disable_above_n_gpus: null
 router:
+  peak_prefill_throughput: null
   template:
     file: manifests/scheduler_config/__router_template__.yaml
     placeholder: __ENDPOINT_PICKER_CONFIG__

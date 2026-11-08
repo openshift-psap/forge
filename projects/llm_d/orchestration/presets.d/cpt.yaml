@@ -51,6 +51,13 @@ cpt-release-testing-gpt-oss-120b:
   - gpt-oss
   runtime.selected_preset: cpt-release-testing-gpt-oss-120b
 
+cpt-release-testing-gemma-4-26b-fp8:
+  extends:
+  - cpt-release-testing-rhoai
+  - gemma-4-26b-fp8
+  runtime.selected_preset: cpt-release-testing-gemma-4-26b-fp8
+  runtime.deployment_profile: default-3.6GA
+
 cpt-release-testing-llama-33-70b:
   extends:
   - cpt-release-testing-rhoai
