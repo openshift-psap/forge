@@ -79,6 +79,12 @@ def shutdown_fjobs_on_interrupt():
     """
     try:
         logger.info("🚫 Process interrupted - shutting down running FournosJobs...")
+
+        interrupt_on_push = config.project.get_config("fournos.job.interrupt_on_push", True)
+        if not interrupt_on_push:
+            logger.info("ℹ️ fournos.job.interrupt_on_push is disabled - skipping job shutdown")
+            return
+
         shutdown_running_fjobs()
     except Exception as e:
         logger.error(f"Failed to shutdown FournosJobs: {e}")
