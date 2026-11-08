@@ -551,3 +551,19 @@ class TestApiKeyAndReplicas:
         assert "GUIDELLM__SPEC__BACKEND__API_KEY" in script
         assert "api_key=" not in script
         assert "$JOB_COMPLETION_INDEX" in script
+
+
+def test_job_active_deadline_is_strictly_after_wait_deadline() -> None:
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
+        JOB_COMPLETION_GRACE_SECONDS,
+        job_active_deadline_seconds,
+    )
+
+    deadline = job_active_deadline_seconds(3600)
+
+    # The Job deadline must fire after the wait task's own deadline
+    # (timeout + JOB_COMPLETION_GRACE_SECONDS), so that a hung benchmark is
+    # reported by the wait task while the pods still exist and their logs can
+    # be captured before the job controller deletes them.
+    assert deadline > 3600 + JOB_COMPLETION_GRACE_SECONDS
+    assert deadline == 3600 + JOB_COMPLETION_GRACE_SECONDS + 300
