@@ -18,13 +18,20 @@ capture:
       - projects/cluster/metrics
     params:
       namespace: "@test.namespace"
+      llmisvc_name: "@platform.maas.llmisvc_name"
     groups:
       resource_load-generator:
         enabled: true
         files: [resource_cpu, resource_memory, resource_network, workload]
         variables:
           NAMESPACE: "{namespace}"
-          POD_NAME: ".*"
+          POD_NAME: "guidellm.*"
+      resource_sim:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, workload]
+        variables:
+          NAMESPACE: "{namespace}"
+          POD_NAME: "{llmisvc_name}-.*"
       resource_ingress:
         enabled: true
         files: [resource_cpu, resource_memory, resource_network, workload]
@@ -38,6 +45,12 @@ capture:
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: "payload-.*"
+      resource_kuadrant:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, workload]
+        variables:
+          NAMESPACE: "kuadrant-system"
+          POD_NAME: ".*"
       worker_node:
         enabled: true
         files: [worker_node]
