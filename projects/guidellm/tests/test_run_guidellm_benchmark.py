@@ -167,6 +167,68 @@ def test_render_guidellm_job_from_parts_keeps_plain_rates_as_single_guidellm_run
     assert "--constraint=kind=max_duration,seconds=600" in args
 
 
+def _make_validate_parameters_args(**overrides):
+    from types import SimpleNamespace
+
+    fields = {
+        "guidellm_args": [],
+        "namespace": "test-namespace",
+        "name": "guidellm-bench",
+        "artifact_dirname_suffix": "",
+        "image": None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_validate_parameters_accepts_k8s_compliant_name() -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    args = _make_validate_parameters_args(artifact_dirname_suffix="xs_smoke_rate2x1")
+    ctx = SimpleNamespace()
+
+    validate_parameters.__wrapped__(args, ctx)
+
+    assert ctx.benchmark_name == "guidellm-bench-xs-smoke-rate2x1"
+
+
+def test_validate_parameters_lowercases_the_suffix() -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    # payload/sweep keys in the caller config can be uppercase (e.g. "XS")
+    args = _make_validate_parameters_args(artifact_dirname_suffix="XS_smoke_rate2x1")
+    ctx = SimpleNamespace()
+
+    validate_parameters.__wrapped__(args, ctx)
+
+    assert ctx.benchmark_name == "guidellm-bench-xs-smoke-rate2x1"
+
+
+@pytest.mark.parametrize(
+    "name,suffix",
+    [
+        ("Guidellm-Bench", ""),  # uppercase
+        ("guidellm_bench", ""),  # underscore
+        ("guidellm-bench-", ""),  # trailing hyphen
+        ("x" * 64, ""),  # too long
+    ],
+)
+def test_validate_parameters_rejects_non_k8s_compliant_name(name: str, suffix: str) -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    args = _make_validate_parameters_args(name=name, artifact_dirname_suffix=suffix)
+    ctx = SimpleNamespace()
+
+    with pytest.raises(ValueError, match="not a valid Kubernetes object name"):
+        validate_parameters.__wrapped__(args, ctx)
+
+
 def test_build_guidellm_args_renders_list_values() -> None:
     benchmark = {
         "args": {

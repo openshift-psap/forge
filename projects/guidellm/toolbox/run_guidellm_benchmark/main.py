@@ -22,6 +22,7 @@ from projects.core.dsl import (  # noqa: F401
 )
 from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
+    is_valid_k8s_name,
     oc,
     oc_apply,
     oc_cp_from_pod,
@@ -212,7 +213,19 @@ def validate_parameters(args, ctx):
 
     benchmark_name = args.name
     if args.artifact_dirname_suffix:
-        benchmark_name = f"{benchmark_name}-{args.artifact_dirname_suffix.replace('_', '-')}"
+        benchmark_name = (
+            f"{benchmark_name}-{args.artifact_dirname_suffix.replace('_', '-').lower()}"
+        )
+
+    # The name is used for the Job, Secret, PVC and copy pod objects, and as the
+    # job-name label/selector value: it must be a valid K8s object name.
+    if not is_valid_k8s_name(benchmark_name):
+        raise ValueError(
+            f"Benchmark name {benchmark_name!r} is not a valid Kubernetes object name: "
+            "lowercase alphanumerics and '-', starting and ending with an alphanumeric, "
+            "max 63 characters"
+        )
+
     ctx.benchmark_name = benchmark_name
     ctx.image = args.image
 
