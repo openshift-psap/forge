@@ -349,9 +349,7 @@ def _test_endpoint(
 ):
     from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
     from projects.cluster.library.prom.collection import capture_prometheus
-    from projects.kserve.toolbox.capture_sim_state import (
-        main as capture_sim_state_command,
-    )
+    from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state_command
 
     benchmark_start = datetime.now(UTC)
 
@@ -402,12 +400,12 @@ def _test_endpoint(
     finally:
         benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
-        sim_name = maas_cfg["llmisvc_name"]
+        llmisvc_name = maas_cfg["llmisvc_name"]
         _run_finalizer(
-            "capturing sim state",
-            capture_sim_state_command.run,
+            "capturing LLMInferenceService state",
+            capture_llmisvc_state_command.run,
+            llmisvc_name=llmisvc_name,
             namespace=test_namespace,
-            name=sim_name,
         )
 
         def _capture_prom():
@@ -648,17 +646,17 @@ def do_test_praxis():
 
 def _run_cleanup(test_namespace, maas_cfg, primary_exc):
     """Run cleanup finalizers after test phase."""
-    from projects.kserve.toolbox.capture_sim_state import (
-        main as capture_sim_state_command,
+    from projects.kserve.toolbox.capture_llmisvc_state import (
+        main as capture_llmisvc_state_command,
     )
 
     finalizer_exc = None
 
-    sim_name = maas_cfg["llmisvc_name"]
+    llmisvc_name = maas_cfg["llmisvc_name"]
     try:
-        capture_sim_state_command.run(namespace=test_namespace, name=sim_name)
+        capture_llmisvc_state_command.run(llmisvc_name=llmisvc_name, namespace=test_namespace)
     except Exception:
-        logger.exception("Failed to capture sim state before cleanup")
+        logger.exception("Failed to capture LLMInferenceService state before cleanup")
         if primary_exc is None:
             finalizer_exc = sys.exc_info()
 
