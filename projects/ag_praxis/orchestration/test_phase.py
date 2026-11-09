@@ -326,6 +326,8 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
         enable_maas_praxis_command.run(
             activate=True,
             tenant_namespace=maas_cfg["tenant_namespace"],
+            ingress_namespace=maas_cfg["gateway"]["namespace"],
+            gateway_name=maas_cfg["gateway"]["name"],
             payload_processing_config=praxis_cfg.get("payload_processing"),
         )
     elif ep_name == "maas":
@@ -333,6 +335,8 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
         enable_maas_praxis_command.run(
             activate=False,
             tenant_namespace=maas_cfg["tenant_namespace"],
+            ingress_namespace=maas_cfg["gateway"]["namespace"],
+            gateway_name=maas_cfg["gateway"]["name"],
         )
 
 
@@ -419,6 +423,7 @@ def _test_endpoint(
             capture_maas_praxis_command.run,
             ingress_namespace=maas_cfg["gateway"]["namespace"],
             tenant_namespace=maas_cfg["tenant_namespace"],
+            gateway_name=maas_cfg["gateway"]["name"],
         )
 
     if primary_exc is not None:
