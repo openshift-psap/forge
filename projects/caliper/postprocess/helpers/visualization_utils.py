@@ -147,73 +147,44 @@ def figure_to_base64(
         return None
 
 
-def create_report_filename(
-    base_name: str,
-    report_number: int | None = None,
-    report_title: str | None = None,
-    extension: str = "html",
-) -> str:
-    """
-    Create a standardized filename for Caliper reports.
+def _title_to_filename(title: str) -> str:
+    return title.lower().replace(" ", "_").replace(":", "").replace("-", "_")
 
-    Args:
-        base_name: Base filename (e.g., "performance_analysis")
-        report_number: Optional report number (e.g., 0 for "Report 00:")
-        report_title: Optional human-readable title for the report
-        extension: File extension (without dot)
 
-    Returns:
-        Formatted filename following Caliper conventions
+def compute_report_stem(title: str, index: int | None) -> str:
+    """Compute the stem used for both report filename and asset directory.
 
     Examples:
-        >>> create_report_filename("performance_analysis", 0, "GuideLLM Performance Analysis")
-        "report_00_guidellm_performance_analysis.html"
-
-        >>> create_report_filename("summary", 5, "Baseline Comparisons")
-        "report_05_baseline_comparisons.html"
-
-        >>> create_report_filename("analysis")  # No numbering
-        "analysis.html"
+        >>> compute_report_stem("Performance Analysis", 0)
+        '000__performance_analysis'
+        >>> compute_report_stem("Resource Load Generator", 2)
+        '002__resource_load_generator'
+        >>> compute_report_stem("Overhead Analysis", None)
+        'overhead_analysis'
     """
-    if report_number is not None:
-        # Use report title if provided, otherwise base name
-        if report_title:
-            # Convert title to filename-safe format
-            safe_title = report_title.lower().replace(" ", "_").replace(":", "").replace("-", "_")
-            filename = f"report_{report_number:02d}_{safe_title}"
-        else:
-            filename = f"report_{report_number:02d}_{base_name}"
-    else:
-        filename = base_name
-
-    return f"{filename}.{extension}"
+    slug = _title_to_filename(title)
+    if index is None:
+        return slug
+    return f"{index:03d}__{slug}"
 
 
-def create_report_title_display(base_title: str, report_number: int | None = None) -> str:
-    """
-    Create a standardized display title for Caliper reports.
-
-    Args:
-        base_title: Base title (e.g., "GuideLLM Performance Analysis")
-        report_number: Optional report number
-
-    Returns:
-        Formatted display title
+def create_report_filename(title: str, index: int | None, extension: str = "html") -> str:
+    """Create a standardized filename for Caliper reports.
 
     Examples:
-        >>> create_report_title_display("GuideLLM Performance Analysis", 0)
-        "Report 00: GuideLLM Performance Analysis"
-
-        >>> create_report_title_display("Baseline Comparisons", 1)
-        "Report 01: Baseline Comparisons"
-
-        >>> create_report_title_display("Summary")  # No numbering
-        "Summary"
+        >>> create_report_filename("Performance Analysis", 0)
+        '000__performance_analysis.html'
+        >>> create_report_filename("Baseline Comparisons", 5)
+        '005__baseline_comparisons.html'
+        >>> create_report_filename("Overhead Analysis", None)
+        'overhead_analysis.html'
     """
-    if report_number is not None:
-        return f"Report {report_number:02d}: {base_title}"
-    else:
-        return base_title
+    return f"{compute_report_stem(title, index)}.{extension}"
+
+
+def create_report_title_display(base_title: str) -> str:
+    """Return the display title for a report (unchanged from input)."""
+    return base_title
 
 
 def write_full_page_html(fig, output_path: str, title: str) -> bool:

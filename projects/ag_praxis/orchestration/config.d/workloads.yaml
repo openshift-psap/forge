@@ -7,6 +7,7 @@ fs_group: null
 replica_count: 2
 timeout_seconds: 3600
 validate_backend: false
+keep_full_benchmark_file: false
 args:
   processor: gpt2
   request_format: /v1/responses
@@ -24,6 +25,9 @@ payloads:
   default:
     prompt_tokens: 256
     output_tokens: 128
+  XS:
+    prompt_tokens: 128
+    output_tokens: 50
   L:
     prompt_tokens: 1000
     output_tokens: 500
@@ -32,7 +36,8 @@ payloads:
     output_tokens: 4000
 
 sweeps:
-  small: [2, 4]
+  smoke: [2, 4]
+  small: [8, 16, 32, 64]
   medium: [4, 16, 32, 64, 96, 128]
   large: [32, 64, 128, 196, 256, 360, 512]
   full: [64, 128, 256, 512, 1024]

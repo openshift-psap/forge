@@ -4,6 +4,7 @@ import html as html_module
 from pathlib import Path
 
 from projects.caliper.postprocess.helpers.visualization_utils import (
+    compute_report_stem,
     create_report_filename,
     create_report_title_display,
     save_figure,
@@ -29,11 +30,12 @@ def generate_resource_report(
     metrics_by_name = {m.metric_name: m for m in group_result.metrics}
 
     report_title = f"Resource Usage vs Limits: {group_result.group_name}"
-    display_title = create_report_title_display(report_title, report_number)
+    display_title = create_report_title_display(report_title)
 
-    report_dir_name = report_title.lower().replace(" ", "_").replace(":", "").replace("-", "_")
     if report_number is not None:
-        report_dir_name = f"report_{report_number:02d}_{report_dir_name}"
+        report_dir_name = compute_report_stem(report_title, report_number)
+    else:
+        report_dir_name = report_title.lower().replace(" ", "_").replace(":", "").replace("-", "_")
     report_dir = output_dir / report_dir_name
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -83,7 +85,7 @@ def generate_resource_report(
 
     report_html = assemble_report(display_title, plot_sections)
 
-    report_filename = create_report_filename(report_dir_name, report_number, report_title, "html")
+    report_filename = create_report_filename(report_title, report_number)
     report_path = output_dir / report_filename
     report_path.write_text(report_html, encoding="utf-8")
 

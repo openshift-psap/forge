@@ -16,6 +16,7 @@ from projects.caliper.engine.parameter_matrix import (
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import (
+    compute_report_stem,
     create_report_filename,
     create_report_title_display,
     save_figure,
@@ -355,27 +356,34 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
                 "ttft_median_s": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
                 "ttft_p10_s": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
                 "ttft_p25_s": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
-                "ttft_p50_s": _safe_get_curve_value(curves, "ttft_median", i, 0.0),  # p50 = median
+                "ttft_p50_s": _safe_get_curve_value(curves, "ttft_p50", i, 0.0),
                 "ttft_p75_s": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
                 "ttft_p90_s": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
                 "ttft_p95_s": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
                 "itl_median_s": _safe_get_curve_value(curves, "itl_median", i, 0.0),
                 "itl_p10_s": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
                 "itl_p25_s": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
-                "itl_p50_s": _safe_get_curve_value(curves, "itl_median", i, 0.0),  # p50 = median
+                "itl_p50_s": _safe_get_curve_value(curves, "itl_p50", i, 0.0),
                 "itl_p75_s": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
                 "itl_p90_s": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
                 "itl_p95_s": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
                 "tpot_median_s": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
                 "tpot_p95_s": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
-                # Output token throughput percentiles (not in curves currently, use zeros)
-                "output_tokens_per_second_p10": 0.0,
-                "output_tokens_per_second_p25": 0.0,
-                "output_tokens_per_second_p50": _safe_get_curve_value(
-                    curves, "output_tokens_per_second", i, 0.0
+                "output_tokens_per_second_p10": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p10", i, 0.0
                 ),
-                "output_tokens_per_second_p75": 0.0,
-                "output_tokens_per_second_p90": 0.0,
+                "output_tokens_per_second_p25": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p25", i, 0.0
+                ),
+                "output_tokens_per_second_p50": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p50", i, 0.0
+                ),
+                "output_tokens_per_second_p75": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p75", i, 0.0
+                ),
+                "output_tokens_per_second_p90": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p90", i, 0.0
+                ),
             }
             data.append(row)
 
@@ -700,13 +708,20 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
         subtitle = " | ".join(subtitle_parts)
         title = f"Token Throughput vs Concurrency{title_context}<br><sub>{subtitle}</sub>"
 
+        has_replicas = "replica_index" in df.columns and (df["replica_index"] > 0).any()
+        x_label = (
+            "Cumulated Concurrency Level (Requested)"
+            if has_replicas
+            else "Concurrency Level (Requested)"
+        )
+
         fig = _build_line_with_replica_scatter(
             df,
             x_col="intended_concurrency",
-            y_col="tokens_per_second",
+            y_col="output_tokens_per_second",
             title=title,
-            x_label="Concurrency Level (Requested)",
-            y_label="Tokens per Second",
+            x_label=x_label,
+            y_label="Output Tokens per Second",
             extra_hover_cols={
                 "request_rate": ":.1f",
                 "ttft_median_s": ":.3f",
@@ -745,7 +760,7 @@ def create_cumulated_throughput_vs_concurrency_plot(df: pd.DataFrame, title_cont
         cumulated = (
             df.groupby(["test_configuration", "intended_concurrency"], sort=False)
             .agg(
-                cumulated_tokens_per_second=("tokens_per_second", "sum"),
+                cumulated_tokens_per_second=("output_tokens_per_second", "sum"),
                 cumulated_concurrency=("intended_concurrency", "sum"),
             )
             .reset_index()
@@ -808,12 +823,15 @@ def create_requested_vs_effective_concurrency_plot(df: pd.DataFrame, title_conte
         if df.empty:
             return None
 
+        has_replicas = "replica_index" in df.columns and (df["replica_index"] > 0).any()
+        x_label = "Cumulated Requested Concurrency" if has_replicas else "Requested Concurrency"
+
         fig = _build_line_with_replica_scatter(
             df,
             x_col="intended_concurrency",
             y_col="request_concurrency",
             title=f"Requested vs Effective Concurrency{title_context}",
-            x_label="Requested Concurrency",
+            x_label=x_label,
             y_label="Effective Concurrency",
             extra_hover_cols={
                 "request_rate": ":.1f",
@@ -891,6 +909,81 @@ def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
 
     except Exception as e:
         logger.info(f"❌ Failed to create TTFT analysis plot: {e}")
+        return None
+
+
+def create_ttft_percentiles_plot(df: pd.DataFrame, title_context: str = ""):
+    """Create TTFT percentiles plot showing P10-P90 distribution per concurrency level."""
+    try:
+        import plotly.express as px
+        import plotly.graph_objects as go
+
+        if df.empty:
+            return None
+
+        percentile_cols = [
+            "ttft_p10_s",
+            "ttft_p25_s",
+            "ttft_p50_s",
+            "ttft_p75_s",
+            "ttft_p90_s",
+        ]
+        available_cols = [col for col in percentile_cols if col in df.columns]
+        if not available_cols:
+            return None
+
+        has_data = any((df[col] > 0).any() for col in available_cols if col in df.columns)
+        if not has_data:
+            return None
+
+        title = f"TTFT Percentiles vs Concurrency{title_context}<br><sub>Lower is better</sub>"
+
+        fig = go.Figure()
+
+        configurations = df["test_configuration"].drop_duplicates().tolist()
+        available_colors = px.colors.qualitative.Set1
+        color_map = {
+            config: available_colors[i % len(available_colors)]
+            for i, config in enumerate(configurations)
+        }
+
+        percentiles = [
+            ("P10", "ttft_p10_s", {"width": 2, "dash": "longdash"}, 0.6),
+            ("P25", "ttft_p25_s", {"width": 2, "dash": "dot"}, 0.7),
+            ("P50", "ttft_p50_s", {"width": 4, "dash": "solid"}, 1.0),
+            ("P75", "ttft_p75_s", {"width": 3, "dash": "dash"}, 0.9),
+            ("P90", "ttft_p90_s", {"width": 2, "dash": "dashdot"}, 0.8),
+        ]
+
+        for config in configurations:
+            config_df = df[df["test_configuration"] == config].sort_values("intended_concurrency")
+
+            for perc_name, perc_col, line_style, opacity in percentiles:
+                if perc_col in config_df.columns and not config_df[perc_col].isna().all():
+                    fig.add_trace(
+                        go.Scatter(
+                            x=config_df["intended_concurrency"],
+                            y=config_df[perc_col],
+                            mode="lines+markers",
+                            name=f"{config} - {perc_name}",
+                            line=dict(color=color_map[config], **line_style),
+                            opacity=opacity,
+                        )
+                    )
+
+        fig.update_layout(
+            title=title,
+            xaxis_title="Concurrency Level (Requested)",
+            yaxis_title="TTFT (s)",
+            showlegend=True,
+            **PLOT_CONFIG_LARGE,
+        )
+        fig.update_yaxes(rangemode="tozero")
+
+        return fig
+
+    except Exception as e:
+        logger.info(f"Failed to create TTFT percentiles plot: {e}")
         return None
 
 
@@ -1126,7 +1219,7 @@ def _generate_shared_performance_report(
     """
     try:
         # Create report identifier using core utilities
-        display_title = create_report_title_display(report_title, report_number)
+        display_title = create_report_title_display(report_title)
 
         logger.info(f"\n🚀 Starting {display_title} generation...")
         logger.info("=" * 70)
@@ -1140,17 +1233,20 @@ def _generate_shared_performance_report(
                 create_token_throughput_vs_concurrency_plot,
                 [
                     (
+                        "Token Throughput Percentiles",
+                        create_token_throughput_percentiles_plot,
+                    ),
+                    (
                         "Cumulated Throughput vs Concurrency",
                         create_cumulated_throughput_vs_concurrency_plot,
                     ),
-                    (
-                        "Requested vs Effective Concurrency",
-                        create_requested_vs_effective_concurrency_plot,
-                    ),
                 ],
             ),
-            ("TTFT Analysis", create_ttft_analysis_plot, []),
-            ("Token Throughput Percentiles", create_token_throughput_percentiles_plot, []),
+            (
+                "TTFT Analysis",
+                create_ttft_analysis_plot,
+                [("TTFT Percentiles", create_ttft_percentiles_plot)],
+            ),
             ("Throughput Scaling", create_throughput_scaling_plot, []),
             ("Latency vs Throughput", create_latency_vs_throughput_plot, []),
         ]
@@ -1191,7 +1287,7 @@ def _generate_shared_performance_report(
 
         # Create dedicated directory for this report
         if report_number is not None:
-            report_dir_name = f"report_{report_number:02d}_{report_title.lower().replace(' ', '_').replace(':', '').replace('-', '_')}"
+            report_dir_name = compute_report_stem(report_title, report_number)
         else:
             report_dir_name = "performance_analysis"
 
@@ -1384,9 +1480,7 @@ def _generate_shared_performance_report(
         )
 
         # Save the main HTML report
-        main_html_filename = create_report_filename(
-            report_title.lower().replace(" ", "_"), report_number, report_title, "html"
-        )
+        main_html_filename = create_report_filename(report_title, report_number)
         main_html_path = output_dir / main_html_filename
 
         with open(main_html_path, "w", encoding="utf-8") as f:

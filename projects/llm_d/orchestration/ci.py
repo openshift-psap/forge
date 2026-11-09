@@ -27,7 +27,7 @@ from projects.core.library.export import (
     caliper_export_list_vaults,
 )
 from projects.core.library.postprocess import run_postprocess_after_test
-from projects.core.library.replot import caliper_replot_entrypoint
+from projects.core.orchestration.replot import caliper_replot_entrypoint
 from projects.llm_d.orchestration.cleanup_phase import (
     cleanup_operators,
 )

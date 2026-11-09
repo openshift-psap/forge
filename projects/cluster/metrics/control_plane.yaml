@@ -1,0 +1,143 @@
+# Control-plane node resource and API-server health metrics.
+# No params required — queries are cluster-scoped, filtered by kube_node_role{role="master"}.
+
+# ── Control Plane Node Resources ──────────────────────────────────────
+
+- query: >-
+    sum(kube_node_status_capacity{resource="cpu"}
+    * on(node) group_left()
+    kube_node_role{role="master"})
+  metricName: control_plane_cpu_capacity
+  description: Total CPU capacity of control-plane nodes
+  unit: cores
+
+- query: >-
+    sum(
+      (1 - rate(node_cpu_seconds_total{mode="idle"}[2m]))
+      * on(namespace, pod) group_left(node)
+      node_namespace_pod:kube_pod_info:{pod=~"node-exporter.+"}
+      * on(node) group_left()
+      kube_node_role{role="master"}
+    )
+  metricName: control_plane_cpu_usage
+  description: CPU usage on control-plane nodes
+  unit: cores
+
+- query: >-
+    sum(
+      irate(node_cpu_seconds_total[2m])
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="master"},
+        "instance", "$1", "node", "(.*)"
+      )
+    ) by (mode, instance)
+  metricName: control_plane_cpu_by_mode
+  description: CPU usage by mode per control-plane node
+  unit: cores
+
+- query: >-
+    sum(kube_node_status_capacity{resource="memory"}
+    * on(node) group_left()
+    kube_node_role{role="master"})
+  metricName: control_plane_memory_capacity
+  description: Total memory capacity of control-plane nodes
+  unit: bytes
+
+- query: >-
+    sum(
+      (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="master"},
+        "instance", "$1", "node", "(.*)"
+      )
+    )
+  metricName: control_plane_memory_usage
+  description: Memory usage on control-plane nodes
+  unit: bytes
+
+# ── API Server ────────────────────────────────────────────────────────
+
+- query: >-
+    sum by (code)
+    (increase(apiserver_request_total{code=~"2.."}[2m]))
+  metricName: apiserver_request_rate_2xx
+  description: API server successful requests (2xx)
+  unit: count
+
+- query: >-
+    sum by (code)
+    (increase(apiserver_request_total{code=~"4.."}[2m]))
+  metricName: apiserver_request_rate_4xx
+  description: API server client error requests (4xx)
+  unit: count
+
+- query: >-
+    sum by (code)
+    (increase(apiserver_request_total{code=~"5.."}[2m]))
+  metricName: apiserver_request_rate_5xx
+  description: API server server error requests (5xx)
+  unit: count
+
+- query: >-
+    histogram_quantile(0.99,
+      sum(rate(apiserver_request_duration_seconds_bucket
+      {apiserver="kube-apiserver", verb="GET", subresource!="log"}[2m]))
+      by (resource, subresource, le)
+    ) > 0
+  metricName: apiserver_latency_get_p99
+  description: API server GET request latency (p99)
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99,
+      sum(rate(apiserver_request_duration_seconds_bucket
+      {apiserver="kube-apiserver", verb="LIST", subresource!="log"}[2m]))
+      by (resource, subresource, le)
+    ) > 0
+  metricName: apiserver_latency_list_p99
+  description: API server LIST request latency (p99)
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99,
+      sum(rate(apiserver_request_duration_seconds_bucket
+      {apiserver="kube-apiserver", verb="PUT", subresource!="log"}[2m]))
+      by (resource, subresource, le)
+    ) > 0
+  metricName: apiserver_latency_put_p99
+  description: API server PUT request latency (p99)
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99,
+      sum(rate(apiserver_request_duration_seconds_bucket
+      {apiserver="kube-apiserver", verb="PATCH", subresource!="log"}[2m]))
+      by (resource, subresource, le)
+    ) > 0
+  metricName: apiserver_latency_patch_p99
+  description: API server PATCH request latency (p99)
+  unit: seconds
+
+# ── etcd ──────────────────────────────────────────────────────────────
+
+- query: >-
+    max(etcd_server_leader_changes_seen_total)
+  metricName: etcd_leader_changes
+  description: Total etcd leader changes
+  unit: count
+
+- query: >-
+    histogram_quantile(0.99,
+      rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m]))
+  metricName: etcd_disk_wal_fsync_p99
+  description: etcd WAL fsync duration (p99)
+  unit: seconds
+
+- query: >-
+    histogram_quantile(0.99,
+      rate(etcd_disk_backend_commit_duration_seconds_bucket[5m]))
+  metricName: etcd_disk_backend_commit_p99
+  description: etcd backend commit duration (p99)
+  unit: seconds

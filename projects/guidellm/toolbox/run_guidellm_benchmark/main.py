@@ -22,6 +22,7 @@ from projects.core.dsl import (  # noqa: F401
 )
 from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
+    is_valid_k8s_name,
     oc,
     oc_apply,
     oc_cp_from_pod,
@@ -38,7 +39,26 @@ from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
 logger = logging.getLogger(__name__)
 WAIT_POLL_INTERVAL_SECONDS = 10
 JOB_COMPLETION_GRACE_SECONDS = 60
+# Extra padding on top of the Job activeDeadlineSeconds, so that the Job
+# deadline fires strictly AFTER our own wait deadline. When a benchmark hangs,
+# the wait task raises TimeoutError while the pods still exist, letting the
+# @always capture_guidellm_state_task collect pod logs before
+# cleanup_guidellm_resources deletes the job. Without this margin, the job
+# controller would hit activeDeadlineSeconds first and delete the pods itself,
+# leaving nothing to capture.
+JOB_DEADLINE_MARGIN_SECONDS = 300
 DEFAULT_GUIDELLM_IMAGE = "ghcr.io/vllm-project/guidellm:v0.8.1"
+
+
+def job_active_deadline_seconds(timeout: int) -> int:
+    """Compute the Job activeDeadlineSeconds from the benchmark timeout.
+
+    The Job deadline must be strictly later than ctx.wait_deadline
+    (= timeout + JOB_COMPLETION_GRACE_SECONDS), so that on a hung benchmark
+    the wait task fails first and the pod state can still be captured.
+    """
+    return timeout + JOB_COMPLETION_GRACE_SECONDS + JOB_DEADLINE_MARGIN_SECONDS
+
 
 # Script template for trimming benchmark JSON on remote pod (removes 'requests' field)
 # Use REMOTE_TRIM_SCRIPT.format(file_path=...) to generate the script
@@ -139,7 +159,10 @@ def run(
         name: Name of the benchmark job
         namespace: Namespace to run the benchmark job in (empty string auto-detects current namespace)
         image: Full container image reference for the benchmark (None uses the toolbox default)
-        timeout: Active deadline for the Job and timeout in seconds to wait for completion
+        timeout: Timeout in seconds to wait for the benchmark to complete. The Job's
+            activeDeadlineSeconds is set to this value plus a margin, so that on a hung
+            benchmark the wait task fails first and pod logs can still be captured before
+            the job is cleaned up.
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
         guidellm_args: List of additional guidellm arguments (e.g., ["--profile=kind=concurrent,streams=10"])
         config_path: Path to a GuideLLM config YAML file on the local filesystem.
@@ -190,7 +213,19 @@ def validate_parameters(args, ctx):
 
     benchmark_name = args.name
     if args.artifact_dirname_suffix:
-        benchmark_name = f"{benchmark_name}-{args.artifact_dirname_suffix.replace('_', '-')}"
+        benchmark_name = (
+            f"{benchmark_name}-{args.artifact_dirname_suffix.replace('_', '-').lower()}"
+        )
+
+    # The name is used for the Job, Secret, PVC and copy pod objects, and as the
+    # job-name label/selector value: it must be a valid K8s object name.
+    if not is_valid_k8s_name(benchmark_name):
+        raise ValueError(
+            f"Benchmark name {benchmark_name!r} is not a valid Kubernetes object name: "
+            "lowercase alphanumerics and '-', starting and ending with an alphanumeric, "
+            "max 63 characters"
+        )
+
     ctx.benchmark_name = benchmark_name
     ctx.image = args.image
 
@@ -339,7 +374,7 @@ def create_guidellm_resources_task(args, ctx):
                 image=ctx.image,
                 endpoint_url=args.endpoint_url,
                 guidellm_args=ctx.guidellm_args,
-                timeout_seconds=args.timeout,
+                timeout_seconds=job_active_deadline_seconds(args.timeout),
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
@@ -390,7 +425,7 @@ def create_guidellm_resources_task(args, ctx):
                 image=ctx.image,
                 endpoint_url=args.endpoint_url,
                 guidellm_args=ctx.guidellm_args,
-                timeout_seconds=args.timeout,
+                timeout_seconds=job_active_deadline_seconds(args.timeout),
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,

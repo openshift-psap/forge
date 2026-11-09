@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -408,6 +409,13 @@ class GuideLLMParser:
         output_tokens_per_second_p90 = get_metric_value("output_tokens_per_second", "p90")
 
         # Calculate requests completed and tokens per request
+        totals = (
+            benchmark_data.get("scheduler_metrics", {}).get("requests_made", {})
+            or benchmark_data.get("request_totals", {})
+            or benchmark_data.get("run_stats", {}).get("requests_made", {})
+            or metrics.get("request_totals", {})
+        )
+        failed_requests = int(totals.get("errored", 0))
         completed_requests = int(request_rate * duration) if request_rate > 0 else 0
         input_tokens_per_request = (
             (input_tokens_per_second / request_rate) if request_rate > 0 else 0.0
@@ -435,7 +443,7 @@ class GuideLLMParser:
             request_concurrency=intended_concurrency,
             intended_concurrency=int(intended_concurrency),
             completed_requests=completed_requests,
-            failed_requests=0,  # Could extract from unsuccessful metrics if needed
+            failed_requests=failed_requests,
             # Token metrics per request
             input_tokens_per_request=input_tokens_per_request,
             output_tokens_per_request=output_tokens_per_request,
@@ -563,9 +571,19 @@ class GuideLLMParser:
             "input_tokens_per_second": [],
             "output_tokens_per_second": [],
             "ttft_median": [],
+            "ttft_p10": [],
+            "ttft_p25": [],
+            "ttft_p50": [],
+            "ttft_p75": [],
+            "ttft_p90": [],
             "ttft_p95": [],
             "ttft_p99": [],
             "itl_median": [],
+            "itl_p10": [],
+            "itl_p25": [],
+            "itl_p50": [],
+            "itl_p75": [],
+            "itl_p90": [],
             "itl_p95": [],
             "itl_p99": [],
             "tpot_median": [],
@@ -577,6 +595,11 @@ class GuideLLMParser:
             "failed_requests": [],
             "request_concurrency": [],  # Effective concurrency to curves
             "intended_concurrency": [],  # Intended concurrency to curves
+            "output_tokens_per_second_p10": [],
+            "output_tokens_per_second_p25": [],
+            "output_tokens_per_second_p50": [],
+            "output_tokens_per_second_p75": [],
+            "output_tokens_per_second_p90": [],
         }
 
         for benchmark in sorted_benchmarks:
@@ -585,9 +608,19 @@ class GuideLLMParser:
             curves["input_tokens_per_second"].append(benchmark.input_tokens_per_second)
             curves["output_tokens_per_second"].append(benchmark.output_tokens_per_second)
             curves["ttft_median"].append(benchmark.ttft_median)
+            curves["ttft_p10"].append(benchmark.ttft_p10)
+            curves["ttft_p25"].append(benchmark.ttft_p25)
+            curves["ttft_p50"].append(benchmark.ttft_p50)
+            curves["ttft_p75"].append(benchmark.ttft_p75)
+            curves["ttft_p90"].append(benchmark.ttft_p90)
             curves["ttft_p95"].append(benchmark.ttft_p95)
             curves["ttft_p99"].append(benchmark.ttft_p99)
             curves["itl_median"].append(benchmark.itl_median)
+            curves["itl_p10"].append(benchmark.itl_p10)
+            curves["itl_p25"].append(benchmark.itl_p25)
+            curves["itl_p50"].append(benchmark.itl_p50)
+            curves["itl_p75"].append(benchmark.itl_p75)
+            curves["itl_p90"].append(benchmark.itl_p90)
             curves["itl_p95"].append(benchmark.itl_p95)
             curves["itl_p99"].append(benchmark.itl_p99)
             curves["tpot_median"].append(benchmark.tpot_median)
@@ -603,6 +636,11 @@ class GuideLLMParser:
             curves["intended_concurrency"].append(
                 benchmark.intended_concurrency
             )  # Add intended concurrency per rate point
+            curves["output_tokens_per_second_p10"].append(benchmark.output_tokens_per_second_p10)
+            curves["output_tokens_per_second_p25"].append(benchmark.output_tokens_per_second_p25)
+            curves["output_tokens_per_second_p50"].append(benchmark.output_tokens_per_second_p50)
+            curves["output_tokens_per_second_p75"].append(benchmark.output_tokens_per_second_p75)
+            curves["output_tokens_per_second_p90"].append(benchmark.output_tokens_per_second_p90)
 
         # Add request_rate and performance curves to metrics
         metrics["request_rate"] = request_rates
@@ -633,21 +671,27 @@ class GuideLLMParser:
         warnings: list[str] = []
 
         for node in nodes:
-            logger.info(f"Parsing '{node.test_path}' ...")
-            # Look for the legacy single-file artifact and the newer per-rate artifacts.
+            node_start = time.monotonic()
+            logger.info(
+                f"Parsing '{node.test_path}' ({len(node.artifact_paths)} artifact paths) ..."
+            )
+
+            t0 = time.monotonic()
             benchmarks_files = [p for p in node.artifact_paths if self._is_benchmarks_artifact(p)]
             benchmarks_files.sort(key=lambda path: path.name)
-
-            # Also look for LLMInferenceService YAML files and config.yaml files for system information
             llmisvc_files = [p for p in node.artifact_paths if self._is_llmisvc_artifact(p)]
             llmisvc_files.sort(key=lambda path: "__capture_llmisvc_state" not in str(path))
             config_files = [p for p in node.artifact_paths if self._is_config_artifact(p)]
             gpu_mapping_files = [
                 p for p in node.artifact_paths if self._is_node_gpu_mapping_artifact(p)
             ]
+            logger.info(
+                f"  Artifact scan: {time.monotonic() - t0:.2f}s — "
+                f"{len(benchmarks_files)} benchmarks, {len(llmisvc_files)} llmisvc, "
+                f"{len(config_files)} config, {len(gpu_mapping_files)} gpu_mapping"
+            )
 
             if not benchmarks_files:
-                # No benchmark result JSON found for this node, create empty record
                 labels = _labels_from_node(node)
                 records.append(
                     UnifiedResultRecord(
@@ -658,54 +702,59 @@ class GuideLLMParser:
                         parse_notes=["No benchmark result JSON file found"],
                     )
                 )
+                logger.info(
+                    f"  No benchmarks found, skipping ({time.monotonic() - node_start:.2f}s total)"
+                )
                 continue
 
-            # Collect all benchmarks from all files for this node
             node_benchmarks = []
             node_config = None
 
+            t0 = time.monotonic()
             for benchmarks_file in benchmarks_files:
                 benchmarks, config, file_warnings = self.parse_benchmarks_json(benchmarks_file)
                 warnings.extend(file_warnings)
                 node_benchmarks.extend(benchmarks)
                 if config and not node_config:
                     node_config = config
+            logger.info(
+                f"  Benchmark JSON parsing: {time.monotonic() - t0:.2f}s — {len(node_benchmarks)} benchmarks from {len(benchmarks_files)} files"
+            )
 
             if node_benchmarks:
-                # Create aggregated metrics with performance curves for this node
                 labels = _labels_from_node(node)
                 node_kpi_labels = _kpi_labels_from_node(node)
-
-                # Start with base labels from node
                 distinguishing_labels = {**labels, **node_kpi_labels}
 
+                t0 = time.monotonic()
                 metrics = self._create_aggregated_metrics(node_benchmarks)
+                logger.info(f"  Metrics aggregation: {time.monotonic() - t0:.2f}s")
+
                 if node_config:
                     metrics["configuration"] = node_config.to_dict()
 
-                # Extract fields from LLMInferenceService YAML if available
+                t0 = time.monotonic()
                 for llmisvc_file in llmisvc_files:
                     llmisvc_fields = self.extract_fields_from_llmisvc(llmisvc_file)
                     for field_name, field_value in llmisvc_fields.items():
                         if field_value and field_name not in metrics:
                             metrics[field_name] = field_value
 
-                # Extract fields from config.yaml if available
                 for config_file in config_files:
                     config_fields = self.extract_fields_from_config(config_file)
                     for field_name, field_value in config_fields.items():
                         if field_value and field_name not in metrics:
                             metrics[field_name] = field_value
 
-                # Extract GPU type from node_gpu_mapping.yaml if available
                 for gpu_mapping_file in gpu_mapping_files:
                     gpu_fields = self.extract_fields_from_node_gpu_mapping(gpu_mapping_file)
                     for field_name, field_value in gpu_fields.items():
                         if field_value and field_name not in metrics:
                             metrics[field_name] = field_value
+                logger.info(
+                    f"  Field extraction (llmisvc/config/gpu): {time.monotonic() - t0:.2f}s"
+                )
 
-                # Merge extracted artifact fields into distinguishing_labels
-                # This creates a single unified label set for both KPI computation and visualization
                 extracted_label_fields = [
                     "gpu_type",
                     "product_version",
@@ -721,8 +770,6 @@ class GuideLLMParser:
                             f"Merged {field_name}='{metrics[field_name]}' into distinguishing_labels"
                         )
 
-                # For backwards compatibility, also store the merged labels as kpi_labels in metrics
-                # This ensures existing KPI computation code continues to work
                 metrics["kpi_labels"] = dict(distinguishing_labels)
 
                 records.append(
@@ -735,5 +782,9 @@ class GuideLLMParser:
                     )
                 )
 
-        logger.debug(f"GuideLLM parser created {len(records)} unified result records")
+            logger.info(
+                f"  Done parsing '{node.test_path}': {time.monotonic() - node_start:.2f}s total"
+            )
+
+        logger.info(f"GuideLLM parser created {len(records)} unified result records")
         return ParseResult(records=records, warnings=warnings)
