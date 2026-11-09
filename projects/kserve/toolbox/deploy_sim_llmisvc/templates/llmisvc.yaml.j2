@@ -17,6 +17,7 @@ metadata:
 {% endif %}
 spec:
   runtime: llm-d-sim-runtime
+  replicas: {{ replicas }}
 {% if not skip_router %}
   router:
     route:

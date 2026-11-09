@@ -35,6 +35,7 @@ def run(
     time_to_first_token: str = "800ms",
     inter_token_latency: str = "30ms",
     mode: str = "random",
+    replicas: int = 1,
     deploy_monitor: bool = True,
     skip_router: bool = False,
     maas_gateway_label: str = "",
@@ -55,6 +56,7 @@ def run(
         time_to_first_token: Simulated time to first token.
         inter_token_latency: Simulated inter-token latency.
         mode: Simulator response mode.
+        replicas: Number of simulator workload replicas.
         deploy_monitor: If True, deploy ServiceMonitor for monitoring.
         skip_router: If True, set spec.router to empty (no scheduler, no gateway routing).
         maas_gateway_label: MaaS gateway label value. When set, adds MaaS labels and annotations.
@@ -86,6 +88,7 @@ def build_manifest(args, ctx):
                 "time_to_first_token": args.time_to_first_token,
                 "inter_token_latency": args.inter_token_latency,
                 "mode": args.mode,
+                "replicas": args.replicas,
                 "skip_router": args.skip_router,
                 "deploy_monitor": args.deploy_monitor,
                 "maas_gateway_label": args.maas_gateway_label,
