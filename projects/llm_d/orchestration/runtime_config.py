@@ -266,10 +266,15 @@ def _load_scheduler_with_epp_config(
     peak_prefill_throughput = config.project.get_config(
         "runtime.router.peak_prefill_throughput", print=False
     )
-    if peak_prefill_throughput is not None:
-        for plugin in epp_config_data.get("plugins", []):
-            parameters = plugin.get("parameters", {})
-            if "peakPrefillThroughput" in parameters:
+    for plugin in epp_config_data.get("plugins", []):
+        parameters = plugin.get("parameters", {})
+        if "peakPrefillThroughput" in parameters:
+            if (
+                parameters["peakPrefillThroughput"] == "__SET_FROM_MODEL_PRESET__"
+                and peak_prefill_throughput is None
+            ):
+                raise ValueError("runtime.router.peak_prefill_throughput is required")
+            if peak_prefill_throughput is not None:
                 parameters["peakPrefillThroughput"] = peak_prefill_throughput
 
     # Replace placeholder in the parsed data structure (avoids YAML formatting issues)
