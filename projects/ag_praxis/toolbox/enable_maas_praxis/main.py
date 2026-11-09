@@ -20,15 +20,23 @@ def run(
     tenant_namespace: str = "models-as-a-service",
     tenant_name: str = "default-tenant",
     ingress_namespace: str = "openshift-ingress",
+    kuadrant_namespace: str = "kuadrant-system",
+    gateway_name: str = "maas-default-gateway",
     payload_processing_config: dict | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
+
+    On every toggle (activate and deactivate), the pods of the gateway-side hot-path
+    deployments (payload extprocs, gateway, authorino, limitador) are bumped so each
+    benchmark endpoint starts from fresh pods.
 
     Args:
         activate: True to enable praxis, False to disable.
         tenant_namespace: Namespace of the MaasTenantConfig resource.
         tenant_name: Name of the MaasTenantConfig resource.
-        ingress_namespace: Namespace where payload-processing deployments live.
+        ingress_namespace: Namespace where the gateway and payload-processing deployments live.
+        kuadrant_namespace: Namespace where the authorino and limitador deployments live.
+        gateway_name: Name of the MaaS Gateway resource.
         payload_processing_config: Scaling/resource config for payload-processing deployments
             (replicas, cpu_limit, memory_limit, cpu_request, memory_request).
             Applied via spec.payloadProcessing on the CR.
@@ -162,6 +170,61 @@ def wait_for_deployment_images(args, ctx):
 
 
 @task
+def bump_hot_path_pods(args, ctx):
+    """Delete the pods of the gateway-side hot-path deployments.
+
+    The deployments recreate their pods, so each benchmark endpoint starts from fresh
+    pods (no leftover connection pools, auth caches or log windows from previous runs).
+    Runs after wait_for_deployment_images so it does not race the operator's image roll.
+    """
+    from projects.ag_praxis.toolbox.capture_maas_praxis.main import build_hot_path_targets
+
+    ctx.hot_path_targets = build_hot_path_targets(
+        args.ingress_namespace, args.kuadrant_namespace, args.gateway_name
+    )
+
+    for target in ctx.hot_path_targets:
+        oc(
+            "delete",
+            "pod",
+            "-l",
+            target.selector,
+            "-n",
+            target.namespace,
+            "--ignore-not-found",
+        )
+
+    names = ", ".join(f"{t.name} ({t.namespace})" for t in ctx.hot_path_targets)
+    return f"Bumped pods of: {names}"
+
+
+@retry(attempts=60, delay=10, backoff=1.0)
+@task
+def wait_hot_path_deployments_ready(args, ctx):
+    """Wait for all hot-path deployments to be ready after the bump."""
+    not_ready = []
+    for target in ctx.hot_path_targets:
+        deploy = oc_get_json(
+            "deployment",
+            name=target.name,
+            namespace=target.namespace,
+            ignore_not_found=True,
+        )
+        if deploy is None:
+            not_ready.append(f"{target.name} does not exist in {target.namespace}")
+            continue
+
+        ready = deploy.get("status", {}).get("readyReplicas", 0)
+        desired = deploy.get("spec", {}).get("replicas", 1)
+        if ready < desired:
+            not_ready.append(f"{target.name} not ready yet ({ready}/{desired} replicas)")
+
+    if not_ready:
+        return False, "; ".join(not_ready)
+    return "All hot-path deployments ready after bump"
+
+
+@task
 def log_deployment_status(args, ctx):
     """Log the current status of payload-processing deployments."""
     oc(
@@ -185,6 +248,8 @@ def capture_state(args, ctx):
         ingress_namespace=args.ingress_namespace,
         tenant_namespace=args.tenant_namespace,
         tenant_name=args.tenant_name,
+        kuadrant_namespace=args.kuadrant_namespace,
+        gateway_name=args.gateway_name,
     )
     return "Captured MaaS praxis state"
 
