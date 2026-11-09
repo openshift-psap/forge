@@ -67,6 +67,80 @@ def test_release_deployment_profiles_have_expected_shape() -> None:
     assert distributed["scheduler"] == {}
 
 
+@pytest.mark.parametrize(
+    ("preset", "model_name", "replicas", "tensor_parallelism", "peak_prefill_throughput"),
+    [
+        ("cpt-release-testing-gpt-oss-120b", "openai/gpt-oss-120b", 4, 2, 55928),
+        (
+            "cpt-release-testing-gemma-4-26b-fp8",
+            "RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic",
+            8,
+            1,
+            61005,
+        ),
+    ],
+)
+def test_default_3_6ga_uses_model_topology(
+    preset: str,
+    model_name: str,
+    replicas: int,
+    tensor_parallelism: int,
+    peak_prefill_throughput: int,
+) -> None:
+    _init_project_config()
+    core_config.project.apply_preset(preset)
+    assert (
+        core_config.project.get_config("runtime.router.peak_prefill_throughput", print=False)
+        == peak_prefill_throughput
+    )
+    if preset == "cpt-release-testing-gemma-4-26b-fp8":
+        assert runtime_config.get_deployment_profile_name() == "default-3.6GA"
+    core_config.project.set_config("runtime.deployment_profile", "default-3.6GA")
+    core_config.project.set_config("model_cache.enabled", False)
+
+    profile = runtime_config.get_deployment_profile()
+    assert profile["replicas"] == replicas
+    assert profile["tensor_parallelism"] == tensor_parallelism
+
+    manifest = render_inference_service_from_parts(
+        config_dir=PROJECT_ORCHESTRATION_DIR,
+        namespace="forge-llm-d",
+        inference_service=runtime_config.get_platform_config()["inference_service"],
+        model_name=runtime_config.get_model_name(),
+        model_slug=runtime_config.get_model_slug(),
+        deployment_profile=profile,
+        model_cache=runtime_config.get_model_cache_config(),
+    )
+    assert manifest["spec"]["model"]["name"] == model_name
+    assert manifest["spec"]["replicas"] == replicas
+    assert manifest["spec"]["parallelism"]["tensor"] == tensor_parallelism
+    gpu_requests = manifest["spec"]["template"]["containers"][0]["resources"]["requests"]
+    assert gpu_requests["nvidia.com/gpu"] == str(tensor_parallelism)
+
+    vllm_args = next(
+        item["value"]
+        for item in manifest["spec"]["template"]["containers"][0]["env"]
+        if item["name"] == "VLLM_ADDITIONAL_ARGS"
+    )
+    gemma_args = (
+        "--kv-cache-dtype=fp8",
+        "--reasoning-parser=gemma4",
+        "--tool-call-parser=gemma4",
+        "--enable-auto-tool-choice",
+    )
+    for arg in gemma_args:
+        assert (arg in vllm_args) == (preset == "cpt-release-testing-gemma-4-26b-fp8")
+
+    scheduler_args = manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["args"]
+    scheduler_config = yaml.safe_load(scheduler_args[-1])
+    prefix_affinity = next(
+        plugin
+        for plugin in scheduler_config["plugins"]
+        if plugin["type"] == "prefix-cache-affinity-filter"
+    )
+    assert prefix_affinity["parameters"]["peakPrefillThroughput"] == peak_prefill_throughput
+
+
 def test_active_profile_inference_service_name_matches_rendered_name() -> None:
     _init_project_config()
     core_config.project.set_config("runtime.deployment_profile", "precise-prefix-cache")
