@@ -24,6 +24,9 @@ payloads:
   default:
     prompt_tokens: 256
     output_tokens: 128
+  XS:
+    prompt_tokens: 128
+    output_tokens: 50
   L:
     prompt_tokens: 1000
     output_tokens: 500
