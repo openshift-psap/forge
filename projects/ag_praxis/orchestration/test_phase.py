@@ -466,6 +466,7 @@ def _deploy_maas_sim(test_namespace, maas_cfg):
         time_to_first_token=sim_cfg["time_to_first_token"],
         inter_token_latency=sim_cfg["inter_token_latency"],
         mode=sim_cfg["mode"],
+        replicas=sim_cfg.get("replicas", 1),
     )
 
     llmisvc_name = maas_cfg["llmisvc_name"]
