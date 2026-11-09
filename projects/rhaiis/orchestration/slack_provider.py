@@ -94,14 +94,23 @@ class RhaiisSlackProvider(SlackNotificationProvider):
         )
         if csv_dashboard_enabled:
             custom_isl_osl = ""
-            if workload_keys == ["custom"]:
-                data = runtime_config.get_workload("custom")["data"]
-                tokens = dict(item.split("=", 1) for item in data.split(",") if "=" in item)
-                # shortcut: dataset-backed custom data has no token pair here; add dataset filters when needed.
-                if "prompt_tokens" in tokens and "output_tokens" in tokens:
-                    isl = int(float(tokens["prompt_tokens"]))
-                    osl = int(float(tokens["output_tokens"]))
-                    custom_isl_osl = f"{isl}/{osl}"
+            if "custom" in workload_keys:
+                try:
+                    data = runtime_config.get_workload("custom")["data"]
+                    if not isinstance(data, str):
+                        raise TypeError("Custom workload data must be a string")
+                    tokens = {}
+                    for item in data.split(","):
+                        if "=" in item:
+                            key, value = item.split("=", 1)
+                            tokens[key.strip()] = value.strip()
+                    # shortcut: dataset-backed custom data has no token pair here; add dataset filters when needed.
+                    if "prompt_tokens" in tokens and "output_tokens" in tokens:
+                        isl = int(float(tokens["prompt_tokens"]))
+                        osl = int(float(tokens["output_tokens"]))
+                        custom_isl_osl = f"{isl}/{osl}"
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    logger.warning("Invalid custom workload data; omitting dashboard shape filter")
 
             dashboard_url = _build_dashboard_url(
                 model=model_name,

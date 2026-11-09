@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
 from projects.core.library import config, env
 from projects.core.notifications.provider import NotificationContext
 from projects.rhaiis.orchestration import slack_provider
@@ -24,7 +26,20 @@ def _capture_slack_messages(monkeypatch) -> list[str]:
     return messages
 
 
-def test_completion_dashboard_link_selects_custom_shape(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("workload_keys", "custom_workload", "expected_shape", "success"),
+    [
+        (["custom"], {"data": "prompt_tokens=128,output_tokens=16"}, "128/16", True),
+        (["custom", "profile1"], {"data": "prompt_tokens=128, output_tokens=16"}, "128/16", True),
+        (["custom"], {}, None, True),
+        (["custom"], None, None, False),
+        (["custom"], {"data": "prompt_tokens=NaN,output_tokens=16"}, None, True),
+        (["custom"], {"data": "prompt_tokens=1e309,output_tokens=16"}, None, True),
+    ],
+)
+def test_completion_dashboard_link_selects_custom_shape(
+    monkeypatch, tmp_path, workload_keys, custom_workload, expected_shape, success
+) -> None:
     values = {
         "tests.rhaiis.model_key": "custom",
         "models.custom": {
@@ -33,14 +48,21 @@ def test_completion_dashboard_link_selects_custom_shape(monkeypatch, tmp_path) -
         },
         "rhaiis.accelerator": "nvidia",
         "tests.rhaiis.version": "vLLM-0.31.0-recipe-latency-oriented",
-        "tests.rhaiis.workload_keys": ["custom"],
-        "workloads.custom": {"data": "prompt_tokens=128,output_tokens=16"},
+        "tests.rhaiis.workload_keys": workload_keys,
         "caliper.postprocess.csv_dashboard.enabled": True,
     }
+    if custom_workload is not None:
+        values["workloads.custom"] = custom_workload
+
+    def get_config(key, default=None, **_):
+        if key == "workloads.custom" and key not in values:
+            raise KeyError(key)
+        return values.get(key, default)
+
     monkeypatch.setattr(
         config,
         "project",
-        SimpleNamespace(get_config=lambda key, default=None: values.get(key, default)),
+        SimpleNamespace(get_config=get_config),
     )
     monkeypatch.setattr(env, "BASE_ARTIFACT_DIR", tmp_path)
     monkeypatch.setattr(slack_provider, "collect_notification_files", lambda _: ("", [], []))
@@ -49,14 +71,21 @@ def test_completion_dashboard_link_selects_custom_shape(monkeypatch, tmp_path) -
 
     message = slack_provider.RhaiisSlackProvider().format_message(
         NotificationContext(
-            status={"success": True}, finish_reason="success", project_name="rhaiis"
+            status={"success": success},
+            finish_reason="success" if success else "failed",
+            project_name="rhaiis",
         )
     )
     url = message.split("*Dashboard:* <", 1)[1].split("|", 1)[0]
     query = parse_qs(urlsplit(url).query)
 
-    assert query["profile"] == ["Custom ISL/OSL"]
-    assert query["custom_isl_osl"] == ["128/16"]
+    title = "Succeeded" if success else "Failed"
+    assert f"*RHAIIS Pipeline {title}*" in message
+    assert "Custom ISL/OSL" in query["profile"][0]
+    if expected_shape:
+        assert query["custom_isl_osl"] == [expected_shape]
+    else:
+        assert "custom_isl_osl" not in query
     assert query["accelerators"] == ["nvidia"]
     assert query["models"] == ["google/gemma-4-26B-A4B-it"]
     assert query["versions"] == ["vLLM-0.31.0-recipe-latency-oriented"]
