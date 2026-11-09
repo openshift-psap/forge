@@ -7,6 +7,7 @@ fs_group: null
 replica_count: 2
 timeout_seconds: 3600
 validate_backend: false
+keep_full_benchmark_file: false
 args:
   processor: gpt2
   request_format: /v1/responses
