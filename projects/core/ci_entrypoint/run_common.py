@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 FORGE_HOME = Path(__file__).resolve().parent.parent.parent.parent
 
-EXTRA_PACKAGES = ["nooa"]
+EXTRA_PACKAGES = []
 
 # Global reference to child process for signal forwarding
 _child_process = None

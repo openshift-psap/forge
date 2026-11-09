@@ -59,12 +59,6 @@ except ImportError:
     _AGENTIC_AVAILABLE = False
     _MISSING_PACKAGES.append("langchain_core")
 
-try:
-    import nooa  # noqa: F401
-except ImportError:
-    _AGENTIC_AVAILABLE = False
-    _MISSING_PACKAGES.append("nooa")
-
 
 def _is_agentic_dependencies_available():
     """Check if required agentic dependencies are available"""

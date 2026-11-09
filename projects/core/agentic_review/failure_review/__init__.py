@@ -93,12 +93,6 @@ except ImportError:
     _AGENTIC_AVAILABLE = False
     _MISSING_PACKAGES.append("langchain_core")
 
-try:
-    import nooa  # noqa: F401
-except ImportError:
-    _AGENTIC_AVAILABLE = False
-    _MISSING_PACKAGES.append("nooa")
-
 
 def _is_agentic_dependencies_available():
     """Check if required agentic dependencies are available"""
@@ -817,8 +811,13 @@ def get_failure_explanations(base_artifact_dir: Path) -> list[dict]:
     return explanations
 
 
-def _prepare_agent_llm(model_key: str = None):
+def _prepare_agent_llm(model_key: str = None, vault_name: str = None, vault_content: str = None):
     """Validate the agent gating and create the LLM client.
+
+    Args:
+        model_key: Model key override — falls back to the project configuration
+        vault_name: Vault name override — falls back to the project configuration
+        vault_content: Vault content override — falls back to the project configuration
 
     Returns:
         Tuple (llm, disable_reason) — exactly one of them is set.
@@ -841,10 +840,17 @@ def _prepare_agent_llm(model_key: str = None):
 
         if model_key is None:
             model_key = agentic_config.model_key
-        vault_name = agentic_config.vault_name
-        vault_content = agentic_config.vault_content
+        if vault_name is None:
+            vault_name = agentic_config.vault_name
+        if vault_content is None:
+            vault_content = agentic_config.vault_content
     elif model_key is None:
         raise ValueError("Configuration not available and no model_key received ...")
+
+    if not vault_name or not vault_content:
+        raise ValueError(
+            "Vault configuration not available and no vault_name/vault_content received ..."
+        )
 
     # Load model configuration from vault
     logger.info("Loading model configuration from vault...")
@@ -862,7 +868,11 @@ def _prepare_agent_llm(model_key: str = None):
 
 
 def run_on_failure_agent(
-    base_artifact_dir: Path, verbose: bool = False, model_key: str = None
+    base_artifact_dir: Path,
+    verbose: bool = False,
+    model_key: str = None,
+    vault_name: str = None,
+    vault_content: str = None,
 ) -> dict:
     """
     Main programmatic interface for the On Failure Agent
@@ -871,12 +881,16 @@ def run_on_failure_agent(
 
     Args:
         base_artifact_dir: Path to the base artifact directory to analyze
+        verbose: Whether to show verbose output
+        model_key: Model key override — falls back to the project configuration
+        vault_name: Vault name override — falls back to the project configuration
+        vault_content: Vault content override — falls back to the project configuration
 
     Returns:
         Dictionary containing analysis results
     """
     try:
-        llm, disable_reason = _prepare_agent_llm(model_key)
+        llm, disable_reason = _prepare_agent_llm(model_key, vault_name, vault_content)
         if disable_reason:
             return {"status": "disabled", "reason": disable_reason, "analyses": []}
 
@@ -917,7 +931,12 @@ def _build_exception_failure_data(e: BaseException, base_artifact_dir: Path) -> 
 
 
 def run_on_exception_agent(
-    e: BaseException, base_artifact_dir: Path, verbose: bool = False, model_key: str = None
+    e: BaseException,
+    base_artifact_dir: Path,
+    verbose: bool = False,
+    model_key: str = None,
+    vault_name: str = None,
+    vault_content: str = None,
 ) -> dict:
     """
     Analyze a CI-command exception with the On Failure Agent
@@ -933,7 +952,7 @@ def run_on_exception_agent(
         Dictionary containing analysis results
     """
     try:
-        llm, disable_reason = _prepare_agent_llm(model_key)
+        llm, disable_reason = _prepare_agent_llm(model_key, vault_name, vault_content)
         if disable_reason:
             return {"status": "disabled", "reason": disable_reason, "analyses": []}
 

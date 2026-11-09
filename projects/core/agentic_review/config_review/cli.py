@@ -1,210 +1,117 @@
 #!/usr/bin/env python3
 
 """
-CLI interface for FORGE config review using pure NOOA agents
+CLI interface for FORGE config review
 
-This module provides direct access to NOOA agents for analyzing FORGE test configurations
-without compatibility wrappers. Users interact with agents directly for maximum performance.
+Contains the Click CLI command and all related output formatting functions.
 """
-
-# Add project root to path when run directly (must be before other imports)
-import sys
-from pathlib import Path
-
-if __name__ == "__main__":
-    # Add the project root (5 levels up from this file) to Python path
-    # projects.core.agentic_review.config_review/cli.py -> /home/kpouget/openshift/forge-censoring
-    project_root = Path(__file__).parent.parent.parent.parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import click
-import yaml
-
-from projects.core.agentic_review.review.models import create_llm_client, load_model_config
-from projects.core.library import vault
-
-# Handle both relative and direct imports
-try:
-    from .agent import ConfigContext, ConfigReviewAgent
-except ImportError:
-    from projects.core.agentic_review.config_review.agent import ConfigContext, ConfigReviewAgent
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_KEY = "qwen-3-6-35b"
-DEFAULT_VAULT_NAME = "psap-models-corp-rh"
-DEFAULT_VAULT_CONTENT = "agent-models.yaml"
 
-
-def parse_artifact_directory(artifact_dir: Path) -> dict[str, Any]:
+def format_text_output(result: dict[str, Any]) -> str:
     """
-    Parse FORGE artifact directory to extract configuration data
+    Format test analysis result for text output
 
     Args:
-        artifact_dir: Path to FORGE artifact directory
+        result: Test analysis result dictionary
 
     Returns:
-        Dictionary containing parsed configuration data
+        Formatted text output
     """
-    artifact_data = {
-        "config": {},
-        "execution_engine": {},
-        "presets_applied": "",
-        "config_overrides": [],
-        "project_name": "unknown",
-        "available_files": [],
-    }
+    if result.get("status") != "success":
+        error_msg = result.get("error", "Unknown error")
+        return f"❌ Test analysis failed: {error_msg}"
 
-    # Look for common FORGE configuration files
-    config_files = [
-        "config.yaml",
-        "config.yml",
-        "test-config.yaml",
-        "config.json",
-        "execution.yaml",
-        "run.yaml",
-    ]
+    base_artifact_dir = result.get("base_artifact_dir", "unknown")
+    structured = result.get("structured_analysis", {})
 
-    available_files = []
-    for config_file in artifact_dir.rglob("*"):
-        if config_file.is_file():
-            available_files.append(str(config_file.relative_to(artifact_dir)))
+    output_lines = [f"🤖 Test Analysis Results for: {base_artifact_dir}", "=" * 60, ""]
 
-    artifact_data["available_files"] = available_files
+    # Validation info
+    validation = result.get("validation_result", {})
+    if validation:
+        if validation.get("is_valid", True):
+            output_lines.append("✅ Artifact directory is valid")
+        else:
+            output_lines.append("❌ Artifact validation failed:")
+            for error in validation.get("errors", []):
+                output_lines.append(f"  - {error}")
 
-    # Try to find and parse configuration files
-    for config_file in config_files:
-        config_path = artifact_dir / config_file
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    if config_file.endswith((".yaml", ".yml")):
-                        config_data = yaml.safe_load(f)
-                    else:
-                        config_data = json.load(f)
+        for warning in validation.get("warnings", []):
+            output_lines.append(f"⚠️  {warning}")
 
-                    if config_data:
-                        artifact_data["config"].update(config_data)
-                        logger.debug(f"Loaded config from {config_file}")
-                        break
-            except Exception as e:
-                logger.warning(f"Failed to parse {config_file}: {e}")
+        structure_info = validation.get("structure_info", {})
+        if structure_info:
+            output_lines.extend(
+                [
+                    "",
+                    "📊 Artifact Info:",
+                    f"  - Has config: {structure_info.get('has_config', False)}",
+                    f"  - Has execution engine: {structure_info.get('has_execution_engine', False)}",
+                    f"  - Project: {structure_info.get('project', 'unknown')}",
+                    f"  - Presets applied: {structure_info.get('preset_count', 0)}",
+                    f"  - Config overrides: {structure_info.get('config_override_count', 0)}",
+                    "",
+                ]
+            )
 
-    # Extract execution engine info if available
-    if "execution" in artifact_data["config"]:
-        artifact_data["execution_engine"] = artifact_data["config"]["execution"]
+    # Analysis results
+    if structured.get("test_description"):
+        output_lines.extend(["🎯 What is being tested:", structured["test_description"], ""])
 
-    # Extract project name - handle both simple strings and nested dictionaries
-    project_info = (
-        artifact_data["config"].get("project")
-        or artifact_data["execution_engine"].get("project")
-        or artifact_dir.name
-    )
+    if structured.get("changes_summary"):
+        output_lines.extend(["🔄 Configuration Changes:", structured["changes_summary"], ""])
 
-    # If project is a dictionary, extract the name field
-    if isinstance(project_info, dict):
-        project_name = project_info.get("name", str(project_info))
-    else:
-        project_name = project_info or artifact_dir.name
+    if structured.get("testing_focus"):
+        output_lines.extend(["📈 Testing Focus:", structured["testing_focus"], ""])
 
-    artifact_data["project_name"] = project_name
+    if structured.get("configuration_context"):
+        output_lines.extend(["⚙️ Configuration Context:", structured["configuration_context"], ""])
 
-    # Extract config overrides
-    overrides = artifact_data["execution_engine"].get("configOverrides", []) or artifact_data[
-        "config"
-    ].get("configOverrides", [])
-    artifact_data["config_overrides"] = overrides if isinstance(overrides, list) else []
-
-    return artifact_data
-
-
-def format_analysis_output(analysis, artifact_dir: str, output_format: str) -> str:
-    """
-    Format NOOA agent analysis results for output
-
-    Args:
-        analysis: ConfigAnalysis object from NOOA agent
-        artifact_dir: Artifact directory path
-        output_format: Output format ("text" or "json")
-
-    Returns:
-        Formatted output string
-    """
-    if output_format == "json":
-        return _format_json_output(analysis, artifact_dir)
-    else:
-        return _format_text_output(analysis, artifact_dir)
-
-
-def _format_text_output(analysis, artifact_dir: str) -> str:
-    """Format analysis results for text output"""
-    output_lines = [
-        f"🤖 NOOA Config Analysis Results for: {artifact_dir}",
-        "=" * 60,
-        "",
-        "📊 Test Analysis Summary",
-        "",
-        f"🎯 Test Description: {analysis.test_description}",
-        "",
-        f"🔄 Changes Summary: {analysis.changes_summary}",
-        "",
-        f"📈 Testing Focus: {analysis.testing_focus}",
-        "",
-        f"⚙️ Configuration Context: {analysis.configuration_context}",
-        "",
-        "📋 Test Details:",
-        f"  - Type: {analysis.test_type}",
-        f"  - Scope: {analysis.estimated_scope}",
-        f"  - Risk: {analysis.risk_assessment}",
-        "",
-    ]
-
-    if analysis.key_parameters:
-        output_lines.append("🔧 Key Parameters:")
-        for param in analysis.key_parameters:
-            output_lines.append(f"  - {param}")
-        output_lines.append("")
-
-    if analysis.expected_outcomes:
-        output_lines.append("🎯 Expected Outcomes:")
-        for outcome in analysis.expected_outcomes:
-            output_lines.append(f"  - {outcome}")
-        output_lines.append("")
-
-    if analysis.configuration_issues:
-        output_lines.append("⚠️ Configuration Issues:")
-        output_lines.append(f"  {analysis.configuration_issues}")
-        output_lines.append("")
+    # Query metadata
+    query_count = result.get("query_count", 0)
+    if query_count > 0:
+        output_lines.extend([f"🤖 Analysis completed using {query_count} LLM queries", ""])
 
     return "\n".join(output_lines)
 
 
-def _format_json_output(analysis, artifact_dir: str) -> str:
-    """Format analysis results for JSON output"""
-    result = {
-        "status": "success",
-        "agent_type": "nooa",
-        "artifact_dir": artifact_dir,
-        "analysis": {
-            "test_description": analysis.test_description,
-            "changes_summary": analysis.changes_summary,
-            "testing_focus": analysis.testing_focus,
-            "configuration_context": analysis.configuration_context,
-            "test_type": analysis.test_type,
-            "estimated_scope": analysis.estimated_scope,
-            "key_parameters": analysis.key_parameters,
-            "risk_assessment": analysis.risk_assessment,
-            "expected_outcomes": analysis.expected_outcomes,
-            "configuration_issues": analysis.configuration_issues,
-        },
+def format_json_output(result: dict[str, Any]) -> str:
+    """
+    Format test analysis result for JSON output
+
+    Args:
+        result: Test analysis result dictionary
+
+    Returns:
+        JSON formatted output
+    """
+    # Create a clean copy for JSON output
+    json_result = {
+        "status": result.get("status", "unknown"),
+        "base_artifact_dir": result.get("base_artifact_dir", "unknown"),
     }
 
-    return json.dumps(result, indent=2)
+    if result.get("status") == "success":
+        json_result.update(
+            {
+                "validation_result": result.get("validation_result", {}),
+                "structured_analysis": result.get("structured_analysis", {}),
+                "query_count": result.get("query_count", 0),
+            }
+        )
+    else:
+        json_result["error"] = result.get("error", "Unknown error")
+
+    return json.dumps(json_result, indent=2)
 
 
 @click.command()
@@ -220,135 +127,64 @@ def _format_json_output(analysis, artifact_dir: str) -> str:
     default="text",
     help="Output format for results",
 )
-@click.option("--verbose", is_flag=True, help="Show verbose output during analysis")
-@click.option("--model-key", default=DEFAULT_MODEL_KEY, help="Model key to use for analysis")
-@click.option("--vault-name", default=DEFAULT_VAULT_NAME, help="Vault name for model configuration")
 @click.option(
-    "--vault-content",
-    default=DEFAULT_VAULT_CONTENT,
-    help="Vault content file for model configuration",
+    "--verbose",
+    is_flag=True,
+    help="Show verbose output during analysis",
 )
 def cli(
     base_artifact_dir: Path,
     output_format: str,
     verbose: bool,
-    model_key: str,
-    vault_name: str,
-    vault_content: str,
-):
+) -> None:
     """
-    FORGE Config Review CLI - Direct NOOA agent analysis
+    FORGE Config Review Agent - Analyze FORGE test configurations
 
-    This tool uses NOOA agents directly to analyze FORGE test configurations.
-    The agent provides structured analysis of what is being tested based on
-    configuration changes and test parameters.
+    This agent analyzes FORGE test artifact directories and provides short
+    descriptions of what is being tested, focusing on configuration changes.
 
     Examples:
-        # Basic config analysis
+        # Basic test analysis
         forge config-review --base-artifact-dir /path/to/artifacts
 
         # JSON output for programmatic use
         forge config-review --base-artifact-dir /path/to/artifacts --output-format json
 
-        # Verbose analysis with detailed progress
+        # Verbose analysis with detailed analysis
         forge config-review --base-artifact-dir /path/to/artifacts --verbose
     """
-    # Set logging level - always show INFO for LLM calls
-    if verbose:
-        logging.basicConfig(
-            level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-    else:
-        logging.basicConfig(
-            level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-
     try:
-        logger.info(f"🤖 Starting NOOA config analysis for: {base_artifact_dir}")
+        # Import the main function here to avoid circular imports
+        from projects.core.agentic_review.config_review import run_config_review_agent
 
-        if verbose:
-            click.echo("Initializing vault manager...")
-        vault.init(vaults=[vault_name])
+        logger.info(f"🤖 Starting test analysis for: {base_artifact_dir}")
 
-        # Load model configuration
-        if verbose:
-            click.echo(f"Loading model configuration for: {model_key}")
+        # Run the config review agent (vault initialization is handled internally)
+        result = run_config_review_agent(base_artifact_dir=base_artifact_dir, verbose=verbose)
 
-        models_config = load_model_config(vault_name, vault_content)
-        model_config = models_config.get(model_key)
+        # Format and display output
+        if output_format == "json":
+            output = format_json_output(result)
+        else:
+            output = format_text_output(result)
 
-        if not model_config:
-            raise ValueError(f"Model key '{model_key}' not found in vault configuration")
-
-        # Create LLM client
-        if verbose:
-            click.echo(f"Creating LLM client for model: {model_config.get('model_id')}")
-
-        llm = create_llm_client(model_config)
-
-        # Parse artifact directory
-        if verbose:
-            click.echo("Parsing artifact directory...")
-
-        artifact_data = parse_artifact_directory(base_artifact_dir)
-
-        # Create NOOA agent
-        agent = ConfigReviewAgent(llm=llm)
-
-        # Create context for the agent
-        context = ConfigContext(
-            artifact_dir=base_artifact_dir,
-            config_data=artifact_data["config"],
-            execution_engine=artifact_data["execution_engine"],
-            presets_applied=artifact_data["presets_applied"],
-            config_overrides=artifact_data["config_overrides"],
-            project_name=artifact_data["project_name"],
-            available_files=artifact_data["available_files"],
-        )
-
-        # Use NOOA agent to analyze the configuration
-        if verbose:
-            click.echo(f"Analyzing configuration for project: {context.project_name}")
-
-        analysis = agent.analyze_config(context, verbose=verbose)
-
-        # Format and display results
-        output = format_analysis_output(analysis, str(base_artifact_dir), output_format)
         click.echo(output)
 
-        logger.info("✅ Successfully completed configuration analysis")
-        exit(0)
-
-    except ImportError as e:
-        error_msg = "❌ NOOA package not available. Install with: pip install nooa"
-        logger.error(error_msg)
-
-        if output_format == "json":
-            error_result = {"status": "error", "error": str(e), "agent_type": "nooa"}
-            click.echo(json.dumps(error_result, indent=2))
+        # Set exit code based on result status
+        if result.get("status") == "success":
+            if not result.get("validation_result", {}).get("is_valid", True):
+                exit(2)  # Config validation failed
+            exit(0)
         else:
-            click.echo(error_msg)
-        exit(1)
+            exit(1)
 
     except Exception as e:
-        import traceback
-
-        logger.error(f"❌ Config analysis failed: {e}")
-        logger.error("Full traceback:")
-        traceback.print_exc()
-
+        logger.error(f"❌ Config review CLI failed: {e}")
         if output_format == "json":
-            error_result = {
-                "status": "error",
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "agent_type": "nooa",
-            }
+            error_result = {"status": "error", "error": str(e)}
             click.echo(json.dumps(error_result, indent=2))
         else:
-            click.echo(f"❌ Config analysis failed: {e}")
-            click.echo("\nFull traceback:")
-            click.echo(traceback.format_exc())
+            click.echo(f"❌ Config review failed: {e}")
         exit(1)
 
 
