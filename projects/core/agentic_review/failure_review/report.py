@@ -65,7 +65,7 @@ def generate_html_report(
 </html>"""
 
     # Import clean_content_for_html_report function from report_utils
-    from projects.core.agentic.report_utils import clean_content_for_html_report
+    from projects.core.agentic_review.report_utils import clean_content_for_html_report
 
     # Build interactions content
     interactions_html = ""

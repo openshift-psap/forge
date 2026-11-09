@@ -91,11 +91,6 @@ def run_artifacts_import(
 
     if not mlflow_tracking_uri:
         mlflow_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-        if not mlflow_tracking_uri:
-            raise ValueError(
-                "MLflow tracking URI is required: --mlflow-tracking-uri, MLFLOW_TRACKING_URI, "
-                "or provide a complete --from-mlflow-url"
-            )
 
     # Load secrets if provided or try to load from vault
     connection_config = {}
@@ -124,6 +119,18 @@ def run_artifacts_import(
     else:
         click.echo("  ℹ️  No secrets file specified, proceeding without authentication")
 
+    # Precedence: CLI (--mlflow-tracking-uri / --from-mlflow-url) > env > secret
+    tracking_uri_from_secrets = False
+    if not mlflow_tracking_uri:
+        mlflow_tracking_uri = connection_config.get("tracking_uri")
+        tracking_uri_from_secrets = mlflow_tracking_uri is not None
+
+    if not mlflow_tracking_uri:
+        raise ValueError(
+            "MLflow tracking URI is required: --mlflow-tracking-uri, MLFLOW_TRACKING_URI, "
+            "--mlflow-secrets tracking_uri, or provide a complete --from-mlflow-url"
+        )
+
     # Set up insecure TLS if needed
     if mlflow_insecure_tls:
         connection_config["insecure_tls"] = True
@@ -137,8 +144,14 @@ def run_artifacts_import(
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # The tracking URI from the secrets configuration may embed credentials:
+    # never echo it, while CLI/env/URL-sourced values stay visible as before
+    display_tracking_uri = (
+        "(redacted - from MLflow secrets)" if tracking_uri_from_secrets else mlflow_tracking_uri
+    )
+
     click.echo("\n📦 MLflow Artifact Download Configuration:")
-    click.echo(f"  📍 Tracking URI: {mlflow_tracking_uri}")
+    click.echo(f"  📍 Tracking URI: {display_tracking_uri}")
     click.echo(f"  🆔 Run ID: {mlflow_run_id}")
     click.echo(f"  📁 Artifact path: {artifact_path or '(root)'}")
     click.echo(f"  📂 Output directory: {output_dir}")
@@ -165,7 +178,7 @@ def run_artifacts_import(
                 pass
 
         # Set tracking URI and get client
-        click.echo(f"\n🔗 Setting MLflow tracking URI: {mlflow_tracking_uri}")
+        click.echo(f"\n🔗 Setting MLflow tracking URI: {display_tracking_uri}")
         mlflow.set_tracking_uri(mlflow_tracking_uri)
 
         click.echo("🏗️  Creating MLflow client...")
@@ -286,6 +299,7 @@ def run_artifacts_import(
 
     # Execute download with proper connection context
     if connection_config:
+        connection_config["tracking_uri"] = mlflow_tracking_uri
         with mlflow_connection_env(connection_config):
             _download_artifacts()
     else:

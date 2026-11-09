@@ -12,7 +12,7 @@ of what is being tested, focusing on configuration changes and test parameters. 
 - Short test descriptions focused on changes
 
 Example usage:
-    from projects.core.agentic.config_review import run_config_review_agent, get_test_analysis
+    from projects.core.agentic_review.config_review import run_config_review_agent, get_test_analysis
 
     # Full analysis with metadata
     result = run_config_review_agent(base_artifact_dir="/path/to/artifacts")
@@ -33,13 +33,13 @@ from typing import Any, Optional, Union
 
 import yaml
 
-from projects.core.agentic.analysis_utils import extract_structured_analysis
-from projects.core.agentic.config_review.queries import (
+from projects.core.agentic_review.analysis_utils import extract_structured_analysis
+from projects.core.agentic_review.config_review.queries import (
     ConfigReviewQueries,
     execute_config_query_sequence,
 )
-from projects.core.agentic.config_review.report import generate_config_html_report
-from projects.core.agentic.models import create_llm_client, load_model_config
+from projects.core.agentic_review.config_review.report import generate_config_html_report
+from projects.core.agentic_review.review.models import create_llm_client, load_model_config
 from projects.core.library import ci as ci_lib
 from projects.core.library import vault
 
@@ -63,14 +63,12 @@ except ImportError:
 def _is_agentic_dependencies_available():
     """Check if required agentic dependencies are available"""
     if not _AGENTIC_AVAILABLE:
-        logger.info(
+        logger.error(
             f"🤖 Agentic processing disabled - missing packages: {', '.join(_MISSING_PACKAGES)}"
         )
         return False
     return True
 
-
-MODEL_KEY = "qwen-3-6-35b"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -82,7 +80,7 @@ logging.getLogger("langchain_openai").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def _ensure_vault_initialized():
+def _ensure_vault_initialized(vault_name: str, vault_content: str):
     """
     Ensure vault is initialized for model access
 
@@ -91,13 +89,13 @@ def _ensure_vault_initialized():
     """
     try:
         # Test if vault is already initialized by trying to access it
-        vault.get_vault_content_path("psap-models-corp-rh", "agent-models.yaml")
+        vault.get_vault_content_path(vault_name, vault_content)
         logger.debug("Vault already initialized and accessible")
     except RuntimeError as e:
         if "not initialized" in str(e):
             logger.info("Initializing vault manager...")
             try:
-                vault.init(vaults=["psap-models-corp-rh"])
+                vault.init(vaults=[vault_name])
                 logger.info("✅ Vault initialized successfully")
             except RuntimeError as init_error:
                 logger.error(f"❌ Vault initialization failed: {init_error}")
@@ -435,17 +433,27 @@ def process_test_review(
         # Create LLM client if not provided
         if llm is None:
             try:
-                # Ensure vault is initialized before trying to load model config
-                _ensure_vault_initialized()
+                from projects.core.library import config as config_lib
 
-                logger.info("Loading model configuration from vault...")
-                models_config = load_model_config(
-                    vault_name="psap-models-corp-rh", content_name="agent-models.yaml"
+                vault_name = config_lib.project.get_config(
+                    "agentic_review.vault_name", print=False, warn=False
+                )
+                vault_content = config_lib.project.get_config(
+                    "agentic_review.vault_content", print=False, warn=False
+                )
+                model_key = config_lib.project.get_config(
+                    "agentic_review.model_key", print=False, warn=False
                 )
 
-                model_config = models_config.get(MODEL_KEY)
+                # Ensure vault is initialized before trying to load model config
+                _ensure_vault_initialized(vault_name, vault_content)
+
+                logger.info("Loading model configuration from vault...")
+                models_config = load_model_config(vault_name=vault_name, content_name=vault_content)
+
+                model_config = models_config.get(model_key)
                 if not model_config:
-                    raise ValueError(f"Model key '{MODEL_KEY}' not found in the vault")
+                    raise ValueError(f"Model key '{model_key}' not found in the vault")
 
                 logger.info(f"Creating LLM client for model: {model_config.get('model_id')}")
                 llm = create_llm_client(model_config)
@@ -456,8 +464,7 @@ def process_test_review(
                     "status": "error",
                     "base_artifact_dir": str(base_artifact_dir),
                     "error": f"Cannot create LLM client - vault configuration issue: {vault_error}. "
-                    f"Please ensure PSAP_MODELS_CORP_RH environment variable is set, "
-                    f"or provide an LLM client directly via the llm parameter.",
+                    f"Or provide an LLM client directly via the llm parameter.",
                     "validation_result": validation_result,
                 }
 
@@ -521,24 +528,29 @@ def trigger_config_review_for_ci(base_artifact_dir: Path, async_mode: bool = Fal
     """
     from projects.core.library import config
 
-    # Check if agentic dependencies are available
-    if not _is_agentic_dependencies_available():
-        return
-
     # Check if agentic features are enabled (master switch)
-    agentic_enabled = config.project.get_config("agentic.enabled", False, print=False, warn=False)
+    agentic_enabled = config.project.get_config(
+        "agentic_review.enabled", False, print=False, warn=False
+    )
     if not agentic_enabled:
-        logger.debug("Agentic features disabled (agentic.enabled=false) - skipping config review")
+        logger.debug(
+            "Agentic features disabled (agentic_review.enabled=false) - skipping config review"
+        )
         return
 
     # Check if config review is specifically enabled
     config_review_enabled = config.project.get_config(
-        "agentic.config_review.enabled", False, print=False, warn=False
+        "agentic_review.config_review.enabled", False, print=False, warn=False
     )
     if not config_review_enabled:
         logger.debug(
-            "Config review disabled (agentic.config_review.enabled=false) - skipping config review"
+            "Config review disabled (agentic_review.config_review.enabled=false)"
+            " - skipping config review"
         )
+        return
+
+    # Check if agentic dependencies are available, before the review processing begins
+    if not _is_agentic_dependencies_available():
         return
 
     def _run_config_review():

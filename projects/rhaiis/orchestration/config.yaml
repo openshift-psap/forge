@@ -85,10 +85,12 @@ caliper:
     notifications:
       enabled: true
       vault: psap-forge-notifications
-agentic:
+agentic_review:
   enabled: true
   model_key: qwen-3-6-35b
-  on_failure:
+  vault_name: psap-models-corp-rh
+  vault_content: agent-models.yaml
+  failure_review:
     enabled: true
   config_review:
     enabled: true
