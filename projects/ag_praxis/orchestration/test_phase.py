@@ -345,6 +345,7 @@ def _test_endpoint(
     model_name,
     run_benchmark,
     completed_endpoints,
+    matrix_labels=None,
 ):
     from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
     from projects.cluster.library.prom.collection import capture_prometheus
@@ -357,9 +358,10 @@ def _test_endpoint(
     test_dir = env.ARTIFACT_DIR
     payload_name = config.project.get_config("test.payload")
     sweep_name = config.project.get_config("test.sweep")
+    test_labels = {"endpoint": ep_name, **(matrix_labels or {})}
     create_test_metadata(
         test_dir,
-        {"endpoint": ep_name},
+        test_labels,
         kpi_labels={
             "model_name": model_name,
             "guidellm_loadshape": f"{payload_name}_{sweep_name}",
@@ -556,6 +558,7 @@ def _run_endpoint_benchmarking(
     model_name,
     run_benchmark,
     completed_endpoints,
+    matrix_labels=None,
 ):
     """Run smoke tests and benchmarks for each endpoint."""
 
@@ -570,6 +573,7 @@ def _run_endpoint_benchmarking(
                 model_name,
                 run_benchmark,
                 completed_endpoints,
+                matrix_labels=matrix_labels,
             )
 
 
@@ -579,10 +583,8 @@ def do_test_praxis():
         prepare_user_workload_monitoring,
         validate_user_workload_monitoring,
     )
+    from projects.core.library.matrix import activate_combination, compute_matrix
     from projects.core.orchestration.utils.k8s import ensure_namespace
-
-    if config.project.get_config("test.run_benchmark"):
-        _validate_benchmark_rates()
 
     validate_user_workload_monitoring()
     prepare_user_workload_monitoring(during="test")
@@ -598,21 +600,30 @@ def do_test_praxis():
     _register_namespace_in_gateway(test_namespace, maas_gw["name"], maas_gw["namespace"])
 
     run_benchmark = config.project.get_config("test.run_benchmark")
+    matrix_config = config.project.get_config("test.matrices.guidellm", default_value={})
+    combinations = compute_matrix(matrix_config)
+
     primary_exc = None
     completed_endpoints = []
 
     try:
         endpoints, model_name, maas_endpoint = _prepare_test_endpoints(test_namespace, maas_cfg)
 
-        with env.NextArtifactDir("benchmarking"):
-            _run_endpoint_benchmarking(
-                endpoints,
-                test_namespace,
-                maas_cfg,
-                model_name,
-                run_benchmark,
-                completed_endpoints,
-            )
+        for combo in combinations:
+            with activate_combination(combo):
+                if run_benchmark:
+                    _validate_benchmark_rates()
+
+                with env.NextArtifactDir(combo.artifact_dirname or "benchmarking"):
+                    _run_endpoint_benchmarking(
+                        endpoints,
+                        test_namespace,
+                        maas_cfg,
+                        model_name,
+                        run_benchmark,
+                        completed_endpoints,
+                        matrix_labels=combo.labels,
+                    )
 
         if not run_benchmark:
             _write_benchmark_dry_run(maas_endpoint)
