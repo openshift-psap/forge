@@ -354,6 +354,8 @@ class GuideLLMParser:
         start_time = state.get("start_time", 0)
         end_time = state.get("end_time", 0)
         duration = end_time - start_time if end_time > start_time else 60.0
+        warmup_duration = float(benchmark_data.get("warmup_duration") or 0.0)
+        cooldown_duration = float(benchmark_data.get("cooldown_duration") or 0.0)
 
         # Extract metrics
         metrics = benchmark_data.get("metrics", {})
@@ -436,8 +438,8 @@ class GuideLLMParser:
         return GuideLLMBenchmark(
             strategy=strategy,
             duration=duration,
-            warmup_time=0.0,  # Not available in JSON format
-            cooldown_time=0.0,  # Not available in JSON format
+            warmup_time=warmup_duration,
+            cooldown_time=cooldown_duration,
             # Request metrics
             request_rate=request_rate,
             request_concurrency=intended_concurrency,
