@@ -252,6 +252,8 @@ def _run_test(
             "opendatahub.io/dashboard": "true",
             "deployment_uuid": run_uuid,
         }
+        fjob_labels = {"fournos.dev/job-name": fjob_name} if fjob_name else {}
+        isvc_labels.update(fjob_labels)
         profiler_ranges = None
         if profiler_enabled:
             isvc_labels["vllm-profiler/enabled"] = "true"
@@ -277,6 +279,7 @@ def _run_test(
             image_pull_secrets=deploy_cfg.get("image_pull_secrets") or [],
             env_vars=env_vars,
             trtllm_config=runtime_config.get_trtllm_config() if engine == "trtllm" else None,
+            labels=fjob_labels,
         )
         isvc_manifest = build_inferenceservice(
             deployment_name=deployment_name,
@@ -556,6 +559,7 @@ def _run_workload_benchmark(
                 guidellm_args=guidellm_args,
                 hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
                 fs_group=benchmark_cfg.get("fs_group"),
+                fjob_name=os.environ.get("FJOB_NAME", ""),
             )
 
 
@@ -805,6 +809,7 @@ def _run_warmup_step(
             guidellm_args=guidellm_args,
             hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
             fs_group=benchmark_cfg.get("fs_group"),
+            fjob_name=os.environ.get("FJOB_NAME", ""),
         )
         logger.info("Warmup completed")
     except Exception:
@@ -872,6 +877,7 @@ def _run_profiler_step(
                 guidellm_args=guidellm_args,
                 hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
                 fs_group=benchmark_cfg.get("fs_group"),
+                fjob_name=os.environ.get("FJOB_NAME", ""),
             )
         finally:
             enable_profiler_gate(

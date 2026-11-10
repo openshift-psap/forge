@@ -20,6 +20,7 @@ def build_servingruntime(
     image_pull_secrets: list[str] | None = None,
     env_vars: dict | None = None,
     trtllm_config: dict | None = None,
+    labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build a KServe ServingRuntime manifest dict."""
     env_vars_list = [{"name": k, "value": str(v)} for k, v in (env_vars or {}).items()]
@@ -31,7 +32,7 @@ def build_servingruntime(
             "annotations": {
                 "opendatahub.io/template-display-name": f"ServingRuntime for {engine} | RHAIIS",
             },
-            "labels": {"opendatahub.io/dashboard": "true"},
+            "labels": {"opendatahub.io/dashboard": "true", **(labels or {})},
             "name": deployment_name,
             "namespace": namespace,
         },

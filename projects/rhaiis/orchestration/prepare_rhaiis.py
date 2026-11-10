@@ -5,6 +5,18 @@ from projects.core.dsl.utils.k8s import oc
 from projects.rhaiis.orchestration import runtime_config
 
 logger = logging.getLogger(__name__)
+FOURNOS_JOB_LABEL = "fournos.dev/job-name"
+JOB_RESOURCE_TYPES = (
+    "inferenceservice",
+    "servingruntime",
+    "job",
+    "pod",
+    "pvc",
+    "deployment",
+    "replicaset",
+    "service",
+    "secret",
+)
 
 
 def prepare():
@@ -45,15 +57,35 @@ def prepare():
             )
 
 
-def _delete_resources_by_suffix(resource_type: str, ns: str, suffix: str) -> None:
-    """Delete resources whose names end with the FJOB suffix."""
-    result = oc("get", resource_type, "-n", ns, "-o", "name", check=False, log_stdout=False)
-    if result.returncode != 0 or not result.stdout:
-        return
-    for line in result.stdout.strip().splitlines():
-        name = line.strip()
-        if name.endswith(f"-{suffix}"):
-            oc("delete", name, "-n", ns, "--ignore-not-found", check=False)
+def _job_resources(resource_type: str, ns: str, fjob: str) -> list[str]:
+    """Find only resources explicitly labelled for this FournosJob."""
+    selector = f"{FOURNOS_JOB_LABEL}={fjob}"
+    result = oc("get", resource_type, "-n", ns, "-l", selector, "-o", "name", log_stdout=False)
+    return sorted(name for name in result.stdout.splitlines() if name)
+
+
+def _delete_job_resources(ns: str, fjob: str) -> None:
+    for resource_type in JOB_RESOURCE_TYPES:
+        for name in _job_resources(resource_type, ns, fjob):
+            oc(
+                "delete",
+                name,
+                "-n",
+                ns,
+                "--ignore-not-found",
+                "--cascade=foreground",
+                "--wait=true",
+                "--timeout=240s",
+                log_stdout=False,
+            )
+
+    remaining = {
+        resource_type: len(resources)
+        for resource_type in JOB_RESOURCE_TYPES
+        if (resources := _job_resources(resource_type, ns, fjob))
+    }
+    if remaining:
+        raise RuntimeError(f"RHAIIS cleanup incomplete in {ns}: {remaining}")
 
 
 def cleanup():
@@ -62,13 +94,11 @@ def cleanup():
 
     fjob = os.environ.get("FJOB_NAME", "")
     if fjob:
-        suffix = fjob.rsplit("-", 1)[-1]
-        for resource_type in ("inferenceservice", "servingruntime", "job", "pod", "pvc"):
-            _delete_resources_by_suffix(resource_type, ns, suffix)
+        _delete_job_resources(ns, fjob)
     else:
-        oc("delete", "inferenceservice", "--all", "-n", ns, "--ignore-not-found", check=False)
-        oc("delete", "servingruntime", "--all", "-n", ns, "--ignore-not-found", check=False)
-        oc("delete", "job", "--all", "-n", ns, "--ignore-not-found", check=False)
-        oc("delete", "pod", "--all", "-n", ns, "--ignore-not-found", check=False)
+        oc("delete", "inferenceservice", "--all", "-n", ns, "--ignore-not-found")
+        oc("delete", "servingruntime", "--all", "-n", ns, "--ignore-not-found")
+        oc("delete", "job", "--all", "-n", ns, "--ignore-not-found")
+        oc("delete", "pod", "--all", "-n", ns, "--ignore-not-found")
 
     logger.info("Cleanup complete")
