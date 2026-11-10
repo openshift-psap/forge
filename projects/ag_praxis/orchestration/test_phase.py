@@ -388,6 +388,15 @@ def _test_endpoint(
     try:
         _toggle_praxis_for_endpoint(ep_name, maas_cfg)
 
+        if ep_name.startswith("maas"):
+            _register_maas_model(test_namespace, maas_cfg, model_name)
+            maas_gateway_url, maas_curl_connect_to = _resolve_maas_gateway_url()
+            llmisvc_name = maas_cfg["llmisvc_name"]
+            subscription_name = f"{test_namespace}-{llmisvc_name}-subscription"
+            api_key_path = _create_maas_api_key(
+                test_namespace, maas_gateway_url, maas_curl_connect_to, subscription_name
+            )
+
         _smoke_test(
             test_namespace,
             ep_url,
@@ -528,26 +537,21 @@ def _validate_benchmark_rates():
 
 
 def _prepare_test_endpoints(test_namespace, maas_cfg):
-    """Deploy sim, register model, resolve gateway, create API key, and build endpoint list."""
+    """Deploy sim, resolve gateway, and build endpoint list."""
     svc_endpoint = _deploy_maas_sim(test_namespace, maas_cfg)
 
-    model_name = config.project.get_config("platform.sim.model_name")
-    _register_maas_model(test_namespace, maas_cfg, model_name)
-
-    maas_gateway_url, maas_curl_connect_to = _resolve_maas_gateway_url()
+    maas_gateway_url, _ = _resolve_maas_gateway_url()
     llmisvc_name = maas_cfg["llmisvc_name"]
-    subscription_name = f"{test_namespace}-{llmisvc_name}-subscription"
-    api_key_file_path = _create_maas_api_key(
-        test_namespace, maas_gateway_url, maas_curl_connect_to, subscription_name
-    )
     maas_endpoint = f"{maas_gateway_url}/{test_namespace}/{llmisvc_name}"
     logger.info("MaaS external endpoint: %s", maas_endpoint)
     logger.info("SVC endpoint: %s", svc_endpoint)
 
+    model_name = config.project.get_config("platform.sim.model_name")
+
     endpoint_map = {
         "svc": (svc_endpoint, None),
-        "maas": (maas_endpoint, api_key_file_path),
-        "maas/praxis": (maas_endpoint, api_key_file_path),
+        "maas": (maas_endpoint, None),
+        "maas/praxis": (maas_endpoint, None),
     }
     selected = config.project.get_config("test.endpoints")
     endpoints = [(name, *endpoint_map[name]) for name in selected if name in endpoint_map]
