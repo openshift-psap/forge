@@ -353,7 +353,7 @@ def test_multi_record_archive_posts_bounded_batches(
 def test_bad_otlp_record_is_a_per_bundle_failure_not_an_escape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_backoff: None
 ):
-    """A record protobuf rejects must fail only its bundle.
+    """A record that cannot be encoded must fail only its bundle.
 
     OtlpEncodingError is a ValueError; without conversion it would escape
     ingest_trace_bundles (which catches TraceExportError) and abort the whole
@@ -370,7 +370,7 @@ def test_bad_otlp_record_is_a_per_bundle_failure_not_an_escape(
     )
     archive = bundle_dir / ARCHIVE_FILENAME
     with gzip.open(archive, "wt", encoding="utf-8") as handle:
-        # traceId is not valid hex or base64 of the right length.
+        # traceId is not valid hex of the right length.
         handle.write(
             json.dumps(
                 {

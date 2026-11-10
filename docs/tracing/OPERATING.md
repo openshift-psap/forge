@@ -19,7 +19,7 @@ serving pods --OTLP--> OTel Collector --native file exporter--> sanitized
                                                                     |
                         <test dir>/traces/otlp.jsonl.gz + trace-summary.json
                                                                     |
-                        Caliper export: encode OTLP protobuf -> POST /v1/traces ->
+                        Caliper export: OTLP/JSON -> POST /v1/traces ->
                         link traces to the owning (child) MLflow run -> receipt
 ```
 
@@ -210,8 +210,11 @@ MLflow are not mutated by this repository's tests.
 Local, disposable fixtures established on MLflow 3.12.0 with a SQL-backed
 store:
 
-- OTLP protobuf is accepted at `POST /v1/traces` (header `x-mlflow-experiment-id`
-  required; `X-MLFLOW-WORKSPACE` for workspace routing).
+- OTLP/JSON is accepted at `POST /v1/traces` (header `x-mlflow-experiment-id`
+  required; `X-MLFLOW-WORKSPACE` for workspace routing). The server converts
+  span `traceId`/`spanId`/`parentSpanId` hex IDs but not span-link IDs, and it
+  does not store links, so FORGE leaves links out of the request; they stay in
+  the archive.
 - The native trace ID is `tr-<otel-trace-hex>` and resolves through
   `client.get_trace(...)`.
 - The server drops resource attributes and keeps span attributes, so FORGE

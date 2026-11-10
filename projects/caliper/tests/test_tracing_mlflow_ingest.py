@@ -1,6 +1,6 @@
 """Stage 1: native MLflow trace ingestion against a disposable SQL server.
 
-These tests prove the tested client/server baseline: OTLP protobuf is accepted
+These tests prove the tested client/server baseline: OTLP/JSON is accepted
 at ``/v1/traces``, the derived ``tr-<hex>`` trace ID resolves, traces link to
 the owning run, and repeated export does not create duplicate children.
 

@@ -1,90 +1,30 @@
-"""Convert sanitized OTLP JSON records into OTLP protobuf requests.
+"""Build OTLP/JSON export requests from sanitized OTLP JSON records.
 
-The collector's file exporter emits newline-delimited OTLP JSON. OTLP JSON
-encodes trace/span IDs as lowercase hex and 64-bit integers as strings, but
-protobuf's canonical JSON mapping expects base64 for ``bytes`` fields. A generic
-protobuf JSON parser therefore cannot consume the archive directly; IDs must be
-converted first. See https://opentelemetry.io/docs/specs/otlp/.
+The collector's file exporter emits newline-delimited OTLP JSON, which MLflow's
+``/v1/traces`` endpoint accepts directly as ``application/json``: the server
+converts the hex ``traceId``/``spanId``/``parentSpanId`` fields itself. See
+https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding.
 
-Imports of ``opentelemetry``/``protobuf`` are lazy so that tracing-disabled
-commands never require the optional tracing packages.
+Span links are left out of the request. MLflow does not store them, and it does
+not convert their hex IDs, so sending them would only risk a mis-decoded or
+rejected request. They remain in the archive artifact.
 """
 
 from __future__ import annotations
 
-import base64
 import json
+import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-# OTLP JSON fields that are hex in JSON but base64 (bytes) in protobuf JSON.
-_HEX_ID_FIELDS = ("traceId", "spanId", "parentSpanId")
+# Trace ids are 16 bytes, span ids 8 bytes, as lowercase or uppercase hex.
+_ID_HEX_LENGTHS = {"traceId": 32, "spanId": 16, "parentSpanId": 16}
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 
 
 class OtlpEncodingError(ValueError):
-    """Raised when an OTLP JSON record cannot be encoded to protobuf."""
-
-
-def _require_proto() -> Any:
-    try:
-        from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
-            ExportTraceServiceRequest,
-        )
-    except ImportError as exc:  # pragma: no cover - depends on optional deps
-        raise OtlpEncodingError(
-            "OpenTelemetry protobuf definitions are required for native trace export. "
-            "Install with: pip install -e '.[tracing]'"
-        ) from exc
-    return ExportTraceServiceRequest
-
-
-_HEX_RE = __import__("re").compile(r"^[0-9a-fA-F]+$")
-
-
-# Trace ids are 16 bytes, span ids 8 bytes.
-_TRACE_ID_BYTES = 16
-_SPAN_ID_BYTES = 8
-
-
-def _id_to_base64(value: str, field_name: str) -> str:
-    """Convert an OTLP JSON id to the base64 form protobuf JSON expects.
-
-    OTLP JSON (spec) uses lowercase hex; protobuf's canonical JSON uses base64.
-    Files produced by tools that already emit canonical JSON are accepted as-is.
-    The decoded length is validated so a malformed id is rejected rather than
-    silently accepted.
-    """
-    if not isinstance(value, str):
-        raise OtlpEncodingError(f"span {field_name!r} must be a string")
-    if _HEX_RE.match(value):
-        raw = bytes.fromhex(value)
-    else:
-        try:
-            raw = base64.b64decode(value, validate=True)
-        except Exception as exc:
-            raise OtlpEncodingError(f"span {field_name!r} is neither hex nor base64") from exc
-
-    expected = _TRACE_ID_BYTES if field_name == "traceId" else _SPAN_ID_BYTES
-    if len(raw) != expected:
-        raise OtlpEncodingError(
-            f"span {field_name!r} must decode to {expected} bytes, got {len(raw)}"
-        )
-    return base64.b64encode(raw).decode("ascii")
-
-
-def _convert_hex_ids_to_base64(record: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of ``record`` with hex trace/span IDs converted to base64."""
-    data = json.loads(json.dumps(record))  # deep copy without sharing nested state
-    for resource_span in data.get("resourceSpans", []) or []:
-        for scope_span in resource_span.get("scopeSpans", []) or []:
-            for span in scope_span.get("spans", []) or []:
-                for field_name in _HEX_ID_FIELDS:
-                    raw_value = span.get(field_name)
-                    if not raw_value:
-                        continue
-                    span[field_name] = _id_to_base64(raw_value, field_name)
-    return data
+    """Raised when an OTLP JSON record cannot be sent as an export request."""
 
 
 @dataclass
@@ -101,37 +41,50 @@ class EncodedBatch:
 MAX_RECORDS_PER_REQUEST = 500
 
 
+def _validate_id(span: dict[str, Any], field_name: str) -> str | None:
+    value = span.get(field_name)
+    if not value:
+        if field_name == "parentSpanId":
+            return None
+        raise OtlpEncodingError(f"span is missing {field_name!r}")
+    if not isinstance(value, str) or not _HEX_RE.match(value):
+        raise OtlpEncodingError(f"span {field_name!r} must be a hex string")
+    if len(value) != _ID_HEX_LENGTHS[field_name]:
+        raise OtlpEncodingError(
+            f"span {field_name!r} must be {_ID_HEX_LENGTHS[field_name]} hex characters, "
+            f"got {len(value)}"
+        )
+    return value.lower()
+
+
 def encode_records_to_request(records: list[dict[str, Any]]) -> EncodedBatch:
-    """Encode one or more OTLP JSON records into a single protobuf request.
+    """Merge OTLP JSON records into one ``application/json`` export request.
 
-    Each record is parsed into its own message and merged, because protobuf's
-    ``json_format.Parse`` clears the target message before populating it: parsing
-    every record into the same request would keep only the last record.
-
-    Returns the serialized ``ExportTraceServiceRequest`` plus the distinct
-    OTLP trace IDs (lowercase hex) contained in the records so callers can
-    derive MLflow trace IDs without an untested internal mapping.
+    Returns the serialized request plus the distinct OTLP trace IDs (lowercase
+    hex) it contains, so callers can derive MLflow trace IDs.
     """
-    ExportTraceServiceRequest = _require_proto()
-    from google.protobuf.json_format import Parse as ParseJsonProto
-
-    request = ExportTraceServiceRequest()
-    for record in records:
-        converted = _convert_hex_ids_to_base64(record)
-        record_request = ExportTraceServiceRequest()
-        try:
-            ParseJsonProto(json.dumps(converted), record_request, ignore_unknown_fields=True)
-        except Exception as exc:  # protobuf json errors are not one type
-            raise OtlpEncodingError(f"invalid OTLP JSON record: {type(exc).__name__}") from exc
-        request.MergeFrom(record_request)
-
+    resource_spans: list[dict[str, Any]] = []
     trace_ids: list[str] = []
-    for resource_span in request.resource_spans:
-        for scope_span in resource_span.scope_spans:
-            for span in scope_span.spans:
-                trace_ids.append(span.trace_id.hex())
-    # Preserve order but drop duplicates.
-    return EncodedBatch(body=request.SerializeToString(), trace_ids=list(dict.fromkeys(trace_ids)))
+    for record in records:
+        if not isinstance(record, dict):
+            raise OtlpEncodingError("OTLP JSON record must be an object")
+        for resource_span in record.get("resourceSpans") or []:
+            scope_spans = []
+            for scope_span in resource_span.get("scopeSpans") or []:
+                spans = []
+                for span in scope_span.get("spans") or []:
+                    trace_ids.append(_validate_id(span, "traceId"))
+                    _validate_id(span, "spanId")
+                    _validate_id(span, "parentSpanId")
+                    spans.append({key: value for key, value in span.items() if key != "links"})
+                scope_spans.append({**scope_span, "spans": spans})
+            resource_spans.append({**resource_span, "scopeSpans": scope_spans})
+
+    if not trace_ids:
+        raise OtlpEncodingError("OTLP JSON batch contains no spans")
+
+    body = json.dumps({"resourceSpans": resource_spans}).encode("utf-8")
+    return EncodedBatch(body=body, trace_ids=list(dict.fromkeys(trace_ids)))
 
 
 def iter_record_batches(

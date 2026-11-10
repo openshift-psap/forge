@@ -1,9 +1,9 @@
-"""Actual OTLP encoding tests.
+"""OTLP/JSON export request tests.
 
-The plan's Encoding row requires proving hex IDs, nanosecond timestamps, typed
-attributes, events, links, and resource/scope metadata survive encoding into a
-real ``ExportTraceServiceRequest``. These tests decode the produced protobuf
-back and inspect the fields.
+Each request is decoded exactly as MLflow 3.12's ``/v1/traces`` endpoint does
+(its hex-to-base64 ID conversion, then protobuf JSON parsing), proving hex IDs,
+nanosecond timestamps, typed attributes, events, and resource/scope metadata
+reach the server intact.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from projects.caliper.engine.tracing.otlp import (
 HEX_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
 HEX_SPAN_ID = "00f067aa0ba902b7"
 HEX_CHILD_ID = "11f067aa0ba902b7"
+OTHER_TRACE_ID = "5bf92f3577b34da6a3ce929d0e0e4736"
 
 
 def _record() -> dict:
@@ -68,12 +69,14 @@ def _record() -> dict:
 
 
 def _decode(body: bytes):
+    from google.protobuf.json_format import Parse
+    from mlflow.server.otel_api import _convert_otlp_json_ids_to_base64
     from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
         ExportTraceServiceRequest,
     )
 
     request = ExportTraceServiceRequest()
-    request.ParseFromString(body)
+    Parse(_convert_otlp_json_ids_to_base64(body), request, ignore_unknown_fields=True)
     return request
 
 
@@ -116,17 +119,41 @@ def test_encode_preserves_events_and_scope():
     assert root.events[0].time_unix_nano == 1700000000000000001
 
 
-def test_encode_accepts_canonical_base64_ids():
-    """A record already in canonical protobuf JSON (base64 ids) still encodes."""
+def test_encode_drops_span_links():
+    """MLflow neither converts nor stores link IDs, so links are not sent."""
+    record = _record()
+    span = record["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    span["links"] = [{"traceId": OTHER_TRACE_ID, "spanId": HEX_CHILD_ID}]
+
+    encoded = encode_records_to_request([record])
+
+    assert b"links" not in encoded.body
+    assert "links" in span, "the source record must not be mutated"
+    root = _decode(encoded.body).resource_spans[0].scope_spans[0].spans[0]
+    assert len(root.links) == 0
+
+
+def test_encode_rejects_base64_ids():
+    """The server only converts hex IDs; a base64 ID would be mis-decoded."""
     import base64
 
     record = _record()
     span = record["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
     span["traceId"] = base64.b64encode(bytes.fromhex(HEX_TRACE_ID)).decode()
-    span["spanId"] = base64.b64encode(bytes.fromhex(HEX_SPAN_ID)).decode()
-    encoded = encode_records_to_request([record])
-    request = _decode(encoded.body)
-    assert request.resource_spans[0].scope_spans[0].spans[0].trace_id.hex() == HEX_TRACE_ID
+    with pytest.raises(OtlpEncodingError, match="traceId"):
+        encode_records_to_request([record])
+
+
+def test_encode_rejects_wrong_length_ids():
+    record = _record()
+    record["resourceSpans"][0]["scopeSpans"][0]["spans"][1]["parentSpanId"] = "abcd"
+    with pytest.raises(OtlpEncodingError, match="parentSpanId"):
+        encode_records_to_request([record])
+
+
+def test_encode_rejects_a_batch_without_spans():
+    with pytest.raises(OtlpEncodingError, match="no spans"):
+        encode_records_to_request([{"resourceSpans": []}])
 
 
 def test_encode_rejects_bad_hex_id():
@@ -134,9 +161,6 @@ def test_encode_rejects_bad_hex_id():
     record["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["traceId"] = "zzzz"
     with pytest.raises(OtlpEncodingError):
         encode_records_to_request([record])
-
-
-OTHER_TRACE_ID = "5bf92f3577b34da6a3ce929d0e0e4736"
 
 
 def _record_with_trace(trace_hex: str, service: str) -> dict:
@@ -151,11 +175,7 @@ def _record_with_trace(trace_hex: str, service: str) -> dict:
 
 
 def test_encode_merges_every_record_not_just_the_last():
-    """Parse() clears its target, so encoding must merge per-record messages.
-
-    A spool is one record per collector flush; a naive single-message parse
-    keeps only the final record and silently drops the rest.
-    """
+    """A spool is one record per collector flush; every record must be sent."""
     encoded = encode_records_to_request(
         [_record_with_trace(HEX_TRACE_ID, "svc-a"), _record_with_trace(OTHER_TRACE_ID, "svc-b")]
     )

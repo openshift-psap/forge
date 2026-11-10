@@ -2,7 +2,7 @@
 
 This module owns:
 
-* encoding sanitized archives into bounded OTLP protobuf requests,
+* encoding sanitized archives into bounded OTLP/JSON requests,
 * POSTing them to the tracking server's ``/v1/traces`` endpoint,
 * resolving the resulting native trace IDs through the tested server contract,
 * linking accepted traces to the owning single or child run,
@@ -172,7 +172,7 @@ def _post_traces(
     insecure_tls: bool,
     server_cert_path: str | None,
 ) -> None:
-    """POST one OTLP protobuf request to the tracking server's /v1/traces.
+    """POST one OTLP/JSON request to the tracking server's /v1/traces.
 
     Uses an explicitly configured client rather than global environment
     credentials. Retries transient failures with bounded backoff.
@@ -182,7 +182,7 @@ def _post_traces(
 
     url = _traces_url(tracking_uri)
     headers = {
-        "Content-Type": "application/x-protobuf",
+        "Content-Type": "application/json",
         "x-mlflow-experiment-id": experiment_id,
     }
     if workspace:
@@ -308,7 +308,7 @@ def ingest_bundle(
             try:
                 encoded = encode_records_to_request(batch)
             except OtlpEncodingError as exc:
-                # A record protobuf rejects is a per-bundle failure, not an
+                # A record that cannot be encoded is a per-bundle failure, not an
                 # escape: the caller reports it as a trace failure and keeps the
                 # MLflow run metadata instead of aborting the whole export.
                 raise TraceExportError(str(exc)) from exc
