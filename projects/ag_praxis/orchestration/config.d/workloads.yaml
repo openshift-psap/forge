@@ -11,6 +11,11 @@ keep_full_benchmark_file: false
 args:
   processor: gpt2
   request_format: /v1/responses
+  # Fraction of the run occluded from the metrics at the end, where requests
+  # trail off after the last request is issued (guidellm profile cooldown).
+  # Values < 1.0 are a percentage; with a max_requests constraint, values >= 1.0
+  # would mean an absolute request count, not seconds.
+  cooldown: 0.1
 
 smoke_request:
   prompt: San Francisco is a
@@ -19,7 +24,11 @@ smoke_request:
 
 warmup_benchmark_key: null
 
-duration: 180
+# Number of requests each stream issues per rate level (max_requests constraint,
+# so every request runs fully through). ~180s for the default payload at
+# TTFT 1s + 128 x 30ms ITL. Payloads with longer outputs override this to stay
+# within timeout_seconds.
+requests_per_stream: 36
 
 payloads:
   default:
@@ -31,9 +40,11 @@ payloads:
   L:
     prompt_tokens: 1000
     output_tokens: 500
+    requests_per_stream: 12
   XL:
     prompt_tokens: 4000
     output_tokens: 4000
+    requests_per_stream: 3
 
 sweeps:
   smoke: [2, 4]
@@ -49,7 +60,8 @@ benchmarks:
     args:
       profile: "kind=concurrent,streams=4"
       data: kind=synthetic_text,prompt_tokens=256,output_tokens=128
-      constraint: kind=max_duration,seconds=60
+      # 4 streams x 12 requests/stream ~ 60s at the default payload
+      constraint: kind=max_requests,count=48
 
   smoke:
     timeout_seconds: 300
