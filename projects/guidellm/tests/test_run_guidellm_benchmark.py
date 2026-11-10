@@ -321,6 +321,33 @@ class TestBuildRunArgs:
         assert "warmup=75" in profile_arg
         assert not any(a.startswith("--warmup") for a in args)
 
+    def test_cooldown_injected_into_profile(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--rate-type=concurrent", "--rate=8", "--cooldown=0.1"],
+        )
+        profile_arg = next(a for a in args if a.startswith("--profile="))
+        assert "cooldown=0.1" in profile_arg
+        assert not any(a.startswith("--cooldown") for a in args)
+
+    def test_cooldown_injected_into_multi_rate_profile(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--rate-type=concurrent", "--rate=8,16", "--cooldown=0.1"],
+        )
+        profile_arg = next(a for a in args if a.startswith("--profile="))
+        assert "cooldown=0.1" in profile_arg
+        assert not any(a.startswith("--cooldown") for a in args)
+
+    def test_cooldown_injected_into_no_rate_profile(self) -> None:
+        args = self._build(
+            "http://model:8000",
+            ["--rate-type=concurrent", "--cooldown=0.25"],
+        )
+        profile_arg = next(a for a in args if a.startswith("--profile="))
+        assert "cooldown=0.25" in profile_arg
+        assert not any(a.startswith("--cooldown") for a in args)
+
     def test_rampup_injected_into_profile(self) -> None:
         args = self._build(
             "http://model:8000",
