@@ -133,7 +133,14 @@ def _build_benchmark_config(payload_name, sweep_name):
     if sweep is None:
         raise ValueError(f"Unknown sweep: {sweep_name!r}. Valid: {list(sweeps)}")
 
-    duration = workloads.get("duration", 180)
+    # Number of requests each stream issues before the level completes. Unlike
+    # a max_duration constraint, max_requests lets every request run fully
+    # through, so no in-flight stream is cancelled at level end (cancellation
+    # bursts trigger the 404 race in the sim's fasthttp server). The trailing
+    # drain period is occluded from the metrics via the profile cooldown.
+    requests_per_stream = payload.get(
+        "requests_per_stream", workloads.get("requests_per_stream", 36)
+    )
 
     benchmark = {}
     for key in (
@@ -157,7 +164,7 @@ def _build_benchmark_config(payload_name, sweep_name):
             "model": model_name,
             "profile": "kind=concurrent,streams={rate}",
             "data": f"kind=synthetic_text,prompt_tokens={payload['prompt_tokens']},output_tokens={payload['output_tokens']}",
-            "constraint": f"kind=max_duration,seconds={duration}",
+            "constraint": f"kind=max_requests,count={{{requests_per_stream}*rate}}",
         }
     )
     benchmark["args"] = workload_args
