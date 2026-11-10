@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from projects.caliper.engine.tracing.ingest import TraceExportContext as _TraceExportContext
 
 from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
+from projects.caliper.engine.file_export.file_stats import describe_files
 from projects.caliper.engine.file_export.mlflow_secrets import (
     assert_tracking_uri_has_no_userinfo,
     mlflow_connection_env,
@@ -401,13 +402,13 @@ def log_artifacts(
             mlflow.set_experiment(experiment)
         file_paths = [p for p in paths if p.is_file()]
         workers = _parallel_workers(upload_workers, len(file_paths))
+        logger.info(
+            "MLflow upload starting: %s, workers=%d, experiment=%s",
+            describe_files(file_paths),
+            workers,
+            experiment or "default",
+        )
         if verbose:
-            n = len(file_paths)
-            logger.info(
-                f"MLflow upload starting ({n} file(s), workers={workers}, "
-                f"experiment={experiment or 'default'})"
-            )
-
             # Save file list to artifact directory to avoid log spam
             try:
                 if env.ARTIFACT_DIR:
@@ -416,7 +417,7 @@ def log_artifacts(
                         f.write("MLflow Upload File List\n")
                         f.write("======================\n")
                         f.write(f"Experiment: {experiment or 'default'}\n")
-                        f.write(f"Total files: {n}\n")
+                        f.write(f"Total files: {len(file_paths)}\n")
                         f.write(f"Workers: {workers}\n")
                         f.write(f"Artifact root: {artifact_root}\n\n")
 
@@ -482,8 +483,7 @@ def log_artifacts(
 
         if partial_failure:
             logger.info(f"MLflow upload partially failed ({mlflow.get_tracking_uri()})")
-
-        elif verbose:
+        else:
             logger.info(f"MLflow upload finished ({mlflow.get_tracking_uri()})")
 
         return f"mlflow:{mlflow.get_tracking_uri()}", meta, any(partial_failure)
@@ -727,13 +727,12 @@ def log_multi_run_artifacts(
         file_paths = [p for p in all_artifact_paths if p.is_file()]
         effective_meta = merge_run_metadata_with_git_source(artifact_root, run_metadata)
 
-        if verbose:
-            logger.info(
-                "Multi-run export: %d artifact file(s), %d test run(s), experiment=%s",
-                len(file_paths),
-                len(run_dirs),
-                experiment or "default",
-            )
+        logger.info(
+            "MLflow multi-run upload starting: %s, %d test run(s), experiment=%s",
+            describe_files(file_paths),
+            len(run_dirs),
+            experiment or "default",
+        )
 
         parent_meta: dict[str, Any] | None = None
         child_runs_meta: list[dict[str, Any]] = []
@@ -891,8 +890,7 @@ def log_multi_run_artifacts(
         for error in all_curve_errors:
             logger.warning("MLflow curve metric error: %s", error)
 
-        if verbose:
-            logger.info("MLflow multi-run upload finished (%s)", mlflow.get_tracking_uri())
+        logger.info("MLflow multi-run upload finished (%s)", mlflow.get_tracking_uri())
         return f"mlflow:{mlflow.get_tracking_uri()}", parent_meta
 
     if connection is not None:
