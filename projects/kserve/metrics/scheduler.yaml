@@ -1,18 +1,32 @@
 # params:
 #   LLMISVC_NAMESPACE: Target namespace
 #   LLMISVC_NAME: Name of the KServe scheduler LLMInferenceService
+#
+# Shared by the llm_d and ag_praxis projects. The router-scheduler pool
+# state metrics are emitted as `kserve_inference_pool_*` by the KServe
+# scheduler and as `llm_d_epp_*` by the llm-d inference extension (EPP);
+# those queries match both names. The scheduler duration/objective metrics
+# only exist on the KServe scheduler, and the std-dev / prefix-indexer
+# metrics only on the llm-d EPP, so each project gets no_data for the
+# entries of the other variant.
 
 - query: >-
-    kserve_inference_pool_average_kv_cache_utilization{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+    {__name__=~"kserve_inference_pool_average_kv_cache_utilization|llm_d_epp_average_kv_cache_utilization", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
   metricName: scheduler_average_kv_cache_utilization
   description: Scheduler average kv cache utilization
   unit: ratio
 
 - query: >-
-    kserve_inference_pool_average_queue_size{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+    {__name__=~"kserve_inference_pool_average_queue_size|llm_d_epp_average_queue_size", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
   metricName: scheduler_average_queue_size
   description: Scheduler average queue size
   unit: unit
+
+- query: >-
+    llm_d_epp_average_running_requests{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_average_running_requests
+  description: Scheduler average number of running requests across model servers in the pool
+  unit: count
 
 - query: >-
     histogram_quantile(0.5, sum(rate(kserve_inference_extension_scheduler_e2e_duration_seconds_bucket{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}[5m])) by (le))
@@ -39,7 +53,7 @@
   unit: count
 
 - query: >-
-    kserve_inference_pool_per_pod_queue_size{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+    {__name__=~"kserve_inference_pool_per_pod_queue_size|llm_d_epp_per_endpoint_queue_size", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
   metricName: scheduler_per_pod_queue_size
   description: Scheduler per pod queue size
   unit: unit
@@ -51,13 +65,19 @@
   unit: ratio
 
 - query: >-
+    llm_d_epp_prefix_indexer_size{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_prefix_indexer_size
+  description: Scheduler prefix indexer size per plugin
+  unit: count
+
+- query: >-
     kserve_process_resident_memory_bytes{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
   metricName: scheduler_process_resident_memory_bytes
   description: Scheduler process resident memory bytes
   unit: bytes
 
 - query: >-
-    kserve_inference_pool_ready_pods{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+    {__name__=~"kserve_inference_pool_ready_pods|llm_d_epp_ready_endpoints", namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
   metricName: scheduler_ready_pods
   description: Scheduler ready pods
   unit: count
@@ -90,6 +110,24 @@
     kserve_inference_objective_running_requests{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
   metricName: scheduler_running_requests
   description: Scheduler running requests
+  unit: count
+
+- query: >-
+    llm_d_epp_std_dev_kv_cache_utilization{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_std_dev_kv_cache_utilization
+  description: Scheduler std-dev of kv cache utilization for the inference server pool
+  unit: ratio
+
+- query: >-
+    llm_d_epp_std_dev_queue_size{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_std_dev_queue_size
+  description: Scheduler std-dev of pending requests in the model server queue
+  unit: count
+
+- query: >-
+    llm_d_epp_std_dev_running_requests{namespace="{{.LLMISVC_NAMESPACE}}", pod=~"{{.LLMISVC_NAME}}-kserve-router-.*"}
+  metricName: scheduler_std_dev_running_requests
+  description: Scheduler std-dev of running requests across model servers in the pool
   unit: count
 
 - query: >-
