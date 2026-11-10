@@ -28,7 +28,7 @@ spec:
 
   results:
     - name: preemption-cleanup-verified
-      description: Set to true only after a RHAIIS job's target resources are gone.
+      description: Set to true when the deployed-image post-cleanup finishes and any project verifier succeeds.
 
   steps:
     - name: forge
@@ -178,7 +178,7 @@ spec:
 
     # A separate container uses the deployed image even when the forge step
     # checked out PR code. Its success is part of the post-cleanup TaskRun.
-    - name: verify-rhaiis-cleanup
+    - name: verify-preemption-cleanup
       image: image-registry.openshift-image-registry.svc:5000/$(context.taskRun.namespace)/forge-core:latest
       imagePullPolicy: Always
       env:
@@ -204,7 +204,7 @@ spec:
           exit 0
         fi
 
-        # Only deployed-image RHAIIS runs have this snapshotted contract.
+        # Only deployed-image runs have this snapshotted contract.
         # PR-checkout runs are held for manual verification by Fournos.
         if ! pipeline_run_json=$(oc get "pipelinerun/$FJOB_NAME" -n "$FOURNOS_WORKLOAD_NAMESPACE" -o json 2>/dev/null); then
           echo "Could not inspect PipelineRun cleanup contract; no result emitted"
@@ -212,10 +212,17 @@ spec:
         fi
         contract_project=$(jq -r '.metadata.annotations["fournos.dev/preemption-cleanup-project"] // ""' <<< "$pipeline_run_json")
         contract_task=$(jq -r '.metadata.annotations["fournos.dev/preemption-cleanup-task"] // ""' <<< "$pipeline_run_json")
-        if [[ "$contract_project" != rhaiis || -z "$contract_task" ]]; then
+        if [[ -z "$contract_project" || "$contract_task" != 04-post-cleanup ]]; then
           exit 0
         fi
         unset pipeline_run_json
+
+        # A successful forge step in this TaskRun is the common cleanup
+        # contract. Projects can add a stronger target-resource verifier here.
+        if [[ "$contract_project" != rhaiis ]]; then
+          printf 'true' > "$(results.preemption-cleanup-verified.path)"
+          exit 0
+        fi
 
         # PipelineRun status is held by the hub and cannot be changed by the
         # PR's container. It tells the verifier whether the test Task started

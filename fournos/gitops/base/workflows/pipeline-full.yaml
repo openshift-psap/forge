@@ -6,7 +6,6 @@ metadata:
   annotations:
     fournos.dev/resolve-image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/forge-core:latest
     fournos.dev/preemption-cleanup-task: 04-post-cleanup
-    fournos.dev/preemption-cleanup-project: rhaiis
 spec:
   workspaces:
     - name: artifacts
