@@ -42,7 +42,6 @@ TRACING_ENV_KEYS = (
 # vLLM / llm-d knobs.
 VLLM_OTLP_ENDPOINT_ARG = "--otlp-traces-endpoint"
 VLLM_DETAILED_ARG = "--collect-detailed-traces"
-ROUTING_PROXY_TRACING_ARG = "--tracing"
 EPP_TRACING_ARG = "--tracing"
 
 _COLLECTOR_SERVICE = "forge-otel-collector"
@@ -131,12 +130,6 @@ def _strip_cli_arg(args: list[str], flag: str) -> list[str]:
     return output
 
 
-def entrypoint_has_cli_arg(args: list[str], flag: str) -> bool:
-    """Return True when ``flag`` is present in an explicit CLI argument list."""
-    prefix = f"{flag}="
-    return any(str(a) == flag or str(a).startswith(prefix) for a in args)
-
-
 def vllm_tracing_args(
     args: list[str],
     settings: TracingSettings,
@@ -158,14 +151,6 @@ def vllm_tracing_args(
     if settings.detailed:
         output.append(f"{VLLM_DETAILED_ARG}=all")
     return output
-
-
-def routing_proxy_tracing_args(args: list[str]) -> list[str]:
-    """Return routing-proxy args with ``--tracing=true`` applied."""
-    return [
-        *_strip_cli_arg(list(args), ROUTING_PROXY_TRACING_ARG),
-        f"{ROUTING_PROXY_TRACING_ARG}=true",
-    ]
 
 
 def epp_tracing_args(args: list[str]) -> list[str]:

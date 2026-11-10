@@ -152,15 +152,3 @@ def iter_record_batches(
             batch = []
     if batch:
         yield batch
-
-
-def iter_jsonl_records(text: str) -> Iterator[dict[str, Any]]:
-    """Yield decoded JSON objects from newline-delimited OTLP JSON text."""
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            yield json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise OtlpEncodingError(f"invalid JSON on OTLP spool line {line_number}") from exc

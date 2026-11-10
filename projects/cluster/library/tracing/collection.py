@@ -60,10 +60,6 @@ def ownership_labels(identity: CaptureIdentity) -> dict[str, str]:
     }
 
 
-def spool_path() -> str:
-    return f"{SPOOL_MOUNT_PATH}/{SPOOL_FILENAME}"
-
-
 def pvc_name(capture_id: str) -> str:
     return f"forge-trace-spool-{capture_id}"
 
@@ -299,5 +295,4 @@ __all__ = [
     "load_collector_config",
     "ownership_labels",
     "pvc_name",
-    "spool_path",
 ]

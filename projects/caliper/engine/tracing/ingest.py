@@ -58,7 +58,6 @@ class IngestionReport:
                     "status": o.status,
                     "ingested": o.ingested,
                     "linked": o.linked,
-                    "unassigned": o.unassigned,
                     "run_id": o.run_id,
                 }
                 for o in self.outcomes

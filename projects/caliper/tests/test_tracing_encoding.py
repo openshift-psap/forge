@@ -13,7 +13,6 @@ import pytest
 from projects.caliper.engine.tracing.otlp import (
     OtlpEncodingError,
     encode_records_to_request,
-    iter_jsonl_records,
     iter_record_batches,
 )
 
@@ -135,16 +134,6 @@ def test_encode_rejects_bad_hex_id():
     record["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["traceId"] = "zzzz"
     with pytest.raises(OtlpEncodingError):
         encode_records_to_request([record])
-
-
-def test_iter_jsonl_records_parses_lines():
-    text = '{"a": 1}\n\n{"b": 2}\n'
-    assert list(iter_jsonl_records(text)) == [{"a": 1}, {"b": 2}]
-
-
-def test_iter_jsonl_records_rejects_bad_line():
-    with pytest.raises(OtlpEncodingError, match="invalid JSON"):
-        list(iter_jsonl_records('{"a": 1}\nnot json\n'))
 
 
 OTHER_TRACE_ID = "5bf92f3577b34da6a3ce929d0e0e4736"

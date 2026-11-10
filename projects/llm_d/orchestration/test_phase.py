@@ -432,7 +432,7 @@ def _capture_traces_finalizer(
 
     if benchmark_times is None:
         logger.info("No benchmark window recorded; removing the trace collector")
-        lifecycle.cleanup(capture_session, force=True)
+        lifecycle.cleanup(capture_session)
         return
 
     settings = capture_session.settings
@@ -455,12 +455,12 @@ def _capture_traces_finalizer(
             "Requested trace collection failed for this test; see the test logs. "
             "The trace collector was removed.",
         )
-        lifecycle.cleanup(session, force=True)
+        lifecycle.cleanup(session)
         raise RuntimeError("requested trace collection failed") from exc
 
     # Nothing recovers a preserved collector, so it is removed whatever the
     # capture outcome; any published bundles are already in the artifacts.
-    lifecycle.cleanup(session, force=True)
+    lifecycle.cleanup(session)
 
     # An empty capture is expected at low sampling or for a tiny workload, but
     # at full sampling it means instrumentation or the collector endpoint is

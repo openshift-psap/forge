@@ -47,10 +47,6 @@ class TraceExportError(RuntimeError):
     """Raised when native ingestion cannot complete for a non-retryable reason."""
 
 
-class TraceExportRetryable(TraceExportError):
-    """Raised internally for transient failures eligible for a bounded retry."""
-
-
 @dataclass
 class ExportReceipt:
     """Scope receipt persisted next to the archive.
@@ -69,7 +65,6 @@ class ExportReceipt:
     exporter_version: int = EXPORTER_VERSION
     ingested_trace_ids: list[str] = field(default_factory=list)
     linked_trace_ids: list[str] = field(default_factory=list)
-    unassigned_trace_ids: list[str] = field(default_factory=list)
     status: str = "pending"
     reason: str = ""
     updated_at: str = ""
@@ -104,7 +99,6 @@ class ExportReceipt:
             "exporter_version": self.exporter_version,
             "ingested_trace_ids": self.ingested_trace_ids,
             "linked_trace_ids": self.linked_trace_ids,
-            "unassigned_trace_ids": self.unassigned_trace_ids,
             "status": self.status,
             "reason": self.reason,
             "updated_at": self.updated_at or _now_iso(),
@@ -122,7 +116,6 @@ class ExportReceipt:
             exporter_version=int(data.get("exporter_version", 0)),
             ingested_trace_ids=list(data.get("ingested_trace_ids", [])),
             linked_trace_ids=list(data.get("linked_trace_ids", [])),
-            unassigned_trace_ids=list(data.get("unassigned_trace_ids", [])),
             status=str(data.get("status", "pending")),
             reason=str(data.get("reason", "")),
             updated_at=str(data.get("updated_at", "")),
@@ -255,7 +248,6 @@ class IngestionOutcome:
     status: str
     ingested: int = 0
     linked: int = 0
-    unassigned: int = 0
     reason: str = ""
     run_id: str = ""
 
@@ -364,7 +356,6 @@ def ingest_bundle(
         status="complete",
         ingested=len(receipt.ingested_trace_ids),
         linked=len(receipt.linked_trace_ids),
-        unassigned=len(receipt.unassigned_trace_ids),
         run_id=run_id,
     )
 

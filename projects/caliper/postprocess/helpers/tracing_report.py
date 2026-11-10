@@ -236,21 +236,10 @@ def _json_dumps(data: Any) -> str:
     return json.dumps(data, indent=2, sort_keys=True)
 
 
-def reports_for_artifact_root(artifact_root: Path) -> list[Path]:
-    """Generate a report for every discovered bundle under an artifact root."""
-    written: list[Path] = []
-    for bundle in bundle_mod.discover_bundles(Path(artifact_root)):
-        reports_dir = bundle.test_dir / "reports"
-        paths = write_report(bundle, reports_dir)
-        written.append(paths["html"])
-    return written
-
-
 __all__ = [
     "REPORT_HTML_FILENAME",
     "REPORT_JSON_FILENAME",
     "SpanStats",
     "build_report",
-    "reports_for_artifact_root",
     "write_report",
 ]

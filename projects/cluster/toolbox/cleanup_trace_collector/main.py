@@ -7,10 +7,6 @@ Removes the collector Deployment, Service, ConfigMap, PVC, and spool for a
 single capture. Cleanup is restricted to the capture's ownership label, so it
 can never delete another job's resources.
 
-By default cleanup refuses to run when the capture has no verified bundle, to
-avoid destroying the only remaining trace copy. Pass ``--force`` to remove
-resources regardless (for an explicit operator-driven cleanup).
-
 Can be run standalone:
     ./bin/run_toolbox cluster cleanup_trace_collector \\
         --namespace my-ns --capture-id cap-123
@@ -19,7 +15,6 @@ Can be run standalone:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from projects.cluster.library.tracing.collection import cleanup_selector
 from projects.cluster.library.tracing.models import CaptureIdentity
@@ -37,8 +32,6 @@ def run(
     job_id: str = "",
     project: str = "",
     deployment_id: str = "",
-    capture_result_file: str | Path | None = None,
-    force: bool = False,
 ) -> int:
     """
     Remove a capture's collector resources.
@@ -49,8 +42,6 @@ def run(
         job_id: FORGE job / local invocation identity (for labels)
         project: Owning FORGE project name (for labels)
         deployment_id: Stable serving deployment identity (for labels)
-        capture_result_file: Capture result JSON; when present and successful, cleanup is safe
-        force: Remove resources even when no verified capture result is available
     """
     execute_tasks(locals())
     return 0
@@ -58,7 +49,7 @@ def run(
 
 @task
 def validate_inputs(args, ctx):
-    """Validate the capture identity and the safe-to-clean condition."""
+    """Validate the capture identity."""
     ctx.identity = CaptureIdentity(
         job_id=args.job_id or "unknown",
         capture_id=args.capture_id,
@@ -66,29 +57,7 @@ def validate_inputs(args, ctx):
         namespace=args.namespace,
         deployment_id=args.deployment_id or "unknown",
     )
-    ctx.force = bool(args.force)
-    ctx.capture_result_file = Path(args.capture_result_file) if args.capture_result_file else None
-
-    if ctx.force:
-        return "Force cleanup requested"
-
-    if ctx.capture_result_file is None:
-        raise RuntimeError(
-            "refusing to clean up without a verified capture result; pass "
-            "--capture-result-file or --force"
-        )
-    if not ctx.capture_result_file.is_file():
-        raise FileNotFoundError(f"capture result not found: {ctx.capture_result_file}")
-
-    import json
-
-    result = json.loads(ctx.capture_result_file.read_text(encoding="utf-8"))
-    if result.get("status") not in ("collected", "empty"):
-        raise RuntimeError(
-            f"capture result status is '{result.get('status')}', not verified; "
-            "pass --force to remove resources anyway"
-        )
-    return "Capture result verified; safe to clean up"
+    return f"Cleaning up capture {ctx.identity.capture_id}"
 
 
 @task

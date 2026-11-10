@@ -2,8 +2,6 @@
 
 import gzip
 import json
-from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
@@ -13,34 +11,6 @@ from projects.cluster.tests.test_tracing_capture_toolbox import (
     _window,
     capture_main,
 )
-
-
-@pytest.mark.parametrize("exit_code", [0, 1, None])
-def test_storage_reads_pod_init_status(monkeypatch, exit_code):
-    from projects.cluster.toolbox.deploy_trace_collector import main
-
-    monkeypatch.setattr(main, "_collector_pod", lambda ctx: "collector-pod")
-    get = Mock(
-        return_value={
-            "status": {
-                "initContainerStatuses": [
-                    {
-                        "name": "spool-probe",
-                        "state": {"terminated": {"exitCode": exit_code}},
-                    }
-                ]
-            }
-        }
-    )
-    monkeypatch.setattr(main, "oc_get_json", get)
-    ctx = SimpleNamespace(identity=SimpleNamespace(namespace="ns"))
-    if exit_code == 0:
-        main.verify_storage.__wrapped__(None, ctx)
-        assert ctx.collector_pod == "collector-pod"
-    else:
-        with pytest.raises(RuntimeError, match="not writable"):
-            main.verify_storage.__wrapped__(None, ctx)
-    get.assert_called_once_with("pod", name="collector-pod", namespace="ns")
 
 
 @pytest.mark.parametrize("shape", ["arrayValue", "kvlistValue", "bytesValue"])

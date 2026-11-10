@@ -110,16 +110,6 @@ def _attributes_to_dict(attributes: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _record_service_names(record: dict[str, Any]) -> list[str]:
-    names: list[str] = []
-    for resource_span in record.get("resourceSpans", []) or []:
-        resource = resource_span.get("resource") or {}
-        attrs = _attributes_to_dict(resource.get("attributes"))
-        name = attrs.get(SERVICE_NAME_KEY)
-        names.append(str(name) if name is not None else "")
-    return names
-
-
 def iter_span_records(records: Iterable[dict[str, Any]]) -> Iterator[SpanRecord]:
     """Yield every span in every record with its resource/scope context."""
     for record in records:

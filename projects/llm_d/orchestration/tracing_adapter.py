@@ -194,9 +194,8 @@ def instrument_manifest(
     if _router_has_routing_proxy(router):
         raise TracingConfigError(
             "tracing is requested for a deployment with a routing-proxy container; "
-            "routing-proxy instrumentation is implemented but not validated "
-            "end-to-end, so FORGE refuses to render unsupported tracing. Add a "
-            "smoke test to validate the routing proxy before enabling it."
+            "routing-proxy tracing is deferred to a separate change, so FORGE "
+            "refuses to render unsupported tracing."
         )
 
     scheduler = router.get("scheduler")

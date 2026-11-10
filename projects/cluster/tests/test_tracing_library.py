@@ -18,8 +18,6 @@ from projects.cluster.library.tracing.instrumentation import (
     apply_vllm_additional_args,
     build_capture_id,
     collector_service_name,
-    entrypoint_has_cli_arg,
-    routing_proxy_tracing_args,
     tracing_environment,
     vllm_detailed_supported,
     vllm_tracing_args,
@@ -140,8 +138,8 @@ def test_tracing_environment_sets_service_identity():
     settings = settings_from_config(
         _Config({"tracing": {"mode": "standard", "sample_ratio": 0.5}}).get_config
     )
-    env = tracing_environment(settings, _identity(), "vllm-decode", namespace="ns")
-    assert env[SERVICE_NAME_ENV] == "llmd-abc-vllm-decode"
+    env = tracing_environment(settings, _identity(), "vllm", namespace="ns")
+    assert env[SERVICE_NAME_ENV] == "llmd-abc-vllm"
     assert env[EXPORTER_ENDPOINT_ENV].startswith("http://forge-otel-collector-cap-1.ns.svc")
     assert env[TRACES_SAMPLER_ARG_ENV] == "0.5"
     assert "forge.capture_id=cap-1" in env[RESOURCE_ATTRIBUTES_ENV]
@@ -172,12 +170,6 @@ def test_vllm_standard_mode_omits_detailed_flag():
     assert "--collect-detailed-traces=all" not in args
 
 
-def test_routing_proxy_tracing_arg_is_idempotent():
-    args = routing_proxy_tracing_args(["--tracing=true", "--foo=1"])
-    assert args.count("--tracing=true") == 1
-    assert "--foo=1" in args
-
-
 def test_apply_vllm_additional_args_preserves_unrelated_and_dedups():
     existing = "--model=x --max-model-len=4096 --otlp-traces-endpoint=http://old:4317"
     merged = apply_vllm_additional_args(existing, ["--otlp-traces-endpoint=http://new:4317"])
@@ -194,11 +186,6 @@ def test_apply_env_vars_replaces_existing_keys():
         "KEEP": "1",
         SERVICE_NAME_ENV: "new",
     }
-
-
-def test_entrypoint_has_cli_arg_detects_both_forms():
-    assert entrypoint_has_cli_arg(["--otlp-traces-endpoint=x"], "--otlp-traces-endpoint")
-    assert not entrypoint_has_cli_arg(["--other=x"], "--otlp-traces-endpoint")
 
 
 def test_vllm_detailed_unsupported_engine_is_rejected():
@@ -357,22 +344,6 @@ def test_cleanup_selector_only_matches_own_capture():
     assert key == OWNERSHIP_LABEL_KEY
     for resource in resources:
         assert resource["metadata"]["labels"][OWNERSHIP_LABEL_KEY] == value
-
-
-def test_write_capture_state_tolerates_failed_validation():
-    """@always write_capture_state must not mask a validation error.
-
-    write_capture_state runs after validate_inputs even when validation failed,
-    at which point ctx.identity was never set.
-    """
-    from projects.cluster.toolbox.deploy_trace_collector import main as deploy_main
-
-    class _Ctx:
-        pass
-
-    result = deploy_main.write_capture_state.__wrapped__(_Ctx(), _Ctx())
-
-    assert "nothing to persist" in result
 
 
 def test_wait_for_ready_honors_configured_deadline(monkeypatch):

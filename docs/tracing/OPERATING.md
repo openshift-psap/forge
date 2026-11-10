@@ -157,7 +157,7 @@ endpoint.
   notification; any published bundles and diagnostics are already in the
   artifacts. Resources left by an interrupted run can be removed explicitly:
 
-  `./bin/run_toolbox cluster cleanup_trace_collector --namespace NS --capture-id CAP --force`
+  `./bin/run_toolbox cluster cleanup_trace_collector --namespace NS --capture-id CAP`
 
 - Repeated export resumes the existing child runs and skips already-ingested
   traces via the scope-checked receipt. A receipt scoped to a different tracking

@@ -148,7 +148,7 @@ def _cleanup_trace_collector(capture_session) -> None:
     from projects.cluster.library.tracing import lifecycle
 
     try:
-        lifecycle.cleanup(capture_session, force=True)
+        lifecycle.cleanup(capture_session)
     except Exception:
         from projects.core.library.ci import add_notification_file
 

@@ -6,8 +6,8 @@ it reads project configuration and hands explicit typed inputs to the toolbox
 commands. Shared helpers and toolbox commands never import project
 orchestration.
 
-Recovery: capture identity and benchmark windows are persisted as soon as they
-are known so a later finalization phase can recover data after an interruption.
+Benchmark windows are persisted to a file as they are recorded, since the
+capture toolbox command reads them from there.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ from projects.core.library import env
 logger = logging.getLogger(__name__)
 
 WINDOWS_FILENAME = "trace-windows.json"
-CAPTURE_STATE_FILENAME = "trace-capture-state.json"
 
 
 class TracingLifecycleError(RuntimeError):
@@ -62,7 +61,7 @@ class CaptureSession:
         return self.output_root / WINDOWS_FILENAME
 
     def persist_windows(self) -> None:
-        """Persist benchmark windows so finalization can recover after a crash."""
+        """Persist benchmark windows for the capture toolbox command."""
         payload = [w.to_dict() for w in self.windows]
         self._windows_path().parent.mkdir(parents=True, exist_ok=True)
         self._windows_path().write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -120,7 +119,6 @@ def start_capture(
         output_root=Path(output_root),
         roles=list(roles or []),
     )
-    _persist_capture_state(session)
     return session
 
 
@@ -139,28 +137,6 @@ def _deploy_collector(identity: CaptureIdentity, settings: TracingSettings) -> N
         storage_class=settings.storage_class,
         ready_timeout_seconds=settings.ready_timeout_seconds,
     )
-
-
-def _state_path(output_root: Path) -> Path:
-    return output_root / CAPTURE_STATE_FILENAME
-
-
-def _persist_capture_state(session: CaptureSession) -> None:
-    state = {
-        "capture_id": session.identity.capture_id,
-        "roles": session.roles,
-        "job_id": session.identity.job_id,
-        "project": session.identity.project,
-        "namespace": session.identity.namespace,
-        "deployment_id": session.identity.deployment_id,
-        "mode": session.settings.mode.value,
-        "sample_ratio": session.settings.sample_ratio,
-        "collector_image": session.settings.collector_image,
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-    path = _state_path(session.output_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def record_window(
@@ -191,7 +167,7 @@ def _utc_iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
 
 
-def capture(session: CaptureSession, *, interrupted: bool = False) -> CollectionStatus:
+def capture(session: CaptureSession) -> CollectionStatus:
     """Snapshot, transfer, sanitize, and publish bundles for every window."""
     windows = session.windows_from_disk()
     if not windows:
@@ -212,7 +188,6 @@ def capture(session: CaptureSession, *, interrupted: bool = False) -> Collection
         instrumentation_roles=",".join(session.roles),
         settle_timeout_seconds=session.settings.settle_timeout_seconds,
         max_bundle_bytes=session.settings.max_bundle_bytes,
-        interrupted=interrupted,
     )
 
     result_path = session.output_root / "trace-capture-result.json"
@@ -226,15 +201,12 @@ def capture(session: CaptureSession, *, interrupted: bool = False) -> Collection
         raise TracingLifecycleError(f"invalid capture status '{status}'") from exc
 
 
-def cleanup(session: CaptureSession, *, force: bool = False) -> None:
-    """Remove the collector and spool after a verified capture."""
-    result_path = session.output_root / "trace-capture-result.json"
+def cleanup(session: CaptureSession) -> None:
+    """Remove the collector and spool."""
     cleanup_trace_collector(
         namespace=session.identity.namespace,
         capture_id=session.identity.capture_id,
         job_id=session.identity.job_id,
         project=session.identity.project,
         deployment_id=session.identity.deployment_id,
-        capture_result_file=str(result_path) if result_path.is_file() else None,
-        force=force,
     )

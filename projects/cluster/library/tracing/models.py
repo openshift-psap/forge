@@ -12,7 +12,7 @@ rejected rather than silently converted.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -53,7 +53,6 @@ DEFAULT_COLLECTOR_IMAGE = (
 DEFAULT_STORAGE_SIZE = "10Gi"
 DEFAULT_READY_TIMEOUT_SECONDS = 300
 DEFAULT_SETTLE_TIMEOUT_SECONDS = 300
-DEFAULT_PVC_NAME = "forge-trace-spool"
 # Size beyond which the transfer/publish step refuses to load the whole archive
 # into memory and streams it instead. Recorded so operators can tune storage.
 DEFAULT_MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
@@ -89,23 +88,8 @@ class TracingSettings:
 class InstrumentationRole(StrEnum):
     """Reviewed component roles that FORGE knows how to instrument."""
 
-    VLLM_DECODE = "vllm-decode"
-    VLLM_PREFILL = "vllm-prefill"
     VLLM = "vllm"
     EPP = "epp"
-    ROUTING_PROXY = "routing-proxy"
-
-    @property
-    def normalized(self) -> str:
-        return self.value
-
-
-class TraceComponent(StrEnum):
-    """Component identity recorded on spans and in summaries."""
-
-    VLLM = "vllm"
-    EPP = "epp"
-    ROUTING_PROXY = "routing-proxy"
 
 
 @dataclass(frozen=True)
@@ -160,14 +144,6 @@ class CollectionStatus(StrEnum):
     EMPTY = "empty"
     INCOMPLETE = "incomplete"
     FAILED = "failed"
-
-
-class DrainOutcome(StrEnum):
-    """How the collector spool was drained before the final snapshot."""
-
-    GRACEFUL = "graceful"
-    TIMEOUT = "timeout"
-    NOT_ATTEMPTED = "not-attempted"
 
 
 @dataclass
@@ -240,20 +216,6 @@ class TraceWindow:
             namespace=str(data.get("namespace", "")),
             deployment_id=str(data.get("deployment_id", "")),
         )
-
-
-@dataclass
-class CollectionResult:
-    """Outcome of one collection attempt, aggregated across windows."""
-
-    status: CollectionStatus
-    reason: str = ""
-    bundles: list[str] = field(default_factory=list)
-    quality: CollectionQuality = field(default_factory=CollectionQuality)
-
-    @property
-    def failed(self) -> bool:
-        return self.status is CollectionStatus.FAILED
 
 
 def _require_bool(value: Any, field_name: str) -> bool:

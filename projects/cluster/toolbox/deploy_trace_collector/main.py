@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
 from projects.cluster.library.tracing.collection import (
     build_collector_resources,
-    cleanup_selector,
     collector_service_name,
     load_collector_config,
 )
@@ -31,8 +29,8 @@ from projects.cluster.library.tracing.models import (
     CaptureIdentity,
     TracingSettings,
 )
-from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
-from projects.core.dsl.utils.k8s import oc, oc_apply, oc_get_json
+from projects.core.dsl import entrypoint, execute_tasks, retry, task
+from projects.core.dsl.utils.k8s import oc_apply, oc_get_json
 
 logger = logging.getLogger("DSL")
 
@@ -111,7 +109,6 @@ def validate_inputs(args, ctx):
 
     ctx.manifest_dir = Path(args.manifest_dir) if args.manifest_dir else args.artifact_dir / "src"
     ctx.manifest_dir.mkdir(parents=True, exist_ok=True)
-    ctx.started_at = datetime.now(UTC).isoformat()
     ctx.ready_deadline = time.monotonic() + ctx.settings.ready_timeout_seconds
 
     return f"Deploying collector for capture {args.capture_id} ({ctx.mode.value})"
@@ -172,80 +169,6 @@ def wait_for_ready(args, ctx):
     if available and available >= 1:
         return f"Collector ready ({available} replica(s))"
     return (False, "collector has no available replica yet")
-
-
-@task
-def verify_storage(args, ctx):
-    """Verify the spool PVC bound and that the writable probe succeeded.
-
-    The Deployment's ``spool-probe`` init container writes and removes a probe
-    with the same volume permissions the collector uses. The artifact reader
-    sidecar stays read-only, so it is never used to test writability.
-    """
-    ctx.collector_pod = _collector_pod(ctx)
-    pod = oc_get_json(
-        "pod",
-        name=ctx.collector_pod,
-        namespace=ctx.identity.namespace,
-    )
-    init_statuses = pod.get("status", {}).get("initContainerStatuses", []) or []
-    probe = next((s for s in init_statuses if s.get("name") == "spool-probe"), None)
-    if not probe or probe.get("state", {}).get("terminated", {}).get("exitCode") != 0:
-        raise RuntimeError("spool write probe did not succeed; PVC is not writable")
-
-    return "Spool PVC is Bound and writable"
-
-
-def _collector_pod(ctx) -> str:
-    from projects.cluster.library.tracing.collection import cleanup_selector
-
-    selector = cleanup_selector(ctx.identity)
-    result = oc(
-        "-n",
-        ctx.identity.namespace,
-        "get",
-        "pods",
-        "-l",
-        selector,
-        "-o",
-        "jsonpath={.items[0].metadata.name}",
-    )
-    pod = result.stdout.strip()
-    if not pod:
-        raise RuntimeError("no collector pod found for this capture")
-    return pod
-
-
-@always
-@task
-def write_capture_state(args, ctx):
-    """Persist capture identity and collector readiness for later finalization.
-
-    This file lets a finalization phase recover the capture identity even after
-    an interruption, since ``finally`` blocks cannot run after SIGKILL. It runs
-    after ``validate_inputs`` (``@always``), so when validation failed the
-    identity is absent and there is nothing to recover; return without masking
-    the original error.
-    """
-    if getattr(ctx, "identity", None) is None:
-        return "No capture identity (input validation failed); nothing to persist"
-    state = {
-        "capture_id": ctx.identity.capture_id,
-        "job_id": ctx.identity.job_id,
-        "project": ctx.identity.project,
-        "namespace": ctx.identity.namespace,
-        "deployment_id": ctx.identity.deployment_id,
-        "mode": ctx.mode.value,
-        "sample_ratio": ctx.sample_ratio,
-        "collector_pod": getattr(ctx, "collector_pod", ""),
-        "started_at": ctx.started_at,
-        "ownership_selector": cleanup_selector(ctx.identity),
-    }
-    path = ctx.manifest_dir.parent / "trace-capture-state.json"
-    from projects.core.dsl.utils import write_json
-
-    write_json(path, state)
-    return f"Wrote capture state to {path}"
 
 
 if __name__ == "__main__":

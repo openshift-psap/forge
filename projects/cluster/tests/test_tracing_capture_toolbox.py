@@ -355,7 +355,6 @@ def test_settle_deadline_marks_capture_interrupted(tmp_path: Path, monkeypatch):
 
     assert "deadline" in result
     assert ctx.interrupted is True
-    assert ctx.settle_timed_out is True
 
 
 def test_settle_within_deadline_does_not_mark_interrupted(tmp_path: Path, monkeypatch):

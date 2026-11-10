@@ -242,7 +242,6 @@ def wait_for_settle(args, ctx):
     deadline = getattr(ctx, "settle_deadline", None)
     if deadline is not None and time.monotonic() >= deadline:
         ctx.interrupted = True
-        ctx.settle_timed_out = True
         return (
             f"Settle deadline of {ctx.settle_timeout_seconds}s expired; "
             "capture recorded as interrupted"

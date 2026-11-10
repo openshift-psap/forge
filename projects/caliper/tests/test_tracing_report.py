@@ -148,13 +148,6 @@ def test_write_report_creates_json_and_html(tmp_path: Path):
     assert "generate" in html_text
 
 
-def test_reports_for_artifact_root_generates_per_bundle(tmp_path: Path):
-    _write_bundle(tmp_path)
-    written = tracing_report.reports_for_artifact_root(tmp_path)
-    assert len(written) == 1
-    assert written[0].name == tracing_report.REPORT_HTML_FILENAME
-
-
 def test_orchestrator_scans_artifact_tree_not_output_dir(tmp_path: Path, monkeypatch):
     """Postprocess runs in NNN__postprocessing; bundles live in the artifact tree.
 

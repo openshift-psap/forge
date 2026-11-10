@@ -348,7 +348,9 @@ def _finalizer_deps(monkeypatch, status_value: str):
     captured = {}
     monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus(status_value))
     monkeypatch.setattr(lifecycle, "record_window", lambda *a, **k: None)
-    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **kw: captured.setdefault("cleaned", kw))
+    monkeypatch.setattr(
+        lifecycle, "cleanup", lambda *_a, **_k: captured.setdefault("cleaned", True)
+    )
     return test_phase, lifecycle, captured
 
 
@@ -370,7 +372,7 @@ def test_incomplete_capture_fails_requested_tracing(monkeypatch, tmp_path):
         )
 
     assert notifications and notifications[0][0] == "tracing-collection-incomplete"
-    assert captured.get("cleaned") == {"force": True}, "collector must not be left behind"
+    assert captured.get("cleaned") is True, "collector must not be left behind"
 
 
 def test_completed_capture_cleans_up(monkeypatch):
@@ -384,7 +386,7 @@ def test_completed_capture_cleans_up(monkeypatch):
 
     test_phase._capture_traces_finalizer((_utc(0), _utc(10)), capture_session=_capture_session())
 
-    assert captured.get("cleaned") == {"force": True}
+    assert captured.get("cleaned") is True
     assert notifications == []
 
 
@@ -410,7 +412,7 @@ def test_empty_capture_at_full_sampling_fails_tracing(monkeypatch):
         )
 
     assert notifications == ["tracing-collection-empty-at-full-sampling"]
-    assert captured.get("cleaned") == {"force": True}, "collector must not be left behind"
+    assert captured.get("cleaned") is True, "collector must not be left behind"
 
 
 def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
@@ -421,7 +423,7 @@ def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
         (_utc(0), _utc(10)), capture_session=_capture_session(sample_ratio=0.1)
     )
 
-    assert captured.get("cleaned") == {"force": True}
+    assert captured.get("cleaned") is True
 
 
 def test_missing_benchmark_window_removes_the_collector(monkeypatch):
@@ -437,7 +439,7 @@ def test_missing_benchmark_window_removes_the_collector(monkeypatch):
 
     test_phase._capture_traces_finalizer(None, capture_session=_capture_session())
 
-    assert captured.get("cleaned") == {"force": True}
+    assert captured.get("cleaned") is True
     assert notifications == []
 
 
@@ -492,4 +494,4 @@ def test_capture_exception_still_removes_the_collector(monkeypatch):
         )
 
     assert notifications == ["tracing-capture-failed"]
-    assert captured.get("cleaned") == {"force": True}
+    assert captured.get("cleaned") is True

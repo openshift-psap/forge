@@ -149,7 +149,7 @@ def _patch_lifecycle(monkeypatch, status_value: str):
 
     cleaned = {}
     monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus(status_value))
-    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **kw: cleaned.setdefault("called", kw))
+    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleaned.setdefault("called", True))
     return test_phase, cleaned
 
 
@@ -167,7 +167,7 @@ def test_incomplete_capture_is_a_warning_and_removes_collector(monkeypatch):
 
     assert notifications == ["tracing-collection-incomplete"]
     assert "Trace collection incomplete" in test_phase._warnings
-    assert cleaned.get("called") == {"force": True}, "collector must not be left behind"
+    assert cleaned.get("called") is True, "collector must not be left behind"
 
 
 def test_completed_capture_cleans_up(monkeypatch):
@@ -176,7 +176,7 @@ def test_completed_capture_cleans_up(monkeypatch):
 
     test_phase._finalize_trace_capture(_session(0.5))
 
-    assert cleaned.get("called") == {"force": True}
+    assert cleaned.get("called") is True
     assert test_phase._warnings == []
 
 
@@ -223,7 +223,7 @@ def test_empty_capture_at_full_sampling_is_a_warning(monkeypatch):
     test_phase._finalize_trace_capture(_session(1.0))
 
     assert notifications == ["tracing-collection-empty-at-full-sampling"]
-    assert cleaned.get("called") == {"force": True}, "collector must not be left behind"
+    assert cleaned.get("called") is True, "collector must not be left behind"
 
 
 def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
@@ -232,7 +232,7 @@ def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
 
     test_phase._finalize_trace_capture(_session(0.1))
 
-    assert cleaned.get("called") == {"force": True}
+    assert cleaned.get("called") is True
     assert test_phase._warnings == []
 
 
@@ -251,7 +251,7 @@ def test_missing_benchmark_window_removes_the_collector(monkeypatch):
 
     test_phase._finalize_trace_capture(_session(1.0, windows=()))
 
-    assert cleaned.get("called") == {"force": True}
+    assert cleaned.get("called") is True
     assert notifications == []
     assert test_phase._warnings == []
 
@@ -298,4 +298,4 @@ def test_capture_exception_still_removes_the_collector(monkeypatch):
 
     assert notifications == ["tracing-capture-failed"]
     assert "Trace collection failed" in test_phase._warnings
-    assert cleaned.get("called") == {"force": True}
+    assert cleaned.get("called") is True
