@@ -1272,6 +1272,31 @@ class CaliperPostprocessOrchestrator:
             )
             return
 
+        if self.config.analyze.skip_kpi_analysis:
+            self._add_step(
+                "analyse_kpis",
+                KpiAnalysisStepResult(
+                    status=StepStatus.SKIPPED,
+                    completed_at=time.time(),
+                    reason="analyze.skip_kpi_analysis",
+                    html_file=None,
+                ),
+            )
+            return
+
+        if self.artifacts_to_kpis_failed:
+            logger.info("Skipping 'analyse_kpis' step: artifacts_to_kpis failed")
+            self._add_step(
+                "analyse_kpis",
+                KpiAnalysisStepResult(
+                    status=StepStatus.SKIPPED,
+                    completed_at=time.time(),
+                    reason="skipped: artifacts_to_kpis failed",
+                    html_file=None,
+                ),
+            )
+            return
+
         # Get current KPI file path from config
         current_kpis_file = Path(self.config.analyze.current_kpis)
         if not current_kpis_file.is_absolute():
