@@ -129,3 +129,12 @@ def test_args_preferred_over_config_spec(tmp_path: Path) -> None:
     assert extra["prompt_toks"] == 128
     assert extra["output_toks"] == 64
     assert extra["request_type"] == "/v1/completions"
+
+
+def test_burnin_results_are_not_benchmark_artifacts() -> None:
+    results = Path("001__llmd/006__burnin/000__run_guidellm_benchmark/results")
+    assert not dashboard.is_benchmarks_artifact(results / "benchmarks-default.json")
+    assert dashboard.is_benchmarks_artifact(
+        Path("001__llmd/008__benchmark_x/000__run_guidellm_benchmark/results")
+        / "benchmarks-default.json"
+    )

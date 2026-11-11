@@ -102,8 +102,16 @@ DASHBOARD_METADATA_LABEL_KEYS = frozenset(
 )
 
 
+# Artifact directory of a burn-in run (``NextArtifactDir("burnin")`` → ``NNN__burnin``).
+# Burn-in only primes the server, so its result is kept as an artifact but is
+# not a benchmark measurement.
+BURNIN_ARTIFACT_DIR_SUFFIX = "__burnin"
+
+
 def is_benchmarks_artifact(path: Path) -> bool:
     """Return whether ``path`` is a GuideLLM benchmark result artifact."""
+    if any(part.endswith(BURNIN_ARTIFACT_DIR_SUFFIX) for part in path.parent.parts):
+        return False
     return path.suffix == ".json" and (
         path.name == "benchmarks.json" or path.name.startswith("benchmarks-")
     )

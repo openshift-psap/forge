@@ -141,3 +141,30 @@ def test_parser_orders_by_intended_concurrency_not_request_rate(tmp_path: Path) 
         50.0,
         75.0,
     ]  # Rates in intended_concurrency order (8→100, 16→50, 32→75)
+
+
+def test_parser_excludes_burnin_results(tmp_path: Path) -> None:
+    """A burn-in GuideLLM run under the test node must not add a benchmark point."""
+    test_dir = tmp_path / "001__llmd__concurrent-1k-1k"
+    burnin = test_dir / "006__burnin/000__run_guidellm_benchmark/results/benchmarks-default.json"
+    measured = (
+        test_dir
+        / "008__benchmark_concurrent-1k-1k/000__run_guidellm_benchmark/results"
+        / "benchmarks-default.json"
+    )
+    burnin.parent.mkdir(parents=True)
+    measured.parent.mkdir(parents=True)
+    _write_benchmark_file(burnin, 200)
+    _write_benchmark_file(measured, 50)
+
+    parser = GuideLLMParser()
+    node = BaseTestNode(
+        directory=test_dir,
+        test_labels={"labels": {"guidellm_loadshape": "concurrent"}},
+        artifact_paths=[burnin, measured],
+    )
+
+    result = parser.parse([node])
+
+    assert result.warnings == []
+    assert result.records[0].metrics["performance_curves"]["intended_concurrency"] == [50]
