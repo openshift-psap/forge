@@ -7,6 +7,7 @@ defaults:
   serving_image: null
   router_image: null
   enable_monitors: true
+  node_selector: {} # pinned onto the serving/prefill pod templates, not the scheduler
   vllm_extra:
     args:
       gpu_memory_utilization: 0.92
