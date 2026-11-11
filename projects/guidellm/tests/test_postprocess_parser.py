@@ -170,3 +170,21 @@ def test_parser_excludes_results_marked_skip_from_postprocessing(tmp_path: Path)
 
     assert result.warnings == []
     assert result.records[0].metrics["performance_curves"]["intended_concurrency"] == [50]
+
+
+def test_ai_eval_export_excludes_results_marked_skip_from_postprocessing(tmp_path: Path) -> None:
+    from projects.guidellm.postprocess.guidellm.plugin import get_plugin
+
+    burnin = tmp_path / "006__burnin/000__run_guidellm_benchmark/results/benchmarks-default.json"
+    measured = (
+        tmp_path / "008__benchmark/000__run_guidellm_benchmark/results/benchmarks-default.json"
+    )
+    for path in (burnin, measured):
+        path.parent.mkdir(parents=True)
+        _write_benchmark_file(path, 50)
+    (burnin.parent / SKIP_FROM_POSTPROCESSING_MARKER).write_text("", encoding="utf-8")
+
+    files = get_plugin().get_ai_data_artifact_files_for_test(tmp_path)
+
+    assert str(measured.relative_to(tmp_path)) in files
+    assert str(burnin.relative_to(tmp_path)) not in files
