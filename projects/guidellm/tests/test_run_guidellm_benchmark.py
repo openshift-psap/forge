@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from projects.guidellm.toolbox.run_guidellm_benchmark import build_guidellm_args
@@ -176,6 +178,8 @@ def _make_validate_parameters_args(**overrides):
         "name": "guidellm-bench",
         "artifact_dirname_suffix": "",
         "image": None,
+        "keep_full_benchmark_file": False,
+        "drop_request_details": False,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -405,7 +409,6 @@ class TestBuildRunArgs:
             "http://model:8000",
             ["--processor=gpt2", '--processor-args={"use_fast": false}'],
         )
-        import json
 
         expected = json.dumps(
             {"kind": "huggingface_auto", "model": "gpt2", "load_kwargs": {"use_fast": False}}
@@ -673,3 +676,223 @@ def test_extract_results_writes_skip_from_postprocessing_marker(
 
     marker = tmp_path / "results" / main.SKIP_FROM_POSTPROCESSING_MARKER
     assert marker.exists() is skip
+
+
+def test_validate_parameters_rejects_conflicting_retention_flags() -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    args = _make_validate_parameters_args(keep_full_benchmark_file=True, drop_request_details=True)
+    ctx = SimpleNamespace()
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        validate_parameters.__wrapped__(args, ctx)
+
+
+def test_validate_parameters_accepts_drop_request_details() -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    args = _make_validate_parameters_args(drop_request_details=True)
+    ctx = SimpleNamespace()
+
+    validate_parameters.__wrapped__(args, ctx)
+
+    assert ctx.benchmark_name == "guidellm-bench"
+
+
+def _sample_benchmark_payload() -> dict:
+    """A minimal GuideLLM benchmarks.json payload with per-request records."""
+    return {
+        "args": {"rate": "concurrent"},
+        "metadata": {"guidellm_version": "0.8.1"},
+        "benchmarks": [
+            {
+                "config": {"strategy": {"type_": "concurrent", "streams": 4}},
+                "scheduler": {"state": {"start_time": 1, "end_time": 61}},
+                "scheduler_metrics": {"requests_made": {"successful": 10, "errored": 2}},
+                "metrics": {
+                    "requests_per_second": {"successful": {"mean": 5.0}},
+                    "time_to_first_token_ms": {"successful": {"median": 100.0}},
+                },
+                "benchmarker": {"requests": {"attributes": {"data": "prompt_tokens=128"}}},
+                "requests": {
+                    "successful": [
+                        {
+                            "request_start_time": 1.5,
+                            "request_latency": 2.0,
+                            "prompt_tokens": 128,
+                            "output_tokens": 64,
+                            "request_args": {"messages": ["full prompt history"]},
+                            "output": "generated text",
+                            "reasoning_output": "reasoning text",
+                            "info": {"turn_index": 0},
+                        }
+                    ],
+                    "errored": [{"info": {"error": "500"}, "request_args": {"messages": []}}],
+                },
+            }
+        ],
+    }
+
+
+def test_trim_benchmark_json_strips_bulk_fields_by_default() -> None:
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import trim_benchmark_json
+
+    trimmed = trim_benchmark_json(_sample_benchmark_payload())
+
+    benchmark = trimmed["benchmarks"][0]
+    assert "requests" in benchmark
+    successful = benchmark["requests"]["successful"][0]
+    assert "request_args" not in successful
+    assert "output" not in successful
+    assert "reasoning_output" not in successful
+    assert successful["prompt_tokens"] == 128
+    assert benchmark["requests"]["errored"][0]["info"] == {"error": "500"}
+    # aggregate data preserved
+    assert benchmark["metrics"]["requests_per_second"]["successful"]["mean"] == 5.0
+    # non-per-request benchmarker data preserved
+    assert benchmark["benchmarker"]["requests"]["attributes"] == {"data": "prompt_tokens=128"}
+
+
+def test_trim_benchmark_json_drops_request_details() -> None:
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import trim_benchmark_json
+
+    trimmed = trim_benchmark_json(_sample_benchmark_payload(), drop_request_details=True)
+
+    benchmark = trimmed["benchmarks"][0]
+    assert "requests" not in benchmark
+    # aggregate data preserved
+    assert benchmark["metrics"]["requests_per_second"]["successful"]["mean"] == 5.0
+    assert benchmark["scheduler_metrics"]["requests_made"] == {"successful": 10, "errored": 2}
+    assert benchmark["config"]["strategy"]["streams"] == 4
+    assert trimmed["args"] == {"rate": "concurrent"}
+    assert trimmed["metadata"] == {"guidellm_version": "0.8.1"}
+    # non-per-request benchmarker data preserved
+    assert benchmark["benchmarker"]["requests"]["attributes"] == {"data": "prompt_tokens=128"}
+
+
+def _run_trim_script(tmp_path, *script_args) -> dict:
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = (
+        Path(__file__).parent.parent
+        / "toolbox"
+        / "run_guidellm_benchmark"
+        / "scripts"
+        / "trim_benchmark.py"
+    )
+    payload = tmp_path / "benchmarks-rate4.json"
+    payload.write_text(json.dumps(_sample_benchmark_payload()))
+
+    result = subprocess.run(
+        [sys.executable, str(script), *script_args, str(payload)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    return json.loads(payload.read_text())
+
+
+def test_trim_benchmark_script_trims_bulk_fields_by_default(tmp_path) -> None:
+    data = _run_trim_script(tmp_path)
+
+    benchmark = data["benchmarks"][0]
+    assert "requests" in benchmark
+    successful = benchmark["requests"]["successful"][0]
+    assert "request_args" not in successful
+    assert "output" not in successful
+    assert "reasoning_output" not in successful
+
+
+def test_trim_benchmark_script_drops_request_details(tmp_path) -> None:
+    data = _run_trim_script(tmp_path, "--drop-request-details")
+
+    benchmark = data["benchmarks"][0]
+    assert "requests" not in benchmark
+    assert benchmark["metrics"]["requests_per_second"]["successful"]["mean"] == 5.0
+    assert benchmark["benchmarker"]["requests"]["attributes"] == {"data": "prompt_tokens=128"}
+
+
+def test_trim_command_includes_drop_request_details_flag() -> None:
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import trim_command
+
+    command = trim_command(
+        "/tmp/trim_benchmark.py",
+        "/results/benchmarks-rate4.json",
+        drop_request_details=True,
+    )
+
+    assert command == [
+        "python3",
+        "/tmp/trim_benchmark.py",
+        "--drop-request-details",
+        "/results/benchmarks-rate4.json",
+    ]
+
+
+def test_trim_command_omits_flag_without_drop_request_details() -> None:
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import trim_command
+
+    command = trim_command(
+        "/tmp/trim_benchmark.py",
+        "/results/benchmarks-rate4.json",
+        drop_request_details=False,
+    )
+
+    assert command == ["python3", "/tmp/trim_benchmark.py", "/results/benchmarks-rate4.json"]
+
+
+def test_push_trim_script_skipped_when_keep_full(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark import main as guidellm_main
+
+    def fail_copy(*args, **kwargs):
+        raise AssertionError("trim script must not be pushed when keep_full is set")
+
+    monkeypatch.setattr(guidellm_main, "oc_cp_to_pod", fail_copy)
+
+    args = SimpleNamespace(
+        keep_full_benchmark_file=True, drop_request_details=False, artifact_dir=tmp_path
+    )
+    ctx = SimpleNamespace(target_namespace="test-namespace")
+
+    assert guidellm_main._push_trim_script(args, ctx, "guidellm-bench-copy") is None
+
+
+def test_push_trim_script_pushed_with_drop_request_details(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark import main as guidellm_main
+
+    copied = {}
+
+    def fake_cp_to_pod(src, dst, *, namespace, pod, container=None, check=True):
+        copied.update({"src": str(src), "dst": dst, "pod": pod, "container": container})
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(guidellm_main, "oc_cp_to_pod", fake_cp_to_pod)
+
+    args = SimpleNamespace(
+        keep_full_benchmark_file=False, drop_request_details=True, artifact_dir=tmp_path
+    )
+    ctx = SimpleNamespace(target_namespace="test-namespace")
+
+    result = guidellm_main._push_trim_script(
+        args, ctx, "guidellm-bench-abc", container="guidellm-sidecar"
+    )
+
+    # drop mode must not disable the pod-side trim script
+    assert result == "/tmp/trim_benchmark.py"
+    assert copied["dst"] == "/tmp/trim_benchmark.py"
+    assert copied["pod"] == "guidellm-bench-abc"
+    assert copied["container"] == "guidellm-sidecar"
+    # the staged script is kept in the artifacts for traceability
+    assert (tmp_path / "scripts" / "trim_benchmark.py").exists()

@@ -74,7 +74,7 @@ POD_TRIM_SCRIPT_PATH = f"/tmp/{TRIM_SCRIPT_NAME}"
 _REQUEST_BULK_FIELDS = {"request_args", "output", "reasoning_output"}
 
 
-def trim_benchmark_json(obj):
+def trim_benchmark_json(obj, drop_request_details: bool = False):
     """Trim bulky text from request entries while keeping per-turn metrics.
 
     Strips ``request_args`` (full message history), ``output``, and
@@ -82,7 +82,14 @@ def trim_benchmark_json(obj):
     ``info`` (conversation_id, turn_index, timings), token counts, and
     computed metrics (TTFT, ITL, latency, tokens/sec) are preserved so
     that per-turn analysis is possible from the trimmed file.
+
+    When ``drop_request_details`` is set, the per-request records are
+    removed entirely from each benchmark entry (saving space); aggregate
+    benchmark data and the non-per-request ``benchmarker`` data are kept.
     """
+    if drop_request_details:
+        obj = _drop_request_details(obj)
+
     if isinstance(obj, dict):
         return {
             k: _trim_request_entry(v) if k == "requests" else trim_benchmark_json(v)
@@ -92,6 +99,39 @@ def trim_benchmark_json(obj):
         return [trim_benchmark_json(item) for item in obj]
     else:
         return obj
+
+
+def _drop_request_details(obj):
+    """Remove the per-request records from each benchmark entry."""
+    if isinstance(obj, dict):
+        return {
+            k: [_strip_requests(item) for item in v]
+            if k == "benchmarks"
+            else _drop_request_details(v)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, list):
+        return [_drop_request_details(item) for item in obj]
+    else:
+        return obj
+
+
+def _strip_requests(benchmark):
+    """Remove the ``requests`` key from a single benchmark entry."""
+    if isinstance(benchmark, dict):
+        return {k: v for k, v in benchmark.items() if k != "requests"}
+    return benchmark
+
+
+def trim_command(
+    trim_script_path: str, remote_path: str, *, drop_request_details: bool
+) -> list[str]:
+    """Build the in-pod trim command for a benchmark result file."""
+    command = ["python3", trim_script_path]
+    if drop_request_details:
+        command.append("--drop-request-details")
+    command.append(remote_path)
+    return command
 
 
 def _trim_request_entry(obj):
@@ -119,6 +159,7 @@ def run(
     hf_token_secret: str = "",
     fs_group: int | None = None,
     keep_full_benchmark_file: bool = False,
+    drop_request_details: bool = False,
     use_pvc: bool = False,
     api_key_file_path: str | None = None,
     replica_count: int = 1,
@@ -145,6 +186,11 @@ def run(
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds securityContext.fsGroup to the GuideLLM job pod.
         keep_full_benchmark_file: Whether to keep the full untrimmed benchmark JSON files alongside trimmed ones (default: False)
+        drop_request_details: Remove the per-request records from the extracted benchmark
+            JSON files entirely, to save space. Aggregate metrics are preserved (performance
+            analysis plots keep working), but per-request plots (scatter, error breakdown)
+            and per-turn analysis lose their data. Mutually exclusive with
+            keep_full_benchmark_file. (default: False)
         use_pvc: Use PVC with copy pod instead of shared emptyDir volume with sidecar (default: False)
         api_key_file_path: Path to a local file containing the API key for the
             backend. When set, a K8s Secret is created, mounted into the pod, and
@@ -173,6 +219,12 @@ def run(
 @task
 def validate_parameters(args, ctx):
     """Validate and normalize parameters"""
+
+    if args.keep_full_benchmark_file and args.drop_request_details:
+        raise ValueError(
+            "keep_full_benchmark_file and drop_request_details are mutually exclusive: "
+            "keeping the full benchmark file includes the request details"
+        )
 
     # Ensure guidellm_args is a list
     ctx.guidellm_args = args.guidellm_args or []
@@ -850,9 +902,9 @@ def _extract_from_copy_pod_file(
             ctx.target_namespace,
             copy_pod,
             "--",
-            "python3",
-            trim_script_path,
-            remote_path,
+            *trim_command(
+                trim_script_path, remote_path, drop_request_details=args.drop_request_details
+            ),
             check=False,
             timeout_seconds=1800,
         )
@@ -906,7 +958,7 @@ def _extract_from_copy_pod_file(
     logger.info("Trimming the benchmark.json file for %s%s...", run.label, replica_suffix)
     try:
         raw_data = json.loads(json_content)
-        cleaned_data = trim_benchmark_json(raw_data)
+        cleaned_data = trim_benchmark_json(raw_data, drop_request_details=args.drop_request_details)
         with open(local_path, "w") as f:
             json.dump(cleaned_data, f, separators=(",", ":"))
     except json.JSONDecodeError:
@@ -1013,9 +1065,9 @@ def _extract_from_sidecar_pod(
                 "-c",
                 "guidellm-sidecar",
                 "--",
-                "python3",
-                trim_script_path,
-                remote_path,
+                *trim_command(
+                    trim_script_path, remote_path, drop_request_details=args.drop_request_details
+                ),
                 check=False,
                 timeout_seconds=1800,
             )
@@ -1072,7 +1124,9 @@ def _extract_from_sidecar_pod(
         logger.info("Trimming the benchmark.json file for %s%s...", run.label, replica_suffix)
         try:
             raw_data = json.loads(json_content)
-            cleaned_data = trim_benchmark_json(raw_data)
+            cleaned_data = trim_benchmark_json(
+                raw_data, drop_request_details=args.drop_request_details
+            )
             with open(local_path, "w") as f:
                 json.dump(cleaned_data, f, separators=(",", ":"))
         except json.JSONDecodeError:
