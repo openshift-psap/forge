@@ -1,0 +1,258 @@
+-- allium: 3
+-- packagemanifest.allium
+
+-- Scope: PackageManifest lookup and capture in the cluster_deploy_operator
+--   toolbox
+-- Includes: polling the source catalog for the operator's PackageManifest,
+--   selection by catalog label and package name, saving the selected
+--   manifest as a working file, check_install_modes reading install modes
+--   for the target channel from that saved file, and the always-run
+--   PackageManifest diagnostics capture
+-- Excludes:
+--   - OLM Subscription, InstallPlan and CSV lifecycle
+--   - OperatorGroup lookup, reuse and creation
+--   - Target namespace creation
+--   - CatalogSource readiness polling and CatalogSource capture
+--   - Install-mode selection policy (auto / namespace-scoped / cluster-wide
+--     decision and its fallbacks); only the read of install modes from the
+--     saved manifest is specified here
+--   - Parameter validation of the other run() arguments
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+-- Served by the cluster's OLM package server; this toolbox only reads it.
+external entity PackageManifest {
+    name: String                    -- the package name
+    catalog: String                 -- value of the `catalog` label (CatalogSource name)
+    namespace: String               -- namespace the listing is queried in
+    default_channel: String
+    channels: Set<PackageChannel>
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value PackageChannel {
+    name: String
+    -- install modes advertised by the channel's current CSV description
+    install_modes: Set<InstallMode>
+}
+
+value InstallMode {
+    type: String                    -- e.g. OwnNamespace, AllNamespaces
+    supported: Boolean
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum ArtifactKind {
+    selected_manifest      -- working file: <artifact_dir>/src/<package_name>-packagemanifest.json
+    package_manifest_yaml  -- diagnostics:  <artifact_dir>/artifacts/packagemanifest.yaml
+    package_manifest_json  -- diagnostics:  <artifact_dir>/artifacts/packagemanifest.json
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity OperatorDeployment {
+    -- run() parameters relevant to PackageManifest handling
+    package_name: String
+    target_namespace: String
+    source_name: String             -- CatalogSource name
+    source_namespace: String = "openshift-marketplace"
+    channel: String
+
+    manifest_lookup: not_started | pending | found | timed_out
+    lookup_attempts: Integer = 0
+
+    transitions manifest_lookup {
+        not_started -> pending
+        pending -> found
+        pending -> timed_out
+        terminal: found, timed_out
+    }
+
+    artifacts: ManifestArtifact with deployment = this
+    selected_manifest_file: artifacts where kind = selected_manifest
+}
+
+entity ManifestArtifact {
+    deployment: OperatorDeployment
+    kind: ArtifactKind
+    path: String
+    -- PackageManifests whose content was written into the file
+    manifests: Set<PackageManifest>
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- wait_for_package_manifest retry policy
+    max_lookup_attempts: Integer = 60
+    lookup_poll_interval: Duration = 15.seconds
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Flow: PackageManifest lookup
+
+rule StartPackageManifestLookup {
+    -- The lookup begins once the CatalogSource is READY (readiness itself is
+    -- out of scope). If a succeeded CSV already exists for the package, the
+    -- run returns early and the lookup never starts.
+    when: CatalogSourceReady(deployment)
+    requires: deployment.manifest_lookup = not_started
+
+    ensures: deployment.manifest_lookup = pending
+}
+
+rule PackageManifestFound {
+    -- Each poll lists every PackageManifest carrying the catalog label of the
+    -- source CatalogSource in the source namespace, then keeps only the one
+    -- whose name equals the package name. The single selected manifest is
+    -- saved as a working file that later tasks consume.
+    when: PackageManifestPolled(deployment, listing_available)
+    requires: deployment.manifest_lookup = pending
+    requires: listing_available
+
+    let catalog_manifests = PackageManifests where catalog = deployment.source_name and namespace = deployment.source_namespace
+    let matching = catalog_manifests where name = deployment.package_name
+    requires: matching.count > 0
+
+    -- first item in the listing order when several match
+    let selected = first_listed(matching)
+
+    ensures:
+        deployment.manifest_lookup = found
+        deployment.lookup_attempts = deployment.lookup_attempts + 1
+        ManifestArtifact.created(
+            deployment: deployment,
+            kind: selected_manifest,
+            path: selected_manifest_path(deployment.package_name),  -- src/<package_name>-packagemanifest.json
+            manifests: {selected}
+        )
+}
+
+rule PackageManifestNotYetAvailable {
+    -- A failed listing, an unparseable listing, and a listing without the
+    -- package are all treated alike: the attempt counts and the poll is
+    -- retried after lookup_poll_interval, up to max_lookup_attempts.
+    when: PackageManifestPolled(deployment, listing_available)
+    requires: deployment.manifest_lookup = pending
+
+    let catalog_manifests = PackageManifests where catalog = deployment.source_name and namespace = deployment.source_namespace
+    let matching = catalog_manifests where name = deployment.package_name
+    requires: not listing_available or matching.count = 0
+
+    let exhausted = deployment.lookup_attempts + 1 >= config.max_lookup_attempts
+
+    ensures: deployment.lookup_attempts = deployment.lookup_attempts + 1
+    ensures:
+        if exhausted:
+            deployment.manifest_lookup = timed_out
+            DeploymentFailed(deployment: deployment)
+        else:
+            PackageManifestPollScheduled(
+                deployment: deployment,
+                after: config.lookup_poll_interval
+            )
+}
+
+-- Flow: Install modes read (check_install_modes, read side only)
+
+rule ReadInstallModesFromSelectedManifest {
+    -- check_install_modes does not query the cluster: it reads the saved
+    -- selected-manifest file and looks up the channel named by the run's
+    -- channel parameter (falling back to the manifest's default channel when
+    -- the parameter is empty). It yields that channel's current-CSV install
+    -- modes. An unreadable file, a missing channel or an empty install-mode
+    -- list all yield InstallModesUnavailable. What is decided from the
+    -- result is out of scope.
+    when: deployment: OperatorDeployment.manifest_lookup transitions_to found
+
+    let manifest = manifest_in(deployment.selected_manifest_file)
+    let target_channel = if deployment.channel = "": manifest.default_channel else: deployment.channel
+    let channel_entry = manifest.channels where name = target_channel
+
+    ensures:
+        if channel_entry.count > 0 and install_modes_of(channel_entry).count > 0:
+            InstallModesRead(
+                deployment: deployment,
+                install_modes: install_modes_of(channel_entry)
+            )
+        else:
+            InstallModesUnavailable(deployment: deployment)
+}
+
+-- Flow: Diagnostics capture
+
+rule CapturePackageManifestDiagnostics {
+    -- Always-run diagnostics task: fires when the run finishes, whether it
+    -- succeeded, failed, or returned early (e.g. CSV already succeeded, in
+    -- which case no lookup happened). It lists every PackageManifest carrying
+    -- the catalog label of the source CatalogSource in the source namespace,
+    -- then keeps only the one whose name equals the package name — the same
+    -- package name can be served by several catalogs, so the catalog label
+    -- and the package name must combine. That single manifest is written to
+    -- both diagnostics files. Listing failures are tolerated and never
+    -- change the run outcome.
+    when: DeploymentRunFinished(deployment)
+
+    let catalog_manifests = PackageManifests where catalog = deployment.source_name and namespace = deployment.source_namespace
+    let matching = catalog_manifests where name = deployment.package_name
+
+    ensures:
+        if matching.count > 0:
+            let selected = first_listed(matching)
+            ManifestArtifact.created(
+                deployment: deployment,
+                kind: package_manifest_yaml,
+                path: "artifacts/packagemanifest.yaml",
+                manifests: {selected}
+            )
+            ManifestArtifact.created(
+                deployment: deployment,
+                kind: package_manifest_json,
+                path: "artifacts/packagemanifest.json",
+                manifests: {selected}
+            )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ArtifactsHoldOnlyTheTargetPackage {
+    -- Every PackageManifest artifact — the working file and the diagnostics
+    -- files alike — holds at most the deployed package's manifest, taken
+    -- from the source catalog. The same package name can exist in several
+    -- catalogs, so both the catalog label and the package name must match.
+    for a in ManifestArtifacts:
+        a.manifests.count <= 1
+        and a.manifests.all(m =>
+            m.name = a.deployment.package_name
+            and m.catalog = a.deployment.source_name)
+}
+
+invariant SelectedManifestOnlyAfterSuccessfulLookup {
+    for d in OperatorDeployments:
+        d.selected_manifest_file.count > 0 implies d.manifest_lookup = found
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Selection uses only the `catalog=<source_name>` label within the source namespace; the catalog-namespace label is not checked. Could a same-named CatalogSource in another namespace (e.g. a global catalog) contribute a manifest with the same package name, and should the lookup guard against it?"
+open question "Query failure, unparseable output and 'package not in catalog' are retried identically for 60 x 15s. Should 'catalog lists fine but the package is absent' be distinguished, or fail faster?"
+open question "check_install_modes has a branch for when no selected-manifest file exists, but a lookup timeout aborts the run before check_install_modes runs. Is that branch dead defensive code or meant for a future path that skips the lookup?"
