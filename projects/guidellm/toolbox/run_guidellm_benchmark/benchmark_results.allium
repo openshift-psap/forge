@@ -1,0 +1,191 @@
+-- allium: 3
+-- benchmark_results.allium
+
+-- Scope: GuideLLM benchmark result retention in the run_guidellm_benchmark
+--   toolbox, and the ag_praxis workloads configuration that feeds its flags
+-- Includes: retention flag validation (mutual exclusion), retention mode
+--   selection, extracted result-file content per retention mode, ag_praxis
+--   flag plumbing into benchmark runs
+-- Excludes:
+--   - Kubernetes job and pod lifecycle
+--   - Result compression, transfer and copy mechanics
+--   - GuideLLM CLI argument construction
+--   - Postprocess consumption of the result files
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum RetentionMode {
+    full                    -- untrimmed result file kept, .json.gz retained
+    trimmed                 -- per-request records kept, bulk text stripped
+    request_details_dropped -- per-request records removed entirely
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity BenchmarkRun {
+    -- Retention flags requested by the caller (toolbox defaults: false)
+    keep_full_benchmark_file: Boolean = false
+    drop_request_details: Boolean = false
+
+    -- Rate labels the benchmark expands to; one result file per label
+    rate_labels: List<String>
+
+    -- Derived retention mode applied to extracted result files
+    retention_mode: RetentionMode?
+
+    -- Validation outcome: conflicting flags reject the run
+    rejected: Boolean = false
+
+    result_files: ResultFile with run = this
+}
+
+entity ResultFile {
+    run: BenchmarkRun
+    label: String
+
+    -- Per-request records present in the file
+    request_records_present: Boolean
+
+    -- Bulk text fields (request_args, output, reasoning_output) present
+    -- within per-request records
+    per_request_bulk_text_present: Boolean
+
+    -- Aggregate benchmark data (metrics, scheduler_metrics, args, metadata)
+    aggregate_metrics_present: Boolean
+
+    -- Full untrimmed .json.gz kept alongside the extracted file
+    full_file_kept: Boolean
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- ag_praxis workloads.* retention flags, passed to every benchmark run
+    keep_full_benchmark_file: Boolean = false
+    drop_request_details: Boolean = false
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Flow: Flag validation
+
+rule RejectConflictingRetentionFlags {
+    -- keep_full_benchmark_file and drop_request_details are mutually
+    -- exclusive: a run requesting both is rejected during parameter
+    -- validation, before any cluster resource is created.
+    when: run: BenchmarkRun.created
+    requires: run.keep_full_benchmark_file and run.drop_request_details
+
+    ensures:
+        run.rejected = true
+        RunRejected(run)
+}
+
+-- Flow: Retention mode selection
+-- The three selectors are mutually exclusive on the flag combination;
+-- a rejected run (both flags) matches none and keeps retention_mode null.
+
+rule SelectFullMode {
+    when: run: BenchmarkRun.created
+    requires: run.keep_full_benchmark_file and not run.drop_request_details
+
+    ensures: run.retention_mode = full
+}
+
+rule SelectDroppedMode {
+    when: run: BenchmarkRun.created
+    requires: run.drop_request_details and not run.keep_full_benchmark_file
+
+    ensures: run.retention_mode = request_details_dropped
+}
+
+rule SelectTrimmedMode {
+    when: run: BenchmarkRun.created
+    requires: not run.keep_full_benchmark_file and not run.drop_request_details
+
+    ensures: run.retention_mode = trimmed
+}
+
+-- Flow: Result extraction
+
+rule ExtractResultFilesOnCompletion {
+    -- When the benchmark job completes, one result file is extracted per
+    -- rate label. Rejected runs never reach benchmark execution.
+    when: BenchmarkCompleted(run)
+    requires: not run.rejected
+
+    ensures:
+        for label in run.rate_labels:
+            ResultFile.created(run: run, label: label)
+}
+
+-- Flow: Result file content per retention mode
+
+rule FullRetentionKeepsResultFileIntact {
+    when: file: ResultFile.created
+    requires: file.run.retention_mode = full
+
+    ensures:
+        file.request_records_present = true
+        file.per_request_bulk_text_present = true
+        file.aggregate_metrics_present = true
+        file.full_file_kept = true
+}
+
+rule TrimmedRetentionStripsBulkText {
+    -- Default mode: per-request records survive (per-turn analysis remains
+    -- possible) but bulk text fields are stripped from each record.
+    when: file: ResultFile.created
+    requires: file.run.retention_mode = trimmed
+
+    ensures:
+        file.request_records_present = true
+        file.per_request_bulk_text_present = false
+        file.aggregate_metrics_present = true
+        file.full_file_kept = false
+}
+
+rule DroppedRetentionRemovesRequestRecords {
+    -- Space-saving mode: the per-request records are removed entirely,
+    -- including their per-turn metrics. Aggregate benchmark data and the
+    -- non-per-request benchmarker data survive, so aggregate performance
+    -- analysis remains possible.
+    when: file: ResultFile.created
+    requires: file.run.retention_mode = request_details_dropped
+
+    ensures:
+        file.request_records_present = false
+        file.aggregate_metrics_present = true
+        file.full_file_kept = false
+}
+
+-- Flow: ag_praxis configuration
+
+rule PraxisLaunchesBenchmarkRun {
+    -- ag_praxis launches every benchmark (including warmup benchmarks) with
+    -- the retention flags read from the workloads configuration.
+    when: PraxisBenchmarkRequested(benchmark_key)
+
+    ensures:
+        BenchmarkRun.created(
+            keep_full_benchmark_file: config.keep_full_benchmark_file,
+            drop_request_details: config.drop_request_details,
+        )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant RejectedRunsExtractNothing {
+    for run in BenchmarkRuns:
+        run.rejected implies run.result_files.count = 0
+}
