@@ -9,6 +9,7 @@ from projects.guidellm.postprocess.guidellm.dashboard import (
     _extract_dashboard_metrics,
     enrich_guidellm_parse_result,
 )
+from projects.guidellm.toolbox.run_guidellm_benchmark import SKIP_FROM_POSTPROCESSING_MARKER
 
 _MINIMAL_BENCHMARK = {
     "config": {"strategy": {"type_": "concurrent", "streams": 8}},
@@ -131,10 +132,13 @@ def test_args_preferred_over_config_spec(tmp_path: Path) -> None:
     assert extra["request_type"] == "/v1/completions"
 
 
-def test_burnin_results_are_not_benchmark_artifacts() -> None:
-    results = Path("001__llmd/006__burnin/000__run_guidellm_benchmark/results")
-    assert not dashboard.is_benchmarks_artifact(results / "benchmarks-default.json")
-    assert dashboard.is_benchmarks_artifact(
-        Path("001__llmd/008__benchmark_x/000__run_guidellm_benchmark/results")
-        / "benchmarks-default.json"
-    )
+def test_results_marked_skip_from_postprocessing_are_not_benchmark_artifacts(
+    tmp_path: Path,
+) -> None:
+    results = tmp_path / "000__run_guidellm_benchmark/results"
+    results.mkdir(parents=True)
+    benchmark_file = results / "benchmarks-default.json"
+    assert dashboard.is_benchmarks_artifact(benchmark_file)
+
+    (results / SKIP_FROM_POSTPROCESSING_MARKER).write_text("", encoding="utf-8")
+    assert not dashboard.is_benchmarks_artifact(benchmark_file)

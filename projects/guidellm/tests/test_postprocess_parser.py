@@ -5,6 +5,7 @@ from pathlib import Path
 
 from projects.caliper.engine.model import BaseTestNode
 from projects.guidellm.postprocess.guidellm.parsing.parsers import GuideLLMParser
+from projects.guidellm.toolbox.run_guidellm_benchmark import SKIP_FROM_POSTPROCESSING_MARKER
 
 
 def _write_benchmark_file(path: Path, streams: int, request_rate: float | None = None) -> None:
@@ -143,8 +144,8 @@ def test_parser_orders_by_intended_concurrency_not_request_rate(tmp_path: Path) 
     ]  # Rates in intended_concurrency order (8→100, 16→50, 32→75)
 
 
-def test_parser_excludes_burnin_results(tmp_path: Path) -> None:
-    """A burn-in GuideLLM run under the test node must not add a benchmark point."""
+def test_parser_excludes_results_marked_skip_from_postprocessing(tmp_path: Path) -> None:
+    """A GuideLLM run marked skip_from_postprocessing (burn-in) must not add a point."""
     test_dir = tmp_path / "001__llmd__concurrent-1k-1k"
     burnin = test_dir / "006__burnin/000__run_guidellm_benchmark/results/benchmarks-default.json"
     measured = (
@@ -155,6 +156,7 @@ def test_parser_excludes_burnin_results(tmp_path: Path) -> None:
     burnin.parent.mkdir(parents=True)
     measured.parent.mkdir(parents=True)
     _write_benchmark_file(burnin, 200)
+    (burnin.parent / SKIP_FROM_POSTPROCESSING_MARKER).write_text("", encoding="utf-8")
     _write_benchmark_file(measured, 50)
 
     parser = GuideLLMParser()

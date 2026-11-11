@@ -29,6 +29,7 @@ from projects.core.dsl.utils.k8s import (
     oc_get_json,
 )
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
+    SKIP_FROM_POSTPROCESSING_MARKER,
     expand_guidellm_runs,
     render_guidellm_copy_pod_from_parts,
     render_guidellm_job_from_parts,
@@ -150,6 +151,7 @@ def run(
     api_key_file_path: str | None = None,
     replica_count: int = 1,
     validate_backend: bool = True,
+    skip_from_postprocessing: bool = False,
 ) -> int:
     """
     Run the GuideLLM benchmark against a resolved endpoint.
@@ -180,6 +182,9 @@ def run(
             own output file using ``JOB_COMPLETION_INDEX``.
         validate_backend: Whether GuideLLM should validate the backend before
             benchmarking. Set to False for endpoints that don't support /v1/models.
+        skip_from_postprocessing: Mark the results so that GuideLLM post-processing
+            ignores them (e.g. a burn-in run that only primes the server). The
+            results are still kept as artifacts.
     """
 
     if timeout <= 0:
@@ -790,6 +795,12 @@ def extract_results(args, ctx):
 
     results_dir = args.artifact_dir / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.skip_from_postprocessing:
+        write_text(
+            results_dir / SKIP_FROM_POSTPROCESSING_MARKER,
+            "These results are excluded from GuideLLM post-processing.\n",
+        )
 
     if args.use_pvc:
         return extract_results_from_copy_pod(args, ctx, results_dir)
