@@ -97,6 +97,7 @@ def _execute_benchmark(
         api_key_file_path=api_key_file_path,
         validate_backend=config.project.get_config("workloads.validate_backend"),
         keep_full_benchmark_file=config.project.get_config("workloads.keep_full_benchmark_file"),
+        drop_request_details=config.project.get_config("workloads.drop_request_details"),
     )
 
 

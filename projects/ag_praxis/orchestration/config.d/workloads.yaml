@@ -8,6 +8,11 @@ replica_count: 2
 timeout_seconds: 3600
 validate_backend: false
 keep_full_benchmark_file: false
+# Remove the per-request records from the extracted benchmark JSON files
+# entirely, to save artifact space. Mutually exclusive with
+# keep_full_benchmark_file. Performance analysis plots keep working; the
+# per-request scatter, error breakdown and per-turn analysis lose their data.
+drop_request_details: false
 args:
   processor: gpt2
   request_format: /v1/responses
