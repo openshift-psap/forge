@@ -48,6 +48,19 @@ JOB_COMPLETION_GRACE_SECONDS = 60
 # leaving nothing to capture.
 JOB_DEADLINE_MARGIN_SECONDS = 300
 DEFAULT_GUIDELLM_IMAGE = "ghcr.io/vllm-project/guidellm:v0.8.1"
+FOURNOS_JOB_LABEL = "fournos.dev/job-name"
+
+
+def _with_fjob_label(manifest: dict, fjob_name: str) -> dict:
+    """Mark resources (and Job pods) for reliable job-scoped cleanup."""
+    if not fjob_name:
+        return manifest
+
+    manifest["metadata"].setdefault("labels", {})[FOURNOS_JOB_LABEL] = fjob_name
+    if manifest.get("kind") == "Job":
+        pod_metadata = manifest["spec"]["template"].setdefault("metadata", {})
+        pod_metadata.setdefault("labels", {})[FOURNOS_JOB_LABEL] = fjob_name
+    return manifest
 
 
 def job_active_deadline_seconds(timeout: int) -> int:
@@ -150,6 +163,7 @@ def run(
     api_key_file_path: str | None = None,
     replica_count: int = 1,
     validate_backend: bool = True,
+    fjob_name: str = "",
 ) -> int:
     """
     Run the GuideLLM benchmark against a resolved endpoint.
@@ -180,10 +194,13 @@ def run(
             own output file using ``JOB_COMPLETION_INDEX``.
         validate_backend: Whether GuideLLM should validate the backend before
             benchmarking. Set to False for endpoints that don't support /v1/models.
+        fjob_name: FournosJob name to label remote resources for cleanup.
     """
 
     if timeout <= 0:
         raise ValueError("timeout must be greater than zero")
+    if fjob_name and not is_valid_k8s_name(fjob_name):
+        raise ValueError("fjob_name must be a valid Kubernetes name")
 
     # None means "no image configured": use the toolbox default
     if not image:
@@ -323,8 +340,7 @@ def create_api_key_secret(args, ctx):
         check=False,
     )
 
-    # secret is safe here (using --from-file)
-    oc(
+    secret_args = (
         "create",
         "secret",
         "generic",
@@ -333,6 +349,14 @@ def create_api_key_secret(args, ctx):
         "-n",
         ctx.target_namespace,
     )
+    if args.fjob_name:
+        # Add the label at creation time so cancellation cannot leave an
+        # unowned, unlabelled secret between create and a later patch.
+        result = oc(*secret_args, "--dry-run=client", "-o", "json", handled_secretly=True)
+        manifest = _with_fjob_label(json.loads(result.stdout), args.fjob_name)
+        oc("apply", "-f", "-", input_text=json.dumps(manifest), handled_secretly=True)
+    else:
+        oc(*secret_args)
 
     ctx.api_key_secret_name = secret_name
     return f"API key secret {secret_name} created from file"
@@ -368,19 +392,22 @@ def create_guidellm_resources_task(args, ctx):
         # PVC mode - traditional single container job + PVC
         oc_apply(
             src_dir / "guidellm-job.yaml",
-            render_guidellm_job_from_parts(
-                namespace=ctx.target_namespace,
-                name=ctx.benchmark_name,
-                image=ctx.image,
-                endpoint_url=args.endpoint_url,
-                guidellm_args=ctx.guidellm_args,
-                timeout_seconds=job_active_deadline_seconds(args.timeout),
-                hf_token_secret=args.hf_token_secret,
-                fs_group=args.fs_group,
-                config_path=ctx.config_path,
-                api_key_secret=api_key_secret,
-                replica_count=args.replica_count,
-                validate_backend=args.validate_backend,
+            _with_fjob_label(
+                render_guidellm_job_from_parts(
+                    namespace=ctx.target_namespace,
+                    name=ctx.benchmark_name,
+                    image=ctx.image,
+                    endpoint_url=args.endpoint_url,
+                    guidellm_args=ctx.guidellm_args,
+                    timeout_seconds=job_active_deadline_seconds(args.timeout),
+                    hf_token_secret=args.hf_token_secret,
+                    fs_group=args.fs_group,
+                    config_path=ctx.config_path,
+                    api_key_secret=api_key_secret,
+                    replica_count=args.replica_count,
+                    validate_backend=args.validate_backend,
+                ),
+                args.fjob_name,
             ),
         )
 
@@ -400,12 +427,15 @@ def create_guidellm_resources_task(args, ctx):
         # Create the PVC with job as owner
         oc_apply(
             src_dir / "guidellm-pvc.yaml",
-            render_guidellm_pvc_from_parts(
-                namespace=ctx.target_namespace,
-                name=ctx.benchmark_name,
-                pvc_size=args.pvc_size,
-                pvc_storage_class=args.pvc_storage_class,
-                owner_reference=owner_reference,
+            _with_fjob_label(
+                render_guidellm_pvc_from_parts(
+                    namespace=ctx.target_namespace,
+                    name=ctx.benchmark_name,
+                    pvc_size=args.pvc_size,
+                    pvc_storage_class=args.pvc_storage_class,
+                    owner_reference=owner_reference,
+                ),
+                args.fjob_name,
             ),
         )
 
@@ -419,19 +449,22 @@ def create_guidellm_resources_task(args, ctx):
         # Shared volume mode - job with main + sidecar containers
         oc_apply(
             src_dir / "guidellm-job.yaml",
-            render_guidellm_shared_volume_job_from_parts(
-                namespace=ctx.target_namespace,
-                name=ctx.benchmark_name,
-                image=ctx.image,
-                endpoint_url=args.endpoint_url,
-                guidellm_args=ctx.guidellm_args,
-                timeout_seconds=job_active_deadline_seconds(args.timeout),
-                hf_token_secret=args.hf_token_secret,
-                fs_group=args.fs_group,
-                config_path=ctx.config_path,
-                api_key_secret=api_key_secret,
-                replica_count=args.replica_count,
-                validate_backend=args.validate_backend,
+            _with_fjob_label(
+                render_guidellm_shared_volume_job_from_parts(
+                    namespace=ctx.target_namespace,
+                    name=ctx.benchmark_name,
+                    image=ctx.image,
+                    endpoint_url=args.endpoint_url,
+                    guidellm_args=ctx.guidellm_args,
+                    timeout_seconds=job_active_deadline_seconds(args.timeout),
+                    hf_token_secret=args.hf_token_secret,
+                    fs_group=args.fs_group,
+                    config_path=ctx.config_path,
+                    api_key_secret=api_key_secret,
+                    replica_count=args.replica_count,
+                    validate_backend=args.validate_backend,
+                ),
+                args.fjob_name,
             ),
         )
 
@@ -751,12 +784,15 @@ def create_copy_pod(args, ctx):
     # Helper commands need shell utilities that custom benchmark images may lack.
     oc_apply(
         args.artifact_dir / "src" / "guidellm-copy-pod.yaml",
-        render_guidellm_copy_pod_from_parts(
-            namespace=ctx.target_namespace,
-            name=ctx.benchmark_name,
-            image=args.image,
-            pvc_size=args.pvc_size,
-            node_name=node_name,
+        _with_fjob_label(
+            render_guidellm_copy_pod_from_parts(
+                namespace=ctx.target_namespace,
+                name=ctx.benchmark_name,
+                image=args.image,
+                pvc_size=args.pvc_size,
+                node_name=node_name,
+            ),
+            args.fjob_name,
         ),
     )
     return f"Created copy pod {ctx.benchmark_name}-copy"
