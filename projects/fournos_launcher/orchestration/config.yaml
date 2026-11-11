@@ -38,6 +38,7 @@ fournos:
     ci_label: null # will be generated from the CI job UID
     exclusive: true
     clusterless: true
+    interrupt_on_push: true  # When true, running FournosJobs are shutdown when the CI process is interrupted (e.g., on new push)
     env:
       OPENSHIFT_CI_job: [JOB_TYPE, JOB_NAME, JOB_SPEC, OPENSHIFT_CI, JOB_NAME_SAFE, BUILD_ID]
       OPENSHIFT_CI_git_pr: [PULL_PULL_SHA, PULL_NUMBER, PULL_BASE_REF, REPO_NAME, REPO_OWNER, PULL_BASE_SHA, JOB_NAME, PULL_TITLE, PULL_REFS, PULL_HEAD_REF]
