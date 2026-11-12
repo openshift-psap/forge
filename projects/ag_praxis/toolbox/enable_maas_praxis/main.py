@@ -39,7 +39,8 @@ def run(
         gateway_name: Name of the MaaS Gateway resource.
         payload_processing_config: Scaling/resource config for payload-processing deployments
             (replicas, cpu_limit, memory_limit, cpu_request, memory_request).
-            Applied via spec.payloadProcessing on the CR.
+            Applied identically via spec.payloadPreProcessing and spec.payloadProcessing
+            on the CR.
     """
     return execute_tasks(locals())
 
@@ -91,7 +92,16 @@ def configure_payload_processing(args, ctx):
     else:
         payload_processing["resources"] = None
 
-    patch = json.dumps({"spec": {"payloadProcessing": payload_processing}})
+    # payloadPreProcessing and payloadProcessing share the same schema and must be
+    # identically configured
+    patch = json.dumps(
+        {
+            "spec": {
+                "payloadPreProcessing": payload_processing,
+                "payloadProcessing": payload_processing,
+            }
+        }
+    )
 
     oc(
         "patch",
@@ -104,7 +114,10 @@ def configure_payload_processing(args, ctx):
         patch,
     )
 
-    return f"Patched MaasTenantConfig {args.tenant_name} payloadProcessing: {payload_processing}"
+    return (
+        f"Patched MaasTenantConfig {args.tenant_name} "
+        f"payloadPreProcessing/payloadProcessing: {payload_processing}"
+    )
 
 
 @task
