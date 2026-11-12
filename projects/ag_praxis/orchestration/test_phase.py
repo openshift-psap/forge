@@ -357,6 +357,7 @@ def _test_endpoint(
     model_name,
     run_benchmark,
     completed_endpoints,
+    capture_session=None,
     matrix_labels=None,
 ):
     from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
@@ -420,6 +421,15 @@ def _test_endpoint(
         update_test_labels_with_status(test_dir, False, f"Endpoint test failed: {e}")
     finally:
         benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
+
+        _run_finalizer(
+            "recording trace window",
+            _record_trace_window,
+            capture_session=capture_session,
+            run_benchmark=run_benchmark,
+            start_time=benchmark_start,
+            end_time=benchmark_end,
+        )
 
         llmisvc_name = maas_cfg["llmisvc_name"]
         _run_finalizer(
@@ -574,6 +584,7 @@ def _run_endpoint_benchmarking(
     model_name,
     run_benchmark,
     completed_endpoints,
+    capture_session=None,
     matrix_labels=None,
 ):
     """Run smoke tests and benchmarks for each endpoint."""
@@ -589,6 +600,7 @@ def _run_endpoint_benchmarking(
                 model_name,
                 run_benchmark,
                 completed_endpoints,
+                capture_session=capture_session,
                 matrix_labels=matrix_labels,
             )
 
@@ -621,8 +633,15 @@ def do_test_praxis():
 
     primary_exc = None
     completed_endpoints = []
+    capture_session = None
 
     try:
+        # Start the trace collector before the serving workloads, so no spans
+        # are lost at startup. Tracing off is a no-op; without a benchmark
+        # there is no window to record, so the collector is not started.
+        if run_benchmark:
+            capture_session = _start_trace_capture(maas_cfg["llmisvc_name"])
+
         endpoints, model_name, maas_endpoint = _prepare_test_endpoints(test_namespace, maas_cfg)
 
         for combo in combinations:
@@ -638,6 +657,7 @@ def do_test_praxis():
                         model_name,
                         run_benchmark,
                         completed_endpoints,
+                        capture_session=capture_session,
                         matrix_labels=combo.labels,
                     )
 
@@ -648,7 +668,7 @@ def do_test_praxis():
         primary_exc = sys.exc_info()
         logger.exception("Test phase failed")
 
-    finalizer_exc = _run_cleanup(test_namespace, maas_cfg, primary_exc)
+    finalizer_exc = _run_cleanup(test_namespace, maas_cfg, primary_exc, capture_session)
 
     if primary_exc is not None:
         raise primary_exc[1].with_traceback(primary_exc[2])
@@ -662,7 +682,113 @@ def do_test_praxis():
     return 0, ExitCategory.SUCCESS, reason
 
 
-def _run_cleanup(test_namespace, maas_cfg, primary_exc):
+def _tracing_job_id() -> str:
+    """Return the FournosJob name, or a local fallback outside CI."""
+    return config.project.get_config("ci_job.fjob_name", None) or "local-ag-praxis"
+
+
+def _start_trace_capture(deployment_id: str):
+    """Deploy the trace collector for this capture, or return None when disabled.
+
+    A startup failure raises: requested tracing must fail setup rather than run
+    without collecting.
+    """
+    from projects.ag_praxis.orchestration import tracing_adapter
+
+    settings = tracing_adapter.resolve_tracing()
+    if not settings.enabled:
+        return None
+
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.instrumentation import build_capture_id
+
+    job_id = _tracing_job_id()
+    namespace = config.project.get_config("test.namespace")
+
+    return lifecycle.start_capture(
+        job_id=job_id,
+        capture_id=build_capture_id(job_id, namespace),
+        project="ag_praxis",
+        namespace=namespace,
+        deployment_id=deployment_id,
+        output_root=env.ARTIFACT_DIR,
+        settings=settings,
+        # No producer is instrumented yet (sim and praxis OTLP support are
+        # unconfirmed); the collector runs to validate the capture plumbing.
+        roles=[],
+    )
+
+
+def _record_trace_window(capture_session, run_benchmark, start_time, end_time) -> None:
+    """Record one benchmark window per endpoint, mirroring the llm_d per-workload windows."""
+    if capture_session is None or not run_benchmark:
+        return
+
+    from projects.cluster.library.tracing import lifecycle
+
+    lifecycle.record_window(
+        capture_session,
+        test_id=env.ARTIFACT_DIR.name,
+        start=start_time,
+        end=end_time,
+        artifact_dir=env.ARTIFACT_DIR,
+    )
+
+
+def _capture_traces(capture_session) -> None:
+    """Capture trace bundles and clean up the collector, mirroring llm_d.
+
+    Runs before the serving resources are cleaned up so the collector spool is
+    still available. A capture failure is surfaced through a notification and
+    re-raised so the finalizer reports it. The collector and spool are always
+    removed afterwards; without a recorded window there is nothing to capture,
+    so the collector is removed directly.
+    """
+    if capture_session is None:
+        return
+
+    from projects.cluster.library.tracing import lifecycle
+
+    if not capture_session.windows_from_disk():
+        logger.info("No trace windows recorded; removing the trace collector")
+        lifecycle.cleanup(capture_session)
+        return
+
+    settings = capture_session.settings
+    try:
+        status = lifecycle.capture(capture_session)
+    except Exception as exc:
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            "tracing-capture-failed",
+            "Requested trace collection failed for this test; see the test logs. "
+            "The trace collector was removed.",
+        )
+        lifecycle.cleanup(capture_session)
+        raise RuntimeError("requested trace collection failed") from exc
+
+    # Nothing recovers a preserved collector, so it is removed whatever the
+    # capture outcome; any published bundles are already in the artifacts.
+    lifecycle.cleanup(capture_session)
+
+    # An empty capture is expected at low sampling or for a tiny workload, but
+    # at full sampling it means instrumentation or the collector endpoint is
+    # misconfigured and the trace evidence must not pass silently.
+    empty_at_full_sampling = status.value == "empty" and settings.sample_ratio >= 1.0
+    if status.value in ("failed", "incomplete") or empty_at_full_sampling:
+        from projects.core.library.ci import add_notification_file
+
+        reason = "empty-at-full-sampling" if empty_at_full_sampling else status.value
+        add_notification_file(
+            f"tracing-collection-{reason}",
+            "Requested trace collection did not complete successfully; partial "
+            "bundles were retained in the artifacts.",
+        )
+        raise RuntimeError(f"requested trace collection {reason}")
+
+
+def _run_cleanup(test_namespace, maas_cfg, primary_exc, capture_session=None):
     """Run cleanup finalizers after test phase."""
     from projects.kserve.toolbox.capture_llmisvc_state import (
         main as capture_llmisvc_state_command,
@@ -677,6 +803,17 @@ def _run_cleanup(test_namespace, maas_cfg, primary_exc):
         logger.exception("Failed to capture LLMInferenceService state before cleanup")
         if primary_exc is None:
             finalizer_exc = sys.exc_info()
+
+    # Capture the trace bundles before the cleanup removes the serving
+    # resources, so the collector spool is still available.
+    try:
+        _capture_traces(capture_session)
+    except Exception:
+        if primary_exc is None:
+            logger.exception("Finalizer failed: capturing traces")
+            finalizer_exc = finalizer_exc or sys.exc_info()
+        else:
+            logger.exception("Ignoring trace capture failure after primary test failure")
 
     if not config.project.get_config("test.skip_cleanup"):
         try:
