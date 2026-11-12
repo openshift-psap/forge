@@ -86,7 +86,7 @@ def resolve_config_path(benchconf_ref: str) -> Path:
 
     Args:
         benchconf_ref: Reference in ``suite/name`` format
-            (e.g. ``"llm-d/concurrent-1k-1k"``).
+            (e.g. ``"psap-inference/concurrent-1k-1k-equal"``).
 
     Returns:
         Path to the resolved YAML config file on the local filesystem.
@@ -103,7 +103,7 @@ def resolve_config_path(benchconf_ref: str) -> Path:
     if len(parts) != 2:
         raise ValueError(
             f"Invalid benchconf reference '{benchconf_ref}'. "
-            "Expected format: 'suite/name' (e.g. 'llm-d/concurrent-1k-1k')"
+            "Expected format: 'suite/name' (e.g. 'psap-inference/concurrent-1k-1k-equal')"
         )
 
     suite, name = parts

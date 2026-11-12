@@ -28,34 +28,34 @@ benchmarks:
 
   smoke:
     timeout_seconds: 300
-    benchconf: llm-d/smoke
+    benchconf: psap-inference/smoke
 
   concurrent-1k-1k:
     timeout_seconds: 3600
     vllm_args:
       max_model_len: 8192
-    benchconf: llm-d/concurrent-1k-1k
+    benchconf: psap-inference/concurrent-1k-1k-equal
 
   concurrent-8k-1k:
     timeout_seconds: 3600
     vllm_args:
       max_model_len: 40960
-    benchconf: llm-d/concurrent-8k-1k
+    benchconf: psap-inference/concurrent-8k-1k-equal
 
   heavy-heterogeneous:
     timeout_seconds: 3600
     vllm_args:
       max_model_len: 40960
-    benchconf: llm-d/concurrent-heavy-heterogeneous
+    benchconf: psap-inference/concurrent-8k-800-norm
 
   heavy-load:
     timeout_seconds: 3600
     vllm_args:
       max_model_len: 40960
-    benchconf: llm-d/heavy-load
+    benchconf: psap-inference/concurrent-100k-1k-equal
 
   multi-turn:
     vllm_args:
       max_model_len: 40960
     timeout_seconds: 7200
-    benchconf: llm-d/multi-turn
+    benchconf: psap-inference/concurrent-128-128-multiturn
