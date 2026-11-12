@@ -47,6 +47,7 @@ def run(
     installplan_approval: str = "Automatic",
     display_name: str = "",
     install_mode: str = "auto",
+    starting_csv: str = "",
 ) -> int:
     """
     Deploy an OLM operator and wait for its CSV to succeed.
@@ -60,6 +61,8 @@ def run(
         installplan_approval: InstallPlan approval mode
         display_name: Optional human-friendly name used in logs
         install_mode: Install mode - "auto" (default), "namespace-scoped", or "cluster-wide"
+        starting_csv: Optional CSV name to pin in the Subscription (spec.startingCSV);
+            when empty, OLM resolves the channel head
     """
 
     execute_tasks(locals())
