@@ -629,3 +629,20 @@ def test_job_active_deadline_is_strictly_after_wait_deadline() -> None:
     # be captured before the job controller deletes them.
     assert deadline > 3600 + JOB_COMPLETION_GRACE_SECONDS
     assert deadline == 3600 + JOB_COMPLETION_GRACE_SECONDS + 300
+
+
+@pytest.mark.parametrize("skip", [True, False])
+def test_extract_results_writes_skip_from_postprocessing_marker(
+    tmp_path, monkeypatch, skip: bool
+) -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark import main
+
+    monkeypatch.setattr(main, "extract_results_from_sidecar", lambda args, ctx, results_dir: [])
+    args = SimpleNamespace(artifact_dir=tmp_path, use_pvc=False, skip_from_postprocessing=skip)
+
+    main.extract_results.__wrapped__(args, SimpleNamespace())
+
+    marker = tmp_path / "results" / main.SKIP_FROM_POSTPROCESSING_MARKER
+    assert marker.exists() is skip
