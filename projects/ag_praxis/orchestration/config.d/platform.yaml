@@ -20,7 +20,7 @@ operators:
     namespace: redhat-ods-operator
     channel: stable-3.x
     source: redhat-operators
-
+    starting_csv: null
 
 rhoai:
   custom_catalog:
