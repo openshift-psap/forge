@@ -27,7 +27,7 @@ class AgPraxisPlugin(GuideLLMPlugin):
         PLOT_REGISTRY[RESOURCE_REPORT_ID] = {
             "function": None,
             "type": "report",
-            "description": "CPU/memory usage vs limits for payload pods",
+            "description": "CPU/memory usage vs limits and requests for every captured target",
         }
         PLOT_REGISTRY[OVERHEAD_REPORT_ID] = {
             "function": None,
@@ -62,7 +62,7 @@ class AgPraxisPlugin(GuideLLMPlugin):
             resource_reports = _generate_resource_reports(model, output_dir)
             reports.extend(resource_reports)
             if not resource_reports:
-                logger.info("No resource_payload capture data found in test artifacts")
+                logger.info("No resource usage/limits capture data found in test artifacts")
 
         if overhead_requested:
             overhead_reports = _generate_overhead_reports(model, output_dir)
@@ -121,29 +121,33 @@ def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list
         node_name = Path(node.directory).name
         source_dir = output_dir / node_name / "resource_usage_vs_limits"
 
+        group_results = []
         for capture_dir in capture_dirs:
             try:
-                group_result = parse_capture_group(capture_dir)
-                if "payload" not in group_result.group_name:
-                    continue
-                report_path = generate_resource_report(group_result, source_dir)
-                if report_path:
-                    rel_path = str(Path(report_path).relative_to(output_dir))
-                    reports.append(
-                        ReportFile(
-                            source="resource_usage_vs_limits",
-                            scope=node_name,
-                            title=group_result.group_name,
-                            path=rel_path,
-                        )
-                    )
-                    logger.info("Generated resource report: %s", report_path)
+                group_results.append(parse_capture_group(capture_dir))
             except Exception:
-                logger.warning(
-                    "Failed to generate resource report for %s",
-                    capture_dir,
-                    exc_info=True,
+                logger.warning("Failed to parse Prometheus capture %s", capture_dir, exc_info=True)
+
+        if not group_results:
+            continue
+
+        try:
+            report_path = generate_resource_report(group_results, source_dir)
+        except Exception:
+            logger.warning("Failed to generate resource report for %s", node_name, exc_info=True)
+            continue
+
+        if report_path:
+            rel_path = str(Path(report_path).relative_to(output_dir))
+            reports.append(
+                ReportFile(
+                    source="resource_usage_vs_limits",
+                    scope=node_name,
+                    title="Resource Usage vs Limits",
+                    path=rel_path,
                 )
+            )
+            logger.info("Generated resource report: %s", report_path)
 
     return reports
 
