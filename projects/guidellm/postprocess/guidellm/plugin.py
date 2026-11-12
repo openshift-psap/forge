@@ -80,7 +80,7 @@ class _PlotRegistry:
                 "kwargs": {
                     "report_title": "GuideLLM Request Scatter",
                 },
-                "description": "per-request latency over time scatter plot colored by concurrency level",
+                "description": "per-request latency and output tokens per response over time, colored by concurrency level",
             },
         }
         return self._registry
