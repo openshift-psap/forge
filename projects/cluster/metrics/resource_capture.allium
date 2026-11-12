@@ -1,0 +1,330 @@
+-- allium: 3
+-- resource_capture.allium
+
+-- Scope: pod and container selection for the Prometheus resource metric
+--   captures (the resource_cpu, resource_memory, resource_limits,
+--   resource_network and workload profiles under projects/cluster/metrics),
+--   the capture-group variable resolution feeding their queries, and the
+--   CPU usage aggregate they produce
+-- Includes:
+--   - capture-group variable resolution: group variables from the project
+--     configuration take precedence over the profile param_defaults
+--   - container selection: the CONTAINER group variable filters every
+--     container-scoped query of the group; groups setting no CONTAINER
+--     capture every container of their selected pods
+--   - the ag_praxis capture groups selecting their workload containers
+--     (guidellm-main for the load generator, main for the simulator)
+--   - the total CPU usage aggregate (sum over the selection, replacing
+--     the former average across series)
+-- Excludes:
+--   - kube-burner execution machinery (capture pod, ConfigMap, result
+--     collection, metadata indexing)
+--   - the TSDB snapshot captures (capture_prometheus_db)
+--   - postprocess reports consuming the captured metrics
+--   - vllm, scheduler, worker_node, control_plane and gpu profiles (no
+--     container selection)
+--   - pod exclusion (POD_NAME_EXCLUDE)
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum AggregateKind {
+    none      -- one series per selected pod/container, no aggregation
+    total     -- one value: sum over every in-scope series
+    average   -- one value: average over every in-scope series
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity MetricProfile {
+    -- one metric profile file under projects/cluster/metrics
+    file_name: String            -- eg resource_cpu
+
+    -- true when the profile's queries filter by the container label (cpu,
+    -- memory, limits, requests); pod-scoped profiles (network counters,
+    -- pod counts) do not
+    container_scoped: Boolean
+}
+
+entity CaptureGroup {
+    name: String                 -- eg resource_load-generator
+    namespace: String
+    pod_pattern: String          -- regex over pod names, eg "guidellm.*"
+
+    -- CONTAINER variable from the group configuration; null when the
+    -- group sets none
+    configured_container_pattern: String?
+
+    -- resolved container selection: the configured CONTAINER variable,
+    -- otherwise the profile default matching every container. Group
+    -- variables take precedence over profile param_defaults.
+    container_pattern: configured_container_pattern ?? ".*"
+
+    -- metric profile files the group captures
+    profile_files: Set<String>
+
+    metrics: CapturedMetric with group = this
+}
+
+entity CapturedMetric {
+    group: CaptureGroup
+    profile: String              -- metric profile file name, eg resource_cpu
+    metric_name: String          -- eg total_cpu_usage
+
+    -- computed over the group's container selection; false for pod-scoped
+    -- queries, which only filter by pod
+    container_scoped: Boolean
+
+    aggregate: AggregateKind
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+default MetricProfile resource_cpu = { file_name: "resource_cpu", container_scoped: true }
+default MetricProfile resource_memory = { file_name: "resource_memory", container_scoped: true }
+default MetricProfile resource_limits = { file_name: "resource_limits", container_scoped: true }
+default MetricProfile resource_network = { file_name: "resource_network", container_scoped: false }
+default MetricProfile workload = { file_name: "workload", container_scoped: false }
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- ag_praxis orchestration/config.d/prom.yaml: the container selections
+    -- of the two workload capture groups, and the profile files every
+    -- ag_praxis resource capture group includes
+    load_generator_container: String = "guidellm-main"
+    simulator_container: String = "main"
+    resource_profile_files: Set<String> = { "resource_cpu", "resource_memory", "resource_network", "resource_limits", "workload" }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Flow: capture-group registration
+
+rule RegisterConfiguredCaptureGroup {
+    -- Every enabled group entry of a project's prometheus capture
+    -- configuration registers one capture group: its namespace, pod
+    -- selection, profile files and the optional CONTAINER variable. A
+    -- query variable resolved by neither the group configuration nor the
+    -- profile param_defaults fails the group's capture; the remaining
+    -- groups still run.
+    when: CaptureGroupConfigured(name, namespace, pod_pattern, profile_files, container_pattern?)
+    ensures:
+        CaptureGroup.created(
+            name: name,
+            namespace: namespace,
+            pod_pattern: pod_pattern,
+            profile_files: profile_files,
+            configured_container_pattern: container_pattern
+        )
+}
+
+rule PraxisConfiguresWorkloadCaptureGroups {
+    -- The ag_praxis capture configuration registers its two workload
+    -- capture groups with a container selection pinning the workload
+    -- container, so sidecar containers stay out of the resource captures:
+    -- the load generator (guidellm pods) captures only the guidellm-main
+    -- container, the simulator (model service pods) only the main
+    -- container.
+    when: PraxisCaptureConfigured(namespace, load_generator_pod_pattern, simulator_pod_pattern)
+    ensures:
+        CaptureGroupConfigured(
+            name: "resource_load-generator",
+            namespace: namespace,
+            pod_pattern: load_generator_pod_pattern,
+            profile_files: config.resource_profile_files,
+            container_pattern: config.load_generator_container
+        )
+        CaptureGroupConfigured(
+            name: "resource_sim",
+            namespace: namespace,
+            pod_pattern: simulator_pod_pattern,
+            profile_files: config.resource_profile_files,
+            container_pattern: config.simulator_container
+        )
+}
+
+-- Flow: metric capture
+
+rule CaptureResourceCpuMetrics {
+    -- resource_cpu: the per-container CPU usage rates (one series per pod
+    -- and container) and the total CPU usage — the sum of the in-scope
+    -- per-container rates over the whole selection, replacing the former
+    -- average across series (avg_cpu_usage).
+    when: CaptureWindowClosed(group)
+    requires: "resource_cpu" in group.profile_files
+    ensures:
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_cpu",
+            metric_name: "cpu_usage_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_cpu",
+            metric_name: "total_cpu_usage",
+            container_scoped: true,
+            aggregate: total
+        )
+}
+
+rule CaptureResourceMemoryMetrics {
+    -- resource_memory: the per-container memory working set (one series
+    -- per pod and container) and the average working set across the
+    -- in-scope series.
+    when: CaptureWindowClosed(group)
+    requires: "resource_memory" in group.profile_files
+    ensures:
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_memory",
+            metric_name: "memory_working_set_bytes_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_memory",
+            metric_name: "avg_memory_working_set_bytes",
+            container_scoped: true,
+            aggregate: average
+        )
+}
+
+rule CaptureResourceLimitsMetrics {
+    -- resource_limits: per-container usage, limits and requests for CPU
+    -- and memory (one series per pod and container).
+    when: CaptureWindowClosed(group)
+    requires: "resource_limits" in group.profile_files
+    ensures:
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_limits",
+            metric_name: "cpu_usage_cores_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_limits",
+            metric_name: "memory_usage_bytes_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_limits",
+            metric_name: "cpu_limits_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_limits",
+            metric_name: "memory_limits_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_limits",
+            metric_name: "cpu_requests_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_limits",
+            metric_name: "memory_requests_by_pod",
+            container_scoped: true,
+            aggregate: none
+        )
+}
+
+rule CaptureResourceNetworkMetrics {
+    -- resource_network: pod-level network counters. cAdvisor reports them
+    -- at pod scope, so the container selection does not apply.
+    when: CaptureWindowClosed(group)
+    requires: "resource_network" in group.profile_files
+    ensures:
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_network",
+            metric_name: "network_receive_bytes_per_second",
+            container_scoped: false,
+            aggregate: none
+        )
+        CapturedMetric.created(
+            group: group,
+            profile: "resource_network",
+            metric_name: "network_transmit_bytes_per_second",
+            container_scoped: false,
+            aggregate: none
+        )
+}
+
+rule CaptureWorkloadMetrics {
+    -- workload: the number of active pods. kube_pod_info is pod-scoped, so
+    -- the container selection does not apply.
+    when: CaptureWindowClosed(group)
+    requires: "workload" in group.profile_files
+    ensures:
+        CapturedMetric.created(
+            group: group,
+            profile: "workload",
+            metric_name: "active_pods",
+            container_scoped: false,
+            aggregate: none
+        )
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant CpuAggregateIsTotalNotAverage {
+    -- the aggregate CPU usage over a capture scope is a total: the sum of
+    -- the in-scope per-container rates. Averaging across series (the
+    -- former avg_cpu_usage) is gone.
+    for metric in CapturedMetrics:
+        metric.profile = "resource_cpu" and metric.aggregate != none
+            implies metric.aggregate = total
+}
+
+invariant ContainerScopedMetricsFollowProfileScope {
+    -- a captured metric is container-scoped exactly when its profile's
+    -- queries filter by the container label
+    for metric in CapturedMetrics:
+        for profile in MetricProfiles where file_name = metric.profile:
+            metric.container_scoped = profile.container_scoped
+}
+
+invariant WorkloadGroupsCaptureOnlyWorkloadContainers {
+    -- the ag_praxis workload capture groups keep their container selection
+    -- pinned to the workload container: sidecar containers never enter the
+    -- resource captures.
+    for group in CaptureGroups:
+        (group.name = "resource_load-generator"
+            implies group.container_pattern = "guidellm-main")
+            and (group.name = "resource_sim"
+                implies group.container_pattern = "main")
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "avg_memory_working_set_bytes still averages over the in-scope series while total_cpu_usage sums. Should memory get a total too?"
+open question "container_network_* series are reported at pod scope; applying the container selection there would likely return no data. Should resource_network honour CONTAINER if per-container network series ever appear?"
+open question "POD_NAME_EXCLUDE excludes pods but there is no CONTAINER_EXCLUDE; is container-level exclusion ever needed?"
