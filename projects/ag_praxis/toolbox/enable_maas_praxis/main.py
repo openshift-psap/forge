@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 
-from projects.core.dsl import entrypoint, execute_tasks, retry, task
+from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc, oc_get_json
 
 logger = logging.getLogger("DSL")
@@ -19,6 +20,7 @@ def run(
     tenant_namespace: str = "models-as-a-service",
     tenant_name: str = "default-tenant",
     ingress_namespace: str = "openshift-ingress",
+    payload_processing_config: dict | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
 
@@ -27,8 +29,74 @@ def run(
         tenant_namespace: Namespace of the MaasTenantConfig resource.
         tenant_name: Name of the MaasTenantConfig resource.
         ingress_namespace: Namespace where payload-processing deployments live.
+        payload_processing_config: Scaling/resource config for payload-processing deployments
+            (replicas, cpu_limit, memory_limit, cpu_request, memory_request).
+            Applied via spec.payloadProcessing on the CR.
     """
     return execute_tasks(locals())
+
+
+@task
+def configure_payload_processing(args, ctx):
+    """Patch MaasTenantConfig with payload processing scaling/resource config.
+
+    Non-None values are set on the CR; None values are removed (null in merge patch).
+    """
+    if not args.activate:
+        return "Skipped: praxis is being deactivated"
+
+    cfg = args.payload_processing_config
+    if not cfg:
+        return "No payload processing config to apply"
+
+    payload_processing = {}
+
+    payload_processing["replicas"] = cfg.get("replicas")
+
+    limits = {}
+    if cfg.get("cpu_limit") is not None:
+        limits["cpu"] = str(cfg["cpu_limit"])
+    if cfg.get("memory_limit") is not None:
+        limits["memory"] = str(cfg["memory_limit"])
+
+    requests = {}
+    if cfg.get("cpu_request") is not None:
+        requests["cpu"] = str(cfg["cpu_request"])
+    if cfg.get("memory_request") is not None:
+        requests["memory"] = str(cfg["memory_request"])
+
+    if limits or requests:
+        resources = {}
+        if limits:
+            limits.setdefault("cpu", None)
+            limits.setdefault("memory", None)
+            resources["limits"] = limits
+        else:
+            resources["limits"] = None
+        if requests:
+            requests.setdefault("cpu", None)
+            requests.setdefault("memory", None)
+            resources["requests"] = requests
+        else:
+            resources["requests"] = None
+        payload_processing["resources"] = resources
+    else:
+        payload_processing["resources"] = None
+
+    patch = json.dumps({"spec": {"payloadProcessing": payload_processing}})
+
+    oc(
+        "patch",
+        "maastenantconfig",
+        args.tenant_name,
+        "-n",
+        args.tenant_namespace,
+        "--type=merge",
+        "-p",
+        patch,
+    )
+
+    return f"Patched MaasTenantConfig {args.tenant_name} payloadProcessing: {payload_processing}"
 
 
 @task
@@ -91,6 +159,34 @@ def wait_for_deployment_images(args, ctx):
 
     action = "activated" if args.activate else "deactivated"
     return f"Praxis {action}: all deployments ready with expected images"
+
+
+@task
+def log_deployment_status(args, ctx):
+    """Log the current status of payload-processing deployments."""
+    oc(
+        "get",
+        "deployments",
+        "-n",
+        args.ingress_namespace,
+        "-owide",
+        log_stdout=True,
+    )
+    return "Logged deployment status"
+
+
+@always
+@task
+def capture_state(args, ctx):
+    """Capture MaaS praxis state for debugging (runs even on failure)."""
+    from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
+
+    capture_maas_praxis_command.run(
+        ingress_namespace=args.ingress_namespace,
+        tenant_namespace=args.tenant_namespace,
+        tenant_name=args.tenant_name,
+    )
+    return "Captured MaaS praxis state"
 
 
 if __name__ == "__main__":

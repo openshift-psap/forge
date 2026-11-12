@@ -16,6 +16,10 @@ import yaml
 
 from projects.core.dsl import template
 
+# Marker file written next to the results of a run that GuideLLM post-processing
+# must ignore (``skip_from_postprocessing=True``, e.g. a burn-in run).
+SKIP_FROM_POSTPROCESSING_MARKER = "skip_from_postprocessing"
+
 logger = logging.getLogger(__name__)
 
 _CONFIG_FILE_PATH = "/tmp/guidellm-config.yaml"

@@ -167,6 +167,68 @@ def test_render_guidellm_job_from_parts_keeps_plain_rates_as_single_guidellm_run
     assert "--constraint=kind=max_duration,seconds=600" in args
 
 
+def _make_validate_parameters_args(**overrides):
+    from types import SimpleNamespace
+
+    fields = {
+        "guidellm_args": [],
+        "namespace": "test-namespace",
+        "name": "guidellm-bench",
+        "artifact_dirname_suffix": "",
+        "image": None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_validate_parameters_accepts_k8s_compliant_name() -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    args = _make_validate_parameters_args(artifact_dirname_suffix="xs_smoke_rate2x1")
+    ctx = SimpleNamespace()
+
+    validate_parameters.__wrapped__(args, ctx)
+
+    assert ctx.benchmark_name == "guidellm-bench-xs-smoke-rate2x1"
+
+
+def test_validate_parameters_lowercases_the_suffix() -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    # payload/sweep keys in the caller config can be uppercase (e.g. "XS")
+    args = _make_validate_parameters_args(artifact_dirname_suffix="XS_smoke_rate2x1")
+    ctx = SimpleNamespace()
+
+    validate_parameters.__wrapped__(args, ctx)
+
+    assert ctx.benchmark_name == "guidellm-bench-xs-smoke-rate2x1"
+
+
+@pytest.mark.parametrize(
+    "name,suffix",
+    [
+        ("Guidellm-Bench", ""),  # uppercase
+        ("guidellm_bench", ""),  # underscore
+        ("guidellm-bench-", ""),  # trailing hyphen
+        ("x" * 64, ""),  # too long
+    ],
+)
+def test_validate_parameters_rejects_non_k8s_compliant_name(name: str, suffix: str) -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import validate_parameters
+
+    args = _make_validate_parameters_args(name=name, artifact_dirname_suffix=suffix)
+    ctx = SimpleNamespace()
+
+    with pytest.raises(ValueError, match="not a valid Kubernetes object name"):
+        validate_parameters.__wrapped__(args, ctx)
+
+
 def test_build_guidellm_args_renders_list_values() -> None:
     benchmark = {
         "args": {
@@ -551,3 +613,36 @@ class TestApiKeyAndReplicas:
         assert "GUIDELLM__SPEC__BACKEND__API_KEY" in script
         assert "api_key=" not in script
         assert "$JOB_COMPLETION_INDEX" in script
+
+
+def test_job_active_deadline_is_strictly_after_wait_deadline() -> None:
+    from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
+        JOB_COMPLETION_GRACE_SECONDS,
+        job_active_deadline_seconds,
+    )
+
+    deadline = job_active_deadline_seconds(3600)
+
+    # The Job deadline must fire after the wait task's own deadline
+    # (timeout + JOB_COMPLETION_GRACE_SECONDS), so that a hung benchmark is
+    # reported by the wait task while the pods still exist and their logs can
+    # be captured before the job controller deletes them.
+    assert deadline > 3600 + JOB_COMPLETION_GRACE_SECONDS
+    assert deadline == 3600 + JOB_COMPLETION_GRACE_SECONDS + 300
+
+
+@pytest.mark.parametrize("skip", [True, False])
+def test_extract_results_writes_skip_from_postprocessing_marker(
+    tmp_path, monkeypatch, skip: bool
+) -> None:
+    from types import SimpleNamespace
+
+    from projects.guidellm.toolbox.run_guidellm_benchmark import main
+
+    monkeypatch.setattr(main, "extract_results_from_sidecar", lambda args, ctx, results_dir: [])
+    args = SimpleNamespace(artifact_dir=tmp_path, use_pvc=False, skip_from_postprocessing=skip)
+
+    main.extract_results.__wrapped__(args, SimpleNamespace())
+
+    marker = tmp_path / "results" / main.SKIP_FROM_POSTPROCESSING_MARKER
+    assert marker.exists() is skip

@@ -15,6 +15,39 @@ import click
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_KEY = "qwen-3-6-35b"
+DEFAULT_VAULT_NAME = "psap-models-corp-rh"
+DEFAULT_VAULT_CONTENT = "agent-models.yaml"
+
+
+def _resolve_vault_settings(model_key, vault_name, vault_content):
+    """
+    Fill in unset vault/model options from the project configuration
+
+    Values not given on the command line are read from the
+    ``agentic_review.*`` project configuration when it is initialized,
+    and fall back to the defaults otherwise.
+    """
+    from projects.core.library import config
+
+    if config.project is not None:
+        if model_key is None:
+            model_key = config.project.get_config(
+                "agentic_review.model_key", None, print=False, warn=False
+            )
+        if vault_name is None:
+            vault_name = config.project.get_config(
+                "agentic_review.vault_name", None, print=False, warn=False
+            )
+        if vault_content is None:
+            vault_content = config.project.get_config(
+                "agentic_review.vault_content", None, print=False, warn=False
+            )
+
+    return (
+        model_key or DEFAULT_MODEL_KEY,
+        vault_name or DEFAULT_VAULT_NAME,
+        vault_content or DEFAULT_VAULT_CONTENT,
+    )
 
 
 @click.command()
@@ -31,25 +64,42 @@ DEFAULT_MODEL_KEY = "qwen-3-6-35b"
     help="Output format for results",
 )
 @click.option("--verbose", is_flag=True, help="Show all AI queries and responses")
-@click.option("--model-key", default=DEFAULT_MODEL_KEY, help="Model key to use for analysis")
-def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: str):
+@click.option("--model-key", default=None, help="Model key to use for analysis")
+@click.option("--vault-name", default=None, help="Vault holding the model configuration")
+@click.option(
+    "--vault-content", default=None, help="Vault content file for the model configuration"
+)
+def cli(
+    base_artifact_dir: Path,
+    output_format: str,
+    verbose: bool,
+    model_key: str,
+    vault_name: str,
+    vault_content: str,
+):
     """
-    On Failure Agent CLI - Analyze failure artifacts using LangChain LLM
+    Failure Review Agent CLI - Analyze failure artifacts using LangChain LLM
 
     This tool processes FAILURE files and execution logs in the specified directory,
     provides AI-powered analysis of the failures, and supports DSL toolbox
     logs (task.log).
     """
     # Import functions from main module (only works when run from forge home directory)
-    from projects.core.agentic.on_failure import run_on_failure_agent
+    from projects.core.agentic_review.failure_review import run_on_failure_agent
     from projects.core.library import vault
+
+    model_key, vault_name, vault_content = _resolve_vault_settings(
+        model_key, vault_name, vault_content
+    )
 
     try:
         # Initialize vault manager for CLI usage
         logger.info("Initializing vault manager...")
-        vault.init(vaults=["psap-models-corp-rh"])
+        vault.init(vaults=[vault_name])
 
-        result = run_on_failure_agent(base_artifact_dir, verbose, model_key)
+        result = run_on_failure_agent(
+            base_artifact_dir, verbose, model_key, vault_name, vault_content
+        )
 
         if output_format == "json":
             click.echo(json.dumps(result, indent=2))
@@ -77,7 +127,7 @@ def cli(base_artifact_dir: Path, output_format: str, verbose: bool, model_key: s
 def _print_header():
     """Print the results header"""
     click.echo("\n" + "=" * 60)
-    click.echo("🎉 ON FAILURE AGENT RESULTS:")
+    click.echo("🎉 FAILURE REVIEW AGENT RESULTS:")
     click.echo("=" * 60)
 
 

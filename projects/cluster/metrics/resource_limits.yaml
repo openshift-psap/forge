@@ -1,0 +1,45 @@
+# params:
+#   NAMESPACE: Target namespace
+#   POD_NAME: Pod name regex for the resource capture
+
+- query: >-
+    rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[5m])
+  metricName: cpu_usage_cores_by_pod
+  description: CPU usage by pod
+  unit: count
+  legendLabels: [container, pod]
+
+- query: >-
+    container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}
+  metricName: memory_usage_bytes_by_pod
+  description: Memory usage by pod
+  unit: bytes
+  legendLabels: [container, pod]
+
+- query: >-
+    kube_pod_container_resource_limits{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", resource="cpu"}
+  metricName: cpu_limits_by_pod
+  description: CPU resource limits by pod
+  unit: count
+  legendLabels: [container, pod]
+
+- query: >-
+    kube_pod_container_resource_limits{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", resource="memory"}
+  metricName: memory_limits_by_pod
+  description: Memory resource limits by pod
+  unit: bytes
+  legendLabels: [container, pod]
+
+- query: >-
+    kube_pod_container_resource_requests{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", resource="cpu"}
+  metricName: cpu_requests_by_pod
+  description: CPU resource requests by pod
+  unit: count
+  legendLabels: [container, pod]
+
+- query: >-
+    kube_pod_container_resource_requests{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", resource="memory"}
+  metricName: memory_requests_by_pod
+  description: Memory resource requests by pod
+  unit: bytes
+  legendLabels: [container, pod]

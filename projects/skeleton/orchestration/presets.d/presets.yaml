@@ -20,8 +20,8 @@ long_test:
 long_12h:
   skeleton.test.duration_seconds: 43200  # 12 hour run
 
-agent:
-  agentic.enabled: true
+agentic_review:
+  agentic_review.enabled: true
 
 fail:
   skeleton.test.fail: true

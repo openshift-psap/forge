@@ -42,6 +42,7 @@ cpt-release-testing-rhoai:
   - concurrent-1k-1k
   - heavy-heterogeneous
   - multi-turn
+  - concurrent-8k-1k
   model_cache.pvc.size: 300Gi
 
 cpt-release-testing-gpt-oss-120b:
@@ -49,6 +50,13 @@ cpt-release-testing-gpt-oss-120b:
   - cpt-release-testing-rhoai
   - gpt-oss
   runtime.selected_preset: cpt-release-testing-gpt-oss-120b
+
+cpt-release-testing-gemma-4-26b-fp8:
+  extends:
+  - cpt-release-testing-rhoai
+  - gemma-4-26b-fp8
+  runtime.selected_preset: cpt-release-testing-gemma-4-26b-fp8
+  runtime.deployment_profile: default-3.6GA
 
 cpt-release-testing-llama-33-70b:
   extends:

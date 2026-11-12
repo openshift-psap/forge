@@ -16,6 +16,7 @@ from projects.caliper.engine.parameter_matrix import (
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import (
+    compute_report_stem,
     create_report_filename,
     create_report_title_display,
     save_figure,
@@ -345,39 +346,44 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
                 "input_tokens_per_request": record.metrics.get("input_tokens_per_request", 0.0),
                 "output_tokens_per_request": record.metrics.get("output_tokens_per_request", 0.0),
                 "total_tokens_per_request": record.metrics.get("total_tokens_per_request", 0.0),
-                # Latency metrics from curves (convert seconds to ms where needed)
-                "request_latency_median_ms": _safe_get_curve_value(
+                # Latency metrics from curves (all in seconds)
+                "request_latency_median_s": _safe_get_curve_value(
                     curves, "request_latency_median", i, 0.0
-                )
-                * 1000,
-                "request_latency_p95_ms": _safe_get_curve_value(
-                    curves, "request_latency_p95", i, 0.0
-                )
-                * 1000,
-                "ttft_median_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
-                "ttft_p10_ms": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
-                "ttft_p25_ms": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
-                "ttft_p50_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),  # p50 = median
-                "ttft_p75_ms": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
-                "ttft_p90_ms": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
-                "ttft_p95_ms": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
-                "itl_median_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),
-                "itl_p10_ms": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
-                "itl_p25_ms": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
-                "itl_p50_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),  # p50 = median
-                "itl_p75_ms": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
-                "itl_p90_ms": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
-                "itl_p95_ms": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
-                "tpot_median_ms": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
-                "tpot_p95_ms": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
-                # Output token throughput percentiles (not in curves currently, use zeros)
-                "output_tokens_per_second_p10": 0.0,
-                "output_tokens_per_second_p25": 0.0,
-                "output_tokens_per_second_p50": _safe_get_curve_value(
-                    curves, "output_tokens_per_second", i, 0.0
                 ),
-                "output_tokens_per_second_p75": 0.0,
-                "output_tokens_per_second_p90": 0.0,
+                "request_latency_p95_s": _safe_get_curve_value(
+                    curves, "request_latency_p95", i, 0.0
+                ),
+                "ttft_median_s": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
+                "ttft_p10_s": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
+                "ttft_p25_s": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
+                "ttft_p50_s": _safe_get_curve_value(curves, "ttft_p50", i, 0.0),
+                "ttft_p75_s": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
+                "ttft_p90_s": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
+                "ttft_p95_s": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
+                "itl_median_s": _safe_get_curve_value(curves, "itl_median", i, 0.0),
+                "itl_p10_s": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
+                "itl_p25_s": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
+                "itl_p50_s": _safe_get_curve_value(curves, "itl_p50", i, 0.0),
+                "itl_p75_s": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
+                "itl_p90_s": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
+                "itl_p95_s": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
+                "tpot_median_s": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
+                "tpot_p95_s": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
+                "output_tokens_per_second_p10": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p10", i, 0.0
+                ),
+                "output_tokens_per_second_p25": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p25", i, 0.0
+                ),
+                "output_tokens_per_second_p50": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p50", i, 0.0
+                ),
+                "output_tokens_per_second_p75": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p75", i, 0.0
+                ),
+                "output_tokens_per_second_p90": _safe_get_curve_value(
+                    curves, "output_tokens_per_second_p90", i, 0.0
+                ),
             }
             data.append(row)
 
@@ -408,6 +414,9 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
 
     # Remove the temporary sort column
     df = df.drop(columns=["_config_sort_key"])
+
+    # Assign replica_index within each (test_configuration, intended_concurrency) group
+    df["replica_index"] = df.groupby(["test_configuration", "intended_concurrency"]).cumcount()
 
     # Fill NaN values in numeric columns with appropriate defaults
     numeric_columns = [
@@ -469,10 +478,11 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
             size="tokens_per_second",
             hover_data={
                 "strategy": True,
-                "request_latency_median_ms": ":.1f",
-                "ttft_median_ms": ":.1f",
+                "request_latency_median_s": ":.3f",
+                "ttft_median_s": ":.3f",
                 "tokens_per_second": ":.0f",
-                "request_concurrency": ":.1f",  # Show achieved concurrency in hover
+                "request_concurrency": ":.1f",
+                "replica_index": True,
             },
             title=title,
             labels={
@@ -514,19 +524,21 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
         fig = px.scatter(
             df,
             x="request_rate",
-            y="request_latency_median_ms",
+            y="request_latency_median_s",
             color="test_configuration",
             size="tokens_per_second",
             hover_data={
                 "strategy": True,
                 "intended_concurrency": ":.1f",
                 "request_concurrency": ":.1f",
-                "ttft_median_ms": ":.1f",
+                "ttft_median_s": ":.3f",
+                "request_latency_median_s": ":.3f",
+                "replica_index": True,
             },
             title=title,
             labels={
                 "request_rate": "Request Rate (req/s)",
-                "request_latency_median_ms": "Latency (ms)",
+                "request_latency_median_s": "Latency (s)",
                 "test_configuration": "Configuration",
             },
             category_orders={"test_configuration": config_order},
@@ -542,23 +554,140 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
         return None
 
 
+def _build_line_with_replica_scatter(
+    df: pd.DataFrame,
+    *,
+    x_col: str,
+    y_col: str,
+    title: str,
+    x_label: str,
+    y_label: str,
+    extra_hover_cols: dict[str, str],
+    y_hover_format: str = ":.1f",
+):
+    """Build a plotly figure with mean trend line and individual replica markers.
+
+    When only one replica exists per concurrency level, behaves identically to
+    a plain ``px.line`` call.
+    """
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    config_order = df["test_configuration"].drop_duplicates().tolist()
+    colors = px.colors.qualitative.Set1
+    color_map = {cfg: colors[i % len(colors)] for i, cfg in enumerate(config_order)}
+
+    hover_cols = [(col, fmt) for col, fmt in extra_hover_cols.items() if col in df.columns]
+    hover_col_names = [col for col, _ in hover_cols]
+    if hover_cols:
+        hover_suffix = "<br>" + "<br>".join(
+            f"{col}: %{{customdata[{i}]{fmt}}}" for i, (col, fmt) in enumerate(hover_cols)
+        )
+    else:
+        hover_suffix = ""
+
+    def _customdata(source_df):
+        if not hover_col_names:
+            return None
+        return source_df[hover_col_names].values
+
+    fig = go.Figure()
+
+    for cfg in config_order:
+        cfg_df = df[df["test_configuration"] == cfg].sort_values(x_col)
+        color = color_map[cfg]
+
+        cfg_has_reps = "replica_index" in cfg_df.columns and (cfg_df["replica_index"] > 0).any()
+
+        if cfg_has_reps:
+            mean_df = cfg_df.groupby(x_col, as_index=False).mean(numeric_only=True)
+            mean_df = mean_df.sort_values(x_col)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=mean_df[x_col],
+                    y=mean_df[y_col],
+                    mode="lines+markers",
+                    name=f"{cfg} (mean)",
+                    line=dict(color=color, width=2),
+                    marker=dict(size=8, symbol="diamond"),
+                    customdata=_customdata(mean_df),
+                    hovertemplate=(
+                        f"<b>{cfg} (mean)</b><br>"
+                        f"{x_label}: %{{x}}<br>"
+                        f"{y_label}: %{{y{y_hover_format}}}"
+                        f"{hover_suffix}<extra></extra>"
+                    ),
+                )
+            )
+
+            replica_indices = sorted(cfg_df["replica_index"].unique())
+            replicas_legend = f"{cfg} ({len(replica_indices)} replicas)"
+            for ri in replica_indices:
+                ri_df = cfg_df[cfg_df["replica_index"] == ri].sort_values(x_col)
+                fig.add_trace(
+                    go.Scatter(
+                        x=ri_df[x_col],
+                        y=ri_df[y_col],
+                        mode="markers",
+                        name=replicas_legend,
+                        legendgroup=replicas_legend,
+                        showlegend=bool(ri == replica_indices[0]),
+                        marker=dict(color=color, size=6, opacity=0.6),
+                        customdata=_customdata(ri_df),
+                        hovertemplate=(
+                            f"<b>{cfg} replica {ri}</b><br>"
+                            f"{x_label}: %{{x}}<br>"
+                            f"{y_label}: %{{y{y_hover_format}}}"
+                            f"{hover_suffix}<extra></extra>"
+                        ),
+                    )
+                )
+        else:
+            fig.add_trace(
+                go.Scatter(
+                    x=cfg_df[x_col],
+                    y=cfg_df[y_col],
+                    mode="lines+markers",
+                    name=cfg,
+                    line=dict(color=color, width=2),
+                    marker=dict(size=8),
+                    customdata=_customdata(cfg_df),
+                    hovertemplate=(
+                        f"<b>{cfg}</b><br>"
+                        f"{x_label}: %{{x}}<br>"
+                        f"{y_label}: %{{y{y_hover_format}}}"
+                        f"{hover_suffix}<extra></extra>"
+                    ),
+                )
+            )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=y_label,
+        showlegend=True,
+        **PLOT_CONFIG,
+    )
+    fig.update_yaxes(rangemode="tozero")
+
+    return fig
+
+
 def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context: str = ""):
     """Create token throughput vs concurrency line plot."""
     try:
         logger.info("📈 Creating token throughput vs concurrency scaling plot...")
-        import plotly.express as px
 
         if df.empty:
             logger.info("⚠️  No data available for token throughput vs concurrency plot")
             return None
 
-        # Check for deployment_profile values and add to subtitle if not in legend
         subtitle_parts = ["Higher is better"]
 
         if "label_deployment_profile" in df.columns:
             deployment_profiles = df["label_deployment_profile"].dropna().unique()
             if len(deployment_profiles) > 0:
-                # Check if deployment_profile values are already part of the legend names
                 legend_values = df["test_configuration"].unique()
                 profile_in_legend = any(
                     any(
@@ -579,35 +708,27 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
         subtitle = " | ".join(subtitle_parts)
         title = f"Token Throughput vs Concurrency{title_context}<br><sub>{subtitle}</sub>"
 
-        # Get ordered configuration list to maintain consistent legend order
-        config_order = df["test_configuration"].drop_duplicates().tolist()
-
-        fig = px.line(
-            df,
-            x="intended_concurrency",
-            y="tokens_per_second",
-            color="test_configuration",
-            markers=True,
-            hover_data={
-                "strategy": True,
-                "request_rate": ":.1f",
-                "ttft_median_ms": ":.1f",
-                "request_latency_median_ms": ":.1f",
-                "request_concurrency": ":.1f",  # Show achieved concurrency in hover
-            },
-            title=title,
-            labels={
-                "intended_concurrency": "Concurrency Level (Requested)",
-                "tokens_per_second": "Tokens per Second",
-                "test_configuration": "Configuration",
-                "request_concurrency": "Achieved Concurrency",
-            },
-            category_orders={"test_configuration": config_order},
+        has_replicas = "replica_index" in df.columns and (df["replica_index"] > 0).any()
+        x_label = (
+            "Cumulated Concurrency Level (Requested)"
+            if has_replicas
+            else "Concurrency Level (Requested)"
         )
 
-        fig.update_traces(mode="lines+markers")
-        fig.update_layout(showlegend=True, **PLOT_CONFIG)
-        fig.update_yaxes(rangemode="tozero")
+        fig = _build_line_with_replica_scatter(
+            df,
+            x_col="intended_concurrency",
+            y_col="output_tokens_per_second",
+            title=title,
+            x_label=x_label,
+            y_label="Output Tokens per Second",
+            extra_hover_cols={
+                "request_rate": ":.1f",
+                "ttft_median_s": ":.3f",
+                "request_latency_median_s": ":.3f",
+                "request_concurrency": ":.1f",
+            },
+        )
 
         logger.info("✅ Token throughput vs concurrency plot created successfully")
         return fig
@@ -617,28 +738,149 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
         return None
 
 
+def create_cumulated_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context: str = ""):
+    """Create cumulated token throughput vs cumulated concurrency line plot.
+
+    Sums tokens_per_second and intended_concurrency across replicas at each rate point.
+    Only meaningful when replicas exist — returns None otherwise.
+    """
+    try:
+        logger.info("📈 Creating cumulated throughput vs concurrency plot...")
+        import plotly.graph_objects as go
+
+        if df.empty:
+            return None
+
+        if "replica_index" not in df.columns or not (df["replica_index"] > 0).any():
+            logger.info("   ⏩ Skipping cumulated plot — no multi-replica data")
+            return None
+
+        config_order = df["test_configuration"].drop_duplicates().tolist()
+
+        cumulated = (
+            df.groupby(["test_configuration", "intended_concurrency"], sort=False)
+            .agg(
+                cumulated_tokens_per_second=("output_tokens_per_second", "sum"),
+                cumulated_concurrency=("intended_concurrency", "sum"),
+            )
+            .reset_index()
+        )
+
+        import plotly.express as px
+
+        colors = px.colors.qualitative.Set1
+        color_map = {cfg: colors[i % len(colors)] for i, cfg in enumerate(config_order)}
+
+        fig = go.Figure()
+        for cfg in config_order:
+            cfg_df = cumulated[cumulated["test_configuration"] == cfg].sort_values(
+                "cumulated_concurrency"
+            )
+            color = color_map[cfg]
+            fig.add_trace(
+                go.Scatter(
+                    x=cfg_df["cumulated_concurrency"],
+                    y=cfg_df["cumulated_tokens_per_second"],
+                    mode="lines+markers",
+                    name=cfg,
+                    line=dict(color=color, width=2),
+                    marker=dict(size=8),
+                    hovertemplate=(
+                        f"<b>{cfg}</b><br>"
+                        "Cumulated Concurrency: %{x}<br>"
+                        "Cumulated Tokens/s: %{y:.1f}<extra></extra>"
+                    ),
+                )
+            )
+
+        subtitle = "Sum across replicas | Higher is better"
+        title = (
+            f"Cumulated Token Throughput vs Cumulated Concurrency{title_context}"
+            f"<br><sub>{subtitle}</sub>"
+        )
+        fig.update_layout(
+            title=title,
+            xaxis_title="Cumulated Concurrency Level",
+            yaxis_title="Cumulated Tokens per Second",
+            showlegend=True,
+            **PLOT_CONFIG,
+        )
+        fig.update_yaxes(rangemode="tozero")
+
+        logger.info("✅ Cumulated throughput vs concurrency plot created successfully")
+        return fig
+
+    except Exception as e:
+        logger.info(f"❌ Failed to create cumulated throughput vs concurrency plot: {e}")
+        return None
+
+
+def create_requested_vs_effective_concurrency_plot(df: pd.DataFrame, title_context: str = ""):
+    """Create requested vs effective concurrency plot with a y=x reference line."""
+    try:
+        logger.info("📈 Creating requested vs effective concurrency plot...")
+
+        if df.empty:
+            return None
+
+        has_replicas = "replica_index" in df.columns and (df["replica_index"] > 0).any()
+        x_label = "Cumulated Requested Concurrency" if has_replicas else "Requested Concurrency"
+
+        fig = _build_line_with_replica_scatter(
+            df,
+            x_col="intended_concurrency",
+            y_col="request_concurrency",
+            title=f"Requested vs Effective Concurrency{title_context}",
+            x_label=x_label,
+            y_label="Effective Concurrency",
+            extra_hover_cols={
+                "request_rate": ":.1f",
+                "tokens_per_second": ":.1f",
+            },
+        )
+
+        max_val = max(df["intended_concurrency"].max(), df["request_concurrency"].max())
+        import plotly.graph_objects as go
+
+        fig.add_trace(
+            go.Scatter(
+                x=[0, max_val * 1.1],
+                y=[0, max_val * 1.1],
+                mode="lines",
+                name="ideal (y=x)",
+                line=dict(color="gray", width=1, dash="dash"),
+                showlegend=True,
+            )
+        )
+
+        logger.info("✅ Requested vs effective concurrency plot created successfully")
+        return fig
+
+    except Exception as e:
+        logger.info(f"❌ Failed to create requested vs effective concurrency plot: {e}")
+        return None
+
+
 def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
     """Create TTFT analysis line plot."""
     try:
         logger.info("📈 Creating TTFT (Time to First Token) analysis plot...")
-        import plotly.express as px
 
         if df.empty:
             logger.info("⚠️  No data available for TTFT analysis plot")
             return None
 
-        # Debug: Check TTFT data availability
-        if "ttft_median_ms" not in df.columns:
-            logger.warning("⚠️  TTFT column 'ttft_median_ms' not found in dataframe")
+        if "ttft_median_s" not in df.columns:
+            logger.warning("⚠️  TTFT column 'ttft_median_s' not found in dataframe")
             logger.info(f"   Available columns: {list(df.columns)}")
             return None
 
-        ttft_data = df["ttft_median_ms"]
+        ttft_data = df["ttft_median_s"]
         non_zero_count = (ttft_data > 0).sum()
         logger.debug(
             f"   TTFT data: {len(ttft_data)} total points, {non_zero_count} non-zero values"
         )
-        logger.debug(f"   TTFT range: {ttft_data.min():.1f} - {ttft_data.max():.1f} ms")
+        logger.debug(f"   TTFT range: {ttft_data.min():.4f} - {ttft_data.max():.4f} s")
 
         if ttft_data.max() == 0:
             logger.warning("⚠️  All TTFT values are zero - plot may appear empty")
@@ -647,40 +889,101 @@ def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
 
         title = f"TTFT vs Concurrency{title_context}<br><sub>Lower is better</sub>"
 
-        # Get ordered configuration list to maintain consistent legend order
-        config_order = df["test_configuration"].drop_duplicates().tolist()
-
-        fig = px.line(
+        fig = _build_line_with_replica_scatter(
             df,
-            x="intended_concurrency",
-            y="ttft_median_ms",
-            color="test_configuration",
-            markers=True,
-            hover_data={
-                "strategy": True,
+            x_col="intended_concurrency",
+            y_col="ttft_median_s",
+            title=title,
+            x_label="Concurrency Level (Requested)",
+            y_label="TTFT P50 (s)",
+            extra_hover_cols={
                 "request_rate": ":.1f",
                 "tokens_per_second": ":.0f",
-                "request_concurrency": ":.1f",  # Show achieved concurrency in hover
+                "request_concurrency": ":.1f",
             },
-            title=title,
-            labels={
-                "intended_concurrency": "Concurrency Level (Requested)",
-                "ttft_median_ms": "TTFT P50 (ms)",
-                "test_configuration": "Configuration",
-                "request_concurrency": "Achieved Concurrency",
-            },
-            category_orders={"test_configuration": config_order},
+            y_hover_format=":.3f",
         )
-
-        fig.update_traces(mode="lines+markers")
-        fig.update_layout(showlegend=True, **PLOT_CONFIG)
-        fig.update_yaxes(rangemode="tozero")
 
         logger.info("✅ TTFT analysis plot created successfully")
         return fig
 
     except Exception as e:
         logger.info(f"❌ Failed to create TTFT analysis plot: {e}")
+        return None
+
+
+def create_ttft_percentiles_plot(df: pd.DataFrame, title_context: str = ""):
+    """Create TTFT percentiles plot showing P10-P90 distribution per concurrency level."""
+    try:
+        import plotly.express as px
+        import plotly.graph_objects as go
+
+        if df.empty:
+            return None
+
+        percentile_cols = [
+            "ttft_p10_s",
+            "ttft_p25_s",
+            "ttft_p50_s",
+            "ttft_p75_s",
+            "ttft_p90_s",
+        ]
+        available_cols = [col for col in percentile_cols if col in df.columns]
+        if not available_cols:
+            return None
+
+        has_data = any((df[col] > 0).any() for col in available_cols if col in df.columns)
+        if not has_data:
+            return None
+
+        title = f"TTFT Percentiles vs Concurrency{title_context}<br><sub>Lower is better</sub>"
+
+        fig = go.Figure()
+
+        configurations = df["test_configuration"].drop_duplicates().tolist()
+        available_colors = px.colors.qualitative.Set1
+        color_map = {
+            config: available_colors[i % len(available_colors)]
+            for i, config in enumerate(configurations)
+        }
+
+        percentiles = [
+            ("P10", "ttft_p10_s", {"width": 2, "dash": "longdash"}, 0.6),
+            ("P25", "ttft_p25_s", {"width": 2, "dash": "dot"}, 0.7),
+            ("P50", "ttft_p50_s", {"width": 4, "dash": "solid"}, 1.0),
+            ("P75", "ttft_p75_s", {"width": 3, "dash": "dash"}, 0.9),
+            ("P90", "ttft_p90_s", {"width": 2, "dash": "dashdot"}, 0.8),
+        ]
+
+        for config in configurations:
+            config_df = df[df["test_configuration"] == config].sort_values("intended_concurrency")
+
+            for perc_name, perc_col, line_style, opacity in percentiles:
+                if perc_col in config_df.columns and not config_df[perc_col].isna().all():
+                    fig.add_trace(
+                        go.Scatter(
+                            x=config_df["intended_concurrency"],
+                            y=config_df[perc_col],
+                            mode="lines+markers",
+                            name=f"{config} - {perc_name}",
+                            line=dict(color=color_map[config], **line_style),
+                            opacity=opacity,
+                        )
+                    )
+
+        fig.update_layout(
+            title=title,
+            xaxis_title="Concurrency Level (Requested)",
+            yaxis_title="TTFT (s)",
+            showlegend=True,
+            **PLOT_CONFIG_LARGE,
+        )
+        fig.update_yaxes(rangemode="tozero")
+
+        return fig
+
+    except Exception as e:
+        logger.info(f"Failed to create TTFT percentiles plot: {e}")
         return None
 
 
@@ -916,18 +1219,36 @@ def _generate_shared_performance_report(
     """
     try:
         # Create report identifier using core utilities
-        display_title = create_report_title_display(report_title, report_number)
+        display_title = create_report_title_display(report_title)
 
         logger.info(f"\n🚀 Starting {display_title} generation...")
         logger.info("=" * 70)
 
         # Generate all the plots as figures
+        # Each entry is (tab_name, main_plot_func, [sub_plot_funcs...])
+        # Sub-plots are rendered below the main plot inside the same tab.
         plot_functions = [
-            ("Token Throughput vs Concurrency", create_token_throughput_vs_concurrency_plot),
-            ("TTFT Analysis", create_ttft_analysis_plot),
-            ("Token Throughput Percentiles", create_token_throughput_percentiles_plot),
-            ("Throughput Scaling", create_throughput_scaling_plot),
-            ("Latency vs Throughput", create_latency_vs_throughput_plot),
+            (
+                "Token Throughput vs Concurrency",
+                create_token_throughput_vs_concurrency_plot,
+                [
+                    (
+                        "Token Throughput Percentiles",
+                        create_token_throughput_percentiles_plot,
+                    ),
+                    (
+                        "Cumulated Throughput vs Concurrency",
+                        create_cumulated_throughput_vs_concurrency_plot,
+                    ),
+                ],
+            ),
+            (
+                "TTFT Analysis",
+                create_ttft_analysis_plot,
+                [("TTFT Percentiles", create_ttft_percentiles_plot)],
+            ),
+            ("Throughput Scaling", create_throughput_scaling_plot, []),
+            ("Latency vs Throughput", create_latency_vs_throughput_plot, []),
         ]
 
         # Group records based on report type
@@ -966,7 +1287,7 @@ def _generate_shared_performance_report(
 
         # Create dedicated directory for this report
         if report_number is not None:
-            report_dir_name = f"report_{report_number:02d}_{report_title.lower().replace(' ', '_').replace(':', '').replace('-', '_')}"
+            report_dir_name = compute_report_stem(report_title, report_number)
         else:
             report_dir_name = "performance_analysis"
 
@@ -1014,7 +1335,7 @@ def _generate_shared_performance_report(
 
             # Generate plots for this group
             group_plots = []
-            for i, (plot_name, plot_func) in enumerate(plot_functions, 1):
+            for i, (plot_name, plot_func, sub_plot_funcs) in enumerate(plot_functions, 1):
                 logger.info(
                     f"   📊 [{i}/{len(plot_functions)}] Creating {plot_name} for {group_desc}..."
                 )
@@ -1064,7 +1385,38 @@ def _generate_shared_performance_report(
                                 else None
                             )
                             html_rel_path = f"{report_dir_name}/{group_name}/{Path(html_path).name}"
-                            group_plots.append((plot_name, png_rel_path, html_rel_path))
+
+                            sub_plots = []
+                            for sub_title, sub_func in sub_plot_funcs:
+                                sub_fig = sub_func(df, group_title_context)
+                                if not sub_fig:
+                                    continue
+                                sub_filename = (
+                                    f"{i - 1:03d}__{plot_name_safe}__sub_{len(sub_plots)}"
+                                )
+                                sub_png = save_figure(
+                                    sub_fig,
+                                    group_dir,
+                                    sub_filename,
+                                    as_image=True,
+                                    width=width,
+                                    height=height,
+                                )
+                                sub_html = save_figure(
+                                    sub_fig, group_dir, sub_filename, as_image=False
+                                )
+                                if sub_html:
+                                    sub_png_rel = (
+                                        f"{report_dir_name}/{group_name}/{Path(sub_png).name}"
+                                        if sub_png
+                                        else None
+                                    )
+                                    sub_html_rel = (
+                                        f"{report_dir_name}/{group_name}/{Path(sub_html).name}"
+                                    )
+                                    sub_plots.append((sub_title, sub_png_rel, sub_html_rel))
+
+                            group_plots.append((plot_name, png_rel_path, html_rel_path, sub_plots))
                             logger.debug(
                                 f"   ✅ {plot_name} saved - PNG: {png_rel_path}, HTML: {html_rel_path}"
                             )
@@ -1128,9 +1480,7 @@ def _generate_shared_performance_report(
         )
 
         # Save the main HTML report
-        main_html_filename = create_report_filename(
-            report_title.lower().replace(" ", "_"), report_number, report_title, "html"
-        )
+        main_html_filename = create_report_filename(report_title, report_number)
         main_html_path = output_dir / main_html_filename
 
         with open(main_html_path, "w", encoding="utf-8") as f:
@@ -1259,7 +1609,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
     best_efficiency_idx = (
         df["tokens_per_second"] / df["intended_concurrency"].replace(0, 1)
     ).idxmax()
-    best_ttft_idx = df["ttft_median_ms"].idxmin()
+    best_ttft_idx = df["ttft_median_s"].idxmin()
 
     # Configuration analysis
     logger.info("   📊 Computing configuration performance rankings...")
@@ -1268,7 +1618,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
         .agg(
             {
                 "tokens_per_second": "max",
-                "ttft_median_ms": "mean",
+                "ttft_median_s": "mean",
                 "request_rate": "max",
                 "intended_concurrency": "max",
                 "request_concurrency": "max",
@@ -1295,7 +1645,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
             "strategy": df.loc[best_efficiency_idx, "strategy"],
         },
         "best_ttft": {
-            "value": df.loc[best_ttft_idx, "ttft_median_ms"],
+            "value": df.loc[best_ttft_idx, "ttft_median_s"],
             "config": df.loc[best_ttft_idx, "test_configuration"],
             "strategy": df.loc[best_ttft_idx, "strategy"],
         },

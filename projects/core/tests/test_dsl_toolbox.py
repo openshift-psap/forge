@@ -247,6 +247,29 @@ def test_execute_tasks_success_returns_shared_context():
     assert getattr(out, "artifact_dir", None) is not None
 
 
+def test_execution_banner_logs_dirname_params():
+    """The execution banner lists artifact_dirname_prefix/suffix even though execute_tasks pops them."""
+    reset_script_manager()
+
+    @task
+    def banner_t1(args, ctx):
+        return True
+
+    fn_locals = {
+        "banner_t1": banner_t1,
+        "artifact_dirname_prefix": "pre",
+        "artifact_dirname_suffix": "suf",
+    }
+    execute_tasks(fn_locals)
+
+    candidates = list(env.ARTIFACT_DIR.glob("*__*/task.log"))
+    assert candidates, "expected nested artifact task.log"
+    task_log = max(candidates, key=lambda p: p.stat().st_mtime)
+    text = task_log.read_text(encoding="utf-8")
+    assert "|   artifact_dirname_prefix: pre" in text
+    assert "|   artifact_dirname_suffix: suf" in text
+
+
 def test_early_return_skips_pending_tasks():
     """When a task returns EarlyReturn, subsequent non-@always tasks are skipped."""
     reset_script_manager()

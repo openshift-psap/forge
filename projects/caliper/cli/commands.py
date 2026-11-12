@@ -399,12 +399,12 @@ def visualize_cmd(
                 {
                     "success": True,
                     "plugin_module": mod,
-                    "output_files": paths,
+                    "output_files": [rf.to_dict() for rf in paths],
                     "output_dir": str(output_dir),
                     "generated_files": len(paths),
                 }
             )
-            click.echo("Wrote: " + ", ".join(paths))
+            click.echo("Wrote: " + ", ".join(rf.path for rf in paths))
 
     except Exception as e:  # noqa: BLE001
         import traceback
@@ -1590,7 +1590,7 @@ def artifacts_censor(
     required=True,
     help="Directory where downloaded artifacts will be saved.",
 )
-@click.option("--mlflow-tracking-uri", envvar="MLFLOW_TRACKING_URI")
+@click.option("--mlflow-tracking-uri")
 @click.option("--artifact-path", default="")
 @click.option("--timeout", default=300, type=click.IntRange(min=1))
 @click.option("--mlflow-insecure-tls", is_flag=True)

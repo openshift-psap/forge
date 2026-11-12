@@ -150,12 +150,12 @@ def cli(
         # JSON output for programmatic use
         forge config-review --base-artifact-dir /path/to/artifacts --output-format json
 
-        # Verbose output with detailed analysis
+        # Verbose analysis with detailed analysis
         forge config-review --base-artifact-dir /path/to/artifacts --verbose
     """
     try:
         # Import the main function here to avoid circular imports
-        from projects.core.agentic.config_review import run_config_review_agent
+        from projects.core.agentic_review.config_review import run_config_review_agent
 
         logger.info(f"🤖 Starting test analysis for: {base_artifact_dir}")
 

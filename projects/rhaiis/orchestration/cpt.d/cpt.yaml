@@ -231,6 +231,13 @@ cpt-rhaiis-3.6-h200:
   __workloads: [profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
+  workloads.profile1.warmup: 0
+  workloads.profile2.warmup: 0
+  workloads.profile3.warmup: 0
+  workloads.profile4.warmup: 0
+  workloads.profile5.warmup: 0
+  workloads.profile6.warmup: 0
+  workloads.profile7.warmup: 0
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -303,6 +310,13 @@ cpt-rhaiis-3.6-b200:
   __workloads: [ci-quick, profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
+  workloads.profile1.warmup: 0
+  workloads.profile2.warmup: 0
+  workloads.profile3.warmup: 0
+  workloads.profile4.warmup: 0
+  workloads.profile5.warmup: 0
+  workloads.profile6.warmup: 0
+  workloads.profile7.warmup: 0
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true
@@ -391,6 +405,13 @@ cpt-rhaiis-3.6-mi355x:
   __workloads: [profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
+  workloads.profile1.warmup: 0
+  workloads.profile2.warmup: 0
+  workloads.profile3.warmup: 0
+  workloads.profile4.warmup: 0
+  workloads.profile5.warmup: 0
+  workloads.profile6.warmup: 0
+  workloads.profile7.warmup: 0
   tests.rhaiis.run_benchmark: true
   caliper.postprocess.csv_dashboard.enabled: true
   tests.rhaiis.slack_notify_always: true

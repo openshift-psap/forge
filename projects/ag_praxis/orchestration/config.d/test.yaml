@@ -1,9 +1,9 @@
 namespace: forge-praxis
 
 payload: default
-sweep: small
+sweep: smoke
 
-run_benchmark: false
+run_benchmark: true
 run_warmup: true
 
 skip_cleanup: false

@@ -14,8 +14,8 @@ import click
 
 from projects.caliper.orchestration.export import ensure_mlflow_destination_marker
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
-from projects.core.agentic.config_review import trigger_config_review_for_ci
-from projects.core.agentic.on_failure import agent_review_on_failure
+from projects.core.agentic_review.config_review import trigger_config_review_for_ci
+from projects.core.agentic_review.failure_review import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
@@ -27,7 +27,7 @@ from projects.core.library.export import (
     caliper_export_list_vaults,
 )
 from projects.core.library.postprocess import run_postprocess_after_test
-from projects.core.library.replot import caliper_replot_entrypoint
+from projects.core.orchestration.replot import caliper_replot_entrypoint
 from projects.llm_d.orchestration.cleanup_phase import (
     cleanup_operators,
 )
@@ -90,11 +90,9 @@ def main(ctx, preset):
     """LLM-D Project CI Operations for FORGE."""
     ctx.ensure_object(types.SimpleNamespace)
 
-    presets_list = list(preset)
-    if presets_list and "," in presets_list[0]:
-        lst = presets_list.pop(0)
-        presets_list = lst.split(",") + presets_list
+    presets_list = [p for item in preset for p in item.split(",")]
 
+    if presets_list:
         logger.info(f"Setting preset configuration from CLI: {presets_list}")
 
     init(presets_list)

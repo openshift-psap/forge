@@ -263,6 +263,20 @@ def _load_scheduler_with_epp_config(
     router_template_data = _load_yaml(router_template_path)
     epp_config_data = _load_yaml(epp_config_path)
 
+    peak_prefill_throughput = config.project.get_config(
+        "runtime.router.peak_prefill_throughput", print=False
+    )
+    for plugin in epp_config_data.get("plugins", []):
+        parameters = plugin.get("parameters", {})
+        if "peakPrefillThroughput" in parameters:
+            if (
+                isinstance(parameters["peakPrefillThroughput"], str)
+                and peak_prefill_throughput is None
+            ):
+                raise ValueError("runtime.router.peak_prefill_throughput is required")
+            if peak_prefill_throughput is not None:
+                parameters["peakPrefillThroughput"] = peak_prefill_throughput
+
     # Replace placeholder in the parsed data structure (avoids YAML formatting issues)
     def replace_placeholder_in_structure(obj):
         if isinstance(obj, dict):
@@ -499,6 +513,16 @@ def get_deployment_profile() -> dict[str, Any]:
         # Fall back to template-based resolution
         profile = _resolve_template_profile(profile_name, deployment_config)
 
+    if profile.pop("topology_from_model", False):
+        topology = config.project.get_config("runtime.model_topology", print=False)
+        if topology is None:
+            raise ValueError(f"Deployment profile {profile_name} requires a model topology preset")
+        profile.update({key: topology[key] for key in ("replicas", "tensor_parallelism")})
+
+    model_vllm_args = config.project.get_config("runtime.model_vllm_args", print=False)
+    if model_vllm_args:
+        profile = deep_merge(profile, {"vllm_extra": {"args": model_vllm_args}})
+
     defaults = copy.deepcopy(deployment_config.get("defaults", {}))
 
     scheduler_manifest = profile.pop("scheduler_manifest", None)
@@ -617,6 +641,15 @@ def get_smoke_request() -> dict[str, Any]:
     """Get the smoke request configuration"""
     smoke_request_key = config.project.get_config("runtime.smoke_request_key")
     return copy.deepcopy(config.project.get_config(f"workloads.smoke_requests.{smoke_request_key}"))
+
+
+def get_burnin_config() -> dict[str, Any]:
+    """Get the burn-in phase configuration.
+
+    Returns:
+        Dictionary with burn-in settings (enabled, rate, max_seconds, job_name_prefix)
+    """
+    return copy.deepcopy(config.project.get_config("burnin", {}))
 
 
 def get_run_specs() -> list[RunSpec]:
