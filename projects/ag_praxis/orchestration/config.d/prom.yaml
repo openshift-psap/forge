@@ -39,12 +39,14 @@ capture:
         variables:
           NAMESPACE: "{namespace}"
           POD_NAME: "guidellm.*"
+          CONTAINER: "guidellm-main"
       resource_sim:
         enabled: true
         files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
         variables:
           NAMESPACE: "{namespace}"
           POD_NAME: "{llmisvc_name}-.*"
+          CONTAINER: "main"
       resource_ingress:
         enabled: true
         files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
