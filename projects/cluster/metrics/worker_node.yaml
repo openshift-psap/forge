@@ -11,6 +11,17 @@
 
 - query: >-
     sum(
+      kube_node_status_capacity{resource="cpu"}
+      * on(node) group_left()
+      kube_node_role{role="worker"}
+    ) by (node)
+  metricName: worker_cpu_capacity_per_node
+  description: CPU capacity per worker node
+  unit: cores
+  legendLabels: [node]
+
+- query: >-
+    sum(
       (1 - rate(node_cpu_seconds_total{mode="idle"}[2m]))
       * on(namespace, pod) group_left(node)
       node_namespace_pod:kube_pod_info:{pod=~"node-exporter.+"}
@@ -20,6 +31,19 @@
   metricName: worker_cpu_usage
   description: CPU usage on worker nodes
   unit: cores
+
+- query: >-
+    sum(
+      (1 - rate(node_cpu_seconds_total{mode="idle"}[2m]))
+      * on(namespace, pod) group_left(node)
+      node_namespace_pod:kube_pod_info:{pod=~"node-exporter.+"}
+      * on(node) group_left()
+      kube_node_role{role="worker"}
+    ) by (node)
+  metricName: worker_cpu_usage_per_node
+  description: CPU usage per worker node
+  unit: cores
+  legendLabels: [node]
 
 - query: >-
     sum(
@@ -41,6 +65,17 @@
 
 - query: >-
     sum(
+      kube_node_status_capacity{resource="memory"}
+      * on(node) group_left()
+      kube_node_role{role="worker"}
+    ) by (node)
+  metricName: worker_memory_capacity_per_node
+  description: Memory capacity per worker node
+  unit: bytes
+  legendLabels: [node]
+
+- query: >-
+    sum(
       (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
       * on(instance) group_left()
       label_replace(
@@ -51,6 +86,20 @@
   metricName: worker_memory_usage
   description: Memory usage on worker nodes
   unit: bytes
+
+- query: >-
+    sum(
+      (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="worker"},
+        "instance", "$1", "node", "(.*)"
+      )
+    ) by (instance)
+  metricName: worker_memory_usage_per_node
+  description: Memory usage per worker node
+  unit: bytes
+  legendLabels: [instance]
 
 - query: >-
     sum(
