@@ -17,7 +17,7 @@ from projects.caliper.engine.model import (
 )
 
 from .ai_eval import GuideLLMAIEvaluator
-from .dashboard import enrich_guidellm_parse_result
+from .dashboard import enrich_guidellm_parse_result, is_benchmarks_artifact
 from .kpi_handler import GuideLLMKpiHandler
 from .parsing.parsers import GuideLLMParser
 
@@ -363,7 +363,9 @@ class GuideLLMPlugin(PostProcessingPlugin):
 
         # GuideLLM benchmark results - search within this test directory only
         benchmark_pattern = "**/*__run_guidellm_benchmark/results/benchmarks*.json"
-        benchmark_matches = list(test_dir.glob(benchmark_pattern))
+        benchmark_matches = [
+            match for match in test_dir.glob(benchmark_pattern) if is_benchmarks_artifact(match)
+        ]
 
         if benchmark_matches:
             logger.debug(f"Found {len(benchmark_matches)} GuideLLM benchmark files in {test_dir}")

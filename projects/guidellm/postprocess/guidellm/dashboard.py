@@ -22,6 +22,7 @@ from projects.caliper.engine.model import (
     UnifiedResultRecord,
     UnifiedRunModel,
 )
+from projects.guidellm.toolbox.run_guidellm_benchmark import SKIP_FROM_POSTPROCESSING_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,8 @@ DASHBOARD_METADATA_LABEL_KEYS = frozenset(
 
 def is_benchmarks_artifact(path: Path) -> bool:
     """Return whether ``path`` is a GuideLLM benchmark result artifact."""
+    if (path.parent / SKIP_FROM_POSTPROCESSING_MARKER).exists():
+        return False
     return path.suffix == ".json" and (
         path.name == "benchmarks.json" or path.name.startswith("benchmarks-")
     )

@@ -832,6 +832,7 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
             config_path=burnin_config_path,
             fs_group=fs_group,
             use_pvc=benchmark.get("use_pvc") if benchmark else False,
+            skip_from_postprocessing=True,
         )
         logger.info("Burn-in phase completed successfully")
 
