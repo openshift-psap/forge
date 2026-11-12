@@ -140,6 +140,7 @@ def ensure_operator_subscription(operator_spec: dict[str, str]) -> dict[str, obj
         channel=operator_spec["channel"],
         source_namespace=operator_spec.get("source_namespace", "openshift-marketplace"),
         display_name=operator_spec.get("display_name", operator_spec["package"]),
+        starting_csv=operator_spec.get("starting_csv", ""),
         artifact_dirname_suffix=f"_{operator_spec['package']}",
     )
 
