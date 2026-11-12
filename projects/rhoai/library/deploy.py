@@ -27,6 +27,13 @@ RHOAI_CUSTOM_CATALOG_VAULTS = [
     "psap-forge-staging-image-pull",
 ]
 
+# Ownership marker stamped on the custom CatalogSource by deploy_custom_catalog.
+# Cleanup deletes CatalogSources carrying this label only, so a catalog forge
+# did not create can never be removed, and leftovers are caught even when the
+# catalog name changed between runs.
+FORGE_MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
+FORGE_MANAGED_BY_SELECTOR = f"{FORGE_MANAGED_BY_LABEL}=forge"
+
 
 @requires(custom_catalog_enabled="platform.rhoai.custom_catalog.enabled")
 def list_mandatory_vaults(_cfg) -> list[str]:
@@ -153,6 +160,52 @@ def deploy_rhoai_custom_catalog(*, custom_catalog: RhoaiCustomCatalogConfig) -> 
         publisher=custom_catalog.publisher or "",
         artifact_dirname_suffix="rhoai",
     )
+
+
+def cleanup_rhoai_custom_catalog(*, rhoai: dict[str, Any]) -> None:
+    """Delete the forge-managed custom CatalogSource, if any.
+
+    Runs regardless of `custom_catalog.enabled` so that leftovers from a
+    previous run are removed even when the current run used the default
+    catalog. Only CatalogSources labeled as forge-managed are deleted; the
+    catalog namespace (typically the shared `openshift-marketplace`) is kept.
+    """
+    rhoai_config = RhoaiOperatorConfig.model_validate(rhoai)
+    custom_catalog = rhoai_config.custom_catalog
+
+    result = oc(
+        "delete",
+        "catalogsource",
+        "-l",
+        FORGE_MANAGED_BY_SELECTOR,
+        "-n",
+        custom_catalog.namespace,
+        "--ignore-not-found=true",
+        check=False,
+        log_stdout=False,
+    )
+    if not result.success:
+        raise RuntimeError(
+            f"Failed to delete the forge-managed CatalogSource in namespace "
+            f"{custom_catalog.namespace}: {result.stderr.strip()}"
+        )
+
+    deleted = [
+        line
+        for line in result.stdout.strip().splitlines()
+        if line.strip() and not line.startswith("No resources found")
+    ]
+    if not deleted:
+        logger.info(
+            "No forge-managed CatalogSource in namespace %s, nothing to clean up",
+            custom_catalog.namespace,
+        )
+    else:
+        logger.info(
+            "Deleted forge-managed CatalogSource(s) in namespace %s: %s",
+            custom_catalog.namespace,
+            ", ".join(deleted),
+        )
 
 
 def rhoai_operator_spec(
