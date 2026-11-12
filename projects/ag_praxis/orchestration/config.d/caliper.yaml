@@ -2,6 +2,11 @@ export:
   from: null
   verbose: true
   dry_run: false
+  traces:
+    # Ingest discovered trace bundles natively when MLflow export is enabled.
+    # Off by default: an untraced run never touches the native trace endpoint.
+    # The `tracing-smoke` preset turns this on alongside tracing.mode.
+    enabled: false
   backend:
     mlflow:
       enabled: true
