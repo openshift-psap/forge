@@ -3,6 +3,8 @@ kind: CatalogSource
 metadata:
   name: {{ args.catalog_source_name }}
   namespace: {{ args.catalog_namespace }}
+  labels:
+    app.kubernetes.io/managed-by: forge
 spec:
   sourceType: grpc
   image: {{ args.catalog_image }}
