@@ -446,3 +446,31 @@ def test_combined_figure_title():
     fig = create_combined_figure(usage, limits, "CPU Usage vs Limits")
 
     assert fig.layout.title.text == "CPU Usage vs Limits"
+
+
+def test_combined_figure_with_requests_adds_dotted_traces():
+    ts = [datetime(2026, 1, 1, tzinfo=UTC)]
+    usage = _make_metric(
+        unit="count",
+        metric_name="cpu_usage",
+        series=[LabeledSeries(labels={"pod": "a"}, timestamps=ts, values=[1.0])],
+    )
+    limits = _make_metric(
+        unit="count",
+        metric_name="cpu_limits",
+        series=[LabeledSeries(labels={"pod": "a"}, timestamps=ts, values=[2.0])],
+    )
+    requests = _make_metric(
+        unit="count",
+        metric_name="cpu_requests",
+        series=[LabeledSeries(labels={"pod": "a"}, timestamps=ts, values=[1.5])],
+    )
+    fig = create_combined_figure(usage, limits, "CPU", request_metric=requests)
+
+    request_traces = [t for t in fig.data if t.name.startswith("request:")]
+    assert len(request_traces) == 1
+    assert request_traces[0].line.dash == "dot"
+
+    # without requests, no request traces are added
+    fig_no_requests = create_combined_figure(usage, limits, "CPU")
+    assert not [t for t in fig_no_requests.data if t.name.startswith("request:")]

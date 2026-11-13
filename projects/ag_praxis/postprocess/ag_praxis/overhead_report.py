@@ -17,7 +17,7 @@ from projects.caliper.postprocess.prometheus.report import assemble_report
 
 logger = logging.getLogger(__name__)
 
-ENDPOINT_ORDER = ["svc", "maas", "maas/praxis"]
+ENDPOINT_ORDER = ["svc", "maas/ipp", "maas/praxis"]
 
 
 def _merge_replica_curves(
@@ -163,7 +163,7 @@ def _build_overhead_table(
         return ""
 
     svc_latency = latencies_by_endpoint.get("svc")
-    maas_latency = latencies_by_endpoint.get("maas")
+    maas_latency = latencies_by_endpoint.get("maas/ipp")
 
     header_cells = "".join(f"<th>{html_module.escape(ep)}</th>" for ep in endpoints)
 
@@ -201,7 +201,7 @@ def _build_overhead_table(
         f"<tr><td>4</td><td>Overhead vs svc [(2<sub>ep</sub>)-(2<sub>svc</sub>)]</td>{cells}</tr>"
     )
 
-    # Row 5: Praxis overhead vs maas [(2_praxis)-(2_maas)]
+    # Row 5: Praxis overhead vs maas/ipp [(2_praxis)-(2_maas/ipp)]
     cells = ""
     for ep in endpoints:
         if ep != "maas/praxis" or maas_latency is None:
@@ -211,7 +211,7 @@ def _build_overhead_table(
             cells += f"<td>{_format_ms(val)}</td>"
     rows.append(
         f"<tr><td>5</td>"
-        f"<td>Praxis overhead vs maas [(2<sub>praxis</sub>)-(2<sub>maas</sub>)]</td>{cells}</tr>"
+        f"<td>Praxis overhead vs maas/ipp [(2<sub>praxis</sub>)-(2<sub>maas/ipp</sub>)]</td>{cells}</tr>"
     )
 
     # Row 6: Overhead vs svc as % of processing time [(4)/(3)]
@@ -230,21 +230,21 @@ def _build_overhead_table(
         f"<tr><td>6</td><td>Overhead vs svc as % of processing time [(4)/(3)]</td>{cells}</tr>"
     )
 
-    # Row 7: Praxis overhead as % of processing time [(5)/(3_maas)]
+    # Row 7: Praxis overhead as % of processing time [(5)/(3_maas/ipp)]
     cells = ""
     for ep in endpoints:
         if ep != "maas/praxis" or maas_latency is None:
             cells += "<td>&mdash;</td>"
         else:
             overhead = latencies_by_endpoint[ep] - maas_latency
-            proc = transport.get("maas", 0)
+            proc = transport.get("maas/ipp", 0)
             if abs(proc) < 0.001:
                 cells += "<td>&mdash;</td>"
             else:
                 cells += f"<td>{_format_pct(overhead / proc * 100)}</td>"
     rows.append(
         f"<tr><td>7</td>"
-        f"<td>Praxis overhead vs maas as % of processing time [(5)/(3<sub>maas</sub>)]</td>"
+        f"<td>Praxis overhead vs maas/ipp as % of processing time [(5)/(3<sub>maas/ipp</sub>)]</td>"
         f"{cells}</tr>"
     )
 

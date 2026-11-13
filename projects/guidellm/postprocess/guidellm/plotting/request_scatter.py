@@ -98,6 +98,72 @@ def create_scatter_plot(scatter_entry: dict[str, Any], title_context: str = ""):
         return None
 
 
+def create_token_scatter_plot(scatter_entry: dict[str, Any], title_context: str = ""):
+    """Create a scatter plot of output tokens per response over time, colored by concurrency."""
+    try:
+        import plotly.graph_objects as go
+
+        scatter_list = scatter_entry["scatter"]
+        fig = go.Figure()
+        has_tokens = False
+
+        for point in sorted(scatter_list, key=lambda p: p.get("concurrency") or 0):
+            concurrency = point.get("concurrency")
+            start_times = point.get("start_times", [])
+            output_tokens = point.get("output_tokens", [])
+            prompt_tokens = point.get("prompt_tokens", [])
+            if not output_tokens:
+                continue
+
+            times, tokens, prompts = [], [], []
+            for idx, token_count in enumerate(output_tokens):
+                if token_count is None or idx >= len(start_times):
+                    continue
+                times.append(start_times[idx])
+                tokens.append(token_count)
+                prompts.append(prompt_tokens[idx] if idx < len(prompt_tokens) else "")
+            if not times:
+                continue
+
+            has_tokens = True
+            fig.add_trace(
+                go.Scattergl(
+                    x=times,
+                    y=tokens,
+                    mode="markers",
+                    name=f"concurrency={concurrency}",
+                    marker={"size": 3, "opacity": 0.5},
+                    customdata=prompts,
+                    hovertemplate=(
+                        f"<b>concurrency={concurrency}</b><br>"
+                        "Time: %{x:.1f}s<br>"
+                        "Output tokens: %{y}<br>"
+                        "Prompt tokens: %{customdata}<extra></extra>"
+                    ),
+                )
+            )
+
+        if not has_tokens:
+            return None
+
+        legend_name = scatter_entry["legend_name"]
+        fig.update_layout(
+            title=f"Output Tokens Per Response Over Time — {legend_name}{title_context}",
+            xaxis_title="Elapsed Time (s)",
+            yaxis_title="Output Tokens Per Response",
+            showlegend=True,
+            width=1400,
+            height=700,
+            font={"size": 12},
+        )
+        fig.update_yaxes(rangemode="tozero")
+        return fig
+
+    except Exception as e:
+        logger.warning("Failed to create token scatter plot: %s", e)
+        return None
+
+
 def generate_request_scatter_report(
     records: list[UnifiedResultRecord],
     output_dir: Path,
@@ -151,10 +217,30 @@ def generate_request_scatter_report(
             )
             html_rel = f"{report_dir_name}/scatter_{entry_idx:03d}/{Path(html_path).name}"
             plot_content = embed_plot_for_report(png_rel, html_rel, legend_name, output_dir)
-            sections.append(
+            section = (
                 f'<h2 id="scatter-{entry_idx}">{legend_name}</h2>\n'
                 f'<div class="plot-section">\n{plot_content}\n</div>'
             )
+
+            token_fig = create_token_scatter_plot(entry, title_context)
+            if token_fig is not None:
+                token_png_path = save_figure(token_fig, entry_dir, "token_scatter", as_image=True)
+                token_html_path = save_figure(token_fig, entry_dir, "token_scatter", as_image=False)
+                if token_html_path:
+                    token_png_rel = (
+                        f"{report_dir_name}/scatter_{entry_idx:03d}/{Path(token_png_path).name}"
+                        if token_png_path
+                        else None
+                    )
+                    token_html_rel = (
+                        f"{report_dir_name}/scatter_{entry_idx:03d}/{Path(token_html_path).name}"
+                    )
+                    token_plot_content = embed_plot_for_report(
+                        token_png_rel, token_html_rel, legend_name, output_dir
+                    )
+                    section += f'\n<div class="plot-section">\n{token_plot_content}\n</div>'
+
+            sections.append(section)
 
         if not sections:
             return None
@@ -198,7 +284,7 @@ def generate_request_scatter_report(
 <body>
     <div class="header">
         <h1>{display_title}</h1>
-        <div>Individual request latency over time, colored by concurrency level</div>
+        <div>Individual request latency and output tokens per response over time, colored by concurrency level</div>
     </div>
     {"".join(sections)}
 </body>

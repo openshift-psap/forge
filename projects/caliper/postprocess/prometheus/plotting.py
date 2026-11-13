@@ -193,6 +193,7 @@ def create_combined_figure(
     usage_metric: MetricTimeSeries,
     limit_metric: MetricTimeSeries,
     title: str,
+    request_metric: MetricTimeSeries | None = None,
 ) -> go.Figure:
     fmt = UNIT_FORMATTERS.get(usage_metric.unit, _FALLBACK_FORMAT)
     fig = go.Figure()
@@ -225,6 +226,24 @@ def create_combined_figure(
                 hovertemplate="%{x}<br>%{y}<br>" + hover_text + "<extra></extra>",
             )
         )
+
+    if request_metric is not None:
+        request_legend = build_legend_info(request_metric)
+        for labeled_series, entry in zip(
+            request_metric.series, request_legend.entries, strict=True
+        ):
+            y_values = [v * fmt.value_scale for v in labeled_series.values]
+            hover_text = _build_hover_text(entry, request_legend, "request")
+            fig.add_trace(
+                go.Scatter(
+                    x=labeled_series.timestamps,
+                    y=y_values,
+                    mode="lines",
+                    name=f"request: {entry.short_name}",
+                    line=dict(dash="dot"),
+                    hovertemplate="%{x}<br>%{y}<br>" + hover_text + "<extra></extra>",
+                )
+            )
 
     y_title = title
     if fmt.axis_suffix:

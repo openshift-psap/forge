@@ -31,6 +31,8 @@ def run(
     gateway_name: str = "",
     gateway_namespace: str = "",
     owner_deployment_name: str = "",
+    token_rate_limit: int = 1_000_000_000,
+    token_rate_limit_window: str = "1m",
 ):
     """Register a model with MaaS by creating MaaSModelRef, MaaSAuthPolicy, and MaaSSubscription.
 
@@ -51,6 +53,14 @@ def run(
         gateway_name: MaaS gateway name (required for ExternalModel).
         gateway_namespace: MaaS gateway namespace (required for ExternalModel).
         owner_deployment_name: Name of the Deployment that owns the created resources (for garbage collection).
+        token_rate_limit: Token quota per window on the MaaSSubscription (tokenRateLimits).
+            The default is a deliberately huge quota so perf runs are not rate-limited.
+            CAVEAT: on builds where the kuadrant wasm shim extracts usage from the response
+            body parsed as a single JSON document, token metering fails OPEN for streamed
+            /v1/responses traffic -- requests return 200 and no quota is counted, so the
+            limit is not enforced (see orchestration/poc/maas-praxis-500-ext-proc-overflow.md,
+            Finding 2). Verify metering before relying on a run to exercise the quota path.
+        token_rate_limit_window: Window for the token quota (e.g. "1m").
     """
     if model_ref_kind not in _VALID_MODEL_REF_KINDS:
         raise ValueError(
@@ -180,6 +190,8 @@ def _template_context(args, ctx):
         "gateway_name": args.gateway_name,
         "gateway_namespace": args.gateway_namespace,
         "owner_ref": ctx.owner_ref,
+        "token_rate_limit": args.token_rate_limit,
+        "token_rate_limit_window": args.token_rate_limit_window,
     }
 
 

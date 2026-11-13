@@ -6,6 +6,7 @@ Replaces llmd_capture_llmisvc_state Ansible role
 """
 
 from projects.core.dsl import entrypoint, execute_tasks, shell, task
+from projects.core.dsl.utils.k8s import oc_get_json
 
 
 @entrypoint
@@ -535,6 +536,58 @@ def capture_used_nodes_yaml(args, context):
         captured_count += 1
 
     return f"Captured YAML for {captured_count} nodes in {nodes_dir}"
+
+
+def _container_crash(pod_name: str, status: dict) -> str | None:
+    """Describe how a container crashed, or None if it did not."""
+    container_name = status.get("name", "<unknown>")
+
+    waiting_reason = status.get("state", {}).get("waiting", {}).get("reason")
+    if waiting_reason == "CrashLoopBackOff":
+        return f"{pod_name}/{container_name}: waiting (CrashLoopBackOff)"
+
+    for state_key in ("state", "lastState"):
+        terminated = status.get(state_key, {}).get("terminated", {})
+        exit_code = terminated.get("exitCode")
+        if terminated and exit_code not in (None, 0):
+            reason = terminated.get("reason", "Unknown")
+            return f"{pod_name}/{container_name}: {state_key} terminated ({reason}, exit code {exit_code})"
+
+    return None
+
+
+def _find_crashed_containers(pods: list) -> list[str]:
+    """Return a crash description per crashed container across the given pods (empty if none)."""
+    crashes = []
+    for pod in pods:
+        pod_name = pod.get("metadata", {}).get("name", "<unknown>")
+        for status_key in (
+            "initContainerStatuses",
+            "containerStatuses",
+            "ephemeralContainerStatuses",
+        ):
+            for status in pod.get("status", {}).get(status_key, []):
+                crash = _container_crash(pod_name, status)
+                if crash:
+                    crashes.append(crash)
+    return crashes
+
+
+@task
+def check_pods_crashed(args, context):
+    """Fail the capture if any LLMInferenceService pod container crashed.
+
+    Runs after all capture tasks so the artifacts are still written on failure.
+    """
+    pods = oc_get_json(
+        "pods",
+        namespace=context.target_namespace,
+        selector=f"app.kubernetes.io/name={args.llmisvc_name}",
+    )
+    crashed = _find_crashed_containers((pods or {}).get("items", []))
+    if crashed:
+        raise RuntimeError("Crashed LLMInferenceService containers detected: " + "; ".join(crashed))
+    return "No crashed containers detected in LLMInferenceService pods"
 
 
 if __name__ == "__main__":

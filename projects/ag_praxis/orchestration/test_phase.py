@@ -97,6 +97,7 @@ def _execute_benchmark(
         api_key_file_path=api_key_file_path,
         validate_backend=config.project.get_config("workloads.validate_backend"),
         keep_full_benchmark_file=config.project.get_config("workloads.keep_full_benchmark_file"),
+        drop_request_details=config.project.get_config("workloads.drop_request_details"),
     )
 
 
@@ -133,7 +134,14 @@ def _build_benchmark_config(payload_name, sweep_name):
     if sweep is None:
         raise ValueError(f"Unknown sweep: {sweep_name!r}. Valid: {list(sweeps)}")
 
-    duration = workloads.get("duration", 180)
+    # Number of requests each stream issues before the level completes. Unlike
+    # a max_duration constraint, max_requests lets every request run fully
+    # through, so no in-flight stream is cancelled at level end (cancellation
+    # bursts trigger the 404 race in the sim's fasthttp server). The trailing
+    # drain period is occluded from the metrics via the profile cooldown.
+    requests_per_stream = payload.get(
+        "requests_per_stream", workloads.get("requests_per_stream", 36)
+    )
 
     benchmark = {}
     for key in (
@@ -157,7 +165,7 @@ def _build_benchmark_config(payload_name, sweep_name):
             "model": model_name,
             "profile": "kind=concurrent,streams={rate}",
             "data": f"kind=synthetic_text,prompt_tokens={payload['prompt_tokens']},output_tokens={payload['output_tokens']}",
-            "constraint": f"kind=max_duration,seconds={duration}",
+            "constraint": f"kind=max_requests,count={{{requests_per_stream}*rate}}",
         }
     )
     benchmark["args"] = workload_args
@@ -326,13 +334,18 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
         enable_maas_praxis_command.run(
             activate=True,
             tenant_namespace=maas_cfg["tenant_namespace"],
+            ingress_namespace=maas_cfg["gateway"]["namespace"],
+            gateway_name=maas_cfg["gateway"]["name"],
             payload_processing_config=praxis_cfg.get("payload_processing"),
+            extproc_max_requests=praxis_cfg.get("extproc_max_requests"),
         )
-    elif ep_name == "maas":
+    elif ep_name == "maas/ipp":
         logger.info("Deactivating praxis for endpoint %s", ep_name)
         enable_maas_praxis_command.run(
             activate=False,
             tenant_namespace=maas_cfg["tenant_namespace"],
+            ingress_namespace=maas_cfg["gateway"]["namespace"],
+            gateway_name=maas_cfg["gateway"]["name"],
         )
 
 
@@ -345,21 +358,22 @@ def _test_endpoint(
     model_name,
     run_benchmark,
     completed_endpoints,
+    capture_session=None,
+    matrix_labels=None,
 ):
     from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
     from projects.cluster.library.prom.collection import capture_prometheus
-    from projects.kserve.toolbox.capture_sim_state import (
-        main as capture_sim_state_command,
-    )
+    from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state_command
 
     benchmark_start = datetime.now(UTC)
 
     test_dir = env.ARTIFACT_DIR
     payload_name = config.project.get_config("test.payload")
     sweep_name = config.project.get_config("test.sweep")
+    test_labels = {"endpoint": ep_name, **(matrix_labels or {})}
     create_test_metadata(
         test_dir,
-        {"endpoint": ep_name},
+        test_labels,
         kpi_labels={
             "model_name": model_name,
             "guidellm_loadshape": f"{payload_name}_{sweep_name}",
@@ -384,6 +398,15 @@ def _test_endpoint(
     try:
         _toggle_praxis_for_endpoint(ep_name, maas_cfg)
 
+        if ep_name.startswith("maas"):
+            _register_maas_model(test_namespace, maas_cfg, model_name)
+            maas_gateway_url, maas_curl_connect_to = _resolve_maas_gateway_url()
+            llmisvc_name = maas_cfg["llmisvc_name"]
+            subscription_name = f"{test_namespace}-{llmisvc_name}-subscription"
+            api_key_path = _create_maas_api_key(
+                test_namespace, maas_gateway_url, maas_curl_connect_to, subscription_name
+            )
+
         _smoke_test(
             test_namespace,
             ep_url,
@@ -400,12 +423,21 @@ def _test_endpoint(
     finally:
         benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
-        sim_name = maas_cfg["llmisvc_name"]
         _run_finalizer(
-            "capturing sim state",
-            capture_sim_state_command.run,
+            "recording trace window",
+            _record_trace_window,
+            capture_session=capture_session,
+            run_benchmark=run_benchmark,
+            start_time=benchmark_start,
+            end_time=benchmark_end,
+        )
+
+        llmisvc_name = maas_cfg["llmisvc_name"]
+        _run_finalizer(
+            "capturing LLMInferenceService state",
+            capture_llmisvc_state_command.run,
+            llmisvc_name=llmisvc_name,
             namespace=test_namespace,
-            name=sim_name,
         )
 
         def _capture_prom():
@@ -419,6 +451,7 @@ def _test_endpoint(
             capture_maas_praxis_command.run,
             ingress_namespace=maas_cfg["gateway"]["namespace"],
             tenant_namespace=maas_cfg["tenant_namespace"],
+            gateway_name=maas_cfg["gateway"]["name"],
         )
 
     if primary_exc is not None:
@@ -461,6 +494,7 @@ def _deploy_maas_sim(test_namespace, maas_cfg):
         time_to_first_token=sim_cfg["time_to_first_token"],
         inter_token_latency=sim_cfg["inter_token_latency"],
         mode=sim_cfg["mode"],
+        replicas=sim_cfg.get("replicas", 1),
     )
 
     llmisvc_name = maas_cfg["llmisvc_name"]
@@ -483,6 +517,8 @@ def _register_maas_model(test_namespace, maas_cfg, model_name):
         tenant_namespace=maas_cfg["tenant_namespace"],
         llmisvc_name=maas_sim_name,
         model_ref_kind="LLMInferenceService",
+        token_rate_limit=maas_cfg.get("token_rate_limit", 1_000_000_000),
+        token_rate_limit_window=maas_cfg.get("token_rate_limit_window", "1m"),
     )
 
 
@@ -522,26 +558,21 @@ def _validate_benchmark_rates():
 
 
 def _prepare_test_endpoints(test_namespace, maas_cfg):
-    """Deploy sim, register model, resolve gateway, create API key, and build endpoint list."""
+    """Deploy sim, resolve gateway, and build endpoint list."""
     svc_endpoint = _deploy_maas_sim(test_namespace, maas_cfg)
 
-    model_name = config.project.get_config("platform.sim.model_name")
-    _register_maas_model(test_namespace, maas_cfg, model_name)
-
-    maas_gateway_url, maas_curl_connect_to = _resolve_maas_gateway_url()
+    maas_gateway_url, _ = _resolve_maas_gateway_url()
     llmisvc_name = maas_cfg["llmisvc_name"]
-    subscription_name = f"{test_namespace}-{llmisvc_name}-subscription"
-    api_key_file_path = _create_maas_api_key(
-        test_namespace, maas_gateway_url, maas_curl_connect_to, subscription_name
-    )
     maas_endpoint = f"{maas_gateway_url}/{test_namespace}/{llmisvc_name}"
     logger.info("MaaS external endpoint: %s", maas_endpoint)
     logger.info("SVC endpoint: %s", svc_endpoint)
 
+    model_name = config.project.get_config("platform.sim.model_name")
+
     endpoint_map = {
         "svc": (svc_endpoint, None),
-        "maas": (maas_endpoint, api_key_file_path),
-        "maas/praxis": (maas_endpoint, api_key_file_path),
+        "maas/ipp": (maas_endpoint, None),
+        "maas/praxis": (maas_endpoint, None),
     }
     selected = config.project.get_config("test.endpoints")
     endpoints = [(name, *endpoint_map[name]) for name in selected if name in endpoint_map]
@@ -556,6 +587,8 @@ def _run_endpoint_benchmarking(
     model_name,
     run_benchmark,
     completed_endpoints,
+    capture_session=None,
+    matrix_labels=None,
 ):
     """Run smoke tests and benchmarks for each endpoint."""
 
@@ -570,6 +603,8 @@ def _run_endpoint_benchmarking(
                 model_name,
                 run_benchmark,
                 completed_endpoints,
+                capture_session=capture_session,
+                matrix_labels=matrix_labels,
             )
 
 
@@ -579,10 +614,8 @@ def do_test_praxis():
         prepare_user_workload_monitoring,
         validate_user_workload_monitoring,
     )
+    from projects.core.library.matrix import activate_combination, compute_matrix
     from projects.core.orchestration.utils.k8s import ensure_namespace
-
-    if config.project.get_config("test.run_benchmark"):
-        _validate_benchmark_rates()
 
     validate_user_workload_monitoring()
     prepare_user_workload_monitoring(during="test")
@@ -598,21 +631,38 @@ def do_test_praxis():
     _register_namespace_in_gateway(test_namespace, maas_gw["name"], maas_gw["namespace"])
 
     run_benchmark = config.project.get_config("test.run_benchmark")
+    matrix_config = config.project.get_config("test.matrices.guidellm", default_value={})
+    combinations = compute_matrix(matrix_config)
+
     primary_exc = None
     completed_endpoints = []
+    capture_session = None
 
     try:
+        # Start the trace collector before the serving workloads, so no spans
+        # are lost at startup. Tracing off is a no-op; without a benchmark
+        # there is no window to record, so the collector is not started.
+        if run_benchmark:
+            capture_session = _start_trace_capture(maas_cfg["llmisvc_name"])
+
         endpoints, model_name, maas_endpoint = _prepare_test_endpoints(test_namespace, maas_cfg)
 
-        with env.NextArtifactDir("benchmarking"):
-            _run_endpoint_benchmarking(
-                endpoints,
-                test_namespace,
-                maas_cfg,
-                model_name,
-                run_benchmark,
-                completed_endpoints,
-            )
+        for combo in combinations:
+            with activate_combination(combo):
+                if run_benchmark:
+                    _validate_benchmark_rates()
+
+                with env.NextArtifactDir(combo.artifact_dirname or "benchmarking"):
+                    _run_endpoint_benchmarking(
+                        endpoints,
+                        test_namespace,
+                        maas_cfg,
+                        model_name,
+                        run_benchmark,
+                        completed_endpoints,
+                        capture_session=capture_session,
+                        matrix_labels=combo.labels,
+                    )
 
         if not run_benchmark:
             _write_benchmark_dry_run(maas_endpoint)
@@ -621,7 +671,7 @@ def do_test_praxis():
         primary_exc = sys.exc_info()
         logger.exception("Test phase failed")
 
-    finalizer_exc = _run_cleanup(test_namespace, maas_cfg, primary_exc)
+    finalizer_exc = _run_cleanup(test_namespace, maas_cfg, primary_exc, capture_session)
 
     if primary_exc is not None:
         raise primary_exc[1].with_traceback(primary_exc[2])
@@ -635,21 +685,138 @@ def do_test_praxis():
     return 0, ExitCategory.SUCCESS, reason
 
 
-def _run_cleanup(test_namespace, maas_cfg, primary_exc):
+def _tracing_job_id() -> str:
+    """Return the FournosJob name, or a local fallback outside CI."""
+    return config.project.get_config("ci_job.fjob_name", None) or "local-ag-praxis"
+
+
+def _start_trace_capture(deployment_id: str):
+    """Deploy the trace collector for this capture, or return None when disabled.
+
+    A startup failure raises: requested tracing must fail setup rather than run
+    without collecting.
+    """
+    from projects.ag_praxis.orchestration import tracing_adapter
+
+    settings = tracing_adapter.resolve_tracing()
+    if not settings.enabled:
+        return None
+
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.instrumentation import build_capture_id
+
+    job_id = _tracing_job_id()
+    namespace = config.project.get_config("test.namespace")
+
+    return lifecycle.start_capture(
+        job_id=job_id,
+        capture_id=build_capture_id(job_id, namespace),
+        project="ag_praxis",
+        namespace=namespace,
+        deployment_id=deployment_id,
+        output_root=env.ARTIFACT_DIR,
+        settings=settings,
+        # No producer is instrumented yet (sim and praxis OTLP support are
+        # unconfirmed); the collector runs to validate the capture plumbing.
+        roles=[],
+    )
+
+
+def _record_trace_window(capture_session, run_benchmark, start_time, end_time) -> None:
+    """Record one benchmark window per endpoint, mirroring the llm_d per-workload windows."""
+    if capture_session is None or not run_benchmark:
+        return
+
+    from projects.cluster.library.tracing import lifecycle
+
+    lifecycle.record_window(
+        capture_session,
+        test_id=env.ARTIFACT_DIR.name,
+        start=start_time,
+        end=end_time,
+        artifact_dir=env.ARTIFACT_DIR,
+    )
+
+
+def _capture_traces(capture_session) -> None:
+    """Capture trace bundles and clean up the collector, mirroring llm_d.
+
+    Runs before the serving resources are cleaned up so the collector spool is
+    still available. A capture failure is surfaced through a notification and
+    re-raised so the finalizer reports it. The collector and spool are always
+    removed afterwards; without a recorded window there is nothing to capture,
+    so the collector is removed directly.
+    """
+    if capture_session is None:
+        return
+
+    from projects.cluster.library.tracing import lifecycle
+
+    if not capture_session.windows_from_disk():
+        logger.info("No trace windows recorded; removing the trace collector")
+        lifecycle.cleanup(capture_session)
+        return
+
+    settings = capture_session.settings
+    try:
+        status = lifecycle.capture(capture_session)
+    except Exception as exc:
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            "tracing-capture-failed",
+            "Requested trace collection failed for this test; see the test logs. "
+            "The trace collector was removed.",
+        )
+        lifecycle.cleanup(capture_session)
+        raise RuntimeError("requested trace collection failed") from exc
+
+    # Nothing recovers a preserved collector, so it is removed whatever the
+    # capture outcome; any published bundles are already in the artifacts.
+    lifecycle.cleanup(capture_session)
+
+    # An empty capture is expected at low sampling or for a tiny workload, but
+    # at full sampling it means instrumentation or the collector endpoint is
+    # misconfigured and the trace evidence must not pass silently.
+    empty_at_full_sampling = status.value == "empty" and settings.sample_ratio >= 1.0
+    if status.value in ("failed", "incomplete") or empty_at_full_sampling:
+        from projects.core.library.ci import add_notification_file
+
+        reason = "empty-at-full-sampling" if empty_at_full_sampling else status.value
+        add_notification_file(
+            f"tracing-collection-{reason}",
+            "Requested trace collection did not complete successfully; partial "
+            "bundles were retained in the artifacts.",
+        )
+        raise RuntimeError(f"requested trace collection {reason}")
+
+
+def _run_cleanup(test_namespace, maas_cfg, primary_exc, capture_session=None):
     """Run cleanup finalizers after test phase."""
-    from projects.kserve.toolbox.capture_sim_state import (
-        main as capture_sim_state_command,
+    from projects.kserve.toolbox.capture_llmisvc_state import (
+        main as capture_llmisvc_state_command,
     )
 
     finalizer_exc = None
 
-    sim_name = maas_cfg["llmisvc_name"]
+    llmisvc_name = maas_cfg["llmisvc_name"]
     try:
-        capture_sim_state_command.run(namespace=test_namespace, name=sim_name)
+        capture_llmisvc_state_command.run(llmisvc_name=llmisvc_name, namespace=test_namespace)
     except Exception:
-        logger.exception("Failed to capture sim state before cleanup")
+        logger.exception("Failed to capture LLMInferenceService state before cleanup")
         if primary_exc is None:
             finalizer_exc = sys.exc_info()
+
+    # Capture the trace bundles before the cleanup removes the serving
+    # resources, so the collector spool is still available.
+    try:
+        _capture_traces(capture_session)
+    except Exception:
+        if primary_exc is None:
+            logger.exception("Finalizer failed: capturing traces")
+            finalizer_exc = finalizer_exc or sys.exc_info()
+        else:
+            logger.exception("Ignoring trace capture failure after primary test failure")
 
     if not config.project.get_config("test.skip_cleanup"):
         try:

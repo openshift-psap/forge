@@ -53,12 +53,26 @@ LLM_D_REQUIRED_LABELS = GuideLLMKpiHandler.REQUIRED_LABELS | {
 }
 
 
+class LlmDKpiHandler(GuideLLMKpiHandler):
+    """llm-d KPI handler: ``gpu_type`` is mandatory and must be a real GPU type.
+
+    An ``unknown`` value means the GPU detection failed, and is as good as a
+    missing label for a mandatory field.
+    """
+
+    def _validate_required_labels(self, labels: dict[str, Any]) -> set[str]:
+        missing = super()._validate_required_labels(labels)
+        if str(labels.get("gpu_type", "")).lower() == "unknown":
+            missing.add("gpu_type")
+        return missing
+
+
 class LlmDGuideLLMPlugin(GuideLLMPlugin):
     """Keep generic GuideLLM outputs and add the llm-d dashboard projection."""
 
     def __init__(self):
         super().__init__()
-        self.kpi_handler = GuideLLMKpiHandler(
+        self.kpi_handler = LlmDKpiHandler(
             required_labels=LLM_D_REQUIRED_LABELS,
         )
 

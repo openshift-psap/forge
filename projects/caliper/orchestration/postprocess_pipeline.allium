@@ -1,0 +1,510 @@
+-- allium: 3
+-- postprocess_pipeline.allium
+
+-- Scope: Caliper postprocess pipeline step orchestration and dependency behavior
+-- Includes: Pipeline, Step, StepResult, final status computation, skip-dependents rule
+-- Excludes:
+--   - Internal CLI command building (build_parse_command, etc.)
+--   - File path resolution and directory setup
+--   - HTML report generation
+--   - YAML serialization / deserialization
+--   - S3 bucket/vault credential configuration details
+--   - Subprocess execution mechanics (_execute_caliper_command)
+--   - Step-specific output fields (output_files, record_count, etc.)
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum StepStatus { success | failed | warning | disabled | skipped | regression_detected }
+
+enum TestPhase { success_ | failed_ | not_available }
+-- Note: success_ and failed_ use trailing underscores to avoid
+-- collision with StepStatus literals in this spec.
+
+enum FinalStatus {
+    test_failed
+    | parse_visualize_failed
+    | kpi_pipeline_failed
+    | performance_regression
+    | performance_increase
+    | success
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Pipeline {
+    -- The test phase outcome, provided before postprocess begins
+    test_phase: TestPhase
+    postprocess_enabled: Boolean
+
+    -- Per-step failure flags: null = not yet evaluated (step not run / disabled)
+    parse_failed: Boolean?
+    visualize_failed: Boolean?
+    artifacts_to_kpis_failed: Boolean?
+    ai_data_failed: Boolean?
+    s3_import_failed: Boolean?
+    analyze_failed: Boolean?
+    s3_export_failed: Boolean?
+
+    -- Computed outcome
+    final_status: FinalStatus?
+
+    -- Step results recorded in execution order
+    steps: List<StepResult>
+}
+
+entity StepResult {
+    name: String
+    status: StepStatus
+    reason: String?
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- Master switch for the entire postprocess pipeline
+    postprocess_enabled: Boolean = true
+
+    -- Individual step enablement
+    parse_enabled: Boolean = false
+    visualize_enabled: Boolean = false
+    kpi_enabled: Boolean = false
+    artifacts_to_kpis_enabled: Boolean = false
+    dashboard_csv_enabled: Boolean = false
+    artifacts_to_ai_data_enabled: Boolean = false
+    s3_import_enabled: Boolean = false
+    analyze_enabled: Boolean = false
+    s3_export_enabled: Boolean = false
+
+    -- When artifacts_to_kpis fails, skip s3_import / analyse_kpis / s3_export
+    skip_dependents_on_failure: Boolean = true
+
+    -- Whether to propagate analyse_kpis regressions as a failure
+    fail_on_regression: Boolean = false
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Flow: Main Pipeline
+-- The pipeline executes steps in a fixed sequence with dependency gates.
+-- Parse gates everything; KPI generation gates s3/analysis when configured.
+
+rule PostprocessDisabled {
+    -- When postprocessing is disabled, compute final status from test phase alone.
+    when: RunPostprocess(pipeline)
+    requires: not config.postprocess_enabled
+
+    ensures:
+        pipeline.final_status = compute_final_status(pipeline)
+}
+
+rule NoStepsEnabled {
+    -- When postprocessing is enabled but no individual steps are enabled,
+    -- compute final status from test phase alone.
+    when: RunPostprocess(pipeline)
+    requires: config.postprocess_enabled
+    requires: not any_step_enabled()
+
+    ensures:
+        pipeline.final_status = compute_final_status(pipeline)
+}
+
+rule ExecutePipeline {
+    -- Main pipeline: parse -> visualize -> kpi_and_ai_data sub-pipeline -> finalize
+    when: RunPostprocess(pipeline)
+    requires: config.postprocess_enabled
+    requires: any_step_enabled()
+
+    ensures:
+        RunParseStep(pipeline)
+}
+
+-- Flow: Parse Step
+
+rule RunParseWhenEnabled {
+    when: RunParseStep(pipeline)
+    requires: config.parse_enabled
+
+    ensures:
+        -- Step executes; on completion the parse_failed flag is set.
+        -- On success: parse_failed = false
+        -- On failure (command error, zero records, exception): parse_failed = true
+        ExecuteStep(pipeline, step_name: parse)
+        ParseStepCompleted(pipeline)
+}
+
+rule SkipParseWhenDisabled {
+    when: RunParseStep(pipeline)
+    requires: not config.parse_enabled
+
+    ensures:
+        -- No step result is recorded; parse_failed remains null.
+        ParseStepCompleted(pipeline)
+}
+
+-- Flow: Parse Failure Gate
+
+rule ParseFailedAbortsPipeline {
+    -- Parse failure aborts the entire remaining pipeline.
+    when: ParseStepCompleted(pipeline)
+    requires: pipeline.parse_failed = true
+
+    ensures:
+        pipeline.final_status = compute_final_status(pipeline)
+}
+
+rule ParseSucceededContinuesPipeline {
+    -- Parse succeeded (or was not enabled): proceed to visualize and KPI steps.
+    when: ParseStepCompleted(pipeline)
+    requires: pipeline.parse_failed != true
+
+    ensures:
+        RunVisualizeStep(pipeline)
+}
+
+-- Flow: Visualize Step
+
+rule RunVisualizeWhenEnabled {
+    when: RunVisualizeStep(pipeline)
+    requires: config.visualize_enabled
+
+    ensures:
+        ExecuteStep(pipeline, step_name: visualize)
+        VisualizeStepCompleted(pipeline)
+}
+
+rule SkipVisualizeWhenDisabled {
+    when: RunVisualizeStep(pipeline)
+    requires: not config.visualize_enabled
+
+    ensures:
+        VisualizeStepCompleted(pipeline)
+}
+
+rule AfterVisualize {
+    when: VisualizeStepCompleted(pipeline)
+
+    ensures:
+        RunKpiAndAiDataSteps(pipeline)
+}
+
+-- Flow: KPI and AI Data Sub-Pipeline
+-- Step order: artifacts_to_kpis -> kpis_to_metrics -> dashboard_csv
+--             -> artifacts_to_ai_data -> (skip check) -> s3_import
+--             -> analyse_kpis -> s3_export
+
+rule KpiDisabled {
+    when: RunKpiAndAiDataSteps(pipeline)
+    requires: not config.kpi_enabled
+
+    ensures:
+        KpiSubPipelineCompleted(pipeline)
+}
+
+rule KpiEnabled {
+    -- When the KPI section is enabled, run the sub-pipeline steps in sequence.
+    when: RunKpiAndAiDataSteps(pipeline)
+    requires: config.kpi_enabled
+
+    ensures:
+        RunArtifactsToKpisStep(pipeline)
+}
+
+-- Sub-step: artifacts_to_kpis
+
+rule ArtifactsToKpisEnabled {
+    when: RunArtifactsToKpisStep(pipeline)
+    requires: config.artifacts_to_kpis_enabled
+
+    ensures:
+        ExecuteStep(pipeline, step_name: artifacts_to_kpis)
+        ArtifactsToKpisCompleted(pipeline)
+}
+
+rule ArtifactsToKpisDisabled {
+    when: RunArtifactsToKpisStep(pipeline)
+    requires: not config.artifacts_to_kpis_enabled
+
+    ensures:
+        StepResult.created(name: "artifacts_to_kpis", status: disabled, reason: "kpi.artifacts_to_kpis disabled")
+        ArtifactsToKpisCompleted(pipeline)
+}
+
+-- Sub-step: kpis_to_metrics (automatic, no config toggle)
+
+rule KpisToMetrics {
+    -- Runs automatically after artifacts_to_kpis succeeds. No failure flag;
+    -- its failure does not affect final status.
+    when: ArtifactsToKpisCompleted(pipeline)
+
+    ensures:
+        RunDashboardCsvStep(pipeline)
+
+    @guidance
+        -- kpis_to_metrics only runs when the artifacts_to_kpis step
+        -- recorded status = success and the KPI JSON file exists.
+        -- Its own failure is logged but does not set any failure flag
+        -- and does not affect the final pipeline status.
+}
+
+-- Sub-step: dashboard_csv
+
+rule DashboardCsvEnabled {
+    when: RunDashboardCsvStep(pipeline)
+    requires: config.dashboard_csv_enabled
+
+    ensures:
+        ExecuteStep(pipeline, step_name: dashboard_csv)
+        DashboardCsvCompleted(pipeline)
+
+    @guidance
+        -- dashboard_csv failure is logged as a warning but does not
+        -- set any failure flag. It is a supplementary export.
+}
+
+rule DashboardCsvDisabled {
+    when: RunDashboardCsvStep(pipeline)
+    requires: not config.dashboard_csv_enabled
+
+    ensures:
+        StepResult.created(name: "dashboard_csv", status: disabled, reason: "kpi.dashboard_csv disabled")
+        DashboardCsvCompleted(pipeline)
+}
+
+-- Sub-step: artifacts_to_ai_data
+
+rule ArtifactsToAiDataCompletes {
+    when: DashboardCsvCompleted(pipeline)
+
+    ensures:
+        RunArtifactsToAiDataStep(pipeline)
+}
+
+rule ArtifactsToAiDataEnabled {
+    when: RunArtifactsToAiDataStep(pipeline)
+    requires: config.artifacts_to_ai_data_enabled
+
+    ensures:
+        ExecuteStep(pipeline, step_name: artifacts_to_ai_data)
+        AiDataCompleted(pipeline)
+}
+
+rule ArtifactsToAiDataDisabled {
+    when: RunArtifactsToAiDataStep(pipeline)
+    requires: not config.artifacts_to_ai_data_enabled
+
+    ensures:
+        StepResult.created(name: "artifacts_to_ai_data", status: disabled, reason: "kpi.artifacts_to_ai_data disabled")
+        AiDataCompleted(pipeline)
+}
+
+-- Flow: Skip-Dependents Gate
+-- When artifacts_to_kpis failed AND skip_dependents_on_failure is true,
+-- the three KPI-dependent steps (s3_import, analyse_kpis, s3_export) are
+-- recorded as SKIPPED and not executed.
+
+rule SkipKpiDependentSteps {
+    when: AiDataCompleted(pipeline)
+    requires: pipeline.artifacts_to_kpis_failed = true
+    requires: config.skip_dependents_on_failure = true
+
+    ensures:
+        StepResult.created(name: "s3_import", status: skipped, reason: "skipped: artifacts_to_kpis failed")
+        StepResult.created(name: "analyse_kpis", status: skipped, reason: "skipped: artifacts_to_kpis failed")
+        StepResult.created(name: "s3_export", status: skipped, reason: "skipped: artifacts_to_kpis failed")
+        KpiSubPipelineCompleted(pipeline)
+}
+
+rule RunKpiDependentSteps {
+    -- KPI generation succeeded, or skip_dependents_on_failure is false:
+    -- proceed with s3_import, analyse_kpis, s3_export.
+    when: AiDataCompleted(pipeline)
+    requires:
+        pipeline.artifacts_to_kpis_failed != true
+        or not config.skip_dependents_on_failure
+
+    ensures:
+        RunS3ImportStep(pipeline)
+}
+
+-- Sub-step: s3_import
+
+rule S3ImportEnabled {
+    when: RunS3ImportStep(pipeline)
+    requires: config.s3_import_enabled
+
+    ensures:
+        ExecuteStep(pipeline, step_name: s3_import)
+        S3ImportCompleted(pipeline)
+}
+
+rule S3ImportDisabled {
+    when: RunS3ImportStep(pipeline)
+    requires: not config.s3_import_enabled
+
+    ensures:
+        StepResult.created(name: "s3_import", status: disabled, reason: "s3_import disabled")
+        S3ImportCompleted(pipeline)
+}
+
+-- Sub-step: analyse_kpis
+
+rule AnalyseKpisEnabled {
+    when: S3ImportCompleted(pipeline)
+    requires: config.analyze_enabled
+
+    ensures:
+        ExecuteStep(pipeline, step_name: analyse_kpis)
+        AnalyseKpisCompleted(pipeline)
+
+    @guidance
+        -- The analyse_kpis step only sets the analyze_failed flag when
+        -- config.fail_on_regression is true. When fail_on_regression is
+        -- false, regressions are logged but do not propagate to the
+        -- failure flags or final status.
+}
+
+rule AnalyseKpisDisabled {
+    when: S3ImportCompleted(pipeline)
+    requires: not config.analyze_enabled
+
+    ensures:
+        StepResult.created(name: "analyse_kpis", status: disabled, reason: "analyze disabled")
+        AnalyseKpisCompleted(pipeline)
+}
+
+-- Sub-step: s3_export
+
+rule S3ExportEnabled {
+    when: AnalyseKpisCompleted(pipeline)
+    requires: config.s3_export_enabled
+
+    ensures:
+        ExecuteStep(pipeline, step_name: s3_export)
+        S3ExportCompleted(pipeline)
+}
+
+rule S3ExportDisabled {
+    when: AnalyseKpisCompleted(pipeline)
+    requires: not config.s3_export_enabled
+
+    ensures:
+        StepResult.created(name: "s3_export", status: disabled, reason: "s3_export disabled")
+        S3ExportCompleted(pipeline)
+}
+
+rule AfterS3Export {
+    when: S3ExportCompleted(pipeline)
+
+    ensures:
+        KpiSubPipelineCompleted(pipeline)
+}
+
+-- Flow: Finalize
+
+rule ComputeFinalStatus {
+    when: KpiSubPipelineCompleted(pipeline)
+
+    ensures:
+        pipeline.final_status = compute_final_status(pipeline)
+}
+
+-- Flow: Step Execution and Failure Flag Setting
+
+rule RecordStepFailure {
+    -- When a step completes with status = failed or warning,
+    -- its corresponding failure flag is set to true.
+    when: step: StepResult.created
+    requires: step.status in {failed, warning}
+    requires: step.name in {"artifacts_to_kpis", "artifacts_to_ai_data", "s3_import", "analyse_kpis", "s3_export"}
+
+    let pipeline = step_pipeline(step)   -- black box: resolve owning pipeline
+
+    ensures:
+        set_failure_flag(pipeline, step.name, true)
+
+    @guidance
+        -- Warning status is treated identically to failed for the
+        -- purpose of setting failure flags. Both propagate to
+        -- the final status computation.
+        --
+        -- parse and visualize use direct flag assignment rather than
+        -- this shared mechanism.
+}
+
+rule RecordStepSuccess {
+    -- When a step completes with status = success,
+    -- its corresponding failure flag is set to false.
+    when: step: StepResult.created
+    requires: step.status = success
+    requires: step.name in {"artifacts_to_kpis", "artifacts_to_ai_data", "s3_import", "analyse_kpis", "s3_export"}
+
+    let pipeline = step_pipeline(step)
+
+    ensures:
+        set_failure_flag(pipeline, step.name, false)
+}
+
+------------------------------------------------------------
+-- Rules: Final Status Computation
+------------------------------------------------------------
+
+-- Priority (first match wins):
+--   1. test_failed         — test_phase = failed_
+--   2. parse_visualize_failed — parse_failed or visualize_failed
+--   3. kpi_pipeline_failed — any of: artifacts_to_kpis_failed, ai_data_failed,
+--                            s3_import_failed, s3_export_failed, analyze_failed
+--   4. performance_regression — has_regression (currently unimplemented)
+--   5. performance_increase  — has_improvement (currently unimplemented)
+--   6. success
+
+deferred FinalStatusComputation.compute_final_status
+    -- see: postprocess_outcome.py — compute_final_postprocess_status()
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant ParseGatesAllSubsequentSteps {
+    -- When parse has failed, no subsequent steps may have a success or failed status.
+    -- They remain unrecorded (the pipeline was aborted).
+    for pipeline in Pipelines:
+        pipeline.parse_failed = true implies
+            pipeline.visualize_failed = null
+            and pipeline.artifacts_to_kpis_failed = null
+            and pipeline.ai_data_failed = null
+            and pipeline.s3_import_failed = null
+            and pipeline.analyze_failed = null
+            and pipeline.s3_export_failed = null
+}
+
+invariant SkipDependentsConsistency {
+    -- When artifacts_to_kpis failed and skip_dependents_on_failure is true,
+    -- s3_import, analyse_kpis, and s3_export must be recorded as skipped
+    -- (not as success or failed).
+    for pipeline in Pipelines:
+        (pipeline.artifacts_to_kpis_failed = true and config.skip_dependents_on_failure)
+        implies
+            pipeline.s3_import_failed = null
+            and pipeline.analyze_failed = null
+            and pipeline.s3_export_failed = null
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "has_regression and has_improvement are hardcoded to false in _compute_final_status. Are performance_regression and performance_increase final statuses reachable, or is this unfinished functionality?"
+
+open question "The warning step status sets the same failure flag as failed (both set flag to true). Is this intentional, or should warnings be treated differently from failures for final status computation?"
+
+open question "dashboard_csv and kpis_to_metrics failures do not set any failure flag and do not affect final status. Is this by design (supplementary steps), or should they contribute to kpi_pipeline_failed?"
+
+open question "analyse_kpis only propagates its failure when fail_on_regression is true. When false, even a hard failure (not just regression detection) in analyse_kpis is ignored for final status. Is this the intended gating, or should non-regression failures always propagate?"

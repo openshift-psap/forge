@@ -148,7 +148,7 @@ def create_total_errors_plot(records: list[UnifiedResultRecord], title_context: 
             height=650,
             font={"size": 12},
         )
-        fig.update_yaxes(type="log")
+        fig.update_yaxes(type="log", rangemode="tozero")
         return fig
 
     except Exception as e:
@@ -203,7 +203,7 @@ def create_error_breakdown_plot(status_entry: dict[str, Any], title_context: str
             height=500,
             font={"size": 12},
         )
-        fig.update_yaxes(type="log")
+        fig.update_yaxes(type="log", rangemode="tozero")
         return fig
 
     except Exception as e:

@@ -59,11 +59,15 @@ testing = [
     "jsonpath_ng>=1.5.0",
     "requests>=2.25.0",
     "pandas>=2.0",
+    # Native trace tests run a disposable SQL-backed MLflow server.
+    "mlflow==3.12.0",
 ]
 caliper = [
     "opensearch-py>=2.4.0",
     "boto3>=1.28.0",
-    "mlflow>=2.10.0",
+    # Native OTLP/JSON trace ingestion (POST /v1/traces) requires MLflow >= 3.12
+    # with a SQL-backed store.
+    "mlflow>=3.12.0",
 ]
 prometheus_metrics = [
     "pyyaml>=6.0",
@@ -138,6 +142,8 @@ testpaths = [
     "projects/rhaiis/tests",
     "projects/cluster/tests",
     "projects/inference_playbooks/tests",
+    "projects/ag_praxis/tests",
+    "projects/rhoai/tests",
 ]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]

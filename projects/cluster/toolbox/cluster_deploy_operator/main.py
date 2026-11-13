@@ -23,6 +23,19 @@ from .on_failure_helpers import handle_installplan_failure
 logger = logging.getLogger("DSL")
 
 
+def _select_package_manifest(catalog_manifests: dict, package_name: str):
+    """Return the PackageManifest of package_name from an oc listing of a catalog
+
+    The same package name can be served by several catalogs, so callers list
+    by catalog label first, then narrow down by name with this helper.
+    """
+
+    for item in catalog_manifests.get("items", []):
+        if item.get("metadata", {}).get("name") == package_name:
+            return item
+    return None
+
+
 @entrypoint
 def run(
     package_name: str,
@@ -34,6 +47,7 @@ def run(
     installplan_approval: str = "Automatic",
     display_name: str = "",
     install_mode: str = "auto",
+    starting_csv: str = "",
 ) -> int:
     """
     Deploy an OLM operator and wait for its CSV to succeed.
@@ -47,6 +61,8 @@ def run(
         installplan_approval: InstallPlan approval mode
         display_name: Optional human-friendly name used in logs
         install_mode: Install mode - "auto" (default), "namespace-scoped", or "cluster-wide"
+        starting_csv: Optional CSV name to pin in the Subscription (spec.startingCSV);
+            when empty, OLM resolves the channel head
     """
 
     execute_tasks(locals())
@@ -190,19 +206,13 @@ def wait_for_package_manifest(args, ctx):
     except json.JSONDecodeError:
         return (False, f"Failed to parse PackageManifest JSON from catalog {args.source_name}")
 
-    matching = [
-        item
-        for item in all_manifests.get("items", [])
-        if item.get("metadata", {}).get("name") == args.package_name
-    ]
+    package_data = _select_package_manifest(all_manifests, args.package_name)
 
-    if not matching:
+    if package_data is None:
         return (
             False,
             f"PackageManifest {args.package_name} not found in catalog {args.source_name}",
         )
-
-    package_data = matching[0]
 
     package_manifest_file = args.artifact_dir / "src" / f"{args.package_name}-packagemanifest.json"
     with open(package_manifest_file, "w") as f:
@@ -595,19 +605,32 @@ def capture_catalog_source(args, ctx):
 @always
 @task
 def capture_package_manifest(args, ctx):
-    """Capture PackageManifest YAML and JSON"""
+    """Capture the PackageManifest YAML and JSON of the deployed package"""
 
-    shell.run(
-        f"oc get packagemanifest -n {args.source_namespace} -lcatalog={args.source_name} -o yaml",
-        stdout_dest=args.artifact_dir / "artifacts" / "packagemanifest.yaml",
-        check=False,
-    )
-    shell.run(
+    result = shell.run(
         f"oc get packagemanifest -n {args.source_namespace} -lcatalog={args.source_name} -o json",
-        stdout_dest=args.artifact_dir / "artifacts" / "packagemanifest.json",
         check=False,
+        log_stdout=False,
     )
-    return "Captured PackageManifest state"
+    if not result.success:
+        return "Failed to capture PackageManifest state"
+
+    try:
+        catalog_manifests = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "Failed to parse PackageManifest JSON"
+
+    package_data = _select_package_manifest(catalog_manifests, args.package_name)
+    if package_data is None:
+        return f"PackageManifest {args.package_name} not found in catalog {args.source_name}"
+
+    artifacts_dir = args.artifact_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    with open(artifacts_dir / "packagemanifest.json", "w") as f:
+        json.dump(package_data, f, indent=2)
+    with open(artifacts_dir / "packagemanifest.yaml", "w") as f:
+        yaml.safe_dump(package_data, f, sort_keys=False)
+    return f"Captured PackageManifest {args.package_name} from catalog {args.source_name}"
 
 
 @always
