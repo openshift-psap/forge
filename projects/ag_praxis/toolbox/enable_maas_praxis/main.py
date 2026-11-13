@@ -9,7 +9,8 @@ from projects.core.dsl.utils.k8s import oc, oc_get_json
 logger = logging.getLogger("DSL")
 
 ANNOTATION_KEY = "maas.opendatahub.io/payload-processing-type"
-ANNOTATION_VALUE = "praxis"
+PRAXIS_ANNOTATION_VALUE = "praxis"
+IPP_ANNOTATION_VALUE = "ipp"
 DEPLOYMENTS_TO_CHECK = ["payload-processing", "payload-pre-processing"]
 
 
@@ -25,6 +26,10 @@ def run(
     payload_processing_config: dict | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
+
+    Both directions annotate maas.opendatahub.io/payload-processing-type explicitly:
+    activating sets it to praxis, deactivating opts back into ipp. Praxis is also the
+    operator default when the annotation is absent.
 
     On every toggle (activate and deactivate), the pods of the gateway-side hot-path
     deployments (payload extprocs, gateway, authorino, limitador) are bumped so each
@@ -122,28 +127,22 @@ def configure_payload_processing(args, ctx):
 
 @task
 def toggle_annotation(args, ctx):
-    """Set or remove the praxis annotation on MaasTenantConfig."""
-    if args.activate:
-        oc(
-            "annotate",
-            "maastenantconfig",
-            args.tenant_name,
-            "-n",
-            args.tenant_namespace,
-            f"{ANNOTATION_KEY}={ANNOTATION_VALUE}",
-            "--overwrite",
-        )
-        return f"Set {ANNOTATION_KEY}={ANNOTATION_VALUE} on {args.tenant_name}"
+    """Annotate MaasTenantConfig with praxis or ipp payload-processing-type.
 
+    Praxis is also the operator default when the annotation is absent; annotating
+    with ipp opts back into the previous payload processing.
+    """
+    value = PRAXIS_ANNOTATION_VALUE if args.activate else IPP_ANNOTATION_VALUE
     oc(
         "annotate",
         "maastenantconfig",
         args.tenant_name,
         "-n",
         args.tenant_namespace,
-        f"{ANNOTATION_KEY}-",
+        f"{ANNOTATION_KEY}={value}",
+        "--overwrite",
     )
-    return f"Removed {ANNOTATION_KEY} from {args.tenant_name}"
+    return f"Set {ANNOTATION_KEY}={value} on {args.tenant_name}"
 
 
 @retry(attempts=60, delay=10, backoff=1.0)
