@@ -167,9 +167,19 @@ def create_dynamic_parser(func, positional_args=None) -> argparse.ArgumentParser
                 help_text += " (format: JSON object or key=value,key2=value2)"
 
             if resolved_annotation is bool:
-                # Boolean args are always optional flags
+                # Boolean args come in a --flag / --no-flag pair. Omitting both keeps
+                # the function's declared default — a plain store_true flag would
+                # clobber a `param: bool = True` default to False when absent, and
+                # would make False impossible to request explicitly.
                 cli_name = f"--{param_name.replace('_', '-')}"
-                parser.add_argument(cli_name, action="store_true", dest=param_name, help=help_text)
+                parser.add_argument(
+                    cli_name,
+                    action=argparse.BooleanOptionalAction,
+                    dest=param_name,
+                    default=param.default if has_default else None,
+                    required=not has_default,
+                    help=help_text,
+                )
                 continue
             elif resolved_annotation is int:
                 arg_type = int
