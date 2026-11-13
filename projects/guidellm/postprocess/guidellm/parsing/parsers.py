@@ -399,7 +399,14 @@ class GuideLLMParser:
 
         # Extract throughput metrics
         request_rate = get_metric_value("requests_per_second", "mean")
-        input_tokens_per_second = get_metric_value("input_tokens_per_second", "mean")
+        # guidellm v0.8+ emits prompt_tokens_per_second; older releases used
+        # input_tokens_per_second for the same metric
+        prompt_metric = (
+            "prompt_tokens_per_second"
+            if "prompt_tokens_per_second" in metrics
+            else "input_tokens_per_second"
+        )
+        input_tokens_per_second = get_metric_value(prompt_metric, "mean")
         output_tokens_per_second = get_metric_value("output_tokens_per_second", "mean")
         total_tokens_per_second = input_tokens_per_second + output_tokens_per_second
 
