@@ -1,0 +1,1272 @@
+-- allium: 3
+-- ag_praxis_harness.allium
+--
+-- Distilled from the FORGE ag_praxis test harness (projects/ag_praxis/).
+--
+-- Purpose: describe what the harness DEPLOYS, CONFIGURES and ASSERTS against
+-- the OpenDataHub "praxis" AI gateway path (MaaS gateway -> payload-processing
+-- ExtProc deployments -> simulated model), so a reviewer can judge whether it
+-- covers the security hardening of ai-gateway-controller PR #217. The spec
+-- records what the harness does NOT touch just as explicitly (see the
+-- "Hardening coverage" defaults and invariants).
+--
+-- Scope:
+--   Includes:
+--     - orchestration/ci.py, cli.py, prepare_phase.py, test_phase.py,
+--       pr_args.py, tracing_adapter.py, config.d/*.yaml, presets.d/, manifests/
+--     - toolbox/ deploy_maas, cleanup_maas, enable_maas_praxis,
+--       register_maas_model, unregister_maas_model, create_maas_token,
+--       capture_maas_praxis (reached from orchestration)
+--     - toolbox/ deploy_praxis, teardown_praxis, add_gateway_route,
+--       setup_maas_external_models, teardown_maas_external_models,
+--       maas_sim_test (present but NOT reached from orchestration; modelled in
+--       a separate section so they are not mistaken for test coverage)
+--   Excludes:
+--     - orchestration/poc/ (untracked scratch work)
+--     - postprocess/ (result parsing / plotting)
+--     - projects/ag_praxis/tests/ (unit tests of the harness itself)
+--     - Caliper/MLflow export, agentic review, Fournos resolve (CI plumbing)
+--     - Tracing collector internals (no producer is instrumented; see
+--       deferred TraceCapture)
+--     - GuideLLM / smoke-request / sim-deploy internals (other projects'
+--       toolboxes; only their pass/fail contract is modelled)
+--
+-- Baseline: the committed state (HEAD), PLUS the (uncommitted) ExtProc
+-- concurrency-budget and token-quota changes in the working tree: enable_maas_
+-- praxis annotates/verifies the extproc budget (see VerifyExtProcBudget) and
+-- register_maas_model takes the token quota from config. The other local edits
+-- to test_phase.py (sim deployment commented out, _run_cleanup short-circuited
+-- by an early `return`) and config edits (skip_cleanup: true, smoke sweep
+-- [32]) are recorded as open questions, not as behaviour.
+--
+-- Key structural fact: the harness never deploys or configures the
+-- ai-gateway-controller or the praxis ExtProc directly. Both are installed by
+-- the RHOAI operator (DataScienceCluster component `aigateway.maas`) plus the
+-- upstream MaaS deploy.sh. The harness only flips a MaasTenantConfig
+-- annotation and scaling knobs, then sends traffic and captures state.
+
+------------------------------------------------------------
+-- Given
+------------------------------------------------------------
+
+given {
+    run: HarnessRun
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+-- The RHOAI operator + DataScienceCluster. Installs KServe and the AI gateway
+-- (ai-gateway-controller). The harness only selects the operator channel /
+-- catalog and the DSC component list; it never pins or patches the
+-- controller or its generated resources.
+-- Evidence: prepare_phase.py:92-108,133-141; config.d/platform.yaml:25-48
+external entity RhoaiPlatform {
+    operator_channel: String
+    custom_catalog_enabled: Boolean
+    components: Set<PlatformComponent>
+    datasciencecluster_ready: Boolean
+}
+
+-- The MaaS Gateway (Gateway API) in the ingress namespace. Created by the
+-- upstream MaaS deploy.sh, not by the harness. The harness reads its class and
+-- hostname, and edits only its listener's allowed-route namespaces.
+-- Evidence: prepare_phase.py:24-84; test_phase.py:271-307
+external entity MaasGateway {
+    name: String
+    namespace: String
+    gateway_class: String
+    hostname: String
+    allowed_route_namespaces: Set<String>
+    allows_all_namespaces: Boolean
+}
+
+-- MaasTenantConfig: the only praxis-related object the harness writes.
+-- Evidence: enable_maas_praxis/main.py:11-19,53-211
+external entity MaasTenantConfig {
+    name: String
+    namespace: String
+    payload_processing_type: PayloadProcessingType
+    payload_processing_replicas: Integer?
+    payload_processing_cpu_limit: String?
+    payload_processing_memory_limit: String?
+    payload_processing_cpu_request: String?
+    payload_processing_memory_request: String?
+    -- ExtProc concurrency budget, set via the
+    -- maas.opendatahub.io/experimental-extproc-max-requests annotation
+    -- (PR #217 / MaaS PR #1872 knob; operator default 8).
+    extproc_max_requests: Integer?
+}
+
+-- A gateway-side "hot path" deployment. Managed by the operators; the harness
+-- reads image/readiness, deletes pods, and captures state/logs.
+-- The five targets are: payload-processing, payload-pre-processing (the
+-- praxis/ipp ExtProcs), the gateway's Envoy deployment, authorino, limitador.
+-- Evidence: capture_maas_praxis/main.py:360-395
+external entity HotPathDeployment {
+    role: HotPathRole
+    namespace: String
+    image_is_praxis: Boolean
+    ready_replicas: Integer
+    desired_replicas: Integer
+
+    is_ready: ready_replicas >= desired_replicas
+}
+
+-- One ext_proc cluster in the gateway's live Envoy configuration, as read from
+-- the gateway pod's config_dump (pilot-agent request). These clusters carry the
+-- circuit breakers hardened by PR #217; the controller renders their limits
+-- from the vendored EnvoyFilter plus the tenant annotation. This is the ground
+-- truth the harness asserts the budget against (config_dump, not Envoy stats:
+-- Istio's stats_matcher means most stats are never instantiated).
+-- Evidence: enable_maas_praxis/main.py verify_extproc_limits;
+-- orchestration/poc/show-active-rules.sh
+external entity EnvoyExtProcCluster {
+    name: String
+    is_payload_cluster: Boolean     -- e.g. payload-processing-extproc
+    max_requests: Integer?
+    max_pending_requests: Integer?
+    max_connections: Integer?
+}
+
+-- The simulated model (llm-d inference sim) served as a KServe
+-- LLMInferenceService with TLS (kserve serving certs). Deployed through the
+-- kserve toolbox; the harness supplies only sizing/latency parameters.
+-- Evidence: test_phase.py:473-504 (HEAD); config.d/platform.yaml:62-75
+external entity SimModelService {
+    name: String
+    namespace: String
+    served_model_names: Set<String>
+    internal_endpoint: String
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- `maas_praxis` stands for the config/endpoint key "maas/praxis".
+enum EndpointKind { svc | maas | maas_praxis }
+
+enum PayloadProcessingType { praxis | ipp }
+
+enum PlatformComponent { kserve | `aigateway.maas` }
+
+enum HotPathRole { payload_processing | payload_pre_processing | gateway | authorino | limitador }
+
+enum CiPhase { pre_cleanup | prepare | preflight | test | post_cleanup }
+
+enum HardeningArea {
+    extproc_rbac
+    | tls_trust
+    | extproc_fail_closed
+    | circuit_breakers
+    | body_size_limits
+    | model_header_stripping
+    | metrics_monitoring
+}
+
+enum Coverage { never_touched | configured_unrelated | configured_only | asserted }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- One CI invocation of the harness (ci.py phase entrypoints).
+entity HarnessRun {
+    phase: CiPhase
+    presets: Set<String>
+    test_namespace: String
+    selected_endpoints: List<EndpointKind>
+    run_benchmark: Boolean
+    run_warmup: Boolean
+    skip_cleanup: Boolean
+    completed_endpoints: Set<EndpointKind>
+    status: running | succeeded | failed
+
+    endpoint_tests: EndpointTest with run = this
+
+    transitions status {
+        running -> succeeded
+        running -> failed
+        terminal: succeeded, failed
+    }
+}
+
+-- The MaaS control plane installed by the harness via the upstream repo's
+-- deploy.sh run inside a deployer pod.
+-- Evidence: deploy_maas/main.py:25-350
+entity MaasInstallation {
+    repo_url: String
+    repo_ref: String
+    operator_type: String
+    api_available: Boolean
+    status: absent | installing | installed | failed
+
+    transitions status {
+        absent -> installing
+        absent -> installed
+        installing -> installed
+        installing -> failed
+        installed -> absent
+        terminal: failed
+    }
+}
+
+-- Cluster-admin ServiceAccount used to run deploy.sh and mint MaaS tokens.
+-- This is a harness-owned privileged identity, unrelated to the ExtProc
+-- ServiceAccounts hardened by PR #217.
+-- Evidence: deploy_maas/main.py:114-183; cleanup_maas/main.py:122-140
+entity DeployerIdentity {
+    namespace: String
+    has_cluster_admin: Boolean
+    kubeconfig_skips_tls_verify: Boolean
+    token_lifetime: Duration
+    pod_kept: Boolean
+}
+
+-- Model registration with MaaS (LLMInferenceService kind on the test path).
+-- Creates MaaSModelRef, MaaSAuthPolicy, MaaSSubscription.
+-- Evidence: register_maas_model/main.py:115-308; templates/maas_*.yaml.j2
+entity ModelRegistration {
+    model: SimModelService
+    tenant_namespace: String
+    auth_subjects: Set<String>
+    subscription_token_limit: Integer
+    subscription_window: Duration
+    status: registering | ready
+
+    transitions status {
+        registering -> ready
+        terminal: ready
+    }
+}
+
+-- Ephemeral MaaS API key used as Bearer token by smoke + benchmark clients.
+-- Evidence: create_maas_token/main.py:45-120
+entity MaasApiKey {
+    registration: ModelRegistration
+    subscription_name: String
+    expires_after: Duration
+    ephemeral: Boolean
+    -- The key request to the gateway is issued without server cert
+    -- verification (curl -k).
+    client_verifies_gateway_cert: Boolean
+}
+
+-- One endpoint under test inside one matrix combination.
+-- Evidence: test_phase.py:351-470
+entity EndpointTest {
+    run: HarnessRun
+    kind: EndpointKind
+    url: String
+    status: pending | running | passed | failed | unrecorded
+
+    smoke: SmokeRequest with endpoint_test = this
+    benchmarks: BenchmarkRun with endpoint_test = this
+    captures: CaptureBundle with endpoint_test = this
+
+    goes_through_gateway: kind in {maas, maas_praxis}
+    all_benchmarks_succeeded:
+        benchmarks.count > 0 and benchmarks.all(b => b.status = succeeded)
+
+    transitions status {
+        pending -> running
+        running -> passed
+        running -> failed
+        running -> unrecorded
+        terminal: passed, failed, unrecorded
+    }
+}
+
+-- A single completion request, the only functional assertion on responses.
+-- Evidence: guidellm/toolbox/run_smoke_request/main.py:20-33,251-315
+entity SmokeRequest {
+    endpoint_test: EndpointTest
+    model_name: String
+    prompt: String
+    max_tokens: Integer
+    bearer_api_key: MaasApiKey?
+    client_verifies_server_cert: Boolean
+    status: pending | succeeded | failed
+
+    transitions status {
+        pending -> succeeded
+        pending -> failed
+        terminal: succeeded, failed
+    }
+}
+
+-- One GuideLLM job (warmup or one sweep rate level).
+-- Evidence: test_phase.py:104-248; guidellm/toolbox/run_guidellm_benchmark/main.py:596-653
+entity BenchmarkRun {
+    endpoint_test: EndpointTest
+    is_warmup: Boolean
+    total_concurrency: Integer
+    replica_count: Integer
+    per_replica_streams: Integer
+    prompt_tokens: Integer
+    output_tokens: Integer
+    request_format: String
+    requests_per_stream: Integer
+    succeeded_replicas: Integer
+    failed_replicas: Integer
+    status: pending | succeeded | failed
+
+    transitions status {
+        pending -> succeeded
+        pending -> failed
+        terminal: succeeded, failed
+    }
+}
+
+-- Debug artifacts captured after every endpoint test (finalizers).
+-- Evidence: test_phase.py:422-454; capture_maas_praxis/main.py:398-600
+entity CaptureBundle {
+    endpoint_test: EndpointTest
+    llmisvc_state: Boolean
+    prometheus_metrics: Boolean
+    hot_path_deployment_specs: Boolean
+    hot_path_pod_logs_untruncated: Boolean
+    tenant_config: Boolean
+    -- Explicitly NOT captured by any harness code path:
+    envoy_filters: Boolean
+    extproc_service_accounts_and_rbac: Boolean
+    destination_rules_or_tls_settings: Boolean
+    service_monitors: Boolean
+}
+
+-- Coverage verdict for one PR #217 hardening area (seeded as defaults below).
+entity HardeningCoverage {
+    area: HardeningArea
+    harness_configures: Boolean
+    harness_asserts: Boolean
+    coverage: Coverage
+}
+
+-- ---- Unreached toolbox artefacts (not invoked by orchestration) ----
+
+-- Stand-alone praxis proxy Deployment (deploy_praxis). NOT the
+-- operator-managed praxis ExtProc and not reached from ci.py/test_phase.py.
+-- Evidence: deploy_praxis/main.py:23-240; templates/*.j2
+entity StandalonePraxisProxy {
+    namespace: String
+    image_version: String
+    upstream_uses_tls: Boolean
+    upstream_ca_is_ingress_router_ca: Boolean
+    public_admin_allowed: Boolean
+    has_service_monitor: Boolean
+    status: deployed | removed
+
+    transitions status {
+        deployed -> removed
+        terminal: removed
+    }
+}
+
+-- Per-model ExternalModel + HTTPRoute pairs (setup_maas_external_models).
+-- Routes match on a caller-supplied X-Gateway-Model-Name header.
+-- Evidence: setup_maas_external_models/main.py:107-190
+entity ExternalModelRoute {
+    model_name: String
+    namespace: String
+    path_prefix_route: Boolean
+    routes_on_model_name_header: Boolean
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- test.yaml
+    test_namespace: String = "forge-praxis"
+    default_payload: String = "default"
+    default_sweep: String = "smoke"
+    run_benchmark: Boolean = true
+    run_warmup: Boolean = true
+    skip_cleanup: Boolean = false            -- HEAD; working tree sets true
+    endpoints: List<EndpointKind> = [svc, maas, maas_praxis]
+    guidellm_matrix_enabled: Boolean = false
+
+    -- platform.yaml (maas / sim / praxis)
+    maas_repo_url: String = "https://github.com/opendatahub-io/models-as-a-service"
+    maas_repo_ref: String = "7a652d9aa3b7320f3b0e81ad49e3190a713cc9b1"
+    maas_operator_type: String = "rhoai"
+    maas_deployer_namespace: String = "default"
+    maas_tenant_namespace: String = "models-as-a-service"
+    maas_gateway_name: String = "maas-default-gateway"
+    maas_gateway_namespace: String = "openshift-ingress"
+    sim_llmisvc_name: String = "sim-llm-maas"
+    sim_model_name: String = "simulated-model"
+    sim_time_to_first_token: Duration = 1.seconds
+    sim_max_num_seqs: Integer = 10240
+    payload_processing_replicas: Integer = 4
+    payload_processing_cpu_request: String = "100m"
+    payload_processing_cpu_limit: String = "4"
+    payload_processing_memory_limit: String = "2Gi"
+    -- platform.praxis.version / .replicas only feed deploy_praxis, which is
+    -- never invoked; they have no effect on the tested path.
+    praxis_version: String = "0.6"
+    -- platform.praxis.extproc_max_requests: ExtProc concurrency budget
+    -- annotated on the MaasTenantConfig at praxis activation. Out-of-range
+    -- values are refused by the harness because the controller rejects them
+    -- with a silent fallback to the default 8.
+    extproc_max_requests: Integer = 1024
+    extproc_max_requests_ceiling: Integer = 1024   -- controller MaxExtProcMaxRequests
+
+    -- workloads.yaml
+    benchmark_replica_count: Integer = 2
+    benchmark_timeout: Duration = 3600.seconds
+    validate_backend: Boolean = false
+    request_format: String = "/v1/responses"
+    requests_per_stream: Integer = 36
+    cooldown_fraction: Decimal = 0.1
+    smoke_prompt: String = "San Francisco is a"
+    smoke_max_tokens: Integer = 50
+    smoke_endpoint_path: String = "/v1/completions"
+    smoke_request_timeout: Duration = 60.seconds
+    sweep_smoke: List<Integer> = [2, 4]      -- HEAD; working tree [32]
+    sweep_small: List<Integer> = [8, 16, 32, 64]
+    sweep_medium: List<Integer> = [4, 16, 32, 64, 96, 128]
+    sweep_large: List<Integer> = [32, 64, 128, 196, 256, 360, 512]
+    sweep_full: List<Integer> = [64, 128, 256, 512, 1024]
+    largest_payload_prompt_tokens: Integer = 4000   -- XL payload
+    largest_payload_output_tokens: Integer = 4000
+
+    -- retry / wait budgets (toolbox decorators)
+    praxis_toggle_wait_attempts: Integer = 60
+    praxis_toggle_wait_delay: Duration = 10.seconds
+    hot_path_ready_attempts: Integer = 60
+    hot_path_ready_delay: Duration = 10.seconds
+    model_ref_ready_attempts: Integer = 30
+    model_ref_ready_delay: Duration = 4.seconds
+    smoke_pod_running_attempts: Integer = 12
+    smoke_pod_running_delay: Duration = 5.seconds
+
+    -- MaaS registration / token. The quota is config-driven
+    -- (platform.maas.token_rate_limit / .token_rate_limit_window), replacing
+    -- the values formerly hardcoded in the maas_subscription template.
+    subscription_token_limit: Integer = 1_000_000_000
+    subscription_window: Duration = 1.minutes
+    api_key_lifetime: Duration = 1.hours
+    deployer_token_lifetime: Duration = 4.hours
+}
+
+------------------------------------------------------------
+-- Defaults
+------------------------------------------------------------
+
+-- The single MaaS installation the harness manages (platform.maas).
+default MaasInstallation maas = {
+    repo_url: "https://github.com/opendatahub-io/models-as-a-service",
+    repo_ref: "7a652d9aa3b7320f3b0e81ad49e3190a713cc9b1",
+    operator_type: "rhoai",
+    api_available: false,
+    status: absent
+}
+
+-- Hardening coverage verdicts for ai-gateway-controller PR #217.
+-- "configured_unrelated": the harness touches the same *kind* of thing but
+-- on a different object, so it says nothing about the PR's change.
+
+-- 1. ExtProc RBAC (ClusterRole/Binding removal, dedicated post-auth SA,
+--    automountServiceAccountToken). No code reads or writes ExtProc SAs,
+--    Roles, RoleBindings or pod automount settings. The only RBAC the harness
+--    creates is its own cluster-admin deployer SA (deploy_maas/main.py:114-129).
+--    Capture covers deployment YAML (capture_maas_praxis/main.py:446-479),
+--    which would incidentally contain serviceAccountName/automount, but
+--    nothing inspects it.
+default HardeningCoverage cov_extproc_rbac = {
+    area: extproc_rbac, harness_configures: false, harness_asserts: false,
+    coverage: configured_unrelated
+}
+
+-- 2. TLS trust (serving certs, trusted_ca, SAN, no skip-verify). The tested
+--    path never configures ExtProc/Envoy TLS. Client-side verification is
+--    disabled everywhere the harness talks TLS: smoke curl -k
+--    (run_smoke_request/main.py:261,271), API-key curl -k
+--    (create_maas_token/main.py:88), deployer kubeconfig
+--    insecure-skip-tls-verify (deploy_maas/main.py:159). The only trusted-CA
+--    wiring (router-ca ConfigMap + praxis tls.ca_path) lives in the unreached
+--    deploy_praxis (deploy_praxis/main.py:75-107; praxis-ai.yaml.j2:25-30).
+--    The unreached ExternalModel path forces DestinationRule tls DISABLE
+--    (register_maas_model/main.py:397-407).
+default HardeningCoverage cov_tls_trust = {
+    area: tls_trust, harness_configures: false, harness_asserts: false,
+    coverage: configured_unrelated
+}
+
+-- 3. Fail-closed ExtProc (failure_mode_allow: false). No EnvoyFilter or
+--    failure-mode setting is read, written or probed; no test kills/stalls the
+--    ExtProc to observe fail-open vs fail-closed. Pod bumps
+--    (enable_maas_praxis/main.py:184-236) happen BEFORE traffic and are
+--    followed by a readiness wait.
+default HardeningCoverage cov_extproc_fail_closed = {
+    area: extproc_fail_closed, harness_configures: false, harness_asserts: false,
+    coverage: never_touched
+}
+
+-- 4. Circuit breakers / concurrency (max_requests, max_pending_requests,
+--    max_concurrent_streams; default 8). CONFIGURED AND ASSERTED since the
+--    extproc-budget change: enable_maas_praxis annotates the MaasTenantConfig
+--    with maas.opendatahub.io/experimental-extproc-max-requests
+--    (config.extproc_max_requests = 1024, range-checked against the controller
+--    ceiling because out-of-range values silently fall back to 8) and
+--    verify_extproc_limits asserts the effective limits on the gateway's live
+--    Envoy config_dump before any traffic. Residual gaps: overflow DURING a
+--    benchmark is still not detected (per-request GuideLLM errors do not fail
+--    the job, run_guidellm_benchmark/main.py:633-653), and the controller
+--    ceiling of 1024 caps the configurable budget (sweeps above 1024 streams
+--    cannot be made to pass). The "max_requests" in workloads.yaml /
+--    test_phase.py:168 is a GuideLLM request-count constraint, unrelated to
+--    Envoy.
+default HardeningCoverage cov_circuit_breakers = {
+    area: circuit_breakers, harness_configures: true, harness_asserts: true,
+    coverage: asserted
+}
+
+-- 5. Body size limits (max_body_bytes 10Mi, no allow_unbounded_body,
+--    GRPC_MAX_RECV_MSG_SIZE). Never configured or asserted. Largest request
+--    is the XL synthetic payload (~4000 prompt tokens, workloads.yaml:49-52),
+--    orders of magnitude below 10Mi; no oversized-body probe exists.
+default HardeningCoverage cov_body_size_limits = {
+    area: body_size_limits, harness_configures: false, harness_asserts: false,
+    coverage: never_touched
+}
+
+-- 6. X-Gateway-Model-Name stripping. The tested path never sends or checks
+--    this header (smoke payload = model/prompt/max_tokens/temperature only).
+--    The unreached setup_maas_external_models creates HTTPRoutes that ROUTE on
+--    a caller-supplied X-Gateway-Model-Name (main.py:161-183); same pattern
+--    in the unused template register_maas_model/templates/httproute.yaml.j2:35-45.
+--    No spoofing test exists.
+default HardeningCoverage cov_model_header_stripping = {
+    area: model_header_stripping, harness_configures: false, harness_asserts: false,
+    coverage: configured_unrelated
+}
+
+-- 7. Metrics (ServiceMonitor, metrics ClusterRoleBindings). The harness
+--    enables user-workload monitoring and captures Prometheus series
+--    (prepare_phase.py:136-138; test_phase.py:442-446; config.d/prom.yaml),
+--    but its metric groups are vllm/scheduler/resource usage — no
+--    praxis/ExtProc metrics group, no check that the controller's
+--    ServiceMonitor exists or is scraped. The only ServiceMonitor it creates
+--    is for the unreached stand-alone praxis (deploy_praxis/main.py:222-240).
+default HardeningCoverage cov_metrics_monitoring = {
+    area: metrics_monitoring, harness_configures: false, harness_asserts: false,
+    coverage: configured_unrelated
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- ============ Prepare phase (ci.py prepare -> prepare_phase.prepare) ============
+
+rule PrepareCluster {
+    when: PreparePhaseInvoked(run)
+    ensures: UserWorkloadMonitoringPrepared(during: prepare)
+    ensures: RhoaiOperatorPrepared(icsp_mirrors_applied: true)
+    ensures: DataScienceClusterApplied(components: { kserve, `aigateway.maas` })
+    ensures: MaasDeploymentRequested(
+        repo_url: config.maas_repo_url,
+        repo_ref: config.maas_repo_ref,
+        operator_type: config.maas_operator_type
+    )
+    ensures: DataScienceClusterAwaited()
+    ensures: TestNamespaceRegisteredInGateway(namespace: config.test_namespace)
+
+    @guidance
+        -- prepare_phase.py:133-164. ICSP mirrors registry.redhat.io/rhoai ->
+        -- quay.io/rhoai (manifests/rhoai-registry-icsp.yaml). Presets
+        -- rhoai-rc / rhoai-nightly switch to a custom FBC catalog image.
+}
+
+rule DeployMaasSkippedWhenHealthy {
+    when: MaasDeploymentRequested(repo_url, repo_ref, operator_type)
+    requires: maas.api_available
+    requires: maas.status = absent
+    ensures: maas.status = installed
+
+    @guidance
+        -- deploy_maas/main.py:56-73: an existing healthy maas-api short-circuits
+        -- the install (unless force_reinstall). An existing but unhealthy
+        -- maas-api raises instead of reinstalling.
+}
+
+rule DeployMaas {
+    when: MaasDeploymentRequested(repo_url, repo_ref, operator_type)
+    requires: not maas.api_available
+    requires: maas.status = absent
+    ensures: maas.status = installing
+    ensures: DeployerIdentity.created(
+        namespace: config.maas_deployer_namespace,
+        has_cluster_admin: true,
+        kubeconfig_skips_tls_verify: true,
+        token_lifetime: config.deployer_token_lifetime,
+        pod_kept: true
+    )
+    ensures: MaasDeployScriptRun(maas: maas)
+
+    @guidance
+        -- deploy_maas/main.py:90-350: removes the AITenant bootstrap
+        -- annotation, creates the maas-deployer SA bound to cluster-admin,
+        -- builds a kubeconfig with insecure-skip-tls-verify, runs
+        -- setup-database.sh then deploy.sh --operator-type in an ose-cli pod.
+}
+
+rule MaasDeployScriptSucceeds {
+    when: MaasDeployScriptCompleted(succeeded)
+    requires: maas.status = installing
+    ensures:
+        if succeeded:
+            maas.status = installed
+        else:
+            maas.status = failed
+}
+
+rule RegisterNamespaceInGateway {
+    when: TestNamespaceRegisteredInGateway(namespace)
+    let gateway = MaasGateway{name: config.maas_gateway_name, namespace: config.maas_gateway_namespace}
+    requires: not gateway.allows_all_namespaces
+    requires: namespace not in gateway.allowed_route_namespaces
+    ensures: gateway.allowed_route_namespaces.add(namespace)
+
+    @guidance
+        -- prepare_phase.py:24-84. Also re-run at the start of the test phase
+        -- (test_phase.py:625-627). No-op when the listener allows All or the
+        -- namespace is already listed. Fails if the Gateway has no listener.
+}
+
+-- ============ Test phase (ci.py test -> test_phase.do_test_praxis) ============
+
+rule TestPhaseStarts {
+    when: TestPhaseInvoked(run)
+    ensures: UserWorkloadMonitoringValidated()
+    ensures: UserWorkloadMonitoringPrepared(during: test)
+    ensures: TestNamespaceRegisteredInGateway(namespace: run.test_namespace)
+    ensures:
+        if run.run_benchmark:
+            TraceCapture.start(deployment: config.sim_llmisvc_name)
+    ensures: SimModelDeployed(
+        name: config.sim_llmisvc_name,
+        namespace: run.test_namespace,
+        model_name: config.sim_model_name
+    )
+    ensures:
+        for kind in run.selected_endpoints:
+            EndpointTest.created(
+                run: run,
+                kind: kind,
+                url: endpoint_url(kind, run.test_namespace),
+                status: pending
+            )
+
+    @guidance
+        -- test_phase.py:607-664. Endpoint URLs (test_phase.py:556-576):
+        --   svc         -> https://<llmisvc>-kserve-workload-svc.<ns>.svc:8000
+        --                  (bypasses the MaaS gateway and the ExtProcs)
+        --   maas        -> https://<gateway hostname>/<ns>/<llmisvc>
+        --   maas_praxis -> same URL as maas; only the tenant annotation differs
+        -- Each matrix combination (test.matrices.guidellm, off by default)
+        -- re-runs all endpoints; with benchmark on, every sweep rate must
+        -- divide evenly by benchmark_replica_count or the phase fails.
+}
+
+rule EndpointTestStarts {
+    when: EndpointTestScheduled(endpoint_test)
+    requires: endpoint_test.status = pending
+    ensures: endpoint_test.status = running
+    ensures:
+        if endpoint_test.kind = maas_praxis:
+            PraxisToggled(activate: true)
+        else if endpoint_test.kind = maas:
+            PraxisToggled(activate: false)
+    ensures:
+        if endpoint_test.goes_through_gateway:
+            ModelRegistrationRequested(endpoint_test: endpoint_test)
+    ensures: SmokeRequestIssued(endpoint_test: endpoint_test)
+
+    @guidance
+        -- test_phase.py:397-418. The svc endpoint does not toggle praxis and
+        -- is unaffected by it (direct to the sim). Endpoints run sequentially
+        -- in config order; praxis is left active after maas_praxis (no
+        -- restore step).
+}
+
+-- ---- Praxis toggle (enable_maas_praxis) ----
+
+rule ActivatePraxis {
+    when: PraxisToggled(activate)
+    let tenant = MaasTenantConfig{name: "default-tenant", namespace: config.maas_tenant_namespace}
+    requires: activate
+    requires: config.extproc_max_requests >= 1
+    requires: config.extproc_max_requests <= config.extproc_max_requests_ceiling
+    ensures: tenant.payload_processing_type = praxis
+    ensures: tenant.payload_processing_replicas = config.payload_processing_replicas
+    ensures: tenant.payload_processing_cpu_limit = config.payload_processing_cpu_limit
+    ensures: tenant.payload_processing_memory_limit = config.payload_processing_memory_limit
+    ensures: tenant.payload_processing_cpu_request = config.payload_processing_cpu_request
+    ensures: tenant.payload_processing_memory_request = null
+    ensures: tenant.extproc_max_requests = config.extproc_max_requests
+    ensures: PayloadProcessingRolloutAwaited(expect_praxis: true)
+
+    @guidance
+        -- enable_maas_praxis/main.py:53-211. The same sizing block is
+        -- written to both spec.payloadPreProcessing and spec.payloadProcessing.
+        -- The extproc budget range is enforced harness-side with a ValueError
+        -- because the controller REJECTS out-of-range values with a silent
+        -- fallback to 8 (not clamped). Remaining praxis configuration is
+        -- still untouched: no EnvoyFilter, ExtProc args, TLS, RBAC or headers.
+}
+
+rule DeactivatePraxis {
+    when: PraxisToggled(activate)
+    let tenant = MaasTenantConfig{name: "default-tenant", namespace: config.maas_tenant_namespace}
+    requires: not activate
+    ensures: tenant.payload_processing_type = ipp
+    ensures: PayloadProcessingRolloutAwaited(expect_praxis: false)
+
+    @guidance
+        -- Sizing is NOT patched on deactivation (main.py:59-60), and the
+        -- extproc budget annotation is deliberately left as-is: the ext_proc
+        -- clusters only exist under praxis, so the budget is inert under ipp.
+}
+
+rule PayloadProcessingRolloutCompletes {
+    when: PayloadProcessingRolloutAwaited(expect_praxis)
+    let ext_procs = HotPathDeployments where role in {payload_processing, payload_pre_processing}
+    requires:
+        ext_procs.all(d => d.image_is_praxis = expect_praxis and d.is_ready)
+    ensures: HotPathPodsBumped()
+
+    @guidance
+        -- enable_maas_praxis/main.py:148-181: polled up to
+        -- praxis_toggle_wait_attempts x praxis_toggle_wait_delay. "Praxis"
+        -- is detected by the substring "praxis" in any container image name.
+        -- On activation a missing deployment keeps waiting; on deactivation
+        -- a missing deployment is accepted. Exhausting retries fails the
+        -- endpoint test.
+}
+
+rule BumpHotPathPods {
+    when: HotPathPodsBumped()
+    ensures:
+        for d in HotPathDeployments:
+            HotPathPodsRecreated(deployment: d)
+    ensures: HotPathReadinessAwaited()
+
+    @guidance
+        -- enable_maas_praxis/main.py:184-236: deletes pods of all five
+        -- hot-path deployments so each endpoint starts from fresh pods, then
+        -- waits (hot_path_ready_attempts x hot_path_ready_delay) for
+        -- ready >= desired. A capture of hot-path state always runs at the
+        -- end of the toggle, even on failure (main.py:253-266).
+}
+
+rule VerifyExtProcBudget {
+    when: HotPathReadinessAwaited()
+    let tenant = MaasTenantConfig{name: "default-tenant", namespace: config.maas_tenant_namespace}
+    let payload_clusters = EnvoyExtProcClusters where is_payload_cluster
+    requires: tenant.payload_processing_type = praxis
+    requires: tenant.extproc_max_requests = config.extproc_max_requests
+    requires: payload_clusters.count > 0
+    requires:
+        payload_clusters.all(c => c.max_requests = tenant.extproc_max_requests and c.max_pending_requests = tenant.extproc_max_requests and c.max_connections = tenant.extproc_max_requests)
+    ensures: ExtProcBudgetConfirmed(budget: tenant.extproc_max_requests)
+
+    @guidance
+        -- enable_maas_praxis/main.py verify_extproc_limits: reads the live
+        -- gateway Envoy config_dump (pilot-agent request GET
+        -- config_dump?resource=dynamic_active_clusters, the same ground truth
+        -- as poc/show-active-rules.sh) and retries up to 60 x 10s. The retry
+        -- covers both the controller resync delay for annotation-only changes
+        -- and the silent out-of-range fallback to 8. A thresholds list longer
+        -- than one entry (botched EnvoyFilter MERGE append) also fails. On
+        -- the maas endpoint (ipp) the rule does not fire: the requires guard
+        -- fails and no budget is verified. Exhausting retries fails the
+        -- endpoint test BEFORE any traffic is sent, instead of letting the
+        -- benchmark silently run against a budget that sheds all requests
+        -- above 8 concurrent. Note: with the default budget of 8, throughput
+        -- is pinned at 8 / extproc_latency and everything above fails before
+        -- auth with an empty HTTP 500 (poc/maas-praxis-500-ext-proc-overflow.md,
+        -- Finding 1).
+}
+
+-- ---- Model registration (register_maas_model, LLMInferenceService kind) ----
+
+rule RegisterModel {
+    when: ModelRegistrationRequested(endpoint_test)
+    let sim = SimModelService{name: config.sim_llmisvc_name, namespace: endpoint_test.run.test_namespace}
+    ensures: ModelRegistration.created(
+        model: sim,
+        tenant_namespace: config.maas_tenant_namespace,
+        auth_subjects: { "system:authenticated" },
+        subscription_token_limit: config.subscription_token_limit,
+        subscription_window: config.subscription_window,
+        status: registering
+    )
+
+    @guidance
+        -- register_maas_model/main.py:115-287: deletes any previous
+        -- subscription/auth-policy/model-ref, then applies MaaSModelRef
+        -- (owned by the LLMInferenceService), MaaSAuthPolicy and
+        -- MaaSSubscription granting all authenticated users. The token quota
+        -- is config-driven (platform.maas.token_rate_limit /
+        -- .token_rate_limit_window; formerly hardcoded in the template) and
+        -- defaults to effectively unlimited. CAVEAT: on builds where the
+        -- kuadrant wasm shim extracts usage from the response body parsed as
+        -- a single JSON document, token metering fails OPEN for streamed
+        -- /v1/responses traffic -- the quota is not enforced
+        -- (poc/maas-praxis-500-ext-proc-overflow.md, Finding 2). Re-run for
+        -- every gateway endpoint test.
+}
+
+rule ModelRegistrationBecomesReady {
+    when: registration: ModelRegistration.created
+    requires: registration.status = registering
+    ensures: registration.status = ready
+    ensures: MaasApiKeyRequested(registration: registration)
+
+    @guidance
+        -- Polls MaaSModelRef .status.phase = Ready, up to
+        -- model_ref_ready_attempts x model_ref_ready_delay
+        -- (register_maas_model/main.py:290-308). Exhausting retries fails the
+        -- endpoint test. Resources are captured to artifacts on every run.
+}
+
+rule CreateMaasApiKey {
+    when: MaasApiKeyRequested(registration)
+    requires: registration.status = ready
+    ensures: MaasApiKey.created(
+        registration: registration,
+        subscription_name: subscription_name_for(registration),
+        expires_after: config.api_key_lifetime,
+        ephemeral: true,
+        client_verifies_gateway_cert: false
+    )
+
+    @guidance
+        -- test_phase.py:400-407; create_maas_token/main.py:45-120. A token
+        -- for the test namespace's `default` SA is copied into the deployer
+        -- pod, which POSTs to <gateway>/maas-api/v1/api-keys via
+        -- --connect-to the internal gateway Service, with curl -k. Fails if
+        -- the response is empty or lacks a key.
+}
+
+-- ---- Smoke request: the only response-content assertion ----
+
+rule SmokeRequestIssue {
+    when: SmokeRequestIssued(endpoint_test)
+    ensures: SmokeRequest.created(
+        endpoint_test: endpoint_test,
+        model_name: config.sim_model_name,
+        prompt: config.smoke_prompt,
+        max_tokens: config.smoke_max_tokens,
+        bearer_api_key: api_key_for(endpoint_test),
+        client_verifies_server_cert: false,
+        status: pending
+    )
+
+    @guidance
+        -- test_phase.py:251-268 -> guidellm run_smoke_request. A curl pod in
+        -- the test namespace sends one POST to <url>/v1/completions with
+        -- curl -k --fail-with-body --max-time smoke_request_timeout, with a
+        -- Bearer API key for gateway endpoints. Single attempt, no retry.
+}
+
+rule SmokeRequestSucceeds {
+    when: SmokeResponseReceived(smoke, http_ok, has_choices)
+    requires: smoke.status = pending
+    requires: http_ok and has_choices
+    ensures: smoke.status = succeeded
+    ensures:
+        if smoke.endpoint_test.run.run_benchmark:
+            BenchmarkSweepRequested(endpoint_test: smoke.endpoint_test)
+        else:
+            EndpointTestFinished(endpoint_test: smoke.endpoint_test)
+
+    @guidance
+        -- Success criteria (run_smoke_request/main.py:302-315): curl exit 0
+        -- (HTTP 2xx), non-empty JSON body, non-empty `choices`. Nothing
+        -- about headers, status codes other than success, TLS identity,
+        -- latency or the model name actually served is checked.
+}
+
+rule SmokeRequestFails {
+    when: SmokeResponseReceived(smoke, http_ok, has_choices)
+    requires: smoke.status = pending
+    requires: not (http_ok and has_choices)
+    requires: smoke.endpoint_test.status = running
+    ensures: smoke.status = failed
+    ensures: smoke.endpoint_test.status = failed
+    ensures: EndpointCaptureRequested(endpoint_test: smoke.endpoint_test)
+}
+
+-- ---- Benchmarks (GuideLLM) ----
+
+rule BenchmarkSweep {
+    when: BenchmarkSweepRequested(endpoint_test)
+    ensures:
+        if endpoint_test.run.run_warmup:
+            BenchmarkRun.created(
+                endpoint_test: endpoint_test,
+                is_warmup: true,
+                total_concurrency: 4,
+                replica_count: config.benchmark_replica_count,
+                per_replica_streams: 4,
+                prompt_tokens: 256,
+                output_tokens: 128,
+                request_format: config.request_format,
+                requests_per_stream: 12,
+                succeeded_replicas: 0,
+                failed_replicas: 0,
+                status: pending
+            )
+    ensures:
+        for rate in sweep_rates(config.default_sweep):
+            BenchmarkRun.created(
+                endpoint_test: endpoint_test,
+                is_warmup: false,
+                total_concurrency: rate,
+                replica_count: config.benchmark_replica_count,
+                per_replica_streams: rate / config.benchmark_replica_count,
+                prompt_tokens: payload_prompt_tokens(config.default_payload),
+                output_tokens: payload_output_tokens(config.default_payload),
+                request_format: config.request_format,
+                requests_per_stream: config.requests_per_stream,
+                succeeded_replicas: 0,
+                failed_replicas: 0,
+                status: pending
+            )
+
+    @guidance
+        -- test_phase.py:121-248. Warmup runs only when
+        -- workloads.warmup_benchmark_key is set (null by default, so in
+        -- practice no warmup runs). Each rate is a concurrent profile with
+        -- streams = rate / replica_count per GuideLLM replica and a
+        -- request-count constraint (requests_per_stream x streams). Rates run
+        -- sequentially; a failing rate aborts the remaining ones.
+}
+
+rule BenchmarkRunCompletes {
+    when: BenchmarkJobFinished(benchmark, succeeded_replicas, failed_replicas)
+    requires: benchmark.status = pending
+    ensures: benchmark.succeeded_replicas = succeeded_replicas
+    ensures: benchmark.failed_replicas = failed_replicas
+    ensures:
+        if failed_replicas = 0 and succeeded_replicas = benchmark.replica_count:
+            benchmark.status = succeeded
+        else:
+            benchmark.status = failed
+
+    @guidance
+        -- run_guidellm_benchmark/main.py:596-653,732-747: success means every
+        -- GuideLLM replica's container exited 0. Per-request HTTP errors
+        -- (e.g. 429/500/503 from gateway limits or ExtProc failures) are
+        -- recorded in the results but do NOT fail the job. validate_backend
+        -- is false, so GuideLLM does not pre-check the endpoint.
+}
+
+rule BenchmarkFailureFailsEndpoint {
+    when: benchmark: BenchmarkRun.status becomes failed
+    requires: benchmark.endpoint_test.status = running
+    ensures: benchmark.endpoint_test.status = failed
+    ensures: EndpointCaptureRequested(endpoint_test: benchmark.endpoint_test)
+}
+
+rule BenchmarkSweepFinished {
+    when: endpoint_test: EndpointTest.all_benchmarks_succeeded
+    requires: endpoint_test.status = running
+    ensures: EndpointTestFinished(endpoint_test: endpoint_test)
+}
+
+-- ---- Endpoint finalizers and outcome ----
+
+rule EndpointFinalizers {
+    when: EndpointTestFinished(endpoint_test)
+    ensures: EndpointCaptureRequested(endpoint_test: endpoint_test)
+    ensures: EndpointOutcomeDecided(endpoint_test: endpoint_test)
+}
+
+rule CaptureEndpointState {
+    when: EndpointCaptureRequested(endpoint_test)
+    ensures: CaptureBundle.created(
+        endpoint_test: endpoint_test,
+        llmisvc_state: true,
+        prometheus_metrics: true,
+        hot_path_deployment_specs: true,
+        hot_path_pod_logs_untruncated: true,
+        tenant_config: true,
+        envoy_filters: false,
+        extproc_service_accounts_and_rbac: false,
+        destination_rules_or_tls_settings: false,
+        service_monitors: false
+    )
+    ensures: TraceWindowRecorded(endpoint_test: endpoint_test)
+
+    @guidance
+        -- test_phase.py:422-454. Each finalizer runs independently; a
+        -- finalizer failure fails the endpoint only if the primary test
+        -- passed (and only when run_benchmark is on). capture_maas_praxis
+        -- (main.py:398-600) saves wide listings of ingress + kuadrant
+        -- namespaces, YAML + describe of the five hot-path deployments and
+        -- their pods, full current + previous logs (--tail=-1; the gateway
+        -- Envoy access log names the failing filter), and the
+        -- MaasTenantConfig. Captured artifacts are never parsed for
+        -- assertions by the test phase.
+}
+
+rule EndpointPasses {
+    when: EndpointOutcomeDecided(endpoint_test)
+    requires: endpoint_test.status = running
+    requires: endpoint_test.run.run_benchmark
+    requires: endpoint_test.captures.count > 0
+    ensures: endpoint_test.status = passed
+    ensures: endpoint_test.run.completed_endpoints.add(endpoint_test.kind)
+}
+
+rule EndpointSmokeOnly {
+    when: EndpointOutcomeDecided(endpoint_test)
+    requires: endpoint_test.status = running
+    requires: not endpoint_test.run.run_benchmark
+    ensures: endpoint_test.status = unrecorded
+
+    @guidance
+        -- test_phase.py:460-461: without a benchmark the endpoint returns
+        -- after the smoke test with no success label and is not counted
+        -- as completed; the phase then writes benchmark_dry_run.yaml.
+}
+
+-- ---- End of test phase ----
+
+rule TestPhaseFinishes {
+    when: TestPhaseCompleted(run)
+    requires: run.status = running
+    ensures:
+        if run.endpoint_tests.any(t => t.status = failed):
+            run.status = failed
+        else:
+            run.status = succeeded
+    ensures: TestCleanupRequested(run: run)
+
+    @guidance
+        -- test_phase.py:666-681. The first endpoint failure aborts the
+        -- remaining endpoints/combinations (exception propagates).
+}
+
+rule TestCleanup {
+    when: TestCleanupRequested(run)
+    ensures: LlmisvcStateCaptured()
+    ensures: TraceCapture.collect()
+    ensures:
+        if not run.skip_cleanup:
+            for r in ModelRegistrations:
+                not exists r
+    ensures:
+        if not run.skip_cleanup:
+            SimModelDeleted(name: config.sim_llmisvc_name, namespace: run.test_namespace)
+
+    @guidance
+        -- test_phase.py:790-829 (HEAD). unregister_maas_model captures then
+        -- deletes MaaSSubscription, MaaSAuthPolicy, MaaSModelRef; the
+        -- LLMInferenceService is deleted best-effort. Praxis activation and
+        -- tenant sizing are not reverted.
+}
+
+-- ============ Cleanup phases (pre_cleanup / post_cleanup) ============
+
+rule ProjectCleanup {
+    when: CleanupPhaseInvoked(run)
+    ensures: RhoaiUninstalled()
+    ensures:
+        for m in MaasInstallations where status = installed:
+            m.status = absent
+    ensures:
+        for d in DeployerIdentities:
+            not exists d
+    ensures: RhoaiCustomCatalogRemoved()
+
+    @guidance
+        -- prepare_phase.py:167-180; cleanup_maas/main.py:415-518. Uninstalls
+        -- the RHOAI operator, deletes all AITenants, MaaSModelRefs,
+        -- MaasTenantConfigs, MaaS namespaces (models-as-a-service,
+        -- ai-tenants, ai-tenant-maas, ai-tenant-forge-praxis), the postgres
+        -- deployment + DB secret, the maas-default-gateway, and the deployer
+        -- SA + cluster-admin binding. All deletions are best-effort.
+}
+
+-- ============ Toolbox commands NOT reached from orchestration ============
+
+rule DeployStandalonePraxis {
+    when: DeployStandalonePraxisInvoked(namespace, model_endpoint, praxis_version)
+    ensures: StandalonePraxisProxy.created(
+        namespace: namespace,
+        image_version: praxis_version,
+        upstream_uses_tls: is_https(model_endpoint),
+        upstream_ca_is_ingress_router_ca: true,
+        public_admin_allowed: true,
+        has_service_monitor: true,
+        status: deployed
+    )
+
+    @guidance
+        -- deploy_praxis/main.py:23-240. Not called by ci.py/test_phase.py.
+        -- Deploys ghcr.io/praxis-proxy/ai:<version> as its own Deployment
+        -- (non-root, drop ALL caps), mounts the OpenShift router CA as
+        -- trusted CA for HTTPS upstreams (SNI = upstream host) or marks the
+        -- upstream as a trusted private endpoint for HTTP, sets
+        -- insecure_options.allow_public_admin, and adds a ServiceMonitor on
+        -- the admin /metrics port. Unrelated to the controller-managed
+        -- ExtProc hardened by PR #217.
+}
+
+rule TeardownStandalonePraxis {
+    when: TeardownStandalonePraxisInvoked(proxy)
+    requires: proxy.status = deployed
+    ensures: proxy.status = removed
+}
+
+rule SetupExternalModelRoutes {
+    when: SetupExternalModelsInvoked(namespace, model_names)
+    requires: model_names.count > 0
+    ensures:
+        for name in model_names:
+            ExternalModelRoute.created(
+                model_name: name,
+                namespace: namespace,
+                path_prefix_route: true,
+                routes_on_model_name_header: true
+            )
+
+    @guidance
+        -- setup_maas_external_models/main.py:38-190 (and its teardown).
+        -- Not called by orchestration. Second route rule matches
+        -- X-Gateway-Model-Name == <model> on path "/" straight to the sim.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- The ExtProc circuit breakers are the ONLY PR #217 hardening area the
+-- harness configures or asserts (via the tenant annotation + config_dump
+-- verification). Every other area remains untouched.
+invariant CircuitBreakersOnlyHardeningCovered {
+    for c in HardeningCoverages:
+        c.area = circuit_breakers or (not c.harness_assertes and not c.harness_configures)
+}
+
+-- Every TLS hop the harness itself initiates skips server-cert verification.
+invariant HarnessClientsNeverVerifyTls {
+    for s in SmokeRequests:
+        not s.client_verifies_server_cert
+}
+
+invariant ApiKeyRequestsNeverVerifyTls {
+    for k in MaasApiKeys:
+        not k.client_verifies_gateway_cert
+}
+
+-- Captures never include the objects PR #217 changes.
+invariant CapturesOmitHardenedObjects {
+    for c in CaptureBundles:
+        not c.envoy_filters
+        and not c.extproc_service_accounts_and_rbac
+        and not c.destination_rules_or_tls_settings
+        and not c.service_monitors
+}
+
+-- Only gateway endpoints carry a MaaS API key.
+invariant SvcEndpointUnauthenticated {
+    for s in SmokeRequests:
+        s.endpoint_test.kind = svc implies s.bearer_api_key = null
+}
+
+------------------------------------------------------------
+-- Actor Declarations
+------------------------------------------------------------
+
+-- The CI system (Fournos/Tekton or a developer via cli.py) driving phases.
+actor CiDriver {
+    identified_by: HarnessRun where status = running
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface HarnessCiEntrypoints {
+    facing driver: CiDriver
+
+    exposes:
+        driver.phase
+        driver.completed_endpoints
+        driver.status
+
+    provides:
+        PreparePhaseInvoked(driver)
+        TestPhaseInvoked(driver)
+        CleanupPhaseInvoked(driver)
+
+    @guarantee PreflightIsEmpty
+        -- The preflight phase performs no checks (ci.py:122-130).
+
+    @guarantee PrDirectivesAreRhoaiOnly
+        -- pr_args.py defines no ag_praxis-specific directives; only the
+        -- shared RHOAI directive handlers are honoured.
+
+    @guidance
+        -- cli.py `deploy` forces skip_cleanup, disables postprocess and can
+        -- restrict the run to a single endpoint (svc | maas | maas/praxis).
+}
+
+-- What the harness observes of the gateway under test. This is the whole
+-- assertion surface against praxis.
+surface GatewayUnderTest {
+    facing driver: CiDriver
+    context endpoint_test: EndpointTest where run = driver
+
+    exposes:
+        endpoint_test.kind
+        endpoint_test.status
+        endpoint_test.smoke.status
+        for b in endpoint_test.benchmarks:
+            b.status
+            b.total_concurrency
+
+    @guarantee OnlyHappyPathAsserted
+        -- Assertions are: hot-path deployments ready with the expected
+        -- (praxis vs non-praxis) image, MaaSModelRef Ready, API key issued,
+        -- one completion with non-empty choices, GuideLLM replicas exit 0,
+        -- and (since the extproc-budget change) the live Envoy circuit
+        -- breakers carrying the configured concurrency budget. No negative
+        -- test (oversized body, spoofed header, ExtProc outage, in-run
+        -- concurrency overflow, untrusted cert) exists.
+}
+
+------------------------------------------------------------
+-- Deferred Specifications
+------------------------------------------------------------
+
+deferred TraceCapture.start     -- see: projects/cluster/library/tracing (no producer instrumented, roles=[])
+deferred TraceCapture.collect   -- see: projects/cluster/library/tracing
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Working tree disables sim deployment (test_phase.py:482-496 commented out) and short-circuits _run_cleanup with an early return (test_phase.py:796): intended to land, or local debugging only? The spec models HEAD."
+open question "Working tree sets test.skip_cleanup=true and the smoke sweep to [32] (HEAD: false and [2, 4]): which is the intended CI default?"
+open question "Praxis is left active (and payload-processing scaled to 4 replicas) after the maas_praxis endpoint and never reverted in test cleanup: intended?"
+open question "Should the harness verify the operator-generated ExtProc RBAC (no ClusterRole/Bindings, dedicated SA, automountServiceAccountToken=false)? Nothing reads these today; captured deployment YAML would contain the pod spec but is not inspected."
+open question "Should the harness assert TLS trust on the gateway->ExtProc and gateway->backend hops (trusted_ca, SAN match, no insecure skip-verify)? All harness clients use curl -k / insecure-skip-tls-verify, and EnvoyFilters/DestinationRules are neither captured nor checked."
+open question "Should there be a fail-closed test (ExtProc unavailable -> requests rejected rather than passed through, failure_mode_allow=false)? None exists."
+open question "The extproc budget is now raised to the controller ceiling (1024) and verified, but sweeps above 1024 concurrent streams (none today; sweep_full tops out at 1024) cannot be configured to pass: should the harness cap sweeps at the budget, or fail early with a clear message when a sweep exceeds it?"
+open question "Should the harness verify token metering before relying on the MaaSSubscription quota? Token metering fails OPEN for streamed /v1/responses traffic on builds where the kuadrant wasm shim parses the response body as a single JSON document (poc/maas-praxis-500-ext-proc-overflow.md, Finding 2), so the configured quota is not enforced there."
+open question "Should there be an oversized-body probe (>10Mi rejected; no unbounded body) and a GRPC_MAX_RECV_MSG_SIZE check? The largest synthetic payload is ~4000 prompt tokens."
+open question "Should there be a spoofed X-Gateway-Model-Name test? The unreached setup_maas_external_models and the unused httproute.yaml.j2 template route on a caller-supplied value of that header, which conflicts with the PR's stripping."
+open question "Should Prometheus capture include a praxis/ExtProc metrics group and a check that the controller's ServiceMonitor and metrics ClusterRoleBindings exist and are scraped?"
+open question "Are deploy_praxis, teardown_praxis, add_gateway_route, setup/teardown_maas_external_models and maas_sim_test (which runs an untracked-directory poc script) still meant to be part of the harness, or dead code to remove?"
+open question "platform.praxis.version and platform.praxis.replicas are only consumed by the unreached deploy_praxis: should the harness pin or record the operator-delivered praxis ExtProc image instead?"
