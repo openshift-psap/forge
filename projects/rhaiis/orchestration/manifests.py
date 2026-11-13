@@ -234,7 +234,7 @@ def _build_vllm_sglang_container(
         else:
             args = ["--model-path=/mnt/models", "--port=8080", "--host=0.0.0.0"]
     else:
-        command = ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        command = ["python3", "-m", "vllm.entrypoints.cli.main", "serve"]
         if storage_source == "hf":
             args = [f"--model={model_id}", "--port=8080"]
         else:
