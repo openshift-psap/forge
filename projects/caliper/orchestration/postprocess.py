@@ -1517,6 +1517,43 @@ class CaliperPostprocessOrchestrator:
         except Exception as e:
             logger.warning("Failed to generate postprocessing status report: %s", e)
 
+        # Trace reports are generated independently of parse/visualize so a
+        # report fix (or a replot) needs neither a running collector nor a
+        # repeated benchmark. Failure is reported but never aborts the pipeline.
+        try:
+            self._generate_trace_reports()
+        except Exception:
+            from projects.core.library import ci
+
+            # Do not include raw exception text: it can originate in trace data.
+            message = "Trace report generation failed; retained bundles can be replayed."
+            logger.error(message)
+            ci.add_notification_file("tracing-report-failed", message)
+            self._add_step("trace_reports", {"status": "failed", "error": message})
+            result["success"] = False
+            if result.get("final_status") == FINAL_SUCCESS:
+                result["final_status"] = FINAL_KPI_PIPELINE_FAILED
+
+    def _generate_trace_reports(self) -> None:
+        """Generate a shared trace report for every discovered bundle.
+
+        Reads only the retained, sanitized artifacts under the artifact root and
+        writes a report beside each owning test node. Never imports a project
+        adapter, so it works for any project that produced a valid bundle.
+        """
+        from projects.caliper.engine.tracing import bundle as bundle_mod
+        from projects.caliper.postprocess.helpers import tracing_report
+
+        # Bundles live under the Caliper artifact tree, not the postprocessing
+        # output directory (env.ARTIFACT_DIR is NNN__postprocessing here), so
+        # scan the resolved artifacts directory.
+        bundles = bundle_mod.discover_bundles(self.artifacts_dir)
+        if not bundles:
+            return
+        for bundle in bundles:
+            tracing_report.write_report(bundle, bundle.test_dir / "reports")
+        logger.info("Generated %d trace report(s)", len(bundles))
+
     def _save_postprocess_status_yaml(self, result: dict[str, Any]) -> None:
         """Save postprocess status as YAML for GitHub notifications."""
         try:
