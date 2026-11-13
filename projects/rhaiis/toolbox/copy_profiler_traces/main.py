@@ -31,7 +31,14 @@ _READ_CHUNK_SCRIPT = (
 
 
 @entrypoint
-def run(*, name: str, namespace: str, transfer_timeout_seconds: int = 300):
+def run(
+    *,
+    name: str,
+    namespace: str,
+    flush_timeout: int = 300,
+    flush_poll_interval: int = 10,
+    transfer_timeout_seconds: int = 300,
+):
     return execute_tasks(locals())
 
 
@@ -59,48 +66,80 @@ def find_predictor_pod(args, context):
 
 @task
 def list_trace_files(args, context):
-    result = shell.run(
-        [
-            "oc",
-            "exec",
-            context.pod_name,
-            "-n",
-            args.namespace,
-            "-c",
-            "kserve-container",
-            "--",
-            "find",
-            "/tmp",
-            "-maxdepth",
-            "1",
-            "-type",
-            "f",
-            "-name",
-            "trace_rank0_*.json*",
-            "-print",
-        ],
-        shell=False,
-        log_stdout=False,
-    )
-    paths = [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
-    if not paths:
-        raise RuntimeError(f"No rank-0 profiler traces found in pod {context.pod_name}")
+    if args.flush_poll_interval <= 0:
+        raise ValueError(
+            f"flush_poll_interval must be a positive integer, got {args.flush_poll_interval}"
+        )
 
-    for path in paths:
-        if (
-            path.parent != Path("/tmp")
-            or not path.name.startswith("trace_rank0_")
-            or not path.name.endswith((".json", ".json.gz"))
-        ):
-            raise ValueError(f"Unexpected profiler trace path: {path}")
+    deadline = time.monotonic() + args.flush_timeout
 
-    output_names = [path.name.removesuffix(".gz") for path in paths]
-    if len(output_names) != len(set(output_names)):
-        raise RuntimeError("Both compressed and uncompressed copies of a rank-0 trace exist")
+    while True:
+        result = shell.run(
+            [
+                "oc",
+                "exec",
+                context.pod_name,
+                "-n",
+                args.namespace,
+                "-c",
+                "kserve-container",
+                "--",
+                "find",
+                "/tmp",
+                "-maxdepth",
+                "1",
+                "-type",
+                "f",
+                "-name",
+                "trace_rank0_*.json*",
+                "-print",
+            ],
+            shell=False,
+            log_stdout=False,
+            check=False,
+        )
 
-    context.trace_files = sorted(path.name for path in paths)
-    context.trace_count = len(context.trace_files)
-    return f"Found {context.trace_count} rank-0 trace files"
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to list trace files in pod {context.pod_name}: "
+                f"exit code {result.returncode}"
+            )
+
+        paths = [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+
+        if not paths:
+            now = time.monotonic()
+            if now >= deadline:
+                raise RuntimeError(
+                    f"No rank-0 profiler traces found in pod {context.pod_name} "
+                    f"after waiting {args.flush_timeout}s"
+                )
+            remaining = deadline - now
+            logger.info(
+                "Waiting for profiler traces to flush... "
+                "retrying in %ds (%ds remaining of %ds timeout)",
+                args.flush_poll_interval,
+                remaining,
+                args.flush_timeout,
+            )
+            time.sleep(min(args.flush_poll_interval, remaining))
+            continue
+
+        for path in paths:
+            if (
+                path.parent != Path("/tmp")
+                or not path.name.startswith("trace_rank0_")
+                or not path.name.endswith((".json", ".json.gz"))
+            ):
+                raise ValueError(f"Unexpected profiler trace path: {path}")
+
+        output_names = [path.name.removesuffix(".gz") for path in paths]
+        if len(output_names) != len(set(output_names)):
+            raise RuntimeError("Both compressed and uncompressed copies of a rank-0 trace exist")
+
+        context.trace_files = sorted(path.name for path in paths)
+        context.trace_count = len(context.trace_files)
+        return f"Found {context.trace_count} rank-0 trace files"
 
 
 def _oc_exec(pod_name: str, namespace: str, *command: str) -> list[str]:
