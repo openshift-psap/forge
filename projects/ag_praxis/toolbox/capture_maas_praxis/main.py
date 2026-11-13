@@ -175,7 +175,7 @@ def capture_overview(args, ctx):
 
 @task
 def capture_deployments(args, ctx):
-    """Capture YAML and describe output for each hot-path deployment."""
+    """Capture YAML, wide listing and describe output for each hot-path deployment."""
     artifacts = args.artifact_dir / "artifacts"
 
     results = []
@@ -197,6 +197,18 @@ def capture_deployments(args, ctx):
         )
         results.append(
             _capture(
+                f"{target.name} wide listing",
+                target_dir / "deployment_wide.txt",
+                "get",
+                "deployment",
+                target.name,
+                "-n",
+                target.namespace,
+                "-owide",
+            )
+        )
+        results.append(
+            _capture(
                 f"{target.name} describe",
                 target_dir / "deployment_describe.txt",
                 "describe",
@@ -211,13 +223,27 @@ def capture_deployments(args, ctx):
 
 @task
 def capture_pods(args, ctx):
-    """Capture status and describe output for the hot-path deployment pods."""
+    """Capture YAML, status and describe output for the hot-path deployment pods."""
     artifacts = args.artifact_dir / "artifacts"
 
     results = []
     for target in ctx.hot_path_deployments:
         target_dir = target.artifact_dir(artifacts)
         target_dir.mkdir(parents=True, exist_ok=True)
+        results.append(
+            _capture(
+                f"{target.name} pods yaml",
+                target_dir / "pods.yaml",
+                "get",
+                "pods",
+                "-l",
+                target.selector,
+                "-n",
+                target.namespace,
+                "-o",
+                "yaml",
+            )
+        )
         results.append(
             _capture(
                 f"{target.name} pods status",
