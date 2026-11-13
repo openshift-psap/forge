@@ -413,6 +413,7 @@ PROFILE_DISPLAY_NAMES = {
     "profile2": "Profile B: Variable Workload (512/2k)",
     "profile3": "Profile C: Large Prompt (2k/128)",
     "profile4": "Profile D: Prefill Heavy (8k/1k)",
+    "custom": "Custom ISL/OSL",
 }
 
 
@@ -424,6 +425,7 @@ def _build_dashboard_url(
     compare_version: str = "",
     profiles: list[str] | None = None,
     tp: str = "",
+    custom_isl_osl: str = "",
 ) -> str:
     """Build a RHAIIS dashboard URL with filters pre-selected."""
     from urllib.parse import quote, urlencode
@@ -442,6 +444,9 @@ def _build_dashboard_url(
     if profiles:
         display_names = [PROFILE_DISPLAY_NAMES.get(p, p) for p in profiles]
         params["profile"] = ",".join(display_names)
+
+    if custom_isl_osl:
+        params["custom_isl_osl"] = custom_isl_osl
 
     if tp:
         try:

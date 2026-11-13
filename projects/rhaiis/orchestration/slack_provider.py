@@ -93,12 +93,32 @@ class RhaiisSlackProvider(SlackNotificationProvider):
             "caliper.postprocess.csv_dashboard.enabled", False
         )
         if csv_dashboard_enabled:
+            custom_isl_osl = ""
+            if "custom" in workload_keys:
+                try:
+                    data = runtime_config.get_workload("custom")["data"]
+                    if not isinstance(data, str):
+                        raise TypeError("Custom workload data must be a string")
+                    tokens = {}
+                    for item in data.split(","):
+                        if "=" in item:
+                            key, value = item.split("=", 1)
+                            tokens[key.strip()] = value.strip()
+                    # shortcut: dataset-backed custom data has no token pair here; add dataset filters when needed.
+                    if "prompt_tokens" in tokens and "output_tokens" in tokens:
+                        isl = int(float(tokens["prompt_tokens"]))
+                        osl = int(float(tokens["output_tokens"]))
+                        custom_isl_osl = f"{isl}/{osl}"
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    logger.warning("Invalid custom workload data; omitting dashboard shape filter")
+
             dashboard_url = _build_dashboard_url(
                 model=model_name,
                 accelerator=accelerator,
                 current_version=version,
                 profiles=workload_keys or None,
                 tp=str(tp) if tp else "",
+                custom_isl_osl=custom_isl_osl,
             )
             dashboard_line = f"*Dashboard:* <{dashboard_url}|View Dashboard>\n"
         else:
