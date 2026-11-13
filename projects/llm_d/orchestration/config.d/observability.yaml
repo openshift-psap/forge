@@ -1,0 +1,30 @@
+# Opt in to a per-run Receiver. Fournos uses FJOB_NAME; local runs set run_id.
+enabled: false
+run_id: null  # Optional when FJOB_NAME is available in every CI phase.
+cluster_label: null
+
+# Forge creates a Receiver for this run and removes it in post-cleanup.
+receiver:
+  namespace: forge-observability
+  name: thanos-receiver
+  image: quay.io/thanos/thanos:v0.35.0
+  storage_class: null  # Use the cluster's default StorageClass.
+  pvc_size: 50Gi
+  objstore_vault:
+    name: psap-forge-thanos
+    content: objstore.yaml
+
+monitoring:
+  enabled: true
+  queue_name: forge-llm-d
+  # Null selects only the workload namespace configured for this llm_d run.
+  namespace_regex: null
+  container_names:
+    - main
+  forward_gpu_metrics: false
+  gpu_namespaces:
+    - nvidia-gpu-operator
+
+# deploy_llmisvc already creates HTTPS workload and HTTP scheduler ServiceMonitors
+# when deployments.defaults.enable_monitors is true.
+service_monitors: []
