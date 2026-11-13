@@ -53,4 +53,4 @@ benchmarks:
 
   smoke:
     timeout_seconds: 300
-    benchconf: llm-d/smoke
+    benchconf: psap-inference/smoke
