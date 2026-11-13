@@ -24,6 +24,10 @@ def _workload_shapes():
     workloads = yaml.safe_load(WORKLOADS_YAML.read_text())
     shapes = {}
     for key, cfg in workloads.items():
+        # ConfigIQ scenarios are tracked by workload key and are not part of
+        # the fixed-shape RHAIIS regression profile map.
+        if key.startswith("configiq-") and cfg.get("benchconf"):
+            continue
         isl = re.search(r"prompt_tokens=(\d+)", cfg["data"])
         osl = re.search(r"output_tokens=(\d+)", cfg["data"])
         if isl and osl:

@@ -20,3 +20,21 @@ profile6-multi-turn:
 
 profile7-heavy-heterogeneous:
   tests.rhaiis.workload_key: profile7
+
+configiq-interactive-chat:
+  tests.rhaiis.workload_key: configiq-interactive-chat
+
+configiq-reasoning:
+  tests.rhaiis.workload_key: configiq-reasoning
+
+configiq-code-generation:
+  tests.rhaiis.workload_key: configiq-code-generation
+
+configiq-deep-research:
+  tests.rhaiis.workload_key: configiq-deep-research
+
+configiq-batch-summarization-rag:
+  tests.rhaiis.workload_key: configiq-batch-summarization-rag
+
+configiq-batch-synthetic-data-generation:
+  tests.rhaiis.workload_key: configiq-batch-synthetic-data-generation
