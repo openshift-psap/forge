@@ -56,6 +56,7 @@ Config is split into `config.yaml` (base) and `config.d/` (per-domain):
 
 - [`orchestration/config.yaml`](./orchestration/config.yaml) — vaults, benchmarks, tests, caliper postprocessing
 - [`orchestration/config.d/rhaiis.yaml`](./orchestration/config.d/rhaiis.yaml) — deploy defaults, engine config (vLLM/SGLang/TRT-LLM), images, gpu_types, S3 settings, profiler
+- [`orchestration/config.d/observability.yaml`](./orchestration/config.d/observability.yaml) — optional Thanos ingestion
 - [`orchestration/config.d/models.yaml`](./orchestration/config.d/models.yaml) — 52 model definitions
 - [`orchestration/config.d/workloads.yaml`](./orchestration/config.d/workloads.yaml) — workload profiles
 
@@ -77,6 +78,37 @@ Key sections:
 | `benchmarks.guidellm` | GuideLLM image, backend, timeout, PVC size, HF token secret, fs_group |
 | `tests` | CI test mapping (model_key, workload_keys, version) |
 | `caliper.postprocess` | Caliper postprocessing pipeline (parse, KPI, CSV export) |
+
+## Optional Thanos metrics
+
+`observability.enabled` is false by default. In a Fournos job, enable it in
+`configOverrides`; Forge uses that job's `FJOB_NAME` as the run ID:
+
+```yaml
+observability.enabled: true
+observability.cluster_label: psap-hera
+```
+
+For local runs, set `observability.run_id` explicitly. The run ID must match
+`FJOB_NAME` in Fournos, and per-run Receiver teardown requires the `forge-full`
+pipeline. Forge uses the configured `rhaiis.namespace` (the existing
+`kserve-e2e-perf` default) and claims it for the duration of the run; two Forge
+runs sharing that namespace must run one at a time. The namespace still needs
+RHAIIS's `model-pvc` and `storage-config` Secret, plus any configured image pull
+secrets. Forge does not copy or delete those workload assets.
+`monitoring.namespace_regex: null` selects only that workload namespace.
+
+Prepare creates a run-scoped Receiver and remote-write queues and a
+ServiceMonitor selecting KServe predictor services on the `http` metrics port.
+The system container filter is `kserve-container`. GPU forwarding remains off
+by default because DCGM series without a matching `exported_namespace` cannot
+be attributed safely. The `psap-forge-thanos` vault must contain `objstore.yaml` with the
+S3 configuration. Post-cleanup stops the run's workload, drains its queues,
+uploads remaining blocks, then removes the Receiver and its PVC. If shipping
+cannot be confirmed, teardown reports an error and preserves the data for a
+retry. The central Querier reads uploaded blocks through its Store Gateway.
+If workload cleanup fails, Forge skips teardown so the Receiver and queues
+remain available for a retry.
 
 ## Engine support
 

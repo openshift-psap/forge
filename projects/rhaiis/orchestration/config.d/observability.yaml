@@ -1,0 +1,35 @@
+# Opt in to a per-run Receiver. Fournos uses FJOB_NAME; local runs set run_id.
+enabled: false
+run_id: null  # Optional when FJOB_NAME is available in every CI phase.
+cluster_label: null
+
+# Forge creates a Receiver for this run and removes it in post-cleanup.
+receiver:
+  namespace: forge-observability
+  name: thanos-receiver
+  image: quay.io/thanos/thanos:v0.35.0
+  storage_class: null  # Use the cluster's default StorageClass.
+  pvc_size: 50Gi
+  objstore_vault:
+    name: psap-forge-thanos
+    content: objstore.yaml
+
+monitoring:
+  enabled: true
+  queue_name: forge-rhaiis
+  # Null selects only the workload namespace configured for this RHAIIS run.
+  namespace_regex: null
+  container_names:
+    - kserve-container
+  forward_gpu_metrics: false
+  gpu_namespaces:
+    - nvidia-gpu-operator
+
+service_monitors:
+  - name: forge-vllm-metrics
+    selector:
+      component: predictor
+    port: http
+    path: /metrics
+    interval: 15s
+    scheme: http
