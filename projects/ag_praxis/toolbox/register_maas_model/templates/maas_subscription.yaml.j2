@@ -11,7 +11,11 @@ spec:
   modelRefs:
   - name: {{ model_ref_name }}
     namespace: {{ model_namespace }}
+    # Token quota: deliberately huge by default so perf runs are not rate-limited.
+    # NOTE: token metering fails OPEN for streamed /v1/responses traffic on builds
+    # where the wasm shim parses the response body as a single JSON document --
+    # see register_maas_model's docstring before relying on the quota path.
     tokenRateLimits:
-    - limit: 1000000000
-      window: 1m
+    - limit: {{ token_rate_limit }}
+      window: {{ token_rate_limit_window }}
   priority: 10
