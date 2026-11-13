@@ -339,7 +339,7 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
             payload_processing_config=praxis_cfg.get("payload_processing"),
             extproc_max_requests=praxis_cfg.get("extproc_max_requests"),
         )
-    elif ep_name == "maas":
+    elif ep_name == "maas/ipp":
         logger.info("Deactivating praxis for endpoint %s", ep_name)
         enable_maas_praxis_command.run(
             activate=False,
@@ -571,7 +571,7 @@ def _prepare_test_endpoints(test_namespace, maas_cfg):
 
     endpoint_map = {
         "svc": (svc_endpoint, None),
-        "maas": (maas_endpoint, None),
+        "maas/ipp": (maas_endpoint, None),
         "maas/praxis": (maas_endpoint, None),
     }
     selected = config.project.get_config("test.endpoints")
