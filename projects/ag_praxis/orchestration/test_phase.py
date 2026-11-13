@@ -337,6 +337,7 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
             ingress_namespace=maas_cfg["gateway"]["namespace"],
             gateway_name=maas_cfg["gateway"]["name"],
             payload_processing_config=praxis_cfg.get("payload_processing"),
+            extproc_max_requests=praxis_cfg.get("extproc_max_requests"),
         )
     elif ep_name == "maas":
         logger.info("Deactivating praxis for endpoint %s", ep_name)
@@ -516,6 +517,8 @@ def _register_maas_model(test_namespace, maas_cfg, model_name):
         tenant_namespace=maas_cfg["tenant_namespace"],
         llmisvc_name=maas_sim_name,
         model_ref_kind="LLMInferenceService",
+        token_rate_limit=maas_cfg.get("token_rate_limit", 1_000_000_000),
+        token_rate_limit_window=maas_cfg.get("token_rate_limit_window", "1m"),
     )
 
 
