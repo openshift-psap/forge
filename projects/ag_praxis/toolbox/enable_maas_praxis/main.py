@@ -13,6 +13,12 @@ PRAXIS_ANNOTATION_VALUE = "praxis"
 IPP_ANNOTATION_VALUE = "ipp"
 DEPLOYMENTS_TO_CHECK = ["payload-processing", "payload-pre-processing"]
 
+EXTPROC_MAX_REQUESTS_ANNOTATION_KEY = "maas.opendatahub.io/experimental-extproc-max-requests"
+# Controller ceiling (MaxExtProcMaxRequests). Values above it are REJECTED by the
+# controller with a silent fallback to the default 8 -- not clamped -- so the range
+# is enforced here, before annotating.
+MAX_EXTPROC_MAX_REQUESTS = 1024
+
 
 @entrypoint
 def run(
@@ -24,6 +30,7 @@ def run(
     kuadrant_namespace: str = "kuadrant-system",
     gateway_name: str = "maas-default-gateway",
     payload_processing_config: dict | None = None,
+    extproc_max_requests: int | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
 
@@ -46,7 +53,24 @@ def run(
             (replicas, cpu_limit, memory_limit, cpu_request, memory_request).
             Applied identically via spec.payloadPreProcessing and spec.payloadProcessing
             on the CR.
+        extproc_max_requests: ExtProc concurrency budget to annotate on the MaasTenantConfig
+            (maas.opendatahub.io/experimental-extproc-max-requests). The operator default
+            is 8 (ai-gateway-controller PR #217 hardening): above 8 concurrent in-flight
+            ext_proc calls the gateway sheds requests with an empty HTTP 500 before auth.
+            Valid range 1-1024. The effective limits are verified against the gateway's
+            live Envoy config (see verify_extproc_limits).
     """
+    if (
+        extproc_max_requests is not None
+        and not 1 <= extproc_max_requests <= MAX_EXTPROC_MAX_REQUESTS
+    ):
+        raise ValueError(
+            f"Invalid extproc_max_requests: {extproc_max_requests!r}. "
+            f"Valid range: 1-{MAX_EXTPROC_MAX_REQUESTS}. "
+            "Out-of-range values are silently rejected by the controller "
+            "(fallback to the default 8), so they are refused here instead."
+        )
+
     return execute_tasks(locals())
 
 
@@ -145,6 +169,41 @@ def toggle_annotation(args, ctx):
     return f"Set {ANNOTATION_KEY}={value} on {args.tenant_name}"
 
 
+@task
+def set_extproc_max_requests(args, ctx):
+    """Annotate MaasTenantConfig with the ExtProc concurrency budget.
+
+    The budget is enforced by Envoy circuit breakers on the ext_proc clusters:
+    above it, requests are shed with an instant empty HTTP 500 *before* auth
+    (ext_proc_error gRPC 14, reset_reason: overflow). With the default budget
+    of 8, throughput is pinned at 8 / extproc_latency regardless of user count.
+
+    The controller writes the annotated value into all four limits (max_requests,
+    max_pending_requests, max_connections, max_concurrent_streams) on all ext_proc
+    clusters. The annotation is only read on reconcile, which for annotation-only
+    changes may wait for the controller resync -- verify_extproc_limits waits for
+    the effective config to catch up.
+    """
+    if not args.activate:
+        return "Skipped: praxis is being deactivated (annotation left as-is)"
+    if args.extproc_max_requests is None:
+        return "Skipped: no extproc_max_requests configured, keeping operator default"
+
+    oc(
+        "annotate",
+        "maastenantconfig",
+        args.tenant_name,
+        "-n",
+        args.tenant_namespace,
+        f"{EXTPROC_MAX_REQUESTS_ANNOTATION_KEY}={args.extproc_max_requests}",
+        "--overwrite",
+    )
+    return (
+        f"Set {EXTPROC_MAX_REQUESTS_ANNOTATION_KEY}={args.extproc_max_requests} "
+        f"on {args.tenant_name}"
+    )
+
+
 @retry(attempts=60, delay=10, backoff=1.0)
 @task
 def wait_for_deployment_images(args, ctx):
@@ -234,6 +293,92 @@ def wait_hot_path_deployments_ready(args, ctx):
     if not_ready:
         return False, "; ".join(not_ready)
     return "All hot-path deployments ready after bump"
+
+
+@retry(attempts=60, delay=10, backoff=1.0)
+@task
+def verify_extproc_limits(args, ctx):
+    """Verify the effective ExtProc circuit-breaker limits on the live gateway.
+
+    Ground truth is the gateway pod's Envoy config_dump, not the CRs: an
+    out-of-range annotation value silently falls back to the default 8, and
+    annotation-only changes may wait for the controller resync before being
+    reconciled into the EnvoyFilter. Fails the run if the budget never takes
+    effect, instead of letting the benchmark silently run against a budget
+    that sheds all traffic above 8 concurrent requests.
+
+    Envoy stats must NOT be used for this check: Istio's stats_matcher means
+    most stats are never instantiated, so "no output" is indistinguishable
+    from "not configured". config_dump is unaffected.
+    """
+    if not args.activate or args.extproc_max_requests is None:
+        return "Skipped: no extproc budget to verify"
+
+    from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
+        _resolve_gateway_deployment_name,
+    )
+
+    deployment = _resolve_gateway_deployment_name(args.gateway_name, args.ingress_namespace)
+
+    result = oc(
+        "exec",
+        "-n",
+        args.ingress_namespace,
+        f"deploy/{deployment}",
+        "--",
+        "pilot-agent",
+        "request",
+        "GET",
+        "config_dump?resource=dynamic_active_clusters",
+        check=False,
+        log_stdout=False,
+    )
+    if result.returncode != 0:
+        return False, f"config_dump fetch failed on deploy/{deployment}: rc={result.returncode}"
+
+    clusters = [
+        config_entry["cluster"]
+        for config_entry in json.loads(result.stdout).get("configs", [])
+        if "extproc" in config_entry.get("cluster", {}).get("name", "")
+    ]
+    if not clusters:
+        return False, "No extproc clusters in the gateway Envoy config yet"
+
+    expected = args.extproc_max_requests
+    problems = []
+    seen = []
+    for cluster in clusters:
+        name = cluster["name"]
+        # A threshold list longer than one entry means a botched MERGE appended
+        # to the repeated field -- the original limits may still be in force.
+        thresholds = cluster.get("circuit_breakers", {}).get("thresholds") or []
+        if not thresholds:
+            if "payload" in name:
+                problems.append(f"{name}: no circuit_breakers thresholds")
+            continue
+
+        seen.append(name)
+        for entry in thresholds:
+            limits = {
+                field: entry.get(field)
+                for field in ("max_requests", "max_pending_requests", "max_connections")
+            }
+            mismatched = {
+                field: value
+                for field, value in limits.items()
+                if value is not None and value != expected
+            }
+            if "payload" in name and (mismatched or len(thresholds) > 1):
+                problems.append(f"{name}: thresholds={thresholds}")
+
+    if problems:
+        return False, (
+            f"ExtProc budget not in effect (expected {expected}): " + "; ".join(problems)
+        )
+    if not seen:
+        return False, "No extproc cluster carries circuit_breakers thresholds yet"
+
+    return f"ExtProc budget {expected} in effect on: {', '.join(sorted(seen))}"
 
 
 @task
