@@ -32,7 +32,7 @@ class AgPraxisPlugin(GuideLLMPlugin):
         PLOT_REGISTRY[OVERHEAD_REPORT_ID] = {
             "function": None,
             "type": "report",
-            "description": "Endpoint overhead analysis comparing svc, maas, and maas/praxis",
+            "description": "Endpoint overhead analysis comparing svc, maas/ipp, and maas/praxis",
         }
 
     def visualize(

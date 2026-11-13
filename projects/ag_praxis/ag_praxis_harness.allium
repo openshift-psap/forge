@@ -145,8 +145,9 @@ external entity SimModelService {
 -- Enumerations
 ------------------------------------------------------------
 
--- `maas_praxis` stands for the config/endpoint key "maas/praxis".
-enum EndpointKind { svc | maas | maas_praxis }
+-- `maas_ipp` stands for the config/endpoint key "maas/ipp" (formerly "maas");
+-- `maas_praxis` for "maas/praxis".
+enum EndpointKind { svc | maas_ipp | maas_praxis }
 
 enum PayloadProcessingType { praxis | ipp }
 
@@ -266,7 +267,7 @@ entity EndpointTest {
     benchmarks: BenchmarkRun with endpoint_test = this
     captures: CaptureBundle with endpoint_test = this
 
-    goes_through_gateway: kind in {maas, maas_praxis}
+    goes_through_gateway: kind in {maas_ipp, maas_praxis}
     all_benchmarks_succeeded:
         benchmarks.count > 0 and benchmarks.all(b => b.status = succeeded)
 
@@ -386,7 +387,7 @@ config {
     run_benchmark: Boolean = true
     run_warmup: Boolean = true
     skip_cleanup: Boolean = false            -- HEAD; working tree sets true
-    endpoints: List<EndpointKind> = [svc, maas, maas_praxis]
+    endpoints: List<EndpointKind> = [svc, maas_ipp, maas_praxis]
     guidellm_matrix_enabled: Boolean = false
 
     -- platform.yaml (maas / sim / praxis)
@@ -667,8 +668,8 @@ rule TestPhaseStarts {
         -- test_phase.py:607-664. Endpoint URLs (test_phase.py:556-576):
         --   svc         -> https://<llmisvc>-kserve-workload-svc.<ns>.svc:8000
         --                  (bypasses the MaaS gateway and the ExtProcs)
-        --   maas        -> https://<gateway hostname>/<ns>/<llmisvc>
-        --   maas_praxis -> same URL as maas; only the tenant annotation differs
+        --   maas_ipp    -> https://<gateway hostname>/<ns>/<llmisvc>
+        --   maas_praxis -> same URL as maas_ipp; only the tenant annotation differs
         -- Each matrix combination (test.matrices.guidellm, off by default)
         -- re-runs all endpoints; with benchmark on, every sweep rate must
         -- divide evenly by benchmark_replica_count or the phase fails.
@@ -681,7 +682,7 @@ rule EndpointTestStarts {
     ensures:
         if endpoint_test.kind = maas_praxis:
             PraxisToggled(activate: true)
-        else if endpoint_test.kind = maas:
+        else if endpoint_test.kind = maas_ipp:
             PraxisToggled(activate: false)
     ensures:
         if endpoint_test.goes_through_gateway:
@@ -784,7 +785,7 @@ rule VerifyExtProcBudget {
         -- covers both the controller resync delay for annotation-only changes
         -- and the silent out-of-range fallback to 8. A thresholds list longer
         -- than one entry (botched EnvoyFilter MERGE append) also fails. On
-        -- the maas endpoint (ipp) the rule does not fire: the requires guard
+        -- the maas_ipp endpoint the rule does not fire: the requires guard
         -- fails and no budget is verified. Exhausting retries fails the
         -- endpoint test BEFORE any traffic is sent, instead of letting the
         -- benchmark silently run against a budget that sheds all requests

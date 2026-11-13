@@ -12,7 +12,7 @@ skip_finalizers: false
 
 endpoints:
 - svc
-- maas
+- maas/ipp
 - maas/praxis
 
 matrices:
