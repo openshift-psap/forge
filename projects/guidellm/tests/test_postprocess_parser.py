@@ -8,13 +8,24 @@ from projects.guidellm.postprocess.guidellm.parsing.parsers import GuideLLMParse
 from projects.guidellm.toolbox.run_guidellm_benchmark import SKIP_FROM_POSTPROCESSING_MARKER
 
 
-def _write_benchmark_file(path: Path, streams: int, request_rate: float | None = None) -> None:
+def _write_benchmark_file(
+    path: Path,
+    streams: int,
+    request_rate: float | None = None,
+    legacy_input_metric_name: bool = False,
+) -> None:
     # Use provided request_rate or default to 1.5 * streams for variation
     effective_rate = request_rate if request_rate is not None else 1.5 * streams
 
     # Create different token rates based on streams for ordering verification
     input_tokens_rate = 2.0 + streams  # e.g., 10, 18, 34 for streams 8, 16, 32
     output_tokens_rate = 1.0 + streams  # e.g., 9, 17, 33 for streams 8, 16, 32
+
+    # guidellm v0.8+ emits prompt_tokens_per_second; older releases used
+    # input_tokens_per_second for the same metric
+    input_metric_name = (
+        "input_tokens_per_second" if legacy_input_metric_name else "prompt_tokens_per_second"
+    )
 
     payload = {
         "args": {"rate": streams},
@@ -25,7 +36,7 @@ def _write_benchmark_file(path: Path, streams: int, request_rate: float | None =
                 "scheduler": {"state": {"start_time": 0, "end_time": 10}},
                 "metrics": {
                     "requests_per_second": {"successful": {"mean": effective_rate}},
-                    "input_tokens_per_second": {"successful": {"mean": input_tokens_rate}},
+                    input_metric_name: {"successful": {"mean": input_tokens_rate}},
                     "output_tokens_per_second": {"successful": {"mean": output_tokens_rate}},
                     "request_latency": {
                         "successful": {"median": 100.0, "percentiles": {"p95": 120.0}}
@@ -142,6 +153,28 @@ def test_parser_orders_by_intended_concurrency_not_request_rate(tmp_path: Path) 
         50.0,
         75.0,
     ]  # Rates in intended_concurrency order (8→100, 16→50, 32→75)
+
+
+def test_parser_falls_back_to_legacy_input_tokens_metric_name(tmp_path: Path) -> None:
+    """Older guidellm releases emit input_tokens_per_second instead of prompt_tokens_per_second."""
+    test_dir = tmp_path / "run"
+    test_dir.mkdir()
+    benchmark = test_dir / "benchmarks-rate-32.json"
+    _write_benchmark_file(benchmark, streams=32, legacy_input_metric_name=True)
+
+    parser = GuideLLMParser()
+    node = BaseTestNode(
+        directory=test_dir,
+        test_labels={"labels": {"guidellm_loadshape": "concurrent"}},
+        artifact_paths=[benchmark],
+    )
+
+    result = parser.parse([node])
+
+    assert result.warnings == []
+    curves = result.records[0].metrics["performance_curves"]
+    # For streams 32: input_tokens=34, output_tokens=33 → total=67
+    assert curves["tokens_per_second"] == [67.0]
 
 
 def test_parser_excludes_results_marked_skip_from_postprocessing(tmp_path: Path) -> None:
