@@ -250,8 +250,13 @@ def capture_pods(args, ctx):
 def capture_pod_logs(args, ctx):
     """Capture logs for the hot-path deployment pods.
 
-    No tail cap: the pods are bumped fresh before each benchmark endpoint, so the
-    logs are bounded by one benchmark window.
+    `--tail=-1` is mandatory: `oc logs` defaults to only the last 10 lines when a
+    selector is given, which would truncate the gateway's Envoy access log — the
+    record of every request the gateway rejected, and the only place where the
+    failing filter is named (`%RESPONSE_CODE_DETAILS%`).
+
+    No tail cap is needed otherwise: the pods are bumped fresh before each benchmark
+    endpoint, so the logs are bounded by one benchmark window.
     """
     artifacts = args.artifact_dir / "artifacts"
 
@@ -270,6 +275,7 @@ def capture_pod_logs(args, ctx):
                 target.namespace,
                 "--all-containers",
                 "--prefix",
+                "--tail=-1",
             )
         )
         results.append(
@@ -284,6 +290,7 @@ def capture_pod_logs(args, ctx):
                 "--all-containers",
                 "--prefix",
                 "--previous",
+                "--tail=-1",
             )
         )
     return "; ".join(results)
