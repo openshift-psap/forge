@@ -4,6 +4,47 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
+
+def test_resolve_replica_scaling_derived_exact() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"replica_count": None, "users_per_replica": 64}
+    assert test_phase._resolve_replica_scaling(128, benchmark) == (2, 64)
+
+
+def test_resolve_replica_scaling_derived_non_even_rate() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"replica_count": None, "users_per_replica": 64}
+    replicas, per_replica_rate = test_phase._resolve_replica_scaling(100, benchmark)
+    assert replicas == 2
+    assert per_replica_rate == 50
+    assert replicas * per_replica_rate == 100
+
+
+def test_resolve_replica_scaling_derived_single_replica() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"replica_count": None, "users_per_replica": 64}
+    assert test_phase._resolve_replica_scaling(8, benchmark) == (1, 8)
+
+
+def test_resolve_replica_scaling_explicit_override_wins() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"replica_count": 4, "users_per_replica": 64}
+    assert test_phase._resolve_replica_scaling(128, benchmark) == (4, 32)
+
+
+def test_resolve_replica_scaling_missing_users_per_replica_raises() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"replica_count": None}
+    with pytest.raises(ValueError, match="users_per_replica"):
+        test_phase._resolve_replica_scaling(64, benchmark)
+
 
 def test_execute_benchmark_passes_retention_flags(monkeypatch) -> None:
     from projects.ag_praxis.orchestration import test_phase

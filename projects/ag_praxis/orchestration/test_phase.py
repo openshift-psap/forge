@@ -1,4 +1,5 @@
 import logging
+import math
 import sys
 from datetime import UTC, datetime
 
@@ -92,7 +93,7 @@ def _execute_benchmark(
         config_path=config_path,
         fs_group=benchmark.get("fs_group"),
         use_pvc=benchmark.get("use_pvc"),
-        replica_count=benchmark.get("replica_count", 1),
+        replica_count=benchmark.get("replica_count") or 1,
         artifact_dirname_suffix=artifact_suffix,
         api_key_file_path=api_key_file_path,
         validate_backend=config.project.get_config("workloads.validate_backend"),
@@ -153,6 +154,7 @@ def _build_benchmark_config(payload_name, sweep_name):
         "fs_group",
         "use_pvc",
         "replica_count",
+        "users_per_replica",
     ):
         if key in workloads:
             benchmark[key] = workloads[key]
@@ -184,10 +186,18 @@ def _write_benchmark_dry_run(endpoint_url):
     sweep_name = config.project.get_config("test.sweep")
     benchmark = _build_benchmark_config(payload_name, sweep_name)
 
+    replica_scaling = []
+    for rate in benchmark.get("rate", []):
+        replicas, per_replica_rate = _resolve_replica_scaling(rate, benchmark)
+        replica_scaling.append(
+            {"rate": rate, "replica_count": replicas, "per_replica_rate": per_replica_rate}
+        )
+
     dry_run = {
         "payload": payload_name,
         "sweep": sweep_name,
         "endpoint_url": endpoint_url,
+        "replica_scaling": replica_scaling,
         "guidellm_args": build_guidellm_args(benchmark),
         "benchmark": benchmark,
     }
@@ -205,6 +215,32 @@ def _write_benchmark_dry_run(endpoint_url):
     dest = env.ARTIFACT_DIR / "benchmark_dry_run.yaml"
     dest.write_text(yaml.safe_dump(dry_run, sort_keys=False))
     logger.info("Benchmark dry-run config written to %s", dest)
+
+
+def _resolve_replica_scaling(rate, benchmark):
+    """Resolve (replica_count, per_replica_rate) for a sweep rate level.
+
+    An explicit benchmark["replica_count"] wins (even division of the rates
+    is enforced separately by _validate_benchmark_rates). Otherwise the
+    replica count is derived from
+    benchmark["users_per_replica"]: replicas = ceil(rate / users_per_replica),
+    streams per replica = ceil(rate / replicas), so the total stream count
+    always reaches (and may slightly exceed) the requested rate.
+    """
+    replica_count = benchmark.get("replica_count")
+    if replica_count is not None:
+        return replica_count, round(rate / replica_count)
+
+    users_per_replica = benchmark.get("users_per_replica")
+    if not users_per_replica or users_per_replica < 1:
+        raise ValueError(
+            "workloads.replica_count is not set: users_per_replica must be a "
+            f"positive integer to derive the guidellm replica count (got {users_per_replica!r})"
+        )
+
+    replica_count = max(1, math.ceil(rate / users_per_replica))
+    per_replica_rate = math.ceil(rate / replica_count)
+    return replica_count, per_replica_rate
 
 
 def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None, ep_name=None):
@@ -228,12 +264,12 @@ def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None
     benchmark = _build_benchmark_config(payload_name, sweep_name)
 
     rates = benchmark.pop("rate")
-    replica_count = benchmark.get("replica_count", 1)
 
     for rate in rates:
-        per_replica_rate = round(rate / replica_count)
+        replica_count, per_replica_rate = _resolve_replica_scaling(rate, benchmark)
         run_benchmark = dict(benchmark)
         run_benchmark["rate"] = per_replica_rate
+        run_benchmark["replica_count"] = replica_count
         suffix = f"{payload_name}_{sweep_name}_rate{replica_count}x{per_replica_rate}"
         logger.info(
             "Running rate=%s (per_replica=%s, replicas=%s)", rate, per_replica_rate, replica_count
@@ -542,12 +578,20 @@ def _cleanup_maas_sim(test_namespace, maas_cfg):
 
 
 def _validate_benchmark_rates():
-    """Validate that all sweep rates divide evenly by replica_count."""
+    """Validate the rate -> replica scaling of every sweep level up front."""
     benchmark = _build_benchmark_config(
         config.project.get_config("test.payload"),
         config.project.get_config("test.sweep"),
     )
-    replica_count = benchmark.get("replica_count", 1)
+
+    for rate in benchmark.get("rate", []):
+        # Raises when replica_count is unset and users_per_replica is missing.
+        _resolve_replica_scaling(rate, benchmark)
+
+    replica_count = benchmark.get("replica_count")
+    if replica_count is None:
+        return
+
     for rate in benchmark.get("rate", []):
         per_replica_rate = rate / replica_count
         if abs(per_replica_rate - round(per_replica_rate)) > 0.01:
