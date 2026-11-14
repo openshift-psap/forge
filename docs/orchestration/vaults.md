@@ -309,7 +309,7 @@ from projects.core.library import vault
 vault.init()
 
 # Initialize with specific vaults only
-vault.init(["psap-forge-ci", "forge-llm-d"])
+vault.init(["psap-forge-ci", "..."])
 ```
 
 ### Runtime Usage
@@ -325,9 +325,8 @@ if not vault_manager.validate_project_vaults("llm_d"):
     raise RuntimeError("Vault validation failed")
 
 # Get paths to vault content
-vault = vault_manager.get_vault("forge-llm-d")
-hf_token_path = vault.content["hf_token"].file_path
-pull_secret_path = vault.content["rhoai_pull_secret"].file_path
+vault = vault_manager.get_vault("psap-rhoai-rc")
+pull_secret_path = vault.content["rhoai_rc.secret"].file_path
 ```
 
 ## Error Handling
