@@ -15,3 +15,7 @@ content:
           model_api: "..."
           model_id: "..."
           user_key: "..."
+    rotate_info:
+      Goto https://litemaas-portal.rhoai.rh-aiservices-bu.com/login
+      Login with RH-Google-Auth
+      Create a new API Key

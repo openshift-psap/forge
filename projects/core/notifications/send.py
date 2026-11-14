@@ -7,7 +7,7 @@ from projects.core.library import vault as vault_lib
 logger = logging.getLogger(__name__)
 
 
-GITHUB_APP_PEM_FILE = "topsail-bot.2024-09-18.private-key.pem"
+GITHUB_APP_PEM_FILE = "topsail-bot.private-key.pem"
 GITHUB_APP_CLIENT_ID_FILE = "topsail-bot.clientid"
 SLACK_TOKEN_FILE = "topsail-bot.slack-token"
 

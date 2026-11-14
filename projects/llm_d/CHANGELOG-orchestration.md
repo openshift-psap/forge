@@ -132,7 +132,7 @@
 ```yaml
 agentic:
   enabled: true
-  model_key: qwen-3-6-35b
+  model_key: default
   on_failure:
     enabled: true
 ```
