@@ -6,6 +6,8 @@ content:
   topsail-bot.private-key.pem:
     description: |
       Private key to send github notifications
+    deprecated_filenames:
+      - topsail-bot.2024-09-18.private-key.pem
     rotation_info: |
       Goto https://github.com/settings/apps/psap-forge-bot
       Credentials -> Key pairs -> New key
