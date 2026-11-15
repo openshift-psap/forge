@@ -205,13 +205,19 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     assert multi_turn["timeout_seconds"] == 7200
 
 
-def test_guidellm_benchmark_uses_hf_model_name(
+@pytest.mark.parametrize("keep_full_benchmark_file", [False, True])
+def test_guidellm_benchmark_forwards_model_and_full_result_setting(
     monkeypatch: pytest.MonkeyPatch,
+    keep_full_benchmark_file: bool,
 ) -> None:
     _init_project_config()
     core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
     core_config.project.set_config("runtime.deployment_profile", "release-distributed-default")
     core_config.project.set_config("runtime.benchmark_key", "concurrent-1k-1k")
+    core_config.project.set_config(
+        "workloads.keep_full_benchmark_file",
+        keep_full_benchmark_file,
+    )
     core_config.project.set_config("prom.capture.enabled", False)
 
     captured: dict[str, object] = {}
@@ -238,6 +244,7 @@ def test_guidellm_benchmark_uses_hf_model_name(
 
     assert captured["timeout"] == 3600
     assert captured["config_path"] == mock_config_path
+    assert captured["keep_full_benchmark_file"] is keep_full_benchmark_file
     guidellm_args = captured["guidellm_args"]
     assert isinstance(guidellm_args, list)
     assert "--tokenizer=kind=huggingface_auto,model=openai/gpt-oss-120b" in guidellm_args

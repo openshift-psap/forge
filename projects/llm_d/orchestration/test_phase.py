@@ -884,6 +884,7 @@ def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, da
                 config_path=config_path,
                 fs_group=fs_group,
                 use_pvc=benchmark.get("use_pvc"),
+                keep_full_benchmark_file=config.project.get_config("workloads.keep_full_benchmark_file"),
             )
     finally:
         end_time = update_test_labels_with_timing(test_dir, "benchmark", "end")
