@@ -260,6 +260,29 @@ def get_ci_base_link(is_raw_file=False, is_dir=False):
     )
 
 
+def get_fournos_instance() -> str:
+    """Return the configured Fournos instance, validated against the known ones."""
+    instance = config.project.get_config("fournos.instance")
+    if instance not in ("psap-mgmt", "intlab"):
+        raise ValueError(
+            f"Unknown fournos.instance: {instance!r} (expected 'psap-mgmt' or 'intlab')"
+        )
+    return instance
+
+
+def vaults_to_init() -> list[str]:
+    """Vaults required by the launcher, for the configured Fournos instance only.
+
+    The vault of the other instance is not used, and may not be available in
+    the CI environment running the launcher.
+    """
+    instance = get_fournos_instance()
+    other_instance = "psap_mgmt" if instance == "intlab" else "intlab"
+    other_instance_vault = config.project.get_config(f"fournos.{other_instance}.vault.name")
+
+    return [v for v in config.project.get_config("vaults") if v != other_instance_vault]
+
+
 def init():
     env.init()
     run.init()
@@ -271,28 +294,24 @@ def init():
     config.init(pathlib.Path(__file__).parent, apply_config_overrides=False)
     config.project.apply_config_overrides(ignore_not_found=True)
     config.project.filter_out_used_overrides()
-    vault.init(config.project.get_config("vaults"))
+    vault.init(vaults_to_init())
 
     prepare_env()
 
 
 def prepare_env():
-    instance = config.project.get_config("fournos.instance")
+    instance = get_fournos_instance()
 
     if instance == "intlab":
         logger.info("Using intlab Fournos instance (via SSH tunnel)")
         tunnelling.open_tunnel()
-    elif instance == "psap-mgmt":
+    else:
         logger.info("Using psap-mgmt Fournos instance (direct)")
         kubeconfig_path = vault.get_vault_content_path(
             config.project.get_config("fournos.psap_mgmt.vault.name"),
             config.project.get_config("fournos.psap_mgmt.vault.key"),
         )
         os.environ["KUBECONFIG"] = str(kubeconfig_path)
-    else:
-        raise ValueError(
-            f"Unknown fournos.instance: {instance!r} (expected 'psap-mgmt' or 'intlab')"
-        )
 
 
 def submit_job():

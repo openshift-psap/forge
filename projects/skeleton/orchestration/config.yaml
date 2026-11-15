@@ -108,7 +108,7 @@ caliper:
 
 agentic_review:
   enabled: false
-  model_key: qwen-3-6-35b
+  model_key: default
   vault_name: psap-models-corp-rh
   vault_content: agent-models.yaml
   failure_review:

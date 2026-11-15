@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import os
 from pathlib import Path
@@ -167,46 +166,10 @@ def extract_cluster_info(args, ctx):
 
 def _build_cluster_config(ctx):
     """Build cluster configuration section for kubeconfig"""
-    # Use certificate verification by default for security
-    config = {"server": ctx.api_server}
-
-    # Check if current KUBECONFIG already uses insecure settings (development context)
-    is_development_context = _is_development_cluster()
-
-    if is_development_context:
-        config["insecure-skip-tls-verify"] = True
-        logger.warning("TLS verification disabled - detected development/testing environment")
-
-    return config
-
-
-def _is_development_cluster() -> bool:
-    """Determine if we're connecting to a development cluster based on current KUBECONFIG."""
-    try:
-        # Get current cluster configuration
-        result = oc("config", "view", "--minify", "-o", "json", log_stdout=False)
-        if result.returncode != 0:
-            return False
-
-        current_config = json.loads(result.stdout)
-        clusters = current_config.get("clusters", [])
-
-        if not clusters:
-            return False
-
-        cluster_config = clusters[0].get("cluster", {})
-
-        if cluster_config.get("insecure-skip-tls-verify"):
-            logger.debug(
-                "Development context detected: current cluster uses insecure-skip-tls-verify"
-            )
-            return True
-
-        return False
-
-    except Exception as e:
-        logger.debug(f"Could not determine cluster context: {e}")
-        return False
+    return {
+        "server": ctx.api_server,
+        "insecure-skip-tls-verify": True,
+    }
 
 
 @task

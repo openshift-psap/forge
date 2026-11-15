@@ -33,12 +33,16 @@ class VaultContent:
     filename: str | None = None
     sensible: bool = True
     censor_text: str | None = None
+    deprecated_filenames: list[str] = None
     _vault: Optional["VaultDefinition"] = None
 
     def __post_init__(self):
         # Default filename to the content name if not specified
         if self.filename is None:
             self.filename = self.name
+
+        if not self.deprecated_filenames:
+            self.deprecated_filenames = []
 
     @property
     def is_sensible(self) -> bool:
@@ -47,7 +51,12 @@ class VaultContent:
 
     @property
     def file_path(self) -> Path | None:
-        """Get the full absolute path to this content file"""
+        """Get the full absolute path to this content file.
+
+        If the canonical file does not exist but a deprecated filename does,
+        log an error and resolve to the deprecated file (see
+        ``deprecated_filenames`` in the vault definition).
+        """
         if self._vault is None:
             return None
 
@@ -55,7 +64,24 @@ class VaultContent:
         if secret_dir is None:
             return None
 
-        return secret_dir / self.filename
+        canonical_path = secret_dir / self.filename
+        if canonical_path.exists() or not self.deprecated_filenames:
+            return canonical_path
+
+        for deprecated_filename in self.deprecated_filenames:
+            deprecated_path = secret_dir / deprecated_filename
+            if not deprecated_path.exists():
+                continue
+
+            logger.error(
+                f"Vault '{self._vault.name}' content '{self.name}': "
+                f"canonical file '{self.filename}' not found, resolving to "
+                f"deprecated filename '{deprecated_filename}'. "
+                f"Rename the file to '{self.filename}' in the vault directory."
+            )
+            return deprecated_path
+
+        return canonical_path
 
 
 @dataclass
@@ -119,12 +145,17 @@ class VaultManager:
             sensible = content_def.get("sensible", True)
             censor_text = content_def.get("censor_text")
 
+            deprecated_filenames = content_def.get("deprecated_filenames") or []
+            if isinstance(deprecated_filenames, str):
+                deprecated_filenames = [deprecated_filenames]
+
             content[content_name] = VaultContent(
                 name=content_name,
                 description=description,
                 filename=filename,
                 sensible=sensible,
                 censor_text=censor_text,
+                deprecated_filenames=deprecated_filenames,
             )
 
         vault_def = VaultDefinition(
@@ -211,7 +242,7 @@ class VaultManager:
                 else:
                     logger.warning(msg)
 
-            # Validate content file exists
+            # Validate content file exists (file_path falls back to deprecated filenames)
             content_path = content_def.file_path
             if content_path is None or not content_path.exists():
                 msg = f"Vault '{vault_name}' missing content '{content_name}' at: {content_path}"
@@ -220,9 +251,26 @@ class VaultManager:
                     all_valid = False
                 else:
                     logger.warning(msg)
+            elif content_path.name != content_def.filename:
+                # Content resolved through a deprecated filename: log an error
+                # (done in file_path) and surface a CI notification so the vault
+                # gets fixed, but do not fail the validation.
+                from projects.core.library import ci as ci_lib
+
+                notification_msg = (
+                    f"Deprecated vault filename in use: {vault_name}/{content_path.name}\n\n"
+                    f"This file should be renamed to '{content_def.filename}' in the vault. "
+                    "It is still resolved correctly, but the deprecated name must be cleaned up."
+                )
+                ci_lib.add_notification_file(
+                    name=f"vault_deprecated_filename_{vault_name}_{content_path.name}",
+                    message=notification_msg,
+                )
 
         # Check for extra files in vault directory that aren't defined
         defined_files = {content_def.filename for content_def in vault.content.values()}
+        for content_def in vault.content.values():
+            defined_files.update(content_def.deprecated_filenames)
 
         for file_path in secret_dir.iterdir():
             if file_path.is_file():

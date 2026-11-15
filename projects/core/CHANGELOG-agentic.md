@@ -13,7 +13,7 @@
 ```yaml
 agentic:
   enabled: true                    # Enable agent review system
-  model_key: qwen-3-6-35b         # AI model for analysis
+  model_key: default         # AI model for analysis
   on_failure:
     enabled: true                  # Auto-analyze test failures
   config_review:
