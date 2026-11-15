@@ -812,6 +812,7 @@ def _run_burnin_if_enabled(*, endpoint_url: str) -> None:
     # Set burn-in profile: high concurrency, short duration
     burnin_args.append(f"--profile=kind=concurrent,streams={burnin_rate}")
     burnin_args.append(f"--constraint=kind=max_duration,seconds={burnin_duration}")
+    burnin_args.append(f"--seed=kind=static,value={burnin_cfg['seed']}")
 
     # Add tokenizer for the model
     burnin_args.append(f"--tokenizer=kind=huggingface_auto,model={runtime_config.get_model_name()}")

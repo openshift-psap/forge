@@ -5,4 +5,5 @@
 enabled: false
 rate: 200           # Concurrent streams during burn-in (high load)
 max_seconds: 60     # Duration of burn-in phase in seconds
+seed: 12345         # Keep burn-in prompts distinct from benchmark prompts (GuideLLM default: 42)
 job_name_prefix: guidellm-burnin
