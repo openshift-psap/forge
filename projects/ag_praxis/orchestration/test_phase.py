@@ -93,7 +93,7 @@ def _execute_benchmark(
         config_path=config_path,
         fs_group=benchmark.get("fs_group"),
         use_pvc=benchmark.get("use_pvc"),
-        replica_count=benchmark.get("replica_count") or 1,
+        replica_count=_validated_replica_count(benchmark) or 1,
         artifact_dirname_suffix=artifact_suffix,
         api_key_file_path=api_key_file_path,
         validate_backend=config.project.get_config("workloads.validate_backend"),
@@ -217,6 +217,25 @@ def _write_benchmark_dry_run(endpoint_url):
     logger.info("Benchmark dry-run config written to %s", dest)
 
 
+def _validated_replica_count(benchmark):
+    """Return the explicit replica count, or None to derive it per rate.
+
+    A replica count below 1 (or not an integer) is a configuration error:
+    it must fail the phase with a clear message, not crash with a
+    ZeroDivisionError or be silently coerced.
+    """
+    replica_count = benchmark.get("replica_count")
+    if replica_count is None:
+        return None
+
+    if not isinstance(replica_count, int) or replica_count < 1:
+        raise ValueError(
+            f"Invalid workloads.replica_count {replica_count!r}: must be an integer >= 1"
+        )
+
+    return replica_count
+
+
 def _resolve_replica_scaling(rate, benchmark):
     """Resolve (replica_count, per_replica_rate) for a sweep rate level.
 
@@ -227,7 +246,7 @@ def _resolve_replica_scaling(rate, benchmark):
     streams per replica = ceil(rate / replicas), so the total stream count
     always reaches (and may slightly exceed) the requested rate.
     """
-    replica_count = benchmark.get("replica_count")
+    replica_count = _validated_replica_count(benchmark)
     if replica_count is not None:
         return replica_count, round(rate / replica_count)
 

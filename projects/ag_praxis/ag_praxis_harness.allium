@@ -261,6 +261,10 @@ entity EndpointTest {
     run: HarnessRun
     kind: EndpointKind
     url: String
+    -- test.matrices.guidellm dimension values in effect for this test;
+    -- null when the matrix is disabled (single no-op combination)
+    matrix_payload: String?
+    matrix_sweep: String?
     status: pending | running | passed | failed | unrecorded
 
     smoke: SmokeRequest with endpoint_test = this
@@ -389,6 +393,10 @@ config {
     skip_cleanup: Boolean = false            -- HEAD; working tree sets true
     endpoints: List<EndpointKind> = [svc, maas_ipp, maas_praxis]
     guidellm_matrix_enabled: Boolean = false
+    -- test.matrices.guidellm dimensions (cross product): each combination
+    -- overrides test.payload / test.sweep and re-runs every endpoint
+    guidellm_matrix_payloads: List<String> = [XS, default, L, XL]
+    guidellm_matrix_sweeps: List<String> = [small]
 
     -- platform.yaml (maas / sim / praxis)
     maas_repo_url: String = "https://github.com/opendatahub-io/models-as-a-service"
@@ -417,7 +425,14 @@ config {
     extproc_max_requests_ceiling: Integer = 1024   -- controller MaxExtProcMaxRequests
 
     -- workloads.yaml
-    benchmark_replica_count: Integer = 2
+    -- Explicit guidellm replica count; null derives the count per sweep
+    -- rate from users_per_replica (see the BenchmarkSweep guidance)
+    benchmark_replica_count: Integer? = null
+    -- Max concurrent streams per guidellm replica, used to derive the
+    -- replica count when benchmark_replica_count is null
+    users_per_replica: Integer = 64
+    -- benchmarks.warmup.replica_count: pinned, no rate to derive it from
+    warmup_replica_count: Integer = 2
     benchmark_timeout: Duration = 3600.seconds
     validate_backend: Boolean = false
     request_format: String = "/v1/responses"
@@ -656,23 +671,38 @@ rule TestPhaseStarts {
         model_name: config.sim_model_name
     )
     ensures:
-        for kind in run.selected_endpoints:
-            EndpointTest.created(
-                run: run,
-                kind: kind,
-                url: endpoint_url(kind, run.test_namespace),
-                status: pending
-            )
+        for combo in matrix_combinations():
+            for kind in run.selected_endpoints:
+                EndpointTest.created(
+                    run: run,
+                    kind: kind,
+                    url: endpoint_url(kind, run.test_namespace),
+                    matrix_payload: combo.payload,
+                    matrix_sweep: combo.sweep,
+                    status: pending
+                )
 
     @guidance
-        -- test_phase.py:607-664. Endpoint URLs (test_phase.py:556-576):
+        -- test_phase.py do_test_praxis. Endpoint URLs (_prepare_test_endpoints):
         --   svc         -> https://<llmisvc>-kserve-workload-svc.<ns>.svc:8000
         --                  (bypasses the MaaS gateway and the ExtProcs)
         --   maas_ipp    -> https://<gateway hostname>/<ns>/<llmisvc>
         --   maas_praxis -> same URL as maas_ipp; only the tenant annotation differs
-        -- Each matrix combination (test.matrices.guidellm, off by default)
-        -- re-runs all endpoints; with benchmark on, every sweep rate must
-        -- divide evenly by benchmark_replica_count or the phase fails.
+        -- matrix_combinations() (core/library/matrix.py) is the cross
+        -- product of the test.matrices.guidellm dimensions; disabled (the
+        -- default) or empty dimensions give a single no-op combination, so
+        -- the test labels are exactly {endpoint} and the artifact dir is
+        -- "benchmarking". With the matrix on, each combination re-runs all
+        -- endpoints under its config overrides (test.payload / test.sweep
+        -- here), each in its own artifact dir (sanitized values joined by
+        -- "_"), with the combination values merged into the test labels
+        -- AFTER the endpoint label (a matrix label named "endpoint" would
+        -- overwrite it). Replica-scaling validation runs per combination,
+        -- inside the matrix loop: an explicit replica_count must be an
+        -- integer >= 1 and divide every sweep rate evenly, and a null
+        -- replica_count requires users_per_replica >= 1 — otherwise the
+        -- phase fails. Validation runs after the trace collector has
+        -- started and the sim is deployed.
 }
 
 rule EndpointTestStarts {
@@ -909,13 +939,16 @@ rule SmokeRequestFails {
 
 rule BenchmarkSweep {
     when: BenchmarkSweepRequested(endpoint_test)
+    requires: config.users_per_replica >= 1
+    requires: config.warmup_replica_count >= 1
+    requires: config.benchmark_replica_count = null or config.benchmark_replica_count >= 1
     ensures:
         if endpoint_test.run.run_warmup:
             BenchmarkRun.created(
                 endpoint_test: endpoint_test,
                 is_warmup: true,
-                total_concurrency: 4,
-                replica_count: config.benchmark_replica_count,
+                total_concurrency: 8,
+                replica_count: config.warmup_replica_count,
                 per_replica_streams: 4,
                 prompt_tokens: 256,
                 output_tokens: 128,
@@ -930,9 +963,9 @@ rule BenchmarkSweep {
             BenchmarkRun.created(
                 endpoint_test: endpoint_test,
                 is_warmup: false,
-                total_concurrency: rate,
-                replica_count: config.benchmark_replica_count,
-                per_replica_streams: rate / config.benchmark_replica_count,
+                total_concurrency: total_streams(rate),
+                replica_count: replicas_for(rate),
+                per_replica_streams: streams_per_replica(rate),
                 prompt_tokens: payload_prompt_tokens(config.default_payload),
                 output_tokens: payload_output_tokens(config.default_payload),
                 request_format: config.request_format,
@@ -943,12 +976,28 @@ rule BenchmarkSweep {
             )
 
     @guidance
-        -- test_phase.py:121-248. Warmup runs only when
+        -- test_phase.py _build_benchmark_config, _resolve_replica_scaling,
+        -- _run_guidellm, _validate_benchmark_rates. Replica scaling per
+        -- rate: an explicit workloads.replica_count — validated to be an
+        -- integer >= 1, and to divide every sweep rate evenly (else the
+        -- phase fails) — wins with
+        --   replicas_for(rate) = replica_count
+        --   streams_per_replica(rate) = round(rate / replica_count)
+        -- otherwise the count is derived:
+        --   replicas_for(rate) = max(1, ceil(rate / users_per_replica))
+        --   streams_per_replica(rate) = ceil(rate / replicas_for(rate))
+        -- so total_streams(rate) = replicas x streams reaches and may
+        -- slightly exceed the requested rate (no configured sweep
+        -- overshoots today). users_per_replica missing or < 1 with a null
+        -- replica_count fails the phase. Warmup runs only when
         -- workloads.warmup_benchmark_key is set (null by default, so in
-        -- practice no warmup runs). Each rate is a concurrent profile with
-        -- streams = rate / replica_count per GuideLLM replica and a
-        -- request-count constraint (requests_per_stream x streams). Rates run
-        -- sequentially; a failing rate aborts the remaining ones.
+        -- practice no warmup runs); its replica count is pinned
+        -- (benchmarks.warmup.replica_count) because there is no rate to
+        -- derive it from, and its 4 streams are per replica (2 replicas =
+        -- 8 total streams). Each rate is a concurrent profile with
+        -- streams_per_replica(rate) streams per GuideLLM replica and a
+        -- request-count constraint (requests_per_stream x streams). Rates
+        -- run sequentially; a failing rate aborts the remaining ones.
 }
 
 rule BenchmarkRunCompletes {
@@ -1060,7 +1109,8 @@ rule TestPhaseFinishes {
 rule TestCleanup {
     when: TestCleanupRequested(run)
     ensures: LlmisvcStateCaptured()
-    ensures: TraceCapture.collect()
+    ensures:
+        TraceCapture.collect(run: run)
     ensures:
         if not run.skip_cleanup:
             for r in ModelRegistrations:

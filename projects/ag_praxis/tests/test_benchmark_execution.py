@@ -46,6 +46,30 @@ def test_resolve_replica_scaling_missing_users_per_replica_raises() -> None:
         test_phase._resolve_replica_scaling(64, benchmark)
 
 
+def test_resolve_replica_scaling_explicit_zero_raises() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"replica_count": 0, "users_per_replica": 64}
+    with pytest.raises(ValueError, match="replica_count"):
+        test_phase._resolve_replica_scaling(64, benchmark)
+
+
+def test_resolve_replica_scaling_explicit_negative_raises() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"replica_count": -2, "users_per_replica": 64}
+    with pytest.raises(ValueError, match="replica_count"):
+        test_phase._resolve_replica_scaling(64, benchmark)
+
+
+def test_execute_benchmark_rejects_invalid_replica_count() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    benchmark = {"job_name": "guidellm", "rate": "4", "replica_count": 0}
+    with pytest.raises(ValueError, match="replica_count"):
+        test_phase._execute_benchmark("test-namespace", "http://endpoint", benchmark, "smoke")
+
+
 def test_execute_benchmark_passes_retention_flags(monkeypatch) -> None:
     from projects.ag_praxis.orchestration import test_phase
     from projects.core.library import config
