@@ -104,7 +104,7 @@ def main(ctx, preset):
     init_vaults_for_phase(ctx.invoked_subcommand)
     ensure_mlflow_destination_marker()
 
-    if ctx.invoked_subcommand != "export-artifacts":
+    if ctx.invoked_subcommand not in ("export-artifacts", "replot"):
         ensure_kubeconfig_works()
 
 

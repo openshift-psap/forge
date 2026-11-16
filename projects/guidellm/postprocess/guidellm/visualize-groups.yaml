@@ -5,10 +5,13 @@
 # Report system:
 #   Report 00: GuideLLM Performance Analysis (comprehensive embedded report with all charts)
 #   Report 01: GuideLLM Deployment Profile Analysis (dedicated plots for each deployment profile)
+#   Request Status / Request Scatter: per-request status breakdown and latency/output scatter
 
 groups:
   comprehensive:
     - report_performance_analysis
+    - report_request_status
+    - report_request_scatter
 
   release_regression:
     - report_deployment_profile
