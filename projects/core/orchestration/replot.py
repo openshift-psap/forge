@@ -220,11 +220,11 @@ def _run_replay_step(artifact_directory: Path, status: dict) -> None:
             status["replot"]["replay_status"] = "skipped"
             return
 
-        force_refresh = config.project.get_config(
-            "prom.capture.metrics.force_refresh", False, print=False, warn=False
+        allow_refresh = config.project.get_config(
+            "caliper.replot.prom.metrics.allow_refresh", False, print=False, warn=False
         )
         logger.info("Checking for Prometheus metrics to replay...")
-        replay_errors = replay_metrics_from_config(artifact_directory, force_refresh=force_refresh)
+        replay_errors = replay_metrics_from_config(artifact_directory, force_refresh=allow_refresh)
 
         if replay_errors:
             logger.warning("Prometheus replay had errors for groups: %s", ", ".join(replay_errors))
