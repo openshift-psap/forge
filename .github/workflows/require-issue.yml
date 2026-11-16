@@ -1,0 +1,34 @@
+name: Require tracking issue
+
+# pull_request_target: the check definition comes from the base branch, so a PR
+# cannot bypass it by editing this workflow. No PR code is checked out here.
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  require-issue:
+    name: PR references a tracking issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the PR body links an issue
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          if printf '%s' "$PR_BODY" | grep -qiE '(fixes|closes|resolves|refs|part of)[[:space:]]+#[0-9]+'; then
+            echo "PR body references a tracking issue."
+            exit 0
+          fi
+
+          if printf '%s' "$PR_BODY" | grep -qiE 'github\.com/[^/[:space:]]+/[^/[:space:]]+/issues/[0-9]+'; then
+            echo "PR body links a tracking issue."
+            exit 0
+          fi
+
+          echo "::error::This PR must reference a tracking GitHub issue. Add 'Fixes #NNN' (closes the issue) or 'Refs #NNN' (partial work), or a full issue URL, to the PR description. See AGENTS.md, 'Pull Requests: A Tracking Issue Is Required'."
+          exit 1
