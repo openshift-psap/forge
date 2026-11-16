@@ -32,10 +32,10 @@ jobs:
 
           # Jira keys are a string match only: the issues are usually private,
           # so this workflow neither resolves nor verifies them.
-          if printf '%s' "$PR_BODY" | grep -qiE '\bPSAP-[0-9]+\b'; then
+          if printf '%s' "$PR_BODY" | grep -qiE '\b(PSAP|RHAIRFE|INFERENG)-[0-9]+\b'; then
             echo "PR body references a Jira issue."
             exit 0
           fi
 
-          echo "::error::This PR must reference a tracking issue. Add 'Fixes #NNN' (closes the issue) or 'Refs #NNN' (partial work), a full GitHub issue URL, or a Jira key such as PSAP-123, to the PR description. See AGENTS.md, 'Pull Requests: A Tracking Issue Is Required'."
+          echo "::error::This PR must reference a tracking issue. Add 'Fixes #NNN' (closes the issue) or 'Refs #NNN' (partial work), a full GitHub issue URL, or a Jira key (PSAP-123, RHAIRFE-45, INFERENG-67), to the PR description. See AGENTS.md, 'Pull Requests: A Tracking Issue Is Required'."
           exit 1
