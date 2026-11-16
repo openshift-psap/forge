@@ -68,6 +68,15 @@ caliper:
         enabled: false
         output_dir: ai_data
 
+    # Append the dashboard CSV rows to the consolidated staging dashboard CSV
+    csv_dashboard:
+      enabled: false
+      bucket: psap-dashboard-data
+      s3_key: staging/llmd-dashboard/llmd-dashboard.csv
+      vault:
+        name: psap-forge-aws-s3-export
+        credentials_file: aws.credentials
+
     s3:
       bucket: psap-dashboard-data
       instance: smoke
