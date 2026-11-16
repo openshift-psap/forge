@@ -300,6 +300,7 @@ def run_finalizers(
     primary_exc: tuple[type[BaseException], BaseException, Any] | None,
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None,
     benchmark_times: tuple[datetime, datetime] | None = None,
+    test_start_time: datetime | None = None,
 ) -> tuple[type[BaseException], BaseException, Any] | None:
     def _run_finalizer(
         description: str,
@@ -326,6 +327,7 @@ def run_finalizers(
             "capturing inference-service state",
             capture_inference_service_state,
             llmisvc_name=llmisvc_name,
+            since_time=test_start_time.isoformat() if test_start_time else "",
         )
     else:
         logging.warning("No llmisvc name received, cannot capture the llmisvc state")
@@ -395,13 +397,14 @@ def do_test() -> int:
     benchmark_times: tuple[datetime, datetime] | None = None
     primary_exc: tuple[type[BaseException], BaseException, Any] | None = None
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None = None
+    test_start_time: datetime | None = None
 
     actual_llmisvc_name = "llmisvc-na-not-computed"
     test_dir = env.ARTIFACT_DIR
     try:
         # Create test labels with actual model and profile information
         create_test_labels()
-        update_test_labels_with_timing(test_dir, "test", "start")
+        test_start_time = update_test_labels_with_timing(test_dir, "test", "start")
 
         # Generate the LLMInferenceService name before deployment
         # so we have it available even if deployment fails
@@ -470,6 +473,7 @@ def do_test() -> int:
                 primary_exc,
                 finalizer_exc,
                 benchmark_times=benchmark_times,
+                test_start_time=test_start_time,
             )
 
     if primary_exc is not None:
@@ -895,13 +899,17 @@ def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, da
     return start_time, end_time
 
 
-def capture_inference_service_state(llmisvc_name: str) -> None:
+def capture_inference_service_state(llmisvc_name: str, since_time: str = "") -> None:
     """Capture inference service state for the given llmisvc name."""
     namespace = runtime_config.get_namespace()
+    gateway = runtime_config.get_platform_config()["gateway"]
 
     capture_llmisvc_state.run(
         llmisvc_name=llmisvc_name,
         namespace=namespace,
+        gateway_name=gateway["name"],
+        gateway_namespace=gateway["namespace"],
+        since_time=since_time,
     )
 
 
