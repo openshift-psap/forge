@@ -57,6 +57,7 @@ cpt-sglang-competitive:
     qwen25-7b/tp1:
     qwen25-7b-bf16/tp1:
   __workloads:
+    - ci-quick
     - profile1
     - profile2
     - profile3
@@ -81,6 +82,7 @@ cpt-trtllm-competitive:
     mistral-24b/tp1:
     qwen25-7b/tp1:
   __workloads:
+    - ci-quick
     - profile1
     - profile2
     - profile3
@@ -113,6 +115,7 @@ cpt-vllm-competitive:
     qwen3-235b/tp4:
     deepseek-r1/tp8:
   __workloads:
+    - ci-quick
     - profile1
     - profile2
     - profile3
@@ -228,7 +231,7 @@ cpt-rhaiis-3.6-h200:
       __workloads: [profile1, profile4, profile5, profile7, profile6]
       rhaiis.engines.vllm.args.tensor-parallel-size: 8
       rhaiis.engines.vllm.args.kv-cache-dtype: bfloat16
-  __workloads: [profile1, profile4, profile7, profile6]
+  __workloads: [ci-quick, profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
   workloads.profile1.warmup: 0
@@ -402,7 +405,7 @@ cpt-rhaiis-3.6-mi355x:
       __workloads: [profile1, profile4, profile5, profile7, profile6]
       rhaiis.engines.vllm.args.tensor-parallel-size: 8
       benchmarks.guidellm.args.tokenizer: '{"kind":"huggingface_auto","model":"moonshotai/Kimi-K3","load_kwargs":{"trust_remote_code":true}}'
-  __workloads: [profile1, profile4, profile7, profile6]
+  __workloads: [ci-quick, profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
   workloads.profile1.warmup: 0
