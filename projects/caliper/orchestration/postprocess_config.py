@@ -120,6 +120,13 @@ class CaliperOrchestrationAnalyzeSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    skip_kpi_analysis: bool = Field(
+        default=False,
+        description=(
+            "Skip the KPI analysis (analyse_kpis) step, recorded as 'skipped'. "
+            "The step is also skipped automatically when artifacts_to_kpis failed."
+        ),
+    )
     current_kpis: str | None = Field(
         default="kpis.json",
         description="Current KPI file path (relative to postprocess output dir unless absolute).",

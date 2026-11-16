@@ -1,5 +1,5 @@
 vaults:
-- psap-forge-ci
+- psap-forge-fournos-deploy
 - psap-forge-notifications
 - psap-fournos-intlab-ci
 
@@ -22,7 +22,7 @@ fournos:
   namespace: psap-automation
   psap_mgmt:
     vault:
-      name: psap-forge-ci
+      name: psap-forge-fournos-deploy
       key: kubeconfig
   intlab:
     vault:

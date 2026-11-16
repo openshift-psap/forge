@@ -121,23 +121,6 @@ class GuideLLMKpiHandler:
             status = KpiComputationStatus.success_status(0, len(model.unified_result_records))
             return out, status
 
-        unknown_gpu_records = []
-        for r in valid_records:
-            test_condition_labels = GuideLLMKpiHandler.LABEL_EXTRACTOR.extract(r)
-            gpu_type = test_condition_labels.get("gpu_type")
-            if gpu_type and gpu_type.lower() == "unknown":
-                unknown_gpu_records.append(r.test_base_path)
-
-        if unknown_gpu_records:
-            error_msg = (
-                f"Found gpu_type='unknown' in {len(unknown_gpu_records)} test paths: "
-                f"{', '.join(unknown_gpu_records[:3])}{'...' if len(unknown_gpu_records) > 3 else ''}. "
-                "Unknown GPU types prevent reliable KPI analysis. "
-                "Please ensure GPU detection is working correctly or set gpu_type manually in test labels."
-            )
-            status = KpiComputationStatus.failure_status(error_msg)
-            return [], status
-
         invalid_label_records = []
         logger.info(f"🔍 Validating required labels for {len(valid_records)} records...")
         logger.info(f"   Required labels: {sorted(self._required_labels)}")
