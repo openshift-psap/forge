@@ -54,7 +54,7 @@ caliper:
       output_dir: reports
       reports: []
       report_group: comprehensive
-      visualize_config: projects/guidellm/postprocess/guidellm/visualize-groups.yaml
+      visualize_config: projects/llm_d/postprocess/llm_d/visualize-groups.yaml
 
     kpi:
       enabled: true
