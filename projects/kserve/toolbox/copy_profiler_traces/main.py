@@ -31,7 +31,13 @@ _READ_CHUNK_SCRIPT = (
 
 
 @entrypoint
-def run(*, name: str, namespace: str, transfer_timeout_seconds: int = 300):
+def run(
+    *,
+    pod_selector: str,
+    namespace: str,
+    container: str = "kserve-container",
+    transfer_timeout_seconds: int = 300,
+):
     return execute_tasks(locals())
 
 
@@ -44,15 +50,14 @@ def setup_directories(args, context):
 @task
 def find_predictor_pod(args, context):
     result = shell.run(
-        f"oc get pod -oname "
-        f"-lserving.kserve.io/inferenceservice={args.name} "
-        f"-n {args.namespace} "
-        "| head -1",
+        f"oc get pod -oname -l{args.pod_selector} -n {args.namespace} | head -1",
         check=False,
     )
     pod_name = result.stdout.strip()
     if not pod_name:
-        raise RuntimeError(f"No predictor pod found for {args.name} in {args.namespace}")
+        raise RuntimeError(
+            f"No predictor pod found for selector '{args.pod_selector}' in {args.namespace}"
+        )
     context.pod_name = pod_name
     return f"Found pod: {pod_name}"
 
@@ -67,7 +72,7 @@ def list_trace_files(args, context):
             "-n",
             args.namespace,
             "-c",
-            "kserve-container",
+            args.container,
             "--",
             "find",
             "/tmp",
@@ -103,7 +108,7 @@ def list_trace_files(args, context):
     return f"Found {context.trace_count} rank-0 trace files"
 
 
-def _oc_exec(pod_name: str, namespace: str, *command: str) -> list[str]:
+def _oc_exec(pod_name: str, namespace: str, container: str, *command: str) -> list[str]:
     return [
         "oc",
         "exec",
@@ -111,15 +116,17 @@ def _oc_exec(pod_name: str, namespace: str, *command: str) -> list[str]:
         "-n",
         namespace,
         "-c",
-        "kserve-container",
+        container,
         "--",
         *command,
     ]
 
 
-def _remote_text(pod_name: str, namespace: str, *command: str, timeout_seconds: int = 60) -> str:
+def _remote_text(
+    pod_name: str, namespace: str, container: str, *command: str, timeout_seconds: int = 60
+) -> str:
     result = subprocess.run(
-        _oc_exec(pod_name, namespace, *command),
+        _oc_exec(pod_name, namespace, container, *command),
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
@@ -144,6 +151,7 @@ def _file_digest(path: Path) -> str:
 def _read_remote_chunk(
     pod_name: str,
     namespace: str,
+    container: str,
     source: str,
     offset: int,
     length: int,
@@ -153,6 +161,7 @@ def _read_remote_chunk(
     command = _oc_exec(
         pod_name,
         namespace,
+        container,
         "python3",
         "-c",
         _READ_CHUNK_SCRIPT,
@@ -200,7 +209,12 @@ def _read_remote_chunk(
 
 
 def _copy_one_trace(
-    pod_name: str, namespace: str, filename: str, traces_dir: Path, timeout_seconds: int
+    pod_name: str,
+    namespace: str,
+    container: str,
+    filename: str,
+    traces_dir: Path,
+    timeout_seconds: int,
 ) -> Path:
     source = f"/tmp/{filename}"
     source_is_gzip = filename.endswith(".gz")
@@ -208,7 +222,7 @@ def _copy_one_trace(
     partial = destination.with_name(f"{destination.name}.partial")
     compressed_partial = traces_dir / f"{filename}.partial" if source_is_gzip else None
     transfer_target = compressed_partial or partial
-    source_size = int(_remote_text(pod_name, namespace, "stat", "-c", "%s", source))
+    source_size = int(_remote_text(pod_name, namespace, container, "stat", "-c", "%s", source))
     if source_size <= 0:
         raise RuntimeError(f"Profiler trace {filename} is empty")
 
@@ -231,7 +245,9 @@ def _copy_one_trace(
             for offset in range(0, source_size, _TRANSFER_CHUNK_BYTES):
                 length = min(_TRANSFER_CHUNK_BYTES, source_size - offset)
                 output.write(
-                    _read_remote_chunk(pod_name, namespace, source, offset, length, deadline)
+                    _read_remote_chunk(
+                        pod_name, namespace, container, source, offset, length, deadline
+                    )
                 )
         if transfer_target.stat().st_size != source_size:
             raise RuntimeError(
@@ -239,12 +255,14 @@ def _copy_one_trace(
                 f"{transfer_target.stat().st_size} of {source_size} bytes"
             )
 
-        final_source_size = int(_remote_text(pod_name, namespace, "stat", "-c", "%s", source))
+        final_source_size = int(
+            _remote_text(pod_name, namespace, container, "stat", "-c", "%s", source)
+        )
         if source_size != final_source_size:
             raise RuntimeError(f"Profiler trace {filename} changed size during transfer")
 
         expected_digest = _remote_text(
-            pod_name, namespace, "sha256sum", source, timeout_seconds=timeout_seconds
+            pod_name, namespace, container, "sha256sum", source, timeout_seconds=timeout_seconds
         ).split()[0]
         actual_digest = _file_digest(transfer_target)
         if actual_digest != expected_digest:
@@ -277,6 +295,7 @@ def copy_traces(args, context):
         _copy_one_trace(
             context.pod_name,
             args.namespace,
+            args.container,
             filename,
             traces_dir,
             args.transfer_timeout_seconds,
