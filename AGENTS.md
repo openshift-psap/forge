@@ -310,9 +310,10 @@ nowhere to record follow-ups.
 
 3. **Link the issue in the PR body.**
    Use `Fixes #NNN` when the PR closes a GitHub issue, or `Refs #NNN` for partial work.
-   For Jira, include the issue key (e.g. `PSAP-123`, `RHAIRFE-45`, `INFERENG-67`).
-   Jira issues are usually private, so the key is matched as text and is not resolved or
-   verified by CI.
+   For Jira, include the issue key (e.g. `PSAP-123`, `RHAIRFE-45`, `INFERENG-67`), or a full
+   browse URL such as `https://issues.redhat.com/browse/RHEL-123` for any project.
+   Jira issues are usually private, so the reference is matched as text and is not resolved
+   or verified by CI.
    Never leave placeholders such as `Fixes #TBD` or "no issue" in a PR that is ready for review.
 
 4. **One issue per PR.** If a change spans multiple issues, link each one with `Refs`,
@@ -322,10 +323,10 @@ nowhere to record follow-ups.
 
 The `Require tracking issue` GitHub Actions workflow checks the PR body on open, edit, and
 synchronize, and fails the PR when no issue is referenced. It accepts GitHub issue references
-(`Fixes #NNN`, `Refs #NNN`, issue URLs) and Jira keys for the PSAP, RHAIRFE, and INFERENG
-projects (string match only; Jira issues are private and are not resolved). It applies to
-every PR regardless of the tool or agent used. Once the check is required by branch
-protection, a PR without an issue reference cannot merge.
+(`Fixes #NNN`, `Refs #NNN`, issue URLs), Jira keys for the PSAP, RHAIRFE, and INFERENG
+projects, and Jira browse URLs for any project (string match only; Jira issues are private
+and are not resolved). It applies to every PR regardless of the tool or agent used. Once the
+check is required by branch protection, a PR without an issue reference cannot merge.
 
 ### Forbidden
 
