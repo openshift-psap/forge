@@ -307,7 +307,7 @@ cpt-rhaiis-3.6-h200-no-reasoning-parser:
       rhaiis.engines.vllm.args.mm-encoder-tp-mode: data
     qwen3-8-27b-bf16/tp1:
       rhaiis.engines.vllm.args.tensor-parallel-size: 1
-  __workloads: [profile1, profile4, profile7, profile6]
+  __workloads: [ci-quick, profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
   workloads.profile1.warmup: 0
