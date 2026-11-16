@@ -92,8 +92,19 @@ def _render_metric_section(
 
     query_html = ""
     if metric.query:
-        escaped_query = html_module.escape(str(metric.query).strip())
-        query_html = f'<p class="query">Query: <code>{escaped_query}</code></p>'
+        escaped_template = html_module.escape(str(metric.query).strip())
+        resolved = metric.resolved_query.strip() if metric.resolved_query else ""
+        escaped_resolved = html_module.escape(resolved) if resolved else ""
+
+        if escaped_resolved and escaped_resolved != escaped_template:
+            query_html = (
+                f'<p class="query">Query: <code>{escaped_resolved}</code></p>'
+                f"<details><summary>Template query</summary>"
+                f'<p class="query"><code>{escaped_template}</code></p>'
+                f"</details>"
+            )
+        else:
+            query_html = f'<p class="query">Query: <code>{escaped_template}</code></p>'
 
     if not metric.series:
         return (
