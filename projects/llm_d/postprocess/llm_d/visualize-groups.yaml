@@ -1,0 +1,21 @@
+# llm-d visualize groups: the shared GuideLLM reports plus the Prometheus
+# time-series reports from the capture artifacts (LlmDGuideLLMPlugin).
+groups:
+  comprehensive:
+    - report_performance_analysis
+    - report_request_status
+    - report_request_scatter
+    - report_prometheus_metrics
+
+  overview:
+    - report_performance_analysis
+
+  prometheus_only:
+    - report_prometheus_metrics
+
+  all:
+    - report_performance_analysis
+    - report_request_status
+    - report_request_scatter
+    - report_deployment_profile
+    - report_prometheus_metrics

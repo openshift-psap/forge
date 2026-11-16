@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -14,16 +15,21 @@ from projects.caliper.engine.model import (
     BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
+    ReportFile,
     UnifiedRunModel,
 )
+from projects.caliper.postprocess.prometheus.parser import parse_capture_group
+from projects.caliper.postprocess.prometheus.report import generate_group_report
 from projects.guidellm.postprocess.guidellm.dashboard import (
     deployment_metadata_from_profile,
     enrich_guidellm_parse_result,
 )
 from projects.guidellm.postprocess.guidellm.kpi_handler import GuideLLMKpiHandler
-from projects.guidellm.postprocess.guidellm.plugin import GuideLLMPlugin
+from projects.guidellm.postprocess.guidellm.plugin import PLOT_REGISTRY, GuideLLMPlugin
 from projects.llm_d.orchestration.render_inference_service import _build_vllm_args
 from projects.llm_d.orchestration.runtime_config import deep_merge
+
+logger = logging.getLogger(__name__)
 
 # Analysis configuration for KPI regression testing
 analysis_config = AnalysisConfig(
@@ -52,6 +58,8 @@ LLM_D_REQUIRED_LABELS = GuideLLMKpiHandler.REQUIRED_LABELS | {
     "test_harness",
 }
 
+PROMETHEUS_REPORT_ID = "report_prometheus_metrics"
+
 
 class LlmDGuideLLMPlugin(GuideLLMPlugin):
     """Keep generic GuideLLM outputs and add the llm-d dashboard projection."""
@@ -61,6 +69,11 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
         self.kpi_handler = GuideLLMKpiHandler(
             required_labels=LLM_D_REQUIRED_LABELS,
         )
+        PLOT_REGISTRY[PROMETHEUS_REPORT_ID] = {
+            "function": None,
+            "type": "report",
+            "description": "Prometheus metrics time-series reports from capture artifacts",
+        }
 
     def parse(self, nodes: list[BaseTestNode]) -> ParseResult:
         parsed = enrich_guidellm_parse_result(super().parse(nodes), nodes)
@@ -86,6 +99,28 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
 
     def kpi_catalog(self) -> list[KpiCatalogEntry]:
         return self.kpi_handler.get_catalog()
+
+    def visualize(
+        self,
+        model: UnifiedRunModel,
+        output_dir: Path,
+        report_ids: list[str] | None,
+        group_id: str | None,
+        visualize_config: dict[str, Any] | None,
+    ) -> list[ReportFile]:
+        wanted = list(dict.fromkeys(report_ids or ()))
+        prom_requested = PROMETHEUS_REPORT_ID in wanted
+        parent_ids = [r for r in wanted if r != PROMETHEUS_REPORT_ID] or None
+
+        reports = super().visualize(model, output_dir, parent_ids, group_id, visualize_config)
+
+        if prom_requested:
+            prom_reports = _generate_prometheus_reports(model, output_dir)
+            reports.extend(prom_reports)
+            if not prom_reports:
+                logger.info("No Prometheus capture data found in test artifacts")
+
+        return reports
 
     def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
         """Compute KPI values using dataclasses with status details."""
@@ -157,6 +192,64 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
 
 def get_plugin() -> PostProcessingPlugin:
     return LlmDGuideLLMPlugin()
+
+
+def find_prometheus_capture_dirs(test_node: BaseTestNode) -> list[Path]:
+    seen = set()
+    results = []
+
+    for artifact_path in test_node.artifact_paths:
+        path = Path(artifact_path)
+        if path.name != "metrics_metadata.yaml":
+            continue
+        if path.parent.name != "prometheus_metrics":
+            continue
+
+        capture_dir = path.parent.parent
+        profiles_dir = capture_dir / "src" / "metric_profiles"
+        if not profiles_dir.is_dir():
+            continue
+
+        if capture_dir not in seen:
+            seen.add(capture_dir)
+            results.append(capture_dir)
+
+    return sorted(results)
+
+
+def _generate_prometheus_reports(model: UnifiedRunModel, output_dir: Path) -> list[ReportFile]:
+    reports: list[ReportFile] = []
+
+    for node in model.test_nodes:
+        capture_dirs = find_prometheus_capture_dirs(node)
+        if not capture_dirs:
+            continue
+
+        node_name = Path(node.directory).name
+        source_dir = output_dir / node_name / "prometheus_metrics"
+
+        for capture_dir in capture_dirs:
+            try:
+                group_result = parse_capture_group(capture_dir)
+                report_path = generate_group_report(group_result, source_dir)
+                rel_path = str(Path(report_path).relative_to(output_dir))
+                reports.append(
+                    ReportFile(
+                        source="prometheus_metrics",
+                        scope=node_name,
+                        title=group_result.group_name,
+                        path=rel_path,
+                    )
+                )
+                logger.info("Generated Prometheus report: %s", report_path)
+            except Exception:
+                logger.warning(
+                    "Failed to generate Prometheus report for %s",
+                    capture_dir,
+                    exc_info=True,
+                )
+
+    return reports
 
 
 def _extract_deployment_metadata(node: BaseTestNode) -> dict[str, Any]:
