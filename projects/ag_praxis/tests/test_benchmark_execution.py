@@ -7,59 +7,38 @@ from types import SimpleNamespace
 import pytest
 
 
-def test_resolve_replica_scaling_derived_exact() -> None:
+def test_validated_replica_count_valid() -> None:
     from projects.ag_praxis.orchestration import test_phase
 
-    benchmark = {"replica_count": None, "users_per_replica": 64}
-    assert test_phase._resolve_replica_scaling(128, benchmark) == (2, 64)
+    assert test_phase._validated_replica_count({"replica_count": 4}) == 4
 
 
-def test_resolve_replica_scaling_derived_non_even_rate() -> None:
+def test_validated_replica_count_none_raises() -> None:
     from projects.ag_praxis.orchestration import test_phase
 
-    benchmark = {"replica_count": None, "users_per_replica": 64}
-    replicas, per_replica_rate = test_phase._resolve_replica_scaling(100, benchmark)
-    assert replicas == 2
-    assert per_replica_rate == 50
-    assert replicas * per_replica_rate == 100
-
-
-def test_resolve_replica_scaling_derived_single_replica() -> None:
-    from projects.ag_praxis.orchestration import test_phase
-
-    benchmark = {"replica_count": None, "users_per_replica": 64}
-    assert test_phase._resolve_replica_scaling(8, benchmark) == (1, 8)
-
-
-def test_resolve_replica_scaling_explicit_override_wins() -> None:
-    from projects.ag_praxis.orchestration import test_phase
-
-    benchmark = {"replica_count": 4, "users_per_replica": 64}
-    assert test_phase._resolve_replica_scaling(128, benchmark) == (4, 32)
-
-
-def test_resolve_replica_scaling_missing_users_per_replica_raises() -> None:
-    from projects.ag_praxis.orchestration import test_phase
-
-    benchmark = {"replica_count": None}
-    with pytest.raises(ValueError, match="users_per_replica"):
-        test_phase._resolve_replica_scaling(64, benchmark)
-
-
-def test_resolve_replica_scaling_explicit_zero_raises() -> None:
-    from projects.ag_praxis.orchestration import test_phase
-
-    benchmark = {"replica_count": 0, "users_per_replica": 64}
     with pytest.raises(ValueError, match="replica_count"):
-        test_phase._resolve_replica_scaling(64, benchmark)
+        test_phase._validated_replica_count({"replica_count": None})
 
 
-def test_resolve_replica_scaling_explicit_negative_raises() -> None:
+def test_validated_replica_count_missing_raises() -> None:
     from projects.ag_praxis.orchestration import test_phase
 
-    benchmark = {"replica_count": -2, "users_per_replica": 64}
     with pytest.raises(ValueError, match="replica_count"):
-        test_phase._resolve_replica_scaling(64, benchmark)
+        test_phase._validated_replica_count({})
+
+
+def test_validated_replica_count_zero_raises() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    with pytest.raises(ValueError, match="replica_count"):
+        test_phase._validated_replica_count({"replica_count": 0})
+
+
+def test_validated_replica_count_negative_raises() -> None:
+    from projects.ag_praxis.orchestration import test_phase
+
+    with pytest.raises(ValueError, match="replica_count"):
+        test_phase._validated_replica_count({"replica_count": -2})
 
 
 def test_execute_benchmark_rejects_invalid_replica_count() -> None:
@@ -95,7 +74,7 @@ def test_execute_benchmark_passes_retention_flags(monkeypatch) -> None:
 
     monkeypatch.setattr(guidellm_main, "run", fake_run)
 
-    benchmark = {"job_name": "guidellm", "rate": "4"}
+    benchmark = {"job_name": "guidellm", "rate": "4", "replica_count": 1}
     test_phase._execute_benchmark("test-namespace", "http://endpoint", benchmark, "smoke")
 
     assert captured["drop_request_details"] is True

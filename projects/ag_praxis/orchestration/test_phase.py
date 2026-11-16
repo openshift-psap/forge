@@ -1,5 +1,4 @@
 import logging
-import math
 import sys
 from datetime import UTC, datetime
 
@@ -93,7 +92,7 @@ def _execute_benchmark(
         config_path=config_path,
         fs_group=benchmark.get("fs_group"),
         use_pvc=benchmark.get("use_pvc"),
-        replica_count=_validated_replica_count(benchmark) or 1,
+        replica_count=_validated_replica_count(benchmark),
         artifact_dirname_suffix=artifact_suffix,
         api_key_file_path=api_key_file_path,
         validate_backend=config.project.get_config("workloads.validate_backend"),
@@ -154,7 +153,6 @@ def _build_benchmark_config(payload_name, sweep_name):
         "fs_group",
         "use_pvc",
         "replica_count",
-        "users_per_replica",
     ):
         if key in workloads:
             benchmark[key] = workloads[key]
@@ -186,11 +184,12 @@ def _write_benchmark_dry_run(endpoint_url):
     sweep_name = config.project.get_config("test.sweep")
     benchmark = _build_benchmark_config(payload_name, sweep_name)
 
+    replica_count = _validated_replica_count(benchmark)
     replica_scaling = []
     for rate in benchmark.get("rate", []):
-        replicas, per_replica_rate = _resolve_replica_scaling(rate, benchmark)
+        per_replica_rate = round(rate / replica_count)
         replica_scaling.append(
-            {"rate": rate, "replica_count": replicas, "per_replica_rate": per_replica_rate}
+            {"rate": rate, "replica_count": replica_count, "per_replica_rate": per_replica_rate}
         )
 
     dry_run = {
@@ -218,15 +217,13 @@ def _write_benchmark_dry_run(endpoint_url):
 
 
 def _validated_replica_count(benchmark):
-    """Return the explicit replica count, or None to derive it per rate.
+    """Return the replica count from the benchmark config.
 
-    A replica count below 1 (or not an integer) is a configuration error:
-    it must fail the phase with a clear message, not crash with a
-    ZeroDivisionError or be silently coerced.
+    A missing, below-1, or non-integer value is a configuration error.
     """
     replica_count = benchmark.get("replica_count")
     if replica_count is None:
-        return None
+        raise ValueError("workloads.replica_count is not set: it must be an explicit integer >= 1")
 
     if not isinstance(replica_count, int) or replica_count < 1:
         raise ValueError(
@@ -234,32 +231,6 @@ def _validated_replica_count(benchmark):
         )
 
     return replica_count
-
-
-def _resolve_replica_scaling(rate, benchmark):
-    """Resolve (replica_count, per_replica_rate) for a sweep rate level.
-
-    An explicit benchmark["replica_count"] wins (even division of the rates
-    is enforced separately by _validate_benchmark_rates). Otherwise the
-    replica count is derived from
-    benchmark["users_per_replica"]: replicas = ceil(rate / users_per_replica),
-    streams per replica = ceil(rate / replicas), so the total stream count
-    always reaches (and may slightly exceed) the requested rate.
-    """
-    replica_count = _validated_replica_count(benchmark)
-    if replica_count is not None:
-        return replica_count, round(rate / replica_count)
-
-    users_per_replica = benchmark.get("users_per_replica")
-    if not users_per_replica or users_per_replica < 1:
-        raise ValueError(
-            "workloads.replica_count is not set: users_per_replica must be a "
-            f"positive integer to derive the guidellm replica count (got {users_per_replica!r})"
-        )
-
-    replica_count = max(1, math.ceil(rate / users_per_replica))
-    per_replica_rate = math.ceil(rate / replica_count)
-    return replica_count, per_replica_rate
 
 
 def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None, ep_name=None):
@@ -283,9 +254,10 @@ def _run_guidellm(test_namespace: str, endpoint_url: str, api_key_file_path=None
     benchmark = _build_benchmark_config(payload_name, sweep_name)
 
     rates = benchmark.pop("rate")
+    replica_count = _validated_replica_count(benchmark)
 
     for rate in rates:
-        replica_count, per_replica_rate = _resolve_replica_scaling(rate, benchmark)
+        per_replica_rate = round(rate / replica_count)
         run_benchmark = dict(benchmark)
         run_benchmark["rate"] = per_replica_rate
         run_benchmark["replica_count"] = replica_count
@@ -593,13 +565,7 @@ def _validate_benchmark_rates():
         config.project.get_config("test.sweep"),
     )
 
-    for rate in benchmark.get("rate", []):
-        # Raises when replica_count is unset and users_per_replica is missing.
-        _resolve_replica_scaling(rate, benchmark)
-
-    replica_count = benchmark.get("replica_count")
-    if replica_count is None:
-        return
+    replica_count = _validated_replica_count(benchmark)
 
     for rate in benchmark.get("rate", []):
         per_replica_rate = rate / replica_count

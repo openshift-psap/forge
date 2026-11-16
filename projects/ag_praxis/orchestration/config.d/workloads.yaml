@@ -4,14 +4,7 @@ use_pvc: false
 pvc_size: 1Gi
 pvc_storage_class: null
 fs_group: null
-# Explicit replica count override for the guidellm Job. When null, the
-# replica count is derived per rate level from users_per_replica:
-#   replicas = ceil(rate / users_per_replica)
-#   streams_per_replica = ceil(rate / replicas)
-replica_count: null
-# Max number of concurrent streams (simulated users) each guidellm replica
-# drives. Used to derive the replica count when replica_count is null.
-users_per_replica: 64
+replica_count: 1
 timeout_seconds: 3600
 validate_backend: false
 keep_full_benchmark_file: false
