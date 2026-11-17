@@ -389,6 +389,7 @@ def _test_endpoint(
 ):
     from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
     from projects.cluster.library.prom.collection import capture_prometheus
+    from projects.cluster.toolbox.capture_cluster_state import main as capture_cluster_state_command
     from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state_command
 
     benchmark_start = datetime.now(UTC)
@@ -449,6 +450,12 @@ def _test_endpoint(
     finally:
         benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
+        def _capture_prom():
+            with env.NextArtifactDir("prometheus_metrics"):
+                capture_prometheus(benchmark_start, benchmark_end)
+
+        _run_finalizer("capturing Prometheus metrics", _capture_prom)
+
         llmisvc_name = maas_cfg["llmisvc_name"]
         _run_finalizer(
             "capturing LLMInferenceService state",
@@ -457,12 +464,6 @@ def _test_endpoint(
             namespace=test_namespace,
         )
 
-        def _capture_prom():
-            with env.NextArtifactDir("prometheus_metrics"):
-                capture_prometheus(benchmark_start, benchmark_end)
-
-        _run_finalizer("capturing Prometheus metrics", _capture_prom)
-
         _run_finalizer(
             "capturing MaaS praxis state",
             capture_maas_praxis_command.run,
@@ -470,6 +471,8 @@ def _test_endpoint(
             tenant_namespace=maas_cfg["tenant_namespace"],
             gateway_name=maas_cfg["gateway"]["name"],
         )
+
+        _run_finalizer("capturing cluster state", capture_cluster_state_command.run)
 
     if primary_exc is not None:
         # primary test status already tracked in the 'except' block
