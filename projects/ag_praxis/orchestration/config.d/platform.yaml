@@ -10,7 +10,7 @@ operators:
   rhcl-operator:
     display_name: Red Hat Connectivity Link
     namespace: openshift-operators
-    channel: stable
+    channel: stable # cannot use stable-1.5 for the time being
     source: redhat-operators
     cleanup_crds:
       - ztunnels.sailoperator.io
