@@ -199,8 +199,19 @@ class GuideLLMPlugin(PostProcessingPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
+        plugin_settings: dict[str, Any] | None = None,
     ) -> list[ReportFile]:
-        """Generate visualization reports for GuideLLM benchmarks."""
+        """Generate visualization reports for GuideLLM benchmarks.
+
+        Accepted plugin_settings keys:
+            legend_keys: list[str] | None
+                Label keys to include in chart legends (whitelist of candidates).
+                Only keys that actually vary within a navigation group appear.
+                When None, all varying parameters are auto-detected.
+            group_keys: list[str] | None
+                Label keys to group records into navigation sections.
+                When None, falls back to guidellm_loadshape grouping.
+        """
         source_dir = output_dir / "global" / "guidellm"
         source_dir.mkdir(parents=True, exist_ok=True)
         reports: list[ReportFile] = []
@@ -215,6 +226,10 @@ class GuideLLMPlugin(PostProcessingPlugin):
         if not guidellm_records:
             return reports
 
+        settings = plugin_settings or {}
+        legend_keys = settings.get("legend_keys")
+        group_keys = settings.get("group_keys")
+
         invalid_reports: list[str] = []
         report_counter = 0
 
@@ -227,6 +242,15 @@ class GuideLLMPlugin(PostProcessingPlugin):
             plot_config = PLOT_REGISTRY[report_name]
             function = plot_config["function"]
             kwargs = plot_config.get("kwargs", {}).copy()
+
+            if function is not None:
+                import inspect
+
+                sig = inspect.signature(function)
+                if legend_keys is not None and "legend_keys" in sig.parameters:
+                    kwargs["legend_keys"] = legend_keys
+                if group_keys is not None and "group_keys" in sig.parameters:
+                    kwargs["group_keys"] = group_keys
 
             if plot_config["type"] == "report":
                 kwargs["report_number"] = report_counter
