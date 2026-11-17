@@ -1,0 +1,249 @@
+-- allium: 3
+-- visualization_config.allium
+
+-- Scope: Configurable legend and grouping keys for GuideLLM visualization reports
+-- Includes: PluginSettings, legend key filtering, navigation group key selection,
+--   legend name formatting, fallback behavior when settings are absent
+-- Excludes:
+--   - X-axis content (sweep/concurrency, unchanged)
+--   - Test metadata recording (guidellm_loadshape still written at test time)
+--   - Plot layout, colors, chart types
+--   - How ag_praxis reads from its harness config (that is the consumer's concern)
+-- Dependencies: UnifiedResultRecord defined in caliper engine
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum LegendFormat {
+    key_value       -- "endpoint=maas, payload=XS"
+    value_only      -- "maas, XS"
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity PluginSettings {
+    -- Labels to include in the chart legend (whitelist of candidates).
+    -- When set, only these label keys are considered for legend names.
+    -- When null, all varying parameters are used (auto-detect).
+    legend_keys: List<String>?
+
+    -- Labels to group records into navigation sections.
+    -- When set, records are grouped by the values of these label keys.
+    -- When null, records are grouped by guidellm_loadshape (existing behavior).
+    group_keys: List<String>?
+}
+
+entity Record {
+    -- A parsed benchmark result with distinguishing labels.
+    distinguishing_labels: Map<String, String>
+    guidellm_loadshape: String?
+}
+
+entity NavigationGroup {
+    -- A group of records displayed together on one chart page.
+    description: String
+    records: List<Record>
+}
+
+entity LegendEntry {
+    -- The legend name assigned to a record within a navigation group.
+    record: Record
+    name: String
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- GuideLLMPlugin documents these as accepted plugin_settings keys.
+    -- Downstream plugins (e.g. AgPraxisPlugin) populate them from
+    -- their own harness configuration.
+    legend_keys: List<String>? = null
+    group_keys: List<String>? = null
+}
+
+------------------------------------------------------------
+-- Rules: Navigation Grouping
+------------------------------------------------------------
+
+-- Flow: Group records for navigation sections
+
+rule GroupByConfiguredKeys {
+    -- When group_keys is set, records are grouped by the combined values
+    -- of those label keys. Records sharing the same values for all
+    -- group_keys land in the same navigation section.
+    when: GroupRecords(records)
+    requires: config.group_keys != null
+
+    ensures:
+        for group in grouped_by_keys(records, config.group_keys):
+            NavigationGroup.created(
+                description: group_description(group),
+                records: group_members(group)
+            )
+}
+
+rule GroupByLoadshapeFallback {
+    -- When group_keys is not configured, fall back to grouping by
+    -- guidellm_loadshape (the existing behavior).
+    when: GroupRecords(records)
+    requires: config.group_keys = null
+
+    ensures:
+        for group in grouped_by_loadshape(records):
+            NavigationGroup.created(
+                description: group_description(group),
+                records: group_members(group)
+            )
+}
+
+------------------------------------------------------------
+-- Rules: Legend Name Construction
+------------------------------------------------------------
+
+-- Flow: Determine which labels appear in legend
+
+rule LegendWithConfiguredKeys {
+    -- When legend_keys is set, only label keys in that list are
+    -- candidates for the legend. Among those candidates, only the
+    -- keys whose values actually vary across records in the group
+    -- are included. legend_keys is a whitelist of candidates, not
+    -- a guarantee of inclusion.
+    when: BuildLegend(group)
+    requires: config.legend_keys != null
+
+    let varying = varying_keys(group.records, config.legend_keys)
+
+    ensures:
+        for record in group.records:
+            LegendEntry.created(
+                record: record,
+                name: format_legend_name(record, varying)
+            )
+}
+
+rule LegendAutoDetectFallback {
+    -- When legend_keys is not configured, all varying parameters
+    -- across records in the group are used (existing behavior).
+    when: BuildLegend(group)
+    requires: config.legend_keys = null
+
+    let varying = detect_varying_keys(group.records)
+
+    ensures:
+        for record in group.records:
+            LegendEntry.created(
+                record: record,
+                name: format_legend_name(record, varying)
+            )
+}
+
+------------------------------------------------------------
+-- Rules: Plugin Interface
+------------------------------------------------------------
+
+rule GuideLLMPluginAcceptsSettings {
+    -- GuideLLMPlugin.visualize() accepts an optional plugin_settings
+    -- dict. It extracts legend_keys and group_keys from that dict
+    -- and passes them to the report generation functions.
+    when: Visualize(plugin, model, output_dir, report_ids, group_id, visualize_config, plugin_settings)
+
+    let legend_keys = extract_setting(plugin_settings, "legend_keys")
+    let group_keys = extract_setting(plugin_settings, "group_keys")
+
+    ensures:
+        for report in report_ids:
+            GenerateReport(
+                report: report,
+                output_dir: output_dir,
+                legend_keys: legend_keys,
+                group_keys: group_keys
+            )
+
+    @guidance
+        -- plugin_settings is forwarded to each report function
+        -- via kwargs alongside existing parameters.
+}
+
+rule AgPraxisPluginBridgesConfig {
+    -- AgPraxisPlugin reads legend_keys and group_keys from the
+    -- test harness config and constructs plugin_settings for the
+    -- parent GuideLLMPlugin.
+    when: AgPraxisVisualize(model, output_dir, report_ids, group_id, visualize_config)
+
+    let legend_keys = read_harness_config("test.guidellm.legend_keys")
+    let group_keys = read_harness_config("test.guidellm.group_keys")
+
+    ensures:
+        Visualize(
+            plugin: null,
+            model: model,
+            output_dir: output_dir,
+            report_ids: report_ids,
+            group_id: group_id,
+            visualize_config: visualize_config,
+            plugin_settings: build_plugin_settings(legend_keys, group_keys)
+        )
+
+    @guidance
+        -- AgPraxisPlugin reads from harness config keys
+        -- test.guidellm.legend_keys and test.guidellm.group_keys,
+        -- then constructs plugin_settings for GuideLLMPlugin.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant AllRecordsAssignedToExactlyOneGroup {
+    -- Every record appears in exactly one navigation group.
+    -- No record is lost or duplicated during grouping.
+    for record in Records:
+        let containing = NavigationGroups where record in records
+        containing.count = 1
+}
+
+invariant LegendKeysAreSubsetOfLabels {
+    -- Every key listed in legend_keys must be a key that exists
+    -- in at least one record's distinguishing_labels.
+    config.legend_keys = null or
+        config.legend_keys.all(key => label_key_exists_in_records(key))
+}
+
+invariant GroupKeysAreSubsetOfLabels {
+    -- Every key listed in group_keys must be a key that exists
+    -- in at least one record's distinguishing_labels.
+    config.group_keys = null or
+        config.group_keys.all(key => label_key_exists_in_records(key))
+}
+
+invariant LegendEntriesMatchGroupMembership {
+    -- Every record in a navigation group has exactly one legend entry.
+    for group in NavigationGroups:
+        for r in group.records:
+            let entries = LegendEntries where record = r
+            entries.count = 1
+}
+
+------------------------------------------------------------
+-- Deferred Specifications
+------------------------------------------------------------
+
+deferred FormatLegendName.format_legend_name    -- see: guidellm/make_report.py
+    -- Formats the legend name for a record given varying keys.
+    -- When exactly one key varies: value only ("XS" not "payload=XS").
+    -- When multiple keys vary: sorted key=value pairs joined by
+    -- comma ("endpoint=maas, payload=XS").
+    -- When no keys vary: "default".
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Should group_keys support composite keys (e.g. group by sweep AND model) or is single-key grouping sufficient for now?"
+
+open question "When group_keys produces a single group (all records share the same values), should the navigation section header still be shown, or should it be suppressed for a cleaner layout?"
