@@ -71,6 +71,7 @@ def run_visualize(
     use_cache: bool,
     cache_path: Path | None,
     verbose_parsing: bool = False,
+    plugin_settings: dict[str, Any] | None = None,
 ) -> list[ReportFile]:
     # Validate visualization configuration BEFORE parsing to avoid wasted work
     cfg = resolve_visualize_config(base_dir, visualize_config_path)
@@ -117,6 +118,7 @@ def run_visualize(
         ids,
         report_group,
         cfg,
+        plugin_settings=plugin_settings,
     )
 
     # Check for error conditions
