@@ -1,0 +1,16 @@
+# params:
+#   NAMESPACE: Target namespace
+#   POD_NAME: Pod name regex for the resource capture
+#   POD_NAME_EXCLUDE: Pod name regex to exclude (default: ^$ matches nothing)
+#   CONTAINER: Container name regex for the resource capture (default: .* matches all)
+
+- param_defaults:
+    POD_NAME_EXCLUDE: "^$"
+    CONTAINER: ".*"
+
+- query: >-
+    container_file_descriptors{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}", container=~"{{.CONTAINER}}"}
+  metricName: open_fds_by_pod
+  description: Open file descriptors by pod
+  unit: count
+  legendLabels: [container, pod]
