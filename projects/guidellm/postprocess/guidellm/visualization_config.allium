@@ -169,14 +169,13 @@ rule GuideLLMPluginAcceptsSettings {
         -- via kwargs alongside existing parameters.
 }
 
-rule AgPraxisPluginBridgesConfig {
-    -- AgPraxisPlugin reads legend_keys and group_keys from the
-    -- test harness config and constructs plugin_settings for the
-    -- parent GuideLLMPlugin.
-    when: AgPraxisVisualize(model, output_dir, report_ids, group_id, visualize_config)
-
-    let legend_keys = read_harness_config("test.guidellm.legend_keys")
-    let group_keys = read_harness_config("test.guidellm.group_keys")
+rule AgPraxisPluginForwardsSettings {
+    -- AgPraxisPlugin does not build plugin_settings itself.
+    -- Settings arrive via the caliper CLI (--plugin-setting key=value),
+    -- populated from caliper.postprocess.visualize.plugin_settings in
+    -- the orchestration config. AgPraxisPlugin passes them through
+    -- to GuideLLMPlugin unchanged.
+    when: AgPraxisVisualize(model, output_dir, report_ids, group_id, visualize_config, plugin_settings)
 
     ensures:
         Visualize(
@@ -186,13 +185,13 @@ rule AgPraxisPluginBridgesConfig {
             report_ids: report_ids,
             group_id: group_id,
             visualize_config: visualize_config,
-            plugin_settings: build_plugin_settings(legend_keys, group_keys)
+            plugin_settings: plugin_settings
         )
 
     @guidance
-        -- AgPraxisPlugin reads from harness config keys
-        -- test.guidellm.legend_keys and test.guidellm.group_keys,
-        -- then constructs plugin_settings for GuideLLMPlugin.
+        -- The caliper layer is generic: it accepts an opaque
+        -- plugin_settings dict and forwards it without interpretation.
+        -- Only the plugin layer knows the accepted keys.
 }
 
 ------------------------------------------------------------
