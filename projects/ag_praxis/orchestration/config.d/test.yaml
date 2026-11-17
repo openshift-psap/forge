@@ -12,6 +12,7 @@ skip_finalizers: false
 
 endpoints:
 - svc
+- gw
 - maas/ipp
 - maas/praxis
 

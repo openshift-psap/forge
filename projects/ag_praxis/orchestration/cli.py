@@ -54,24 +54,37 @@ def test(ctx):
 
 
 @main.command()
-@click.option(
-    "--benchmark",
-    type=click.Choice(["svc", "maas/ipp", "maas/praxis"]),
+@click.argument(
+    "endpoint",
+    type=click.Choice(["svc", "gw", "maas/ipp", "maas/praxis"]),
     default=None,
-    help="Run benchmark against 'svc' (direct LLMInferenceService), 'maas/ipp' or 'maas/praxis' (MaaS external gateway)",
+    required=False,
+)
+@click.option(
+    "--benchmark", is_flag=True, default=False, help="Benchmark the endpoint(s) after deployment"
 )
 @click.pass_context
 @safe_cli_command
-def deploy(ctx, benchmark):
-    """Deploy the LLMInferenceService and optionally benchmark one endpoint."""
+def deploy(ctx, endpoint, benchmark):
+    """Deploy the LLMInferenceService, optionally benchmarking one endpoint.
+
+    ENDPOINT selects which endpoint to deploy for: 'svc' (direct
+    LLMInferenceService), 'gw', 'maas/ipp' or 'maas/praxis' (MaaS external
+    gateway). Omit it to deploy all endpoints.
+
+    Deployment only, by default. Pass --benchmark to also run the benchmark,
+    with the standard finalizers.
+    """
     config.project.set_config("test.skip_cleanup", True)
     config.project.set_config("caliper.postprocess.enabled", False)
 
-    if benchmark:
-        config.project.set_config("test.endpoints", [benchmark])
-        config.project.set_config("test.run_benchmark", True)
-    else:
-        config.project.set_config("test.run_benchmark", False)
+    if endpoint:
+        config.project.set_config("test.endpoints", [endpoint])
+
+    config.project.set_config("test.run_benchmark", benchmark)
+
+    if not benchmark:
+        config.project.set_config("test.skip_finalizers", True)
 
     exit_code = test_phase.test()
     sys.exit(exit_code)
