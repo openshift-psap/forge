@@ -42,6 +42,7 @@ class AgPraxisPlugin(GuideLLMPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
+        plugin_settings: dict[str, Any] | None = None,
     ) -> list[ReportFile]:
         wanted = list(dict.fromkeys(report_ids or ()))
         our_ids = {PROMETHEUS_REPORT_ID, RESOURCE_REPORT_ID, OVERHEAD_REPORT_ID}
@@ -50,7 +51,14 @@ class AgPraxisPlugin(GuideLLMPlugin):
         overhead_requested = OVERHEAD_REPORT_ID in wanted
         parent_ids = [r for r in wanted if r not in our_ids] or None
 
-        reports = super().visualize(model, output_dir, parent_ids, group_id, visualize_config)
+        reports = super().visualize(
+            model,
+            output_dir,
+            parent_ids,
+            group_id,
+            visualize_config,
+            plugin_settings=plugin_settings,
+        )
 
         if prom_requested:
             prom_reports = _generate_prometheus_reports(model, output_dir)
