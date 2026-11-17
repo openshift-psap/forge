@@ -5,6 +5,9 @@ metadata:
   namespace: {{ args.target_namespace }}
 spec:
   channel: {{ args.channel }}
+{%- if args.starting_csv %}
+  startingCSV: {{ args.starting_csv }}
+{%- endif %}
   installPlanApproval: {{ args.installplan_approval }}
   name: {{ args.package_name }}
   source: {{ args.source_name }}

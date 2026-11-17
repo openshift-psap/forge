@@ -57,6 +57,7 @@ cpt-sglang-competitive:
     qwen25-7b/tp1:
     qwen25-7b-bf16/tp1:
   __workloads:
+    - ci-quick
     - profile1
     - profile2
     - profile3
@@ -81,6 +82,7 @@ cpt-trtllm-competitive:
     mistral-24b/tp1:
     qwen25-7b/tp1:
   __workloads:
+    - ci-quick
     - profile1
     - profile2
     - profile3
@@ -113,6 +115,7 @@ cpt-vllm-competitive:
     qwen3-235b/tp4:
     deepseek-r1/tp8:
   __workloads:
+    - ci-quick
     - profile1
     - profile2
     - profile3
@@ -228,7 +231,86 @@ cpt-rhaiis-3.6-h200:
       __workloads: [profile1, profile4, profile5, profile7, profile6]
       rhaiis.engines.vllm.args.tensor-parallel-size: 8
       rhaiis.engines.vllm.args.kv-cache-dtype: bfloat16
-  __workloads: [profile1, profile4, profile7, profile6]
+  __workloads: [ci-quick, profile1, profile4, profile7, profile6]
+  rhaiis.profiler.enabled: true
+  tests.rhaiis.warmup: false
+  workloads.profile1.warmup: 0
+  workloads.profile2.warmup: 0
+  workloads.profile3.warmup: 0
+  workloads.profile4.warmup: 0
+  workloads.profile5.warmup: 0
+  workloads.profile6.warmup: 0
+  workloads.profile7.warmup: 0
+  tests.rhaiis.run_benchmark: true
+  caliper.postprocess.csv_dashboard.enabled: true
+  tests.rhaiis.slack_notify_always: true
+  rhaiis.agent_analysis.enabled: false
+
+# ──────────────────────────────────────────────
+# RHAIIS 3.6 release regression — H200 (no reasoning parser)
+# ──────────────────────────────────────────────
+cpt-rhaiis-3.6-h200-no-reasoning-parser:
+  __description: "RHAIIS 3.6 release regression — H200 models without reasoning parser"
+  __engine: vllm
+  rhaiis.engines.vllm.args.enable-prefix-caching: true
+  __accelerator: nvidia
+  __gpu_type: h200
+  __clusters:
+    - hera
+    - zeus
+    - old-zeus
+    - athena-fire
+    - janus
+  __models:
+    qwen3-5-122b/tp2:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 2
+      rhaiis.engines.vllm.args.language-model-only: true
+    qwen3-5-397b/tp4:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 4
+      rhaiis.engines.vllm.args.language-model-only: true
+    deepseek-v4-pro/tp8:
+      __workloads: [profile1, profile4, profile5, profile7, profile6]
+      rhaiis.engines.vllm.args.tensor-parallel-size: 8
+      rhaiis.engines.vllm.args.kv-cache-dtype: fp8
+      rhaiis.engines.vllm.args.tokenizer-mode: deepseek_v4
+      rhaiis.engines.vllm.args.tool-call-parser: deepseek_v4
+      rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+    gemma-4-26b-fp8/tp2:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 2
+      rhaiis.engines.vllm.args.kv-cache-dtype: fp8
+      rhaiis.engines.vllm.args.tool-call-parser: gemma4
+      rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+    gemma-4-31b-fp8-block/tp1:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 1
+      rhaiis.engines.vllm.args.kv-cache-dtype: fp8
+      rhaiis.engines.vllm.args.tool-call-parser: gemma4
+      rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+    nemotron3ultra-550b/tp8:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 8
+      rhaiis.engines.vllm.args.enable-expert-parallel: true
+      rhaiis.engines.vllm.args.kv-cache-dtype: fp8
+      rhaiis.engines.vllm.args.tool-call-parser: qwen3_coder
+    muse-glimmer/tp1:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 1
+      rhaiis.engines.vllm.args.generation-config: auto
+      rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+      rhaiis.engines.vllm.args.tool-call-parser: muse_glimmer
+    deepseek-v4-flash-base/tp4:
+      __workloads: [profile1, profile4, profile5, profile7, profile6]
+      rhaiis.engines.vllm.args.tensor-parallel-size: 4
+      rhaiis.engines.vllm.args.kv-cache-dtype: fp8
+      rhaiis.engines.vllm.args.tokenizer-mode: deepseek_v4
+      rhaiis.engines.vllm.args.tool-call-parser: deepseek_v4
+      rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+    qwen3-8-27b-int4/tp1:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 1
+      rhaiis.engines.vllm.args.kv-cache-dtype: fp8
+      rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+      rhaiis.engines.vllm.args.tool-call-parser: qwen3_xml
+      rhaiis.engines.vllm.args.mm-encoder-tp-mode: data
+    qwen3-8-27b-bf16/tp1:
+      rhaiis.engines.vllm.args.tensor-parallel-size: 1
+  __workloads: [ci-quick, profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
   workloads.profile1.warmup: 0
@@ -402,7 +484,7 @@ cpt-rhaiis-3.6-mi355x:
       __workloads: [profile1, profile4, profile5, profile7, profile6]
       rhaiis.engines.vllm.args.tensor-parallel-size: 8
       benchmarks.guidellm.args.tokenizer: '{"kind":"huggingface_auto","model":"moonshotai/Kimi-K3","load_kwargs":{"trust_remote_code":true}}'
-  __workloads: [profile1, profile4, profile7, profile6]
+  __workloads: [ci-quick, profile1, profile4, profile7, profile6]
   rhaiis.profiler.enabled: true
   tests.rhaiis.warmup: false
   workloads.profile1.warmup: 0

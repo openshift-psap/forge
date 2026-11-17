@@ -30,6 +30,7 @@ EXIT_STATUS_FILENAME = "exit_status.yaml"
 
 class ExitCategory(StrEnum):
     SUCCESS = "success"
+    WARNING = "warning"
     SKIPPED = "skipped"
     TEST_FAILURE = "test_failure"
     INFRA_FAILURE = "infra_failure"

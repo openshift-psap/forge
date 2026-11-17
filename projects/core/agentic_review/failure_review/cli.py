@@ -14,7 +14,7 @@ import click
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_KEY = "qwen-3-6-35b"
+DEFAULT_MODEL_KEY = "default"
 DEFAULT_VAULT_NAME = "psap-models-corp-rh"
 DEFAULT_VAULT_CONTENT = "agent-models.yaml"
 

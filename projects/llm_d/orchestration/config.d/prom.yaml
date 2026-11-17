@@ -23,7 +23,7 @@ capture:
     groups:
       resources:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
         variables:
           NAMESPACE: "{llmisvc_namespace}"
           POD_NAME: "{llmisvc_name}-.*"

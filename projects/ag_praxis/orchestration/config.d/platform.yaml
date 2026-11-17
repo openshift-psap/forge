@@ -20,7 +20,7 @@ operators:
     namespace: redhat-ods-operator
     channel: stable-3.x
     source: redhat-operators
-
+    starting_csv: null
 
 rhoai:
   custom_catalog:
@@ -55,6 +55,13 @@ maas:
   tenant_namespace: models-as-a-service
   maas_gateway_label: maas-gateway
   llmisvc_name: sim-llm-maas
+  # Token quota on the MaaSSubscription registered for the sim model. Deliberately
+  # huge so perf runs are not rate-limited. CAVEAT: token metering fails OPEN for
+  # streamed /v1/responses traffic on builds where the kuadrant wasm shim parses
+  # the response body as a single JSON document -- the limit is not enforced there
+  # (see orchestration/poc/maas-praxis-500-ext-proc-overflow.md, Finding 2).
+  token_rate_limit: 1000000000
+  token_rate_limit_window: 1m
   gateway:
     name: maas-default-gateway
     namespace: openshift-ingress
@@ -62,6 +69,7 @@ maas:
 sim:
   image: ghcr.io/llm-d/llm-d-inference-sim:v0.12.0
   model_name: simulated-model
+  replicas: 1
   served_model_names:
     - simulated-model
     - simulated-model-1
@@ -76,6 +84,15 @@ sim:
 praxis:
   version: "0.6"
   replicas: 1
+  # ExtProc concurrency budget (Envoy circuit breakers on the ext_proc clusters,
+  # set via the maas.opendatahub.io/experimental-extproc-max-requests annotation on
+  # the MaasTenantConfig). The operator default is 8 (ai-gateway-controller PR #217
+  # hardening): above 8 concurrent in-flight ext_proc calls, the gateway sheds
+  # requests with an instant empty HTTP 500 before auth. Valid range 1-1024;
+  # out-of-range values silently fall back to 8. The effective limits are verified
+  # against the gateway's live Envoy config after activation.
+  # See orchestration/poc/maas-praxis-500-ext-proc-overflow.md (Finding 1).
+  extproc_max_requests: 1024
   payload_processing:
     replicas: 4
     cpu_request: 100m
