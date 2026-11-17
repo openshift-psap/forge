@@ -175,12 +175,17 @@ def filter_records_by_parameters(
     return filtered
 
 
-def get_varying_parameters(records: list[UnifiedResultRecord]) -> set[str]:
+def get_varying_parameters(
+    records: list[UnifiedResultRecord],
+    candidate_keys: list[str] | None = None,
+) -> set[str]:
     """
     Get parameter keys that have varying values across records.
 
     Args:
         records: List of unified result records to analyze
+        candidate_keys: When provided, only these keys are considered
+            (whitelist of candidates). When None, all label keys are considered.
 
     Returns:
         Set of parameter keys that vary across records
@@ -190,19 +195,19 @@ def get_varying_parameters(records: list[UnifiedResultRecord]) -> set[str]:
 
     varying_params = set()
 
-    # Get all parameter keys
-    all_keys = set()
-    for record in records:
-        all_keys.update(record.distinguishing_labels.keys())
+    if candidate_keys is not None:
+        all_keys = set(candidate_keys)
+    else:
+        all_keys = set()
+        for record in records:
+            all_keys.update(record.distinguishing_labels.keys())
 
-    # Check each parameter to see if it varies
     for key in all_keys:
         values = set()
         for record in records:
             if key in record.distinguishing_labels:
                 values.add(str(record.distinguishing_labels[key]))
 
-        # If more than one unique value, this parameter varies
         if len(values) > 1:
             varying_params.add(key)
 
@@ -215,27 +220,26 @@ def create_legend_name(
     """
     Create a meaningful legend name using only varying parameters.
 
+    When exactly one parameter varies, shows value only ("XS").
+    When multiple parameters vary, shows key=value pairs ("endpoint=maas, payload=XS").
+
     Args:
         record: The record to create a name for
         varying_params: Set of parameter keys that vary across all records
         max_length: Maximum length for the legend name
 
     Returns:
-        Legend name string using format "param1=value1, param2=value2"
+        Legend name string
     """
     if not varying_params:
         return "default"
 
-    # Get varying parameter values for this record
-    param_pairs = []
-    for key in sorted(varying_params):
-        if key in record.distinguishing_labels:
-            value = record.distinguishing_labels[key]
-            param_pairs.append(f"{key}={value}")
+    present_keys = sorted(k for k in varying_params if k in record.distinguishing_labels)
 
-    if not param_pairs:
+    if not present_keys:
         return "default"
 
-    legend_name = ", ".join(param_pairs)
+    if len(varying_params) == 1:
+        return str(record.distinguishing_labels[present_keys[0]])
 
-    return legend_name
+    return ", ".join(f"{k}={record.distinguishing_labels[k]}" for k in present_keys)
