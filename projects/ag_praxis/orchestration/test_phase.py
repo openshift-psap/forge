@@ -25,6 +25,16 @@ def test():
     return run_and_postprocess(do_test_praxis)
 
 
+def _configure_matrix_visualization(matrix_config: dict) -> None:
+    """Populate caliper plugin_settings from matrix visualization config."""
+    viz = matrix_config.get("visualization", {})
+    if not viz:
+        return
+
+    if viz:
+        config.project.set_config("caliper.postprocess.visualize.plugin_settings", dict(viz))
+
+
 def _resolve_benchmark_config(benchmark_key: str) -> dict:
     """Resolve a benchmark config by key, merging workload defaults."""
     import copy
@@ -653,6 +663,9 @@ def do_test_praxis():
     run_benchmark = config.project.get_config("test.run_benchmark")
     matrix_config = config.project.get_config("test.matrices.guidellm", default_value={})
     combinations = compute_matrix(matrix_config)
+
+    if matrix_config.get("enabled", False):
+        _configure_matrix_visualization(matrix_config)
 
     primary_exc = None
     completed_endpoints = []

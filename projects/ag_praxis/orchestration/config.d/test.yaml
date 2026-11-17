@@ -24,3 +24,6 @@ matrices:
     dimensions:
       test.payload: [XS, default, L, XL]
       test.sweep: [small]
+    visualization:
+      legend_keys: [payload]
+      group_keys: null
