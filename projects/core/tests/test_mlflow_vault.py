@@ -33,4 +33,6 @@ def test_mlflow_instance_rejects_unknown_value(monkeypatch):
     config.write_variables_override(variables_dict={"mlflow_instance": "qa"})
 
     with pytest.raises(ValueError, match="mlflow_instance must be"):
-        config.init(Path(env.FORGE_HOME) / "projects/llm_d/orchestration", apply_cluster_config=False)
+        config.init(
+            Path(env.FORGE_HOME) / "projects/llm_d/orchestration", apply_cluster_config=False
+        )
