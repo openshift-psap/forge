@@ -60,13 +60,36 @@ _ALLOWED_YAML_KEYS = frozenset(
 )
 
 
-def load_mlflow_secrets_yaml(path: Path) -> dict[str, Any]:
-    """Parse and validate a secrets YAML file (credentials / TLS only)."""
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+def _read_mlflow_secrets_yaml(path: Path) -> dict[str, Any]:
+    """Read the credential document and verify its top-level shape."""
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        raise ValueError(f"Invalid YAML in MLflow secrets file: {path}") from None
     if raw is None:
         raise ValueError(f"MLflow secrets file is empty: {path}")
     if not isinstance(raw, dict):
         raise ValueError(f"MLflow secrets file must be a mapping at the top level: {path}")
+    return raw
+
+
+def load_mlflow_secrets_yaml(path: Path) -> dict[str, Any]:
+    """Prepare the selected MLflow credentials for callers as a flat mapping."""
+    raw = _read_mlflow_secrets_yaml(path)
+    mlflow_instance = os.environ.get("FORGE_MLFLOW_INSTANCE", "prod")
+
+    if any(isinstance(value, dict) for value in raw.values()):
+        if mlflow_instance not in raw:
+            raise ValueError(f"MLflow profile {mlflow_instance!r} is missing from {path}")
+        raw = raw[mlflow_instance]
+        if not isinstance(raw, dict):
+            raise ValueError(f"MLflow profile {mlflow_instance!r} must be a mapping: {path}")
+        uri = raw.get("tracking_uri")
+        if not isinstance(uri, str) or not uri.strip():
+            raise ValueError(f"MLflow profile {mlflow_instance!r} needs a tracking_uri: {path}")
+    elif mlflow_instance != "prod":
+        raise ValueError(f"MLflow profile {mlflow_instance!r} is missing from {path}")
+
     unknown = set(raw) - _ALLOWED_YAML_KEYS
     if unknown:
         raise ValueError(
