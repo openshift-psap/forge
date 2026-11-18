@@ -17,7 +17,9 @@ def test_mlflow_instance_selects_profile(monkeypatch, tmp_path, project_name, ov
     monkeypatch.setenv("FORGE_MLFLOW_INSTANCE", "previous")
     orchestration_dir = Path(env.FORGE_HOME) / "projects" / project_name / "orchestration"
     if override is not None:
-        config.write_variables_override(variables_dict={"mlflow_instance": override})
+        config.write_variables_override(
+            variables_dict={"caliper.export.backend.mlflow.instance": override}
+        )
 
     config.init(orchestration_dir, apply_cluster_config=False)
 

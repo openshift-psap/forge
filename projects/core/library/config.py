@@ -676,9 +676,11 @@ def init(orchestration_dir, *, apply_config_overrides=True, apply_cluster_config
     project.apply_config_overrides(
         ignore_not_found=lenient_presets
     )  # reapply so that the value overrides are applied last
-    mlflow_instance = project.get_config("mlflow_instance", "prod", warn=False, print=False)
+    mlflow_instance = project.get_config(
+        "caliper.export.backend.mlflow.instance", "prod", warn=False, print=False
+    )
     if not isinstance(mlflow_instance, str) or not mlflow_instance.strip():
-        raise ValueError("mlflow_instance must be a non-empty profile name")
+        raise ValueError("caliper.export.backend.mlflow.instance must be a non-empty profile name")
     # Pass the profile name to Caliper, including when it runs in a subprocess.
     os.environ["FORGE_MLFLOW_INSTANCE"] = mlflow_instance
 

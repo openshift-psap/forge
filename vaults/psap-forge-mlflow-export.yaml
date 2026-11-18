@@ -1,7 +1,7 @@
 env_key: PSAP_FORGE_MLFLOW_EXPORT_SECRET_PATH
 description: |
   Vault to push data to production and staging MLflow.
-  Select a profile from mlflow-secret.yaml with /var mlflow_instance: staging.
+  Select a profile from mlflow-secret.yaml with /var caliper.export.backend.mlflow.instance: staging.
 
 content:
   mlflow-secret.yaml:

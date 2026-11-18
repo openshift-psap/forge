@@ -1,4 +1,1 @@
-# Selects a credentials profile in the MLflow export vault.
-mlflow_instance: prod
-
 # see the config.d/*.yaml files
