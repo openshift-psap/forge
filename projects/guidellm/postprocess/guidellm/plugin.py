@@ -205,9 +205,9 @@ class GuideLLMPlugin(PostProcessingPlugin):
 
         Accepted plugin_settings keys:
             legend_keys: list[str] | None
-                Label keys to include in chart legends (whitelist of candidates).
-                Only keys that actually vary within a navigation group appear.
-                When None, all varying parameters are auto-detected.
+                Label keys to order first in chart legends. All varying label
+                keys appear in legends; these are merely placed first.
+                When None, varying parameters are sorted alphabetically.
             group_keys: list[str] | None
                 Label keys to group records into navigation sections.
                 When None, falls back to guidellm_loadshape grouping.

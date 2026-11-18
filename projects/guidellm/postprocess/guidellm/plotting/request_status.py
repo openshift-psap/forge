@@ -24,9 +24,10 @@ logger = logging.getLogger(__name__)
 
 def _extract_status_data(
     records: list[UnifiedResultRecord],
+    legend_keys: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract per-configuration request status data from records."""
-    varying_params = get_varying_parameters(records)
+    varying_params = get_varying_parameters(records, priority_keys=legend_keys)
     result = []
 
     for record in records:
@@ -59,12 +60,16 @@ def _extract_status_data(
     return result
 
 
-def create_successful_requests_plot(records: list[UnifiedResultRecord], title_context: str = ""):
+def create_successful_requests_plot(
+    records: list[UnifiedResultRecord],
+    title_context: str = "",
+    legend_keys: list[str] | None = None,
+):
     """Create a bar chart of successful requests per concurrency level, one color per config."""
     try:
         import plotly.graph_objects as go
 
-        groups = _extract_status_data(records)
+        groups = _extract_status_data(records, legend_keys)
         if not groups:
             return None
 
@@ -104,12 +109,16 @@ def create_successful_requests_plot(records: list[UnifiedResultRecord], title_co
         return None
 
 
-def create_total_errors_plot(records: list[UnifiedResultRecord], title_context: str = ""):
+def create_total_errors_plot(
+    records: list[UnifiedResultRecord],
+    title_context: str = "",
+    legend_keys: list[str] | None = None,
+):
     """Create a bar chart of total error count per concurrency level, one color per config."""
     try:
         import plotly.graph_objects as go
 
-        groups = _extract_status_data(records)
+        groups = _extract_status_data(records, legend_keys)
         if not groups:
             return None
 
@@ -283,6 +292,7 @@ def generate_request_status_report(
     title_context: str = "",
     report_number: int | None = None,
     report_title: str = "GuideLLM Request Status",
+    legend_keys: list[str] | None = None,
 ) -> str | None:
     """Generate a request status report: successful requests plot, then per-config error plots."""
     try:
@@ -314,7 +324,7 @@ def generate_request_status_report(
         sections: list[str] = []
 
         # --- Requested vs Effective Concurrency ---
-        df = create_dataframe_from_records(guidellm_records)
+        df = create_dataframe_from_records(guidellm_records, legend_keys=legend_keys)
         concurrency_fig = create_requested_vs_effective_concurrency_plot(df, title_context)
         if concurrency_fig is not None:
             conc_dir = report_dir / "concurrency"
@@ -336,7 +346,9 @@ def generate_request_status_report(
                 sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
 
         # --- Successful requests plot (all configs together) ---
-        success_fig = create_successful_requests_plot(guidellm_records, title_context)
+        success_fig = create_successful_requests_plot(
+            guidellm_records, title_context, legend_keys=legend_keys
+        )
         if success_fig is not None:
             success_dir = report_dir / "successful"
             success_dir.mkdir(exist_ok=True)
@@ -353,7 +365,9 @@ def generate_request_status_report(
                 sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
 
         # --- Total errors plot (all configs together) ---
-        errors_fig = create_total_errors_plot(guidellm_records, title_context)
+        errors_fig = create_total_errors_plot(
+            guidellm_records, title_context, legend_keys=legend_keys
+        )
         if errors_fig is not None:
             errors_dir = report_dir / "total_errors"
             errors_dir.mkdir(exist_ok=True)
@@ -368,7 +382,7 @@ def generate_request_status_report(
                 sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
 
         # --- Per-config error plots + tables ---
-        status_data = _extract_status_data(guidellm_records)
+        status_data = _extract_status_data(guidellm_records, legend_keys)
         for entry_idx, entry in enumerate(status_data):
             legend_name = entry["legend_name"]
             error_fig = create_error_breakdown_plot(entry, title_context)
