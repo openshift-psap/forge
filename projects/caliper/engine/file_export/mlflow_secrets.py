@@ -73,12 +73,10 @@ def _read_mlflow_secrets_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
-def load_mlflow_secrets_yaml(path: Path) -> dict[str, Any]:
+def load_mlflow_secrets_yaml(path: Path, *, mlflow_instance: str | None = None) -> dict[str, Any]:
     """Prepare the selected MLflow credentials for callers as a flat mapping."""
     raw = _read_mlflow_secrets_yaml(path)
-    mlflow_instance = os.environ.get("FORGE_MLFLOW_INSTANCE", "prod")
-
-    if any(isinstance(value, dict) for value in raw.values()):
+    if mlflow_instance is not None:
         if mlflow_instance not in raw:
             raise ValueError(f"MLflow profile {mlflow_instance!r} is missing from {path}")
         raw = raw[mlflow_instance]
@@ -87,9 +85,6 @@ def load_mlflow_secrets_yaml(path: Path) -> dict[str, Any]:
         uri = raw.get("tracking_uri")
         if not isinstance(uri, str) or not uri.strip():
             raise ValueError(f"MLflow profile {mlflow_instance!r} needs a tracking_uri: {path}")
-    elif mlflow_instance != "prod":
-        raise ValueError(f"MLflow profile {mlflow_instance!r} is missing from {path}")
-
     unknown = set(raw) - _ALLOWED_YAML_KEYS
     if unknown:
         raise ValueError(

@@ -16,12 +16,12 @@ from pathlib import Path
 
 import click
 
+from projects.caliper.orchestration.mlflow_credentials import resolve_mlflow_credentials
 from projects.caliper.orchestration.postprocess import run_postprocess_from_orchestration_config
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
 from projects.cluster.library.prom.replay import replay_metrics_from_config
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
-from projects.core.library import vault as vault_lib
 from projects.core.library.ci import ExitCategory
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ def _download_mlflow_artifacts_via_import(
     replot_url: str,
     replot_download_dir: Path,
     mlflow_secrets_path: Path,
+    mlflow_instance: str | None = None,
 ) -> dict:
     run_id_match = re.search(r"[/#]runs/([^/?#]+)", replot_url)
     if not run_id_match:
@@ -66,6 +67,9 @@ def _download_mlflow_artifacts_via_import(
         str(mlflow_secrets_path),
         "--mlflow-insecure-tls",
     ]
+
+    if mlflow_instance is not None:
+        cmd.extend(["--mlflow-instance", mlflow_instance])
 
     logger.info("Running import command: %s", " ".join(cmd))
     logger.info("Target download directory: %s", replot_download_dir)
@@ -173,11 +177,11 @@ def _run_download_step(
     logger.info("Replotting artifacts from URL: %s", replot_url)
     logger.info("Download directory: %s", replot_download_dir)
 
-    mlflow_secrets_path = vault_lib.get_vault_content_path(vault_name, vault_mlflow_secret)
-    if mlflow_secrets_path is None or not mlflow_secrets_path.exists():
-        raise FileNotFoundError(
-            f"MLflow secrets not found in vault {vault_name}/{vault_mlflow_secret}"
-        )
+    if not vault_name or not vault_mlflow_secret:
+        raise ValueError("MLflow vault configuration is missing")
+    mlflow_secrets_path, mlflow_instance = resolve_mlflow_credentials(
+        vault_name, vault_mlflow_secret
+    )
 
     if replot_download_dir.exists() and any(replot_download_dir.iterdir()):
         logger.info(
@@ -198,7 +202,7 @@ def _run_download_step(
 
     if "mlflow" in replot_url.lower() and "runs" in replot_url:
         download_result = _download_mlflow_artifacts_via_import(
-            replot_url, replot_download_dir, mlflow_secrets_path
+            replot_url, replot_download_dir, mlflow_secrets_path, mlflow_instance
         )
         status["replot"].update(download_result)
     else:

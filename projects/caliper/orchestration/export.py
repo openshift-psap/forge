@@ -38,8 +38,8 @@ from projects.caliper.orchestration.censoring import (
 from projects.caliper.orchestration.export_config import (
     CaliperOrchestrationExportConfig,
 )
+from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
 from projects.core.library import env
-from projects.core.library import vault as vault_lib
 from projects.core.library.config import requires
 from projects.core.library.export_notifications import ExportStatus
 
@@ -218,12 +218,7 @@ def run_from_orchestration_config(
 
     vault_name = export_cfg.backend.mlflow.secrets.vault.name
     vault_mlflow_secret = export_cfg.backend.mlflow.secrets.vault.mlflow_secret
-    mlflow_secrets_path = vault_lib.get_vault_content_path(vault_name, vault_mlflow_secret)
-
-    if mlflow_secrets_path is None:
-        raise ValueError(f"Vault {vault_name}/{vault_mlflow_secret} missing :/")
-    elif not mlflow_secrets_path.exists():
-        raise FileNotFoundError(f"Vault {vault_name}/{vault_mlflow_secret} file missing :/")
+    connection = load_mlflow_connection(vault_name, vault_mlflow_secret)
 
     raw_cfg = mlflow_backend_cfg.config
     mlflow_config_data: dict[str, Any] | None = None
@@ -274,7 +269,7 @@ def run_from_orchestration_config(
                 export_cfg=export_cfg,
                 from_path=from_path,
                 status_yaml=status_yaml,
-                mlflow_secrets_path=mlflow_secrets_path,
+                connection=connection,
                 mlflow_config_data=mlflow_config_data,
                 run_dirs=run_dirs,
                 mlflow_run_id=mlflow_run_id,
@@ -292,7 +287,7 @@ def run_from_orchestration_config(
             "mlflow_experiment": export_cfg.mlflow_experiment,
             "mlflow_run_id": mlflow_run_id,
             "mlflow_run_name": effective_name,
-            "mlflow_secrets_path": mlflow_secrets_path,
+            "mlflow_secrets_data": connection,
         }
         if mlflow_config_data is not None:
             mlflow_kwargs["mlflow_config_data"] = mlflow_config_data
@@ -368,14 +363,8 @@ def precreate_mlflow_run_if_configured(_cfg, force=False) -> MlflowDestination |
         logger.info("MLflow vault not configured, skipping run pre-creation")
         return None
 
-    secrets_path = vault_lib.get_vault_content_path(vault_name, vault_key)
-    if not secrets_path:
-        raise FileNotFoundError("Configured MLflow secrets could not be resolved")
-    if not secrets_path.exists():
-        raise FileNotFoundError(f"Configured MLflow secrets file not found: {secrets_path}")
-
     return precreate_mlflow_run(
-        secrets_path=secrets_path,
+        connection=load_mlflow_connection(vault_name, vault_key),
         experiment=_cfg.experiment or None,
         workspace=_cfg.workspace or None,
     )
@@ -460,7 +449,7 @@ def ensure_mlflow_destination_marker() -> Path | None:
 
 def precreate_mlflow_run(
     *,
-    secrets_path: Path,
+    connection: dict[str, Any],
     experiment: str | None = None,
     workspace: str | None = None,
 ) -> MlflowDestination:
@@ -476,18 +465,14 @@ def precreate_mlflow_run(
     """
     import mlflow
 
-    from projects.caliper.public.file_export import (
-        load_mlflow_secrets_yaml,
-        mlflow_connection_env,
-    )
+    from projects.caliper.public.file_export import mlflow_connection_env
 
-    secrets_data = load_mlflow_secrets_yaml(secrets_path)
-    tracking_uri = secrets_data.get("tracking_uri", "")
+    tracking_uri = connection.get("tracking_uri", "")
 
     prev_workspace = os.environ.get("MLFLOW_WORKSPACE")
     prev_tracking_uri = mlflow.get_tracking_uri()
     try:
-        with mlflow_connection_env(secrets_data):
+        with mlflow_connection_env(connection):
             if tracking_uri:
                 mlflow.set_tracking_uri(tracking_uri)
             if workspace:
@@ -535,30 +520,24 @@ def build_mlflow_run_url_from_config(_cfg) -> str:
         logger.warning("Cannot build MLflow URL: vault not configured")
         return ""
 
-    secrets_path = vault_lib.get_vault_content_path(vault_name, vault_key)
-    if not secrets_path or not secrets_path.exists():
+    try:
+        connection = load_mlflow_connection(vault_name, vault_key)
+    except FileNotFoundError:
         logger.warning("Cannot build MLflow URL: secrets file not found")
         return ""
 
-    return build_mlflow_run_url(secrets_path=secrets_path, workspace=_cfg.workspace or None)
+    return build_mlflow_run_url(connection=connection, workspace=_cfg.workspace or None)
 
 
 def build_mlflow_run_url(
     *,
-    secrets_path: Path,
+    connection: dict[str, Any],
     workspace: str | None = None,
 ) -> str:
-    """Construct the MLflow run URL from vault secrets and the marker file.
-
-    The caller (test harness) is responsible for resolving ``secrets_path``
-    and ``workspace``; this function does not access the project config.
-    """
+    """Construct the MLflow run URL from the selected connection and marker."""
     from urllib.parse import quote
 
-    from projects.caliper.public.file_export import (
-        assert_tracking_uri_has_no_userinfo,
-        load_mlflow_secrets_yaml,
-    )
+    from projects.caliper.public.file_export import assert_tracking_uri_has_no_userinfo
 
     try:
         destination = read_mlflow_destination_marker()
@@ -578,12 +557,7 @@ def build_mlflow_run_url(
         )
         return ""
 
-    if not secrets_path.exists():
-        logger.warning("Cannot build MLflow URL: secrets file %s not found", secrets_path)
-        return ""
-
-    secrets_data = load_mlflow_secrets_yaml(secrets_path)
-    tracking_uri = secrets_data.get("tracking_uri", "").rstrip("/")
+    tracking_uri = connection.get("tracking_uri", "").rstrip("/")
     if not tracking_uri.startswith(("http://", "https://")):
         logger.warning("Cannot build MLflow URL: tracking_uri has unsupported scheme")
         return ""
@@ -620,7 +594,7 @@ def _run_multi_run_export(
     export_cfg: CaliperOrchestrationExportConfig,
     from_path: Path,
     status_yaml: Path,
-    mlflow_secrets_path: Path,
+    connection: dict[str, Any],
     mlflow_config_data: dict[str, Any] | None,
     run_dirs: list[Path],
     mlflow_run_id: str | None = None,
@@ -644,11 +618,7 @@ def _run_multi_run_export(
         merge_mlflow_files_with_cli,
         write_artifacts_status_yaml,
     )
-    from projects.caliper.engine.file_export.mlflow_secrets import (
-        load_mlflow_secrets_yaml,
-        project_secrets_fields,
-        validate_mlflow_secrets,
-    )
+    from projects.caliper.engine.file_export.mlflow_secrets import project_secrets_fields
     from projects.caliper.engine.model import FileExportBackendResult
 
     logger.info("Multi-run export: %d test run(s) detected", len(run_dirs))
@@ -659,14 +629,9 @@ def _run_multi_run_export(
     # Collect artifact paths after censoring (files may have been modified in-place)
     all_artifact_paths = [p for p in from_path.rglob("*") if p.is_file()]
 
-    secrets_data = None
-    if mlflow_secrets_path is not None:
-        secrets_data = load_mlflow_secrets_yaml(mlflow_secrets_path)
-        validate_mlflow_secrets(secrets_data)
-
     merged_ml = merge_mlflow_files_with_cli(
         None,
-        secrets_data=secrets_data,
+        secrets_data=connection,
         config_data=mlflow_config_data,
         cli_tracking_uri=None,
         cli_experiment=export_cfg.mlflow_experiment,

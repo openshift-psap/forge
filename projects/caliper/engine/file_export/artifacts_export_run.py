@@ -100,13 +100,14 @@ def _load_mlflow_inputs(
     *,
     mlflow_secrets_path: Path | None,
     mlflow_config_data: dict[str, Any] | None,
+    mlflow_secrets_data: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None] | int:
     """Load and validate MLflow secrets + config.
 
     Returns ``(secrets_data, config_data)`` on success, or an int exit code on
     validation failure.
     """
-    secrets_data: dict[str, Any] | None = None
+    secrets_data = mlflow_secrets_data
     config_data: dict[str, Any] | None = None
 
     if mlflow_secrets_path is not None:
@@ -181,6 +182,7 @@ def run_artifacts_export(
     mlflow_run_name: str | None = None,
     mlflow_insecure_tls: bool = False,
     mlflow_secrets_path: Path | None = None,
+    mlflow_secrets_data: dict[str, Any] | None = None,
     mlflow_config_data: dict[str, Any] | None = None,
     dry_run: bool = False,
     verbose: bool = False,
@@ -196,7 +198,8 @@ def run_artifacts_export(
     ``mlflow_config_data`` (a dict). The CLI and orchestration load a YAML file themselves
     when needed, then call this with the resulting dict.
 
-    TLS and credentials belong in ``mlflow_secrets_path``.
+    TLS and credentials can be loaded from ``mlflow_secrets_path`` or supplied as
+    ``mlflow_secrets_data`` by Forge orchestration.
     """
     backends = [b.strip().lower() for b in backend if b.strip()]
     if not backends:
@@ -209,6 +212,7 @@ def run_artifacts_export(
 
     loaded = _load_mlflow_inputs(
         mlflow_secrets_path=mlflow_secrets_path,
+        mlflow_secrets_data=mlflow_secrets_data,
         mlflow_config_data=mlflow_config_data,
     )
     if isinstance(loaded, int):

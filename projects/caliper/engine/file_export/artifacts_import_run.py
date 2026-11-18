@@ -39,6 +39,7 @@ def run_artifacts_import(
     mlflow_experiment: str | None = None,
     mlflow_workspace: str | None = None,
     mlflow_secrets_path: Path | None = None,
+    mlflow_instance: str | None = None,
 ) -> None:
     """Download artifacts from MLflow."""
 
@@ -96,10 +97,15 @@ def run_artifacts_import(
     connection_config = {}
     click.echo("\n🔐 Authentication Configuration:")
 
+    if mlflow_instance is not None and mlflow_secrets_path is None:
+        raise ValueError("--mlflow-instance requires --mlflow-secrets")
+
     if mlflow_secrets_path:
         click.echo(f"  📄 Loading secrets from file: {mlflow_secrets_path}")
         try:
-            secrets_data = load_mlflow_secrets_yaml(mlflow_secrets_path)
+            secrets_data = load_mlflow_secrets_yaml(
+                mlflow_secrets_path, mlflow_instance=mlflow_instance
+            )
             validate_mlflow_secrets(secrets_data)
             connection_config = secrets_data
             click.echo("  ✅ Successfully loaded secrets from file")
@@ -118,6 +124,10 @@ def run_artifacts_import(
             click.echo("  ⚠️  No vault secrets found, proceeding without authentication")
     else:
         click.echo("  ℹ️  No secrets file specified, proceeding without authentication")
+
+    if mlflow_instance is not None and mlflow_tracking_uri:
+        if mlflow_tracking_uri.rstrip("/") != connection_config["tracking_uri"].rstrip("/"):
+            raise ValueError("MLflow tracking URI does not match the selected credentials profile")
 
     # Precedence: CLI (--mlflow-tracking-uri / --from-mlflow-url) > env > secret
     tracking_uri_from_secrets = False

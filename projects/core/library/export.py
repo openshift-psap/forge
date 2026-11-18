@@ -21,6 +21,7 @@ from projects.caliper.orchestration.export import (
     ExportFailedException,
     run_from_orchestration_config,
 )
+from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
 from projects.caliper.orchestration.postprocess import POSTPROCESS_STATUS_FILENAME
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run
@@ -502,16 +503,9 @@ def _update_final_artifacts(artifact_dir, export_status: ExportStatus | None) ->
             warn=False,
         )
 
-        connection = None
-        if vault_name and vault_key:
-            from projects.caliper.engine.file_export.mlflow_secrets import (
-                load_mlflow_secrets_yaml,
-            )
-            from projects.core.library import vault as vault_lib
-
-            secrets_path = vault_lib.get_vault_content_path(vault_name, vault_key)
-            if secrets_path and secrets_path.exists():
-                connection = load_mlflow_secrets_yaml(secrets_path)
+        connection = (
+            load_mlflow_connection(vault_name, vault_key) if vault_name and vault_key else None
+        )
 
         # Upload session artifacts using MLflow backend
 

@@ -65,7 +65,10 @@ def retrieve_vault_secrets(
 
                 content_path = vault_manager.get_vault_content_path(vault_name, content_name)
                 if not (content_path and content_path.exists()):
-                    logger.warning(f"Invalid vault found: {vault_name} {content_name} (missing)")
+                    if not content_def.optional:
+                        logger.warning(
+                            f"Invalid vault found: {vault_name} {content_name} (missing)"
+                        )
                     continue
 
                 try:

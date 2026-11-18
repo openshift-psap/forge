@@ -20,12 +20,8 @@ import re
 import time
 import warnings
 
-from projects.caliper.engine.file_export.mlflow_secrets import (
-    load_mlflow_secrets_yaml,
-    mlflow_connection_env,
-    validate_mlflow_secrets,
-)
-from projects.core.library import vault
+from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
+from projects.caliper.public.file_export import mlflow_connection_env
 from projects.core.library.config import requires
 from projects.core.nightly.base_verifier import NightlyVerifier
 
@@ -83,17 +79,7 @@ class CaliperMLflowVerifier(NightlyVerifier):
         raise RuntimeError(f"MLflow verifier failed after {MAX_ATTEMPTS} attempts") from last_error
 
     def _load_connection(self) -> dict:
-        secret_path = vault.get_vault_content_path(self.secret_name, self.secret_file)
-
-        if secret_path is None or not secret_path.exists():
-            raise FileNotFoundError(
-                f"MLflow secret '{self.secret_name}/{self.secret_file}' not found in vault. "
-                "Ensure the vault configuration is correct."
-            )
-
-        data = load_mlflow_secrets_yaml(secret_path)
-        validate_mlflow_secrets(data)
-        return data
+        return load_mlflow_connection(self.secret_name, self.secret_file)
 
     def _query_latest_run(self) -> str:
         import mlflow
