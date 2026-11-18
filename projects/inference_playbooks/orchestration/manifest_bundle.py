@@ -346,6 +346,32 @@ def load_source_bundle(root: Path, recipe: dict, selection: Path | None = None) 
             }
         )
     bundle = classify_documents(documents)
+    from projects.inference_playbooks.orchestration.private_images import (
+        image_binding,
+        placeholder,
+        replace_images,
+    )
+
+    overrides = {}
+    if platform.get("overrides"):
+        override_path = recipe_path.parent / platform["overrides"]
+        if override_path != override_path.resolve(strict=True) or not override_path.is_relative_to(
+            recipe_path.parent
+        ):
+            raise ValueError("Platform override must be canonical and contained")
+        raw = override_path.read_bytes()
+        if raw != _git_bytes(root, revision, override_path.relative_to(root).as_posix()):
+            raise ValueError("Platform override differs from tested Git revision")
+        overrides = load_metadata_document(raw)
+    private_binding = image_binding(authored.get("serving", {}), overrides)
+    if private_binding:
+        if len(documents) != 1 or bundle["primary"]["kind"] not in {
+            "Deployment",
+            "LeaderWorkerSet",
+            "LLMInferenceService",
+        }:
+            raise ValueError("Private images require one supported serving resource")
+        replace_images(documents[0], placeholder(private_binding), placeholder(private_binding))
     return {
         **bundle,
         "documents": documents,
@@ -354,6 +380,7 @@ def load_source_bundle(root: Path, recipe: dict, selection: Path | None = None) 
         "recipe_path": recipe_relative,
         "recipe_revision": revision,
         "platform": platform,
+        **({"private_image": private_binding} if private_binding else {}),
     }
 
 
@@ -383,6 +410,10 @@ def write_bundle_artifacts(
     if node_selector:
         metadata["ci_node_selector"] = node_selector
         metadata["submission_mode"] = "ci-node-selector-override"
+    if bundle.get("private_image"):
+        metadata["contract_version"] = 3
+        metadata["private_image"] = bundle["private_image"]
+        metadata["submission_mode"] = "private-image-override"
     src.mkdir(parents=True, exist_ok=True)
     (src / "source-bundle.yaml").write_bytes(source_bytes)
     (src / "submitted-bundle.yaml").write_bytes(submitted_bytes)

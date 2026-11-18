@@ -5,3 +5,4 @@ prepare-optional: []
 test: []
 test-optional:
 - psap-forge-hf
+- psap-forge-private-images

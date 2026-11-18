@@ -1,0 +1,7 @@
+env_key: PSAP_FORGE_PRIVATE_IMAGES_SECRET_PATH
+description: Private serving image references for hosted Inference Playbooks runs.
+content:
+  images:
+    file: images.json
+    description: JSON object mapping recipe image_env names to private image references.
+    sensible: true

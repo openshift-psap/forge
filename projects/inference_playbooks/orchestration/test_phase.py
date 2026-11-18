@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 from projects.core.dsl.utils import slugify_identifier
-from projects.core.dsl.utils.k8s import oc, oc_get_json
+from projects.core.dsl.utils.k8s import oc
 from projects.core.library import config, env
 from projects.core.library.postprocess import (
     create_test_metadata,
@@ -30,6 +30,7 @@ from projects.inference_playbooks.orchestration.manifest_bundle import (
     normalized_documents,
     write_bundle_artifacts,
 )
+from projects.inference_playbooks.orchestration.private_images import PrivateImage, oc_get_json
 from projects.inference_playbooks.orchestration.recipe_validation import (
     load_recipe_catalog,
     resolve_model_quantization,
@@ -280,6 +281,15 @@ def _manifest_bundle_from_recipe(recipe: dict) -> dict:
 
 def _launch_recipe(recipe_id: str, recipe: dict) -> None:
     bundle = _manifest_bundle_from_recipe(recipe)
+    private = PrivateImage.load(bundle["private_image"]) if bundle.get("private_image") else None
+    if private:
+        with private.artifact_scope():
+            _launch_recipe_bundle(recipe_id, recipe, bundle, private)
+    else:
+        _launch_recipe_bundle(recipe_id, recipe, bundle, None)
+
+
+def _launch_recipe_bundle(recipe_id: str, recipe: dict, bundle: dict, private) -> None:
     if _clusterless_mode():
         raise RuntimeError(
             "A recipe launch needs a target cluster; rerun the PR test with /cluster <registered-target>"
@@ -332,7 +342,10 @@ def _launch_recipe(recipe_id: str, recipe: dict) -> None:
     name = manifest["metadata"]["name"]
 
     def deploy():
-        _create_checked_bundle(src, namespace, metadata, created)
+        if private:
+            _create_checked_bundle(src, namespace, metadata, created, private=private)
+        else:
+            _create_checked_bundle(src, namespace, metadata, created)
         primary = next(resource for resource in created if resource["kind"] == kind)
         return wait_recipe.run(
             namespace=namespace,
@@ -344,7 +357,10 @@ def _launch_recipe(recipe_id: str, recipe: dict) -> None:
         )
 
     def capture():
-        _capture_created_recipe(namespace, created)
+        if private:
+            _capture_created_recipe(namespace, created, private=private)
+        else:
+            _capture_created_recipe(namespace, created)
 
     def cleanup():
         _delete_created_resources(namespace, created)
@@ -700,8 +716,20 @@ def _resource_type(document: dict) -> str:
     return f"{plural}.{version.split('/')[0]}"
 
 
-def _create_checked_bundle(src: Path, namespace: str, metadata: dict, created: list[dict]) -> None:
+def _create_checked_bundle(
+    src: Path, namespace: str, metadata: dict, created: list[dict], *, private=None
+) -> None:
     documents = checked_submission(src, namespace, metadata)
+    if metadata.get("private_image"):
+        if (
+            private is None
+            or private.binding != metadata["private_image"]
+            or metadata.get("contract_version") != 3
+        ):
+            raise ValueError("Private submission requires the checked vault binding")
+        documents = [private.inject(document) for document in documents]
+    elif private is not None:
+        raise ValueError("Private injection requires a declared private bundle")
     # Provisioning and isolation are external prerequisites, not serving repairs.
     oc_get_json("namespaces", name=namespace)
     for document in documents:
@@ -810,7 +838,7 @@ def _delete_created_resources(namespace: str, resources: list[dict]) -> None:
         raise RuntimeError("Failed to clean up: " + "; ".join(failures))
 
 
-def _capture_created_recipe(namespace: str, resources: list[dict]) -> None:
+def _capture_created_recipe(namespace: str, resources: list[dict], *, private=None) -> None:
     capture_names = {
         "LeaderWorkerSet": "capture_lws_state",
         "LLMInferenceService": "capture_llmisvc_state",
@@ -836,15 +864,41 @@ def _capture_created_recipe(namespace: str, resources: list[dict]) -> None:
             env.NextArtifactDir(capture_names[kind]) if kind in capture_names else nullcontext()
         )
         with context:
-            _capture_admitted_state(namespace, document, current)
+            if private:
+                _capture_admitted_state(namespace, document, current, private=private)
+            else:
+                _capture_admitted_state(namespace, document, current)
 
 
-def _capture_admitted_state(namespace: str, document: dict, current: dict) -> None:
+def _capture_admitted_state(namespace: str, document: dict, current: dict, *, private=None) -> None:
     directory = env.ARTIFACT_DIR / "artifacts"
     directory.mkdir(parents=True, exist_ok=True)
     kind = document["kind"]
     metadata = document["metadata"]
     stem = kind.lower()
+    if private:
+        # Discover observed identities before serializing any resource. Raw Pod logs
+        # are deliberately omitted: arbitrary application output is not a safe capture.
+        pods = wait_recipe.owned_pods(namespace, metadata["uid"])
+        deployments = oc_get_json("deployments.apps", namespace=namespace).get("items", [])
+        owned = [
+            item for item in deployments if wait_recipe.owned_by(item, metadata["uid"], namespace)
+        ]
+        captured = private.capture({"items": [current, *pods, *owned]})["items"]
+        current, safe_pods, safe_owned = (
+            captured[0],
+            captured[1 : 1 + len(pods)],
+            captured[1 + len(pods) :],
+        )
+        for filename, value in (
+            (f"{stem}.yaml", current),
+            (f"{stem}.pods.yaml", {"apiVersion": "v1", "kind": "List", "items": safe_pods}),
+            (f"{stem}.deployments.yaml", {"apiVersion": "v1", "kind": "List", "items": safe_owned}),
+        ):
+            (directory / filename).write_text(
+                yaml.safe_dump(value, sort_keys=False), encoding="utf-8"
+            )
+        return
     (directory / f"{stem}.yaml").write_text(
         yaml.safe_dump(current, sort_keys=False), encoding="utf-8"
     )

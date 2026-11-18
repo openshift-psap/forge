@@ -94,6 +94,8 @@ def checkout(tmp_path, monkeypatch):
         "serving": {"model": "example/model", "port": 8000},
     }
     recipe_path.write_text(yaml.safe_dump(authored))
+    (recipe_path.parent / "platforms").mkdir()
+    (recipe_path.parent / "platforms/vllm-v1.yaml").write_text("{}\n")
     (root / "models/model/model.yaml").write_text(
         "model_id: model\nhuggingface_id: example/model\n"
     )
@@ -485,6 +487,184 @@ def test_artifact_contract_and_final_byte_boundary(checkout, tmp_path):
         handle.write("\n# tampered bytes\n")
     with pytest.raises(ValueError, match="hash mismatch"):
         contract.checked_submission(src, "target", metadata)
+
+
+@pytest.mark.parametrize("kind", ["Deployment", "LeaderWorkerSet", "LLMInferenceService"])
+def test_private_checked_injection_and_capture(checkout, tmp_path, monkeypatch, kind):
+    from projects.inference_playbooks.orchestration.private_images import PrivateImage, placeholder
+
+    binding = {"image_visibility": "private", "image_env": "RHOAI_36_RC_IMAGE"}
+    secret = "restricted.example.org/internal/runtime:secret-rc2"
+    digest = "sha256:" + "c" * 64
+    private = PrivateImage(binding, secret)
+    source = _manifest(kind)
+
+    def containers(value):
+        if isinstance(value, dict):
+            yield from value.get("containers", [])
+            for child in value.values():
+                yield from containers(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from containers(child)
+
+    for container in containers(source):
+        container.update(
+            name="main" if kind == "LLMInferenceService" else "vllm", image=placeholder(binding)
+        )
+    recipe_path = checkout.recipe["recipe_path"]
+    authored = yaml.safe_load(recipe_path.read_text())
+    authored["serving"].update(binding)
+    recipe_path.write_text(yaml.safe_dump(authored))
+    checkout.path.write_text(yaml.safe_dump(source))
+    checkout.snapshot()
+    bundle = contract.load_source_bundle(checkout.root, checkout.recipe, checkout.path)
+    src = tmp_path / "artifacts/src"
+    metadata = contract.write_bundle_artifacts(
+        bundle,
+        contract.normalized_documents(bundle["documents"], "target"),
+        "target",
+        src,
+        Path("/forge"),
+    )
+    assert metadata["contract_version"] == 3
+    monkeypatch.setattr(
+        test_phase, "oc_get_json", lambda resource, **kw: {} if resource == "namespaces" else None
+    )
+    submitted = []
+
+    def create(*args, **kwargs):
+        assert kwargs["handled_secretly"] is True
+        value = json.loads(kwargs["input_text"])
+        assert all(c["image"] == secret for c in containers(value))
+        value["metadata"]["uid"] = "created"
+        submitted.append(value)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(value))
+
+    monkeypatch.setattr(test_phase, "oc", create)
+    created = []
+    test_phase._create_checked_bundle(src, "target", metadata, created, private=private)
+    assert created == submitted
+    pod = {
+        "kind": "Pod",
+        "metadata": {"name": "pod"},
+        "spec": {"containers": [copy.deepcopy(next(containers(created[0])))]},
+        "status": {
+            "containerStatuses": [
+                {
+                    "name": next(containers(created[0]))["name"],
+                    "ready": True,
+                    "image": secret,
+                    "imageID": secret + "@" + digest,
+                }
+            ]
+        },
+    }
+    monkeypatch.setattr(test_phase.wait_recipe, "owned_pods", lambda *a: [pod])
+    monkeypatch.setattr(test_phase, "oc_get_json", lambda *a, **kw: {"items": []})
+    monkeypatch.setattr(test_phase.env, "ARTIFACT_DIR", src.parent)
+    monkeypatch.setattr(
+        test_phase, "oc", lambda *a, **kw: pytest.fail("private captures must not read Pod logs")
+    )
+    original_write = Path.write_text
+
+    def checked_write(path, text, *args, **kwargs):
+        assert all(
+            token not in text
+            for token in (secret, "restricted.example.org", "secret-rc2", digest, "c" * 64)
+        )
+        return original_write(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", checked_write)
+    test_phase._capture_admitted_state("target", created[0], created[0], private=private)
+    captured = yaml.safe_load((src.parent / "artifacts" / f"{kind.lower()}.pods.yaml").read_text())
+    assert captured["items"][0]["status"]["containerStatuses"][0]["imageID"] == "private"
+    assert all(secret not in path.read_text() for path in src.rglob("*.yaml"))
+    with pytest.raises(ValueError, match="vault binding"):
+        test_phase._create_checked_bundle(src, "target", metadata, [])
+
+
+def test_private_vault_and_errors_do_not_echo_values(tmp_path, monkeypatch):
+    from projects.inference_playbooks.orchestration import private_images as images
+
+    binding = {"image_visibility": "private", "image_env": "RHOAI_36_RC_IMAGE"}
+    secret = "restricted.example.org/internal/runtime:secret-rc2"
+    path = tmp_path / "vault/images.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({binding["image_env"]: secret}))
+    monkeypatch.setattr(images.env, "ARTIFACT_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(images.vault, "get_vault_content_path", lambda *a: path)
+    assert secret not in repr(images.PrivateImage.load(binding))
+    path.write_text("{invalid " + secret)
+    with pytest.raises(ValueError) as error:
+        images.PrivateImage.load(binding)
+    assert secret not in str(error.value)
+    monkeypatch.setattr(
+        images, "_oc_get_json", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError(secret))
+    )
+    with pytest.raises(RuntimeError) as error:
+        images.oc_get_json("pods")
+    assert secret not in str(error.value)
+
+
+@pytest.mark.parametrize("failure", [None, "workload", "leak"])
+def test_private_publication_checks_whole_staging_tree(tmp_path, failure, monkeypatch):
+    from projects.inference_playbooks.orchestration import private_images as images
+
+    # Other fixtures replace this dynamic module attribute with a plain value.
+    monkeypatch.delattr(images.env, "ARTIFACT_DIR", raising=False)
+    private = images.PrivateImage(
+        {"image_visibility": "private", "image_env": "RC_IMAGE"},
+        "restricted.example.org/internal/runtime:secret-rc2",
+    )
+    destination = tmp_path / "published"
+
+    def execute():
+        with images.env.TempArtifactDir(destination), private.artifact_scope():
+            (images.env.ARTIFACT_DIR / "measurements.json").write_text('{"throughput": 123}')
+            if failure == "leak":
+                (images.env.ARTIFACT_DIR / "unexpected.txt").write_text(private.value)
+            if failure == "workload":
+                raise RuntimeError("synthetic workload failure")
+            assert not (destination / "measurements.json").exists()
+
+    if failure:
+        with pytest.raises((RuntimeError, ValueError)):
+            execute()
+    else:
+        execute()
+    assert (destination / "measurements.json").exists() == (failure != "leak")
+    assert not (destination / "unexpected.txt").exists()
+
+
+def test_private_launch_publishes_only_checked_staging(launch, monkeypatch):
+    from projects.inference_playbooks.orchestration.private_images import PrivateImage, placeholder
+
+    binding = {"image_visibility": "private", "image_env": "RC_IMAGE"}
+    private = PrivateImage(binding, "restricted.example.org/internal/runtime:secret-rc2")
+    path = launch.checkout.recipe["recipe_path"]
+    recipe = yaml.safe_load(path.read_text())
+    recipe["serving"].update(binding)
+    path.write_text(yaml.safe_dump(recipe))
+    source = _manifest()
+    source["spec"]["template"]["spec"]["containers"][0].update(
+        name="vllm", image=placeholder(binding)
+    )
+    launch.checkout.path.write_text(yaml.safe_dump(source))
+    launch.checkout.snapshot()
+    monkeypatch.setattr(PrivateImage, "load", lambda binding: private)
+    monkeypatch.setattr(test_phase, "_capture_created_recipe", lambda *args, **kw: None)
+    monkeypatch.delattr(test_phase.env, "ARTIFACT_DIR", raising=False)
+    with test_phase.env.TempArtifactDir(launch.src.parent):
+        test_phase._launch_recipe("synthetic", launch.checkout.recipe)
+    assert placeholder(binding) in (launch.src / "submitted-bundle.yaml").read_text()
+    assert all(private.value not in p.read_text() for p in launch.src.rglob("*.yaml"))
+    posts = [
+        json.loads(kwargs["input_text"])
+        for args, kwargs in launch.actions
+        if isinstance(args, tuple) and args[0] == "create"
+    ]
+    assert posts[0]["spec"]["template"]["spec"]["containers"][0]["image"] == private.value
 
 
 @pytest.fixture
@@ -1427,7 +1607,13 @@ def test_direct_selection_reads_only_selected_recipe_and_dependencies(checkout, 
         "recipe_id: same\nrecipe_id: duplicate\nunsupported: !!python/object:do_not_construct {}\n"
     )
     checkout.snapshot()
-    allowed = {recipe_path, model_path, hardware_path, checkout.path}
+    allowed = {
+        recipe_path,
+        model_path,
+        hardware_path,
+        checkout.path,
+        recipe_path.parent / "platforms/vllm-v1.yaml",
+    }
     seen = set()
     original_open, original_glob = Path.open, Path.glob
 

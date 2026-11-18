@@ -4,7 +4,8 @@ import ipaddress
 from urllib.parse import urlparse
 
 from projects.core.dsl import entrypoint, execute_tasks, retry, task
-from projects.core.dsl.utils.k8s import oc, oc_get_json
+from projects.core.dsl.utils.k8s import oc
+from projects.inference_playbooks.orchestration.private_images import oc_get_json
 
 CONTROLLERS = {
     ("v1", "Pod"): "pods",
@@ -56,6 +57,7 @@ def wait_for_primary(args, ctx):
         f"--timeout={args.timeout_seconds}s",
         timeout_seconds=args.timeout_seconds + 15,
         log_stdout=False,
+        handled_secretly=True,
     )
     get_primary(args.namespace, args.kind, args.name, args.uid)
     return "Run-created recipe primary is ready"
