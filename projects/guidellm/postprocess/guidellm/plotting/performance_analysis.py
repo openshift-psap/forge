@@ -13,6 +13,7 @@ from jinja2 import Environment, FileSystemLoader
 from projects.caliper.engine.model import UnifiedResultRecord
 from projects.caliper.engine.parameter_matrix import (
     create_legend_name,
+    create_legend_title,
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import (
@@ -236,6 +237,14 @@ def _safe_get_curve_value(curves: dict, metric_name: str, index: int, default: A
         return default
 
 
+def _numeric_legend_sort_key(name: str) -> tuple[int, float | str]:
+    """Sort key that orders numeric values numerically, non-numeric last."""
+    try:
+        return (0, float(name))
+    except (ValueError, TypeError):
+        return (1, name)
+
+
 def _custom_configuration_sort_key(config_name: str) -> tuple[int, str]:
     """
     Create a sort key that ensures heterogeneous configurations appear before multi-turn.
@@ -395,6 +404,7 @@ def create_dataframe_from_records(
 
     logger.info(f"✅ Successfully processed {len(data)} data points from {len(records)} records")
     df = pd.DataFrame(data)
+    df.attrs["legend_title"] = create_legend_title(varying_params)
 
     # Sort for consistent ordering
     logger.info("📋 Organizing data by configuration, concurrency, and request rate...")
@@ -470,7 +480,10 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
         title = f"Request Throughput vs Concurrency by Configuration{title_context}"
 
         # Get ordered configuration list to maintain consistent legend order
-        config_order = df["test_configuration"].drop_duplicates().tolist()
+        config_order = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
 
         fig = px.scatter(
             df,
@@ -497,7 +510,11 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
         )
 
         fig.update_traces(textposition="top center")
-        fig.update_layout(showlegend=True, **PLOT_CONFIG)
+        fig.update_layout(
+            showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
+            **PLOT_CONFIG,
+        )
         fig.update_yaxes(rangemode="tozero")
 
         logger.info("✅ Throughput scaling plot created successfully")
@@ -521,7 +538,10 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
         title = f"Latency vs Throughput Trade-off{title_context}"
 
         # Get ordered configuration list to maintain consistent legend order
-        config_order = df["test_configuration"].drop_duplicates().tolist()
+        config_order = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
 
         fig = px.scatter(
             df,
@@ -546,7 +566,11 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
             category_orders={"test_configuration": config_order},
         )
 
-        fig.update_layout(showlegend=True, **PLOT_CONFIG)
+        fig.update_layout(
+            showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
+            **PLOT_CONFIG,
+        )
 
         logger.info("✅ Latency vs throughput plot created successfully")
         return fig
@@ -575,7 +599,10 @@ def _build_line_with_replica_scatter(
     import plotly.express as px
     import plotly.graph_objects as go
 
-    config_order = df["test_configuration"].drop_duplicates().tolist()
+    config_order = sorted(
+        df["test_configuration"].drop_duplicates().tolist(),
+        key=_numeric_legend_sort_key,
+    )
     colors = px.colors.qualitative.Set1
     color_map = {cfg: colors[i % len(colors)] for i, cfg in enumerate(config_order)}
 
@@ -669,6 +696,7 @@ def _build_line_with_replica_scatter(
         xaxis_title=x_label,
         yaxis_title=y_label,
         showlegend=True,
+        legend_title_text=df.attrs.get("legend_title"),
         **PLOT_CONFIG,
     )
     fig.update_yaxes(rangemode="tozero")
@@ -757,7 +785,10 @@ def create_cumulated_throughput_vs_concurrency_plot(df: pd.DataFrame, title_cont
             logger.info("   ⏩ Skipping cumulated plot — no multi-replica data")
             return None
 
-        config_order = df["test_configuration"].drop_duplicates().tolist()
+        config_order = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
 
         cumulated = (
             df.groupby(["test_configuration", "intended_concurrency"], sort=False)
@@ -805,6 +836,7 @@ def create_cumulated_throughput_vs_concurrency_plot(df: pd.DataFrame, title_cont
             xaxis_title="Cumulated Concurrency Level",
             yaxis_title="Cumulated Tokens per Second",
             showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
             **PLOT_CONFIG,
         )
         fig.update_yaxes(rangemode="tozero")
@@ -942,7 +974,10 @@ def create_ttft_percentiles_plot(df: pd.DataFrame, title_context: str = ""):
 
         fig = go.Figure()
 
-        configurations = df["test_configuration"].drop_duplicates().tolist()
+        configurations = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
         available_colors = px.colors.qualitative.Set1
         color_map = {
             config: available_colors[i % len(available_colors)]
@@ -978,6 +1013,7 @@ def create_ttft_percentiles_plot(df: pd.DataFrame, title_context: str = ""):
             xaxis_title="Concurrency Level (Requested)",
             yaxis_title="TTFT (s)",
             showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
             **PLOT_CONFIG_LARGE,
         )
         fig.update_yaxes(rangemode="tozero")
@@ -1036,7 +1072,10 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
         fig = go.Figure()
 
         # Get unique configurations and colors - maintain custom sort order
-        configurations = df["test_configuration"].drop_duplicates().tolist()
+        configurations = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
         logger.debug(
             f"   Plotting {len(configurations)} configurations with percentile distributions..."
         )
@@ -1077,6 +1116,7 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
             xaxis_title="Concurrency Level (Requested)",
             yaxis_title="Output Tokens per Second",
             showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
             **PLOT_CONFIG_LARGE,
         )
         fig.update_yaxes(rangemode="tozero")

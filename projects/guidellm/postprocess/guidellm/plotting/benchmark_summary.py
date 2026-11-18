@@ -6,6 +6,7 @@ from pathlib import Path
 
 from projects.caliper.engine.parameter_matrix import (
     create_legend_name,
+    create_legend_title,
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import write_full_page_html
@@ -39,9 +40,16 @@ def generate_benchmark_summary(records: list, output_dir: Path) -> str | None:
         # Create figure
         fig = go.Figure()
 
+        def _numeric_sort_key(item):
+            name = item[0]
+            try:
+                return (0, float(name))
+            except (ValueError, TypeError):
+                return (1, name)
+
         # Add traces for each group
         colors = ["blue", "red", "green", "purple", "orange", "brown", "pink", "gray"]
-        for i, (legend_name, data) in enumerate(sorted(data_groups.items())):
+        for i, (legend_name, data) in enumerate(sorted(data_groups.items(), key=_numeric_sort_key)):
             color = colors[i % len(colors)]
 
             fig.add_trace(
@@ -56,10 +64,12 @@ def generate_benchmark_summary(records: list, output_dir: Path) -> str | None:
             )
 
         # Update layout
+        legend_title = create_legend_title(varying_params)
         fig.update_layout(
             title="Throughput vs Concurrency",
             xaxis_title="Concurrency Level",
             yaxis_title="Tokens per Second",
+            legend_title_text=legend_title,
             width=800,
             height=500,
         )
