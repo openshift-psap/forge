@@ -1,5 +1,20 @@
 # DSL Framework Changelog
 
+## 2026-11-13 - Boolean CLI Flags: --flag / --no-flag Pairs
+
+### CLI Argument Parsing
+- **BooleanOptionalAction for bool parameters**: toolbox CLI booleans are now a `--flag` / `--no-flag` pair
+  - **Explicit False**: `--no-validate-backend` sets the parameter to False; previously False was impossible to request
+  - **Default Preservation**: omitting both flags keeps the function's declared default
+  - **Bug Fix**: the previous `store_true` flags defaulted to False when absent, silently clobbering declared defaults like `validate_backend: bool = True` for every CLI invocation
+
+### Files Modified
+- `projects/core/dsl/cli.py` - Boolean branch of `create_dynamic_parser` now uses `argparse.BooleanOptionalAction` with the function's default
+
+### Benefits
+- **No Silent Overrides**: `param: bool = True` in a `run()` signature is honored by the CLI instead of being forced to False
+- **Full Boolean Expressiveness**: scripts can now pass either value explicitly (e.g. the ag_praxis poc launch script passes `--no-validate-backend`)
+
 ## 2026-06-30 - Logging Enhancements & Timestamp Tracking
 
 ### Logging Improvements

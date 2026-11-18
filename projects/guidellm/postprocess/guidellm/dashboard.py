@@ -270,10 +270,10 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
 
     benchmarks.sort(
         key=lambda benchmark: float(
-            benchmark.get("metrics", {})
-            .get("requests_per_second", {})
-            .get("successful", {})
-            .get("mean", 0)
+            (
+                benchmark.get("config", {}).get("strategy", {})
+                or benchmark.get("scheduler", {}).get("strategy", {})
+            ).get("streams", 0)
             or 0
         )
     )
@@ -441,17 +441,23 @@ def _extract_dashboard_metrics(node: BaseTestNode) -> tuple[dict[str, Any], dict
         )
         scatter_times: list[float] = []
         scatter_latencies: list[float] = []
+        scatter_output_tokens: list[Any] = []
+        scatter_prompt_tokens: list[Any] = []
         for req in benchmark.get("requests", {}).get("successful", []):
             t = req.get("request_start_time")
             lat = req.get("request_latency")
             if t is not None and lat is not None:
                 scatter_times.append(t - bench_start)
                 scatter_latencies.append(lat)
+                scatter_output_tokens.append(req.get("output_tokens"))
+                scatter_prompt_tokens.append(req.get("prompt_tokens"))
         request_scatter.append(
             {
                 "concurrency": intended_concurrency,
                 "start_times": scatter_times,
                 "latencies": scatter_latencies,
+                "output_tokens": scatter_output_tokens,
+                "prompt_tokens": scatter_prompt_tokens,
             }
         )
 
@@ -733,17 +739,27 @@ def _merge_replica_performance_curves(
             replica_count = len(indices)
             combined_times: list[float] = []
             combined_latencies: list[float] = []
+            combined_output_tokens: list[Any] = []
+            combined_prompt_tokens: list[Any] = []
             for i in indices:
                 if i < len(request_scatter):
-                    combined_times.extend(request_scatter[i].get("start_times", []))
-                    combined_latencies.extend(request_scatter[i].get("latencies", []))
-            merged_scatter.append(
-                {
-                    "concurrency": conc * replica_count,
-                    "start_times": combined_times,
-                    "latencies": combined_latencies,
-                }
-            )
+                    point = request_scatter[i]
+                    combined_times.extend(point.get("start_times", []))
+                    combined_latencies.extend(point.get("latencies", []))
+                    combined_output_tokens.extend(point.get("output_tokens") or [])
+                    combined_prompt_tokens.extend(point.get("prompt_tokens") or [])
+            merged_point = {
+                "concurrency": conc * replica_count,
+                "start_times": combined_times,
+                "latencies": combined_latencies,
+            }
+            # keep token counts only when they stay aligned with the request times
+            if len(combined_output_tokens) == len(combined_times) and len(
+                combined_prompt_tokens
+            ) == len(combined_times):
+                merged_point["output_tokens"] = combined_output_tokens
+                merged_point["prompt_tokens"] = combined_prompt_tokens
+            merged_scatter.append(merged_point)
 
     return merged_curves, merged_breakdown, merged_scatter
 

@@ -2,19 +2,21 @@
 #   NAMESPACE: Target namespace
 #   POD_NAME: Pod name regex for the resource capture
 #   POD_NAME_EXCLUDE: Pod name regex to exclude (default: ^$ matches nothing)
+#   CONTAINER: Container name regex for the resource capture (default: .* matches all)
 
 - param_defaults:
     POD_NAME_EXCLUDE: "^$"
+    CONTAINER: ".*"
 
 - query: >-
-    rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}[5m])
+    rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}", container=~"{{.CONTAINER}}"}[5m])
   metricName: cpu_usage_by_pod
   description: Cpu usage by pod
   unit: cores
   legendLabels: [container, pod]
 
 - query: >-
-    avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}"}[5m]))
-  metricName: avg_cpu_usage
-  description: Avg cpu usage
+    sum(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}", container=~"{{.CONTAINER}}"}[5m]))
+  metricName: total_cpu_usage
+  description: Total cpu usage
   unit: cores

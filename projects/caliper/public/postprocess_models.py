@@ -39,6 +39,7 @@ class StepStatus(StrEnum):
     FAILED = "failed"
     WARNING = "warning"
     DISABLED = "disabled"
+    SKIPPED = "skipped"
     REGRESSION_DETECTED = "regression_detected"
 
 

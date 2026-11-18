@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from projects.caliper.engine.file_export.censoring import apply_censoring_to_artifacts
+from projects.caliper.engine.file_export.file_stats import describe_files
 from projects.caliper.orchestration.export_config import CaliperOrchestrationExportConfig
 from projects.core.library import ci as ci_lib
 from projects.core.library import env
@@ -202,7 +203,7 @@ def orchestration_apply_censoring(
     all_artifact_paths = [p for p in from_path.rglob("*") if p.is_file()]
 
     logger.info(
-        f"Starting artifact censoring: {len(all_artifact_paths)} files to scan from {from_path}"
+        f"Starting artifact censoring: {describe_files(all_artifact_paths)} to scan from {from_path}"
     )
 
     # Apply in-place censoring

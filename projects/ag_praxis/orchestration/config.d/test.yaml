@@ -12,5 +12,15 @@ skip_finalizers: false
 
 endpoints:
 - svc
-- maas
+- maas/ipp
 - maas/praxis
+
+matrices:
+  guidellm:
+    enabled: false
+    labels:
+      test.payload: payload
+      test.sweep: sweep
+    dimensions:
+      test.payload: [XS, default, L, XL]
+      test.sweep: [small]
