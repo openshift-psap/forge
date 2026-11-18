@@ -676,6 +676,14 @@ def init(orchestration_dir, *, apply_config_overrides=True, apply_cluster_config
     project.apply_config_overrides(
         ignore_not_found=lenient_presets
     )  # reapply so that the value overrides are applied last
+    mlflow_instance = project.get_config("mlflow_instance", None, warn=False, print=False)
+    if mlflow_instance is not None:
+        if mlflow_instance not in ("prod", "staging"):
+            raise ValueError("mlflow_instance must be 'prod' or 'staging'")
+        filename = (
+            "mlflow-staging-secret.yaml" if mlflow_instance == "staging" else "mlflow-secret.yaml"
+        )
+        project.set_config("caliper.export.backend.mlflow.secrets.vault.mlflow_secret", filename)
 
 
 def reload(orchestration_dir, *, apply_config_overrides=True, apply_cluster_config=True):

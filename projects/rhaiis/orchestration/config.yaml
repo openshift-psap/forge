@@ -1,3 +1,6 @@
+# prod or staging. Selects the credentials file in the MLflow export vault.
+mlflow_instance: prod
+
 vaults:
 - psap-forge-notifications
 - psap-forge-mlflow-export
