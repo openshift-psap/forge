@@ -742,6 +742,8 @@ def record_routing_capture_warnings(args, context):
             "\n".join(warnings) + "\n", encoding="utf-8"
         )
     return f"{len(warnings)} routing capture warnings"
+
+
 def _container_crash(pod_name: str, status: dict) -> str | None:
     """Describe how a container crashed, or None if it did not."""
     container_name = status.get("name", "<unknown>")
