@@ -3,12 +3,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from projects.caliper.engine.file_export.mlflow_secrets import load_mlflow_secrets_yaml
+from projects.caliper.engine.mlflow_connection import load_mlflow_connection_file
 from projects.caliper.orchestration.mlflow_credentials import (
     INSTANCE_CONFIG_PATH,
     INSTANCE_SECRET_KEY,
     load_mlflow_connection,
-    resolve_mlflow_credentials,
 )
 from projects.core.library import config, env, vault
 
@@ -42,10 +41,6 @@ def test_mlflow_instance_selects_explicit_file_and_profile(
         (tmp_path / INSTANCE_SECRET_KEY).write_text(yaml.safe_dump({"staging": STAGING}))
     monkeypatch.setattr(vault, "get_vault_content_path", lambda name, key: tmp_path / key)
 
-    path, instance = resolve_mlflow_credentials(vault_ref["name"], vault_ref["mlflow_secret"])
-
-    assert path.name == (INSTANCE_SECRET_KEY if override else DEFAULT_KEY)
-    assert instance == override
     assert load_mlflow_connection(vault_ref["name"], vault_ref["mlflow_secret"]) == (
         STAGING if override else PROD
     )
@@ -81,6 +76,6 @@ def test_mlflow_profile_names_come_from_file(tmp_path):
     qa = {"tracking_uri": "https://qa.example", "token": "fake-qa"}
     path.write_text(yaml.safe_dump({"qa": qa, "prod": PROD}))
 
-    assert load_mlflow_secrets_yaml(path, mlflow_instance="qa") == qa
+    assert load_mlflow_connection_file(path, mlflow_instance="qa") == qa
     with pytest.raises(ValueError, match="profile 'staging' is missing"):
-        load_mlflow_secrets_yaml(path, mlflow_instance="staging")
+        load_mlflow_connection_file(path, mlflow_instance="staging")

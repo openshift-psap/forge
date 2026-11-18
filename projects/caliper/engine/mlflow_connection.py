@@ -1,4 +1,4 @@
-"""Load MLflow connection settings from a YAML file (no shell env required)."""
+"""Read, validate, and apply Caliper MLflow connections."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import yaml
 
@@ -73,7 +73,9 @@ def _read_mlflow_secrets_yaml(path: Path) -> dict[str, Any]:
     return raw
 
 
-def load_mlflow_secrets_yaml(path: Path, *, mlflow_instance: str | None = None) -> dict[str, Any]:
+def load_mlflow_connection_file(
+    path: Path, *, mlflow_instance: str | None = None
+) -> dict[str, Any]:
     """Prepare the selected MLflow credentials for callers as a flat mapping."""
     raw = _read_mlflow_secrets_yaml(path)
     if mlflow_instance is not None:
@@ -143,6 +145,18 @@ def connection_to_env(conn: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def resolve_mlflow_tracking_uri(
+    connection: dict[str, Any], requested_uri: str | None = None
+) -> str | None:
+    """Use the connection's endpoint and reject any conflicting requested endpoint."""
+    uri = connection.get("tracking_uri")
+    if uri and requested_uri and uri.rstrip("/") != requested_uri.rstrip("/"):
+        raise ValueError("Requested MLflow tracking URI does not match the selected connection")
+    selected_uri = uri or requested_uri
+    assert_tracking_uri_has_no_userinfo(selected_uri)
+    return selected_uri
+
+
 @contextmanager
 def mlflow_connection_env(conn: dict[str, Any]) -> Iterator[None]:
     """
@@ -167,30 +181,96 @@ def mlflow_connection_env(conn: dict[str, Any]) -> Iterator[None]:
                 os.environ[k] = previous[k]  # type: ignore[assignment]
 
 
-def artifacts_export_mlflow_verbose_lines(
-    *,
-    tracking_uri: str | None,
-    experiment: str | None,
-    run_id: str | None,
-    run_name: str | None = None,
-    config_is_inline: bool = False,
-    secrets_path: Path | None = None,
-) -> list[str]:
-    """
-    Human-readable MLflow settings for ``--verbose`` (no secrets or tokens are printed).
-    """
-    lines: list[str] = ["  MLflow:"]
-    lines.append(f"    Tracking URI: {tracking_uri or '(not set)'}")
-    if secrets_path is not None:
-        lines.append(f"    Secrets file: {secrets_path}")
-    if config_is_inline:
-        lines.append("    Settings: (non-secret config dict passed to the export runner)")
+@contextmanager
+def mlflow_tracking_context(
+    connection: dict[str, Any], *, workspace: str | None = None
+) -> Iterator[None]:
+    """Apply a connection for an MLflow operation and restore the caller's state."""
+    import mlflow
 
-    lines.append(f"    Experiment: {experiment or '(default)'}")
-    if run_id:
-        lines.append(f"    Run ID: {run_id} (existing run; --mlflow-run-name ignored)")
-    elif run_name:
-        lines.append(f"    Run name (new run): {run_name}")
-    else:
-        lines.append("    Run name (new run): (MLflow default random name)")
-    return lines
+    previous_uri = mlflow.get_tracking_uri()
+    previous_workspace = os.environ.get("MLFLOW_WORKSPACE")
+    with mlflow_connection_env(connection):
+        try:
+            if uri := connection.get("tracking_uri"):
+                mlflow.set_tracking_uri(uri)
+            if workspace is not None:
+                os.environ["MLFLOW_WORKSPACE"] = workspace
+            yield
+        finally:
+            mlflow.set_tracking_uri(previous_uri)
+            if previous_workspace is None:
+                os.environ.pop("MLFLOW_WORKSPACE", None)
+            else:
+                os.environ["MLFLOW_WORKSPACE"] = previous_workspace
+
+
+def parse_mlflow_url(url: str) -> dict[str, str | None]:
+    """
+    Parse MLflow web UI URL and extract components.
+
+    Supports URLs like:
+    https://mlflow.apps.example.com/#/experiments/231/runs/3147e102.../artifacts/path?workspace=forge
+
+    Returns dict with: endpoint, experiment_id, run_id, artifact_path, workspace
+    """
+    try:
+        parsed = urlparse(url)
+
+        # Extract base endpoint (scheme + netloc + path)
+        endpoint = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+        # Parse fragment (the part after #) - this may contain query params too
+        fragment = parsed.fragment or ""
+        workspace = None
+        artifact_path = None
+        experiment_id = None
+        run_id = None
+
+        # Split fragment into path and query parts
+        if "?" in fragment:
+            fragment_path, fragment_query = fragment.split("?", 1)
+            # Parse fragment query parameters (for workspace)
+            fragment_params = parse_qs(fragment_query)
+            workspace = fragment_params.get("workspace", [None])[0]
+        else:
+            fragment_path = fragment
+
+        # Also check main URL query parameters (fallback)
+        if not workspace and parsed.query:
+            query_params = parse_qs(parsed.query)
+            workspace = query_params.get("workspace", [None])[0]
+
+        # Parse the fragment path: /experiments/231/runs/3147e102.../artifacts/path
+        if fragment_path.startswith("/"):
+            fragment_path = fragment_path[1:]  # Remove leading slash
+
+        parts = fragment_path.split("/")
+
+        # Expected patterns:
+        # 1. experiments/231/runs/RUN_ID/artifacts/PATH (standard)
+        # 2. experiments/231/runs/RUN_ID/PATH (direct artifact path)
+        if len(parts) >= 4 and parts[0] == "experiments" and parts[2] == "runs":
+            experiment_id = parts[1]
+            run_id = parts[3]
+
+            # Check for artifacts path
+            if len(parts) > 4:
+                if parts[4] == "artifacts":
+                    # Standard format: /experiments/231/runs/RUN_ID/artifacts/PATH
+                    if len(parts) > 5:
+                        artifact_path = "/".join(parts[5:])
+                else:
+                    # Alternative format: /experiments/231/runs/RUN_ID/PATH
+                    artifact_path = "/".join(parts[4:])
+
+        return {
+            "tracking_uri": endpoint,
+            "experiment": experiment_id,
+            "run_id": run_id,
+            "artifact_path": artifact_path,
+            "workspace": workspace,
+        }
+
+    except Exception as e:
+        raise ValueError(f"Failed to parse MLflow URL: {e}") from e

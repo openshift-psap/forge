@@ -15,13 +15,12 @@ every FORGE project already has.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 import warnings
 
 from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
-from projects.caliper.public.file_export import mlflow_connection_env
+from projects.caliper.public.mlflow import mlflow_tracking_context
 from projects.core.library.config import requires
 from projects.core.nightly.base_verifier import NightlyVerifier
 
@@ -63,7 +62,7 @@ class CaliperMLflowVerifier(NightlyVerifier):
         last_error = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                with mlflow_connection_env(connection):
+                with mlflow_tracking_context(connection, workspace=self.workspace):
                     return self._query_latest_run()
             except Exception as e:
                 last_error = e
@@ -85,13 +84,8 @@ class CaliperMLflowVerifier(NightlyVerifier):
         import mlflow
         import urllib3
 
-        warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
-
-        previous_workspace = os.environ.get("MLFLOW_WORKSPACE")
-        try:
-            if self.workspace:
-                os.environ["MLFLOW_WORKSPACE"] = self.workspace
-
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
             client = mlflow.tracking.MlflowClient()
 
             experiment = client.get_experiment_by_name(self.experiment)
@@ -115,11 +109,6 @@ class CaliperMLflowVerifier(NightlyVerifier):
             logger.info("Latest MLflow run: %s", run_name)
 
             return self._extract_version(run_name)
-        finally:
-            if previous_workspace is None:
-                os.environ.pop("MLFLOW_WORKSPACE", None)
-            else:
-                os.environ["MLFLOW_WORKSPACE"] = previous_workspace
 
     def _extract_version(self, run_name: str) -> str:
         match = self._version_re.search(run_name)

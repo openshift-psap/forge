@@ -465,32 +465,17 @@ def precreate_mlflow_run(
     """
     import mlflow
 
-    from projects.caliper.public.file_export import mlflow_connection_env
+    from projects.caliper.public.mlflow import mlflow_tracking_context
 
-    tracking_uri = connection.get("tracking_uri", "")
+    with mlflow_tracking_context(connection, workspace=workspace):
+        if experiment:
+            mlflow.set_experiment(experiment)
 
-    prev_workspace = os.environ.get("MLFLOW_WORKSPACE")
-    prev_tracking_uri = mlflow.get_tracking_uri()
-    try:
-        with mlflow_connection_env(connection):
-            if tracking_uri:
-                mlflow.set_tracking_uri(tracking_uri)
-            if workspace:
-                os.environ["MLFLOW_WORKSPACE"] = workspace
-            if experiment:
-                mlflow.set_experiment(experiment)
-
-            run_name = os.environ.get("FJOB_NAME")
-            with mlflow.start_run(run_name=run_name):
-                active = mlflow.active_run()
-                run_id = active.info.run_id
-                experiment_id = str(active.info.experiment_id)
-    finally:
-        if prev_workspace is not None:
-            os.environ["MLFLOW_WORKSPACE"] = prev_workspace
-        else:
-            os.environ.pop("MLFLOW_WORKSPACE", None)
-        mlflow.set_tracking_uri(prev_tracking_uri)
+        run_name = os.environ.get("FJOB_NAME")
+        with mlflow.start_run(run_name=run_name):
+            active = mlflow.active_run()
+            run_id = active.info.run_id
+            experiment_id = str(active.info.experiment_id)
 
     meta = MlflowDestination(
         run_id=run_id,
@@ -537,7 +522,7 @@ def build_mlflow_run_url(
     """Construct the MLflow run URL from the selected connection and marker."""
     from urllib.parse import quote
 
-    from projects.caliper.public.file_export import assert_tracking_uri_has_no_userinfo
+    from projects.caliper.public.mlflow import assert_tracking_uri_has_no_userinfo
 
     try:
         destination = read_mlflow_destination_marker()
@@ -618,8 +603,8 @@ def _run_multi_run_export(
         merge_mlflow_files_with_cli,
         write_artifacts_status_yaml,
     )
-    from projects.caliper.engine.file_export.mlflow_secrets import project_secrets_fields
     from projects.caliper.engine.model import FileExportBackendResult
+    from projects.caliper.public.mlflow import project_secrets_fields
 
     logger.info("Multi-run export: %d test run(s) detected", len(run_dirs))
 

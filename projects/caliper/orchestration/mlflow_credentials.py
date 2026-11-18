@@ -3,14 +3,14 @@
 from pathlib import Path
 from typing import Any
 
-from projects.caliper.public.file_export import load_mlflow_secrets_yaml, validate_mlflow_secrets
+from projects.caliper.public.mlflow import load_mlflow_connection_file, validate_mlflow_secrets
 from projects.core.library import config, vault
 
 INSTANCE_CONFIG_PATH = "caliper.export.backend.mlflow.instance"
 INSTANCE_SECRET_KEY = "mlflow-instance-secrets.yaml"
 
 
-def resolve_mlflow_credentials(vault_name: str, default_key: str) -> tuple[Path, str | None]:
+def _resolve_mlflow_credentials(vault_name: str, default_key: str) -> tuple[Path, str | None]:
     """Keep the existing file unless the project explicitly selects a profile."""
     instance = (
         config.project.get_config(INSTANCE_CONFIG_PATH, None, warn=False, print=False)
@@ -29,7 +29,7 @@ def resolve_mlflow_credentials(vault_name: str, default_key: str) -> tuple[Path,
 
 def load_mlflow_connection(vault_name: str, default_key: str) -> dict[str, Any]:
     """Load and validate credentials for the configured MLflow instance."""
-    path, instance = resolve_mlflow_credentials(vault_name, default_key)
-    connection = load_mlflow_secrets_yaml(path, mlflow_instance=instance)
+    path, instance = _resolve_mlflow_credentials(vault_name, default_key)
+    connection = load_mlflow_connection_file(path, mlflow_instance=instance)
     validate_mlflow_secrets(connection)
     return connection
