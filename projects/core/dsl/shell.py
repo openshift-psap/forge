@@ -35,6 +35,7 @@ def run(
     input_text: str | None = None,
     timeout_seconds: float | None = None,
     text: bool = True,
+    handled_secretly: bool = False,
 ) -> CommandResult:
     """
     Execute a shell command
@@ -49,6 +50,7 @@ def run(
         input_text: Optional text to send to command's stdin
         timeout_seconds: Optional timeout in seconds
         text: Optional. If False, handle binary output (default True)
+        handled_secretly: If True, suppress command logging to prevent secret leakage
     Returns:
         CommandResult with execution details
     """
@@ -61,8 +63,12 @@ def run(
         command_for_subprocess = command
 
     # Print command in verbose format
-    logger.info("== command == ")
-    logger.info(f"| <command> {command_for_logging}")
+    if handled_secretly:
+        logger.info("== command == ")
+        logger.info("| <command suppressed for secret handling>")
+    else:
+        logger.info("== command == ")
+        logger.info(f"| <command> {command_for_logging}")
 
     try:
         result = subprocess.run(
@@ -88,7 +94,7 @@ def run(
             stdout=stdout_str,
             stderr=stderr_str,
             returncode=result.returncode,
-            command=command,
+            command="<suppressed for secret handling>" if handled_secretly else command,
         )
 
         # Write stdout to file if requested
@@ -156,6 +162,14 @@ def run(
         logger.info("==")
 
         if check and result.returncode != 0:
+            if handled_secretly:
+                raise subprocess.CalledProcessError(
+                    result.returncode,
+                    "command failed (suppressed for secret handling)",
+                    "",
+                    "error output suppressed for secret handling",
+                )
+
             # Create a more informative error message
             error_msg = f"Command failed with exit code {result.returncode}: {command}"
             if result.stderr:
