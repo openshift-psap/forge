@@ -267,16 +267,11 @@ def _apply_vault_pull_secret(
         temp_path.write_text(json.dumps(merged_secret, indent=2, sort_keys=True), encoding="utf-8")
         return merged_secret
 
-    for registry in registries:
-        oc(
-            "registry",
-            "login",
-            f"--registry={registry}",
-            f"--auth-basic={pull_secret_payload}",
-            "--to",
-            str(temp_path),
-        )
-    return json.loads(temp_path.read_text(encoding="utf-8"))
+    encoded_auth = base64.b64encode(pull_secret_payload.encode("utf-8")).decode("utf-8")
+    vault_auths = {registry: {"auth": encoded_auth} for registry in registries}
+    merged_secret = _merge_pull_secret_auths(current_secret, {"auths": vault_auths})
+    temp_path.write_text(json.dumps(merged_secret, indent=2, sort_keys=True), encoding="utf-8")
+    return merged_secret
 
 
 def _current_pull_secret_json() -> dict[str, Any]:
