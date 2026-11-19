@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import click
 
@@ -26,78 +25,6 @@ from projects.caliper.cli.commands import (
     visualize_cmd,
 )
 from projects.caliper.cli.s3_export_cli import s3_export_cmd
-
-
-def parse_mlflow_url(url: str) -> dict[str, str | None]:
-    """
-    Parse MLflow web UI URL and extract components.
-
-    Supports URLs like:
-    https://mlflow.apps.example.com/#/experiments/231/runs/3147e102.../artifacts/path?workspace=forge
-
-    Returns dict with: endpoint, experiment_id, run_id, artifact_path, workspace
-    """
-    try:
-        parsed = urlparse(url)
-
-        # Extract base endpoint (scheme + netloc + path)
-        endpoint = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-
-        # Parse fragment (the part after #) - this may contain query params too
-        fragment = parsed.fragment or ""
-        workspace = None
-        artifact_path = None
-        experiment_id = None
-        run_id = None
-
-        # Split fragment into path and query parts
-        if "?" in fragment:
-            fragment_path, fragment_query = fragment.split("?", 1)
-            # Parse fragment query parameters (for workspace)
-            fragment_params = parse_qs(fragment_query)
-            workspace = fragment_params.get("workspace", [None])[0]
-        else:
-            fragment_path = fragment
-
-        # Also check main URL query parameters (fallback)
-        if not workspace and parsed.query:
-            query_params = parse_qs(parsed.query)
-            workspace = query_params.get("workspace", [None])[0]
-
-        # Parse the fragment path: /experiments/231/runs/3147e102.../artifacts/path
-        if fragment_path.startswith("/"):
-            fragment_path = fragment_path[1:]  # Remove leading slash
-
-        parts = fragment_path.split("/")
-
-        # Expected patterns:
-        # 1. experiments/231/runs/RUN_ID/artifacts/PATH (standard)
-        # 2. experiments/231/runs/RUN_ID/PATH (direct artifact path)
-        if len(parts) >= 4 and parts[0] == "experiments" and parts[2] == "runs":
-            experiment_id = parts[1]
-            run_id = parts[3]
-
-            # Check for artifacts path
-            if len(parts) > 4:
-                if parts[4] == "artifacts":
-                    # Standard format: /experiments/231/runs/RUN_ID/artifacts/PATH
-                    if len(parts) > 5:
-                        artifact_path = "/".join(parts[5:])
-                else:
-                    # Alternative format: /experiments/231/runs/RUN_ID/PATH
-                    artifact_path = "/".join(parts[4:])
-
-        return {
-            "tracking_uri": endpoint,
-            "experiment": experiment_id,
-            "run_id": run_id,
-            "artifact_path": artifact_path,
-            "workspace": workspace,
-        }
-
-    except Exception as e:
-        raise ValueError(f"Failed to parse MLflow URL: {e}") from e
-
 
 _ARTIFACTS_DIR_HELP = (
     "Root directory of the test artifact tree (directories containing "

@@ -11,9 +11,10 @@ from typing import Any
 
 from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.engine.file_export.file_stats import describe_files
-from projects.caliper.engine.file_export.mlflow_secrets import (
+from projects.caliper.engine.mlflow_connection import (
     assert_tracking_uri_has_no_userinfo,
-    mlflow_connection_env,
+    mlflow_tracking_context,
+    resolve_mlflow_tracking_uri,
 )
 from projects.core.library import env
 
@@ -463,8 +464,9 @@ def log_artifacts(
         return f"mlflow:{mlflow.get_tracking_uri()}", meta, any(partial_failure)
 
     if connection is not None:
-        with mlflow_connection_env(connection):
-            return _run(tracking_uri or connection.get("tracking_uri"))
+        uri = resolve_mlflow_tracking_uri(connection, tracking_uri)
+        with mlflow_tracking_context({**connection, "tracking_uri": uri}, workspace=workspace):
+            return _run(uri)
 
     return _run(tracking_uri)
 
@@ -754,8 +756,9 @@ def log_multi_run_artifacts(
         return f"mlflow:{mlflow.get_tracking_uri()}", parent_meta
 
     if connection is not None:
-        with mlflow_connection_env(connection):
-            return _run(tracking_uri or connection.get("tracking_uri"))
+        uri = resolve_mlflow_tracking_uri(connection, tracking_uri)
+        with mlflow_tracking_context({**connection, "tracking_uri": uri}, workspace=workspace):
+            return _run(uri)
     return _run(tracking_uri)
 
 
@@ -792,26 +795,17 @@ def update_artifacts(
         files_dict = files
 
     def _upload(uri: str | None) -> None:
-        import os
-
-        if uri:
-            assert_tracking_uri_has_no_userinfo(uri)
-            mlflow.set_tracking_uri(uri)
-
-        os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
-
         for handler in logging.getLogger().handlers:
             handler.flush()
 
-        client = mlflow.tracking.MlflowClient()
-
-        # Upload each file to its specified artifact path
+        client = mlflow.tracking.MlflowClient(tracking_uri=uri)
         for file_path, artifact_path in files_dict.items():
             if file_path.exists():
                 client.log_artifact(run_id, str(file_path), artifact_path=artifact_path)
 
+    uri = resolve_mlflow_tracking_uri(connection or {}, tracking_uri)
     if connection is not None:
-        with mlflow_connection_env(connection):
-            _upload(tracking_uri or connection.get("tracking_uri"))
+        with mlflow_tracking_context({**connection, "tracking_uri": uri}):
+            _upload(uri)
     else:
-        _upload(tracking_uri)
+        _upload(uri)

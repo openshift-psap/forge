@@ -201,10 +201,11 @@ def test_multi_run_export_reuses_job_marker_run_id(tmp_path: Path, monkeypatch: 
     monkeypatch.setenv("ARTIFACT_BASE_DIR", str(artifact_root))
     write_mlflow_destination_marker(MlflowDestination(run_id="job-run", experiment_id="264"))
 
-    secrets_path = tmp_path / "mlflow-secret.yaml"
-    secrets_path.write_text("tracking_uri: https://mlflow.example\n", encoding="utf-8")
-    monkeypatch.setattr(export.vault_lib, "get_vault_content_path", lambda *_args: secrets_path)
-    monkeypatch.setattr(export.env, "ARTIFACT_DIR", tmp_path / "export-step", raising=False)
+    connection = {"tracking_uri": "https://staging.example"}
+    monkeypatch.setattr(export, "load_mlflow_connection", lambda *_args: connection)
+    monkeypatch.setattr(
+        export.env._tls_artifact_dir, "val", tmp_path / "export-step", raising=False
+    )
     monkeypatch.setattr(
         export,
         "discover_run_dirs",
@@ -237,3 +238,4 @@ def test_multi_run_export_reuses_job_marker_run_id(tmp_path: Path, monkeypatch: 
     )
 
     assert captured["mlflow_run_id"] == "job-run"
+    assert captured["connection"] == connection

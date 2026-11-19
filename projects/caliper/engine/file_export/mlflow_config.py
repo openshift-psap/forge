@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from projects.caliper.engine.file_export.mlflow_secrets import assert_tracking_uri_has_no_userinfo
+from projects.caliper.engine.mlflow_connection import assert_tracking_uri_has_no_userinfo
 
 # Identity / routing (not emitted as generic tags by apply_run_metadata).
 MLFLOW_CONFIG_RUN_KEYS = frozenset(

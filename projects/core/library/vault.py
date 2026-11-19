@@ -34,6 +34,7 @@ class VaultContent:
     sensible: bool = True
     censor_text: str | None = None
     deprecated_filenames: list[str] = None
+    optional: bool = False
     _vault: Optional["VaultDefinition"] = None
 
     def __post_init__(self):
@@ -156,6 +157,7 @@ class VaultManager:
                 sensible=sensible,
                 censor_text=censor_text,
                 deprecated_filenames=deprecated_filenames,
+                optional=content_def.get("optional", False),
             )
 
         vault_def = VaultDefinition(
@@ -245,6 +247,8 @@ class VaultManager:
             # Validate content file exists (file_path falls back to deprecated filenames)
             content_path = content_def.file_path
             if content_path is None or not content_path.exists():
+                if content_def.optional:
+                    continue
                 msg = f"Vault '{vault_name}' missing content '{content_name}' at: {content_path}"
                 if effective_strict:
                     logger.error(msg)

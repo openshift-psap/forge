@@ -1602,6 +1602,7 @@ def artifacts_censor(
     type=click.Path(path_type=Path, exists=True),
     default=None,
 )
+@click.option("--mlflow-instance", help="Named profile in the MLflow secrets file.")
 @click.pass_context
 def artifacts_import(
     ctx: click.Context,
@@ -1615,6 +1616,7 @@ def artifacts_import(
     mlflow_experiment: str | None,
     mlflow_workspace: str | None,
     mlflow_secrets_path: Path | None,
+    mlflow_instance: str | None,
 ) -> None:
     """Download artifacts from MLflow."""
 
@@ -1630,6 +1632,7 @@ def artifacts_import(
             mlflow_experiment=mlflow_experiment,
             mlflow_workspace=mlflow_workspace,
             mlflow_secrets_path=mlflow_secrets_path,
+            mlflow_instance=mlflow_instance,
         )
     except Exception as e:  # noqa: BLE001
         click.echo(f"❌ artifacts import failed: {e}", err=True)
