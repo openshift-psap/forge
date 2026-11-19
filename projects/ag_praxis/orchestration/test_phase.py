@@ -501,30 +501,63 @@ def _test_endpoint(
     completed_endpoints.append(ep_name)
 
 
-def _deploy_maas_sim(test_namespace, maas_cfg):
-    """Deploy a sim for MaaS as an LLMInferenceService with TLS.
-
-    Returns the internal SVC endpoint URL.
-    """
+def _deploy_sim_llmisvc(
+    test_namespace,
+    *,
+    name,
+    gateway_name,
+    gateway_namespace,
+    maas_gateway_label,
+    artifact_dirname_suffix,
+    gateway_status_address_name=None,
+):
+    """Deploy an llm-d simulator LLMInferenceService. Returns the gateway endpoint URL."""
     from projects.kserve.toolbox.deploy_sim_llmisvc import main as deploy_sim_llmisvc_command
 
     sim_cfg = config.project.get_config("platform.sim")
-    maas_gw = maas_cfg["gateway"]
 
-    deploy_sim_llmisvc_command.run(
+    # gateway_status_address_name=None has a distinct meaning in deploy_llmisvc
+    # (different endpoint resolution mode): only forward it when explicitly set,
+    # so unset falls back to the toolbox default.
+    gateway_kwargs = (
+        {"gateway_status_address_name": gateway_status_address_name}
+        if gateway_status_address_name
+        else {}
+    )
+
+    return deploy_sim_llmisvc_command.run(
         namespace=test_namespace,
-        name=maas_cfg["llmisvc_name"],
+        name=name,
         model_name=sim_cfg["model_name"],
         image=sim_cfg["image"],
-        gateway_name=maas_gw["name"],
-        gateway_namespace=maas_gw["namespace"],
-        maas_gateway_label=maas_cfg["maas_gateway_label"],
+        gateway_name=gateway_name,
+        gateway_namespace=gateway_namespace,
+        maas_gateway_label=maas_gateway_label,
+        artifact_dirname_suffix=artifact_dirname_suffix,
         skip_router=False,
         max_num_seqs=sim_cfg["max_num_seqs"],
         time_to_first_token=sim_cfg["time_to_first_token"],
         inter_token_latency=sim_cfg["inter_token_latency"],
         mode=sim_cfg["mode"],
         replicas=sim_cfg.get("replicas", 1),
+        **gateway_kwargs,
+    )
+
+
+def _deploy_maas_sim(test_namespace, maas_cfg):
+    """Deploy a sim for MaaS as an LLMInferenceService with TLS.
+
+    Returns the internal SVC endpoint URL.
+    """
+    maas_gw = maas_cfg["gateway"]
+
+    _deploy_sim_llmisvc(
+        test_namespace,
+        name=maas_cfg["llmisvc_name"],
+        gateway_name=maas_gw["name"],
+        gateway_namespace=maas_gw["namespace"],
+        maas_gateway_label=maas_cfg["maas_gateway_label"],
+        artifact_dirname_suffix="maas",
     )
 
     llmisvc_name = maas_cfg["llmisvc_name"]
@@ -541,26 +574,16 @@ def _deploy_gw_sim(test_namespace):
 
     Returns the gateway endpoint URL.
     """
-    from projects.kserve.toolbox.deploy_sim_llmisvc import main as deploy_sim_llmisvc_command
-
     gw_cfg = config.project.get_config("platform.default_gateway")
-    sim_cfg = config.project.get_config("platform.sim")
 
-    endpoint_url = deploy_sim_llmisvc_command.run(
-        namespace=test_namespace,
+    endpoint_url = _deploy_sim_llmisvc(
+        test_namespace,
         name=gw_cfg["llmisvc_name"],
-        model_name=sim_cfg["model_name"],
-        image=sim_cfg["image"],
         gateway_name=gw_cfg["name"],
         gateway_namespace=gw_cfg["namespace"],
-        gateway_status_address_name=gw_cfg["status_address_name"],
         maas_gateway_label="",
-        skip_router=False,
-        max_num_seqs=sim_cfg["max_num_seqs"],
-        time_to_first_token=sim_cfg["time_to_first_token"],
-        inter_token_latency=sim_cfg["inter_token_latency"],
-        mode=sim_cfg["mode"],
-        replicas=sim_cfg.get("replicas", 1),
+        gateway_status_address_name=gw_cfg["status_address_name"],
+        artifact_dirname_suffix="gw",
     )
 
     logger.info("GW LLMInferenceService endpoint: %s", endpoint_url)
@@ -694,13 +717,72 @@ def _run_endpoint_benchmarking(
             )
 
 
+def _run_test_matrix(
+    simulator_combos,
+    deployment_combos,
+    workload_combos,
+    test_namespace,
+    maas_cfg,
+    run_benchmark,
+    completed_endpoints,
+):
+    """Run the test matrix: simulator combos x deployment combos x workload combos x endpoints."""
+    from projects.core.library.matrix import activate_combination
+
+    for sim_combo in simulator_combos:
+        sim_dir = (
+            env.NextArtifactDir(sim_combo.artifact_dirname)
+            if sim_combo.artifact_dirname
+            else contextlib.nullcontext()
+        )
+        with activate_combination(sim_combo), sim_dir:
+            for dep_combo in deployment_combos:
+                dep_dir = (
+                    env.NextArtifactDir(dep_combo.artifact_dirname)
+                    if dep_combo.artifact_dirname
+                    else contextlib.nullcontext()
+                )
+                with activate_combination(dep_combo), dep_dir:
+                    endpoints, model_name, maas_endpoint = _prepare_test_endpoints(
+                        test_namespace, maas_cfg
+                    )
+                    for wl_combo in workload_combos:
+                        wl_dir = (
+                            env.NextArtifactDir(wl_combo.artifact_dirname)
+                            if wl_combo.artifact_dirname
+                            else contextlib.nullcontext()
+                        )
+                        with activate_combination(wl_combo), wl_dir:
+                            if run_benchmark:
+                                _validate_benchmark_rates()
+
+                            merged_labels = {
+                                **sim_combo.labels,
+                                **dep_combo.labels,
+                                **wl_combo.labels,
+                            }
+
+                            _run_endpoint_benchmarking(
+                                endpoints,
+                                test_namespace,
+                                maas_cfg,
+                                model_name,
+                                run_benchmark,
+                                completed_endpoints,
+                                matrix_labels=merged_labels,
+                            )
+
+    if not run_benchmark:
+        _write_benchmark_dry_run(maas_endpoint)
+
+
 def do_test_praxis():
     logger.info("=== AG Praxis Project Test Phase ===")
     from projects.cluster.library.prom.collection import (
         prepare_user_workload_monitoring,
         validate_user_workload_monitoring,
     )
-    from projects.core.library.matrix import activate_combination, compute_matrix
+    from projects.core.library.matrix import compute_matrix
     from projects.core.orchestration.utils.k8s import ensure_namespace
 
     validate_user_workload_monitoring()
@@ -731,13 +813,19 @@ def do_test_praxis():
 
     matrix_cfg = config.project.get_config("test.matrix_benchmarking", default_value={})
 
+    simulator_config = matrix_cfg.get("simulator_level", {})
     workload_config = matrix_cfg.get("workload_level", {})
     deployment_config = matrix_cfg.get("deployment_level", {})
 
+    simulator_combos = compute_matrix(simulator_config)
     workload_combos = compute_matrix(workload_config)
     deployment_combos = compute_matrix(deployment_config)
 
-    matrix_enabled = workload_config.get("enabled") or deployment_config.get("enabled")
+    matrix_enabled = (
+        simulator_config.get("enabled")
+        or workload_config.get("enabled")
+        or deployment_config.get("enabled")
+    )
     if matrix_enabled:
         _configure_matrix_visualization(matrix_cfg)
 
@@ -745,40 +833,16 @@ def do_test_praxis():
     completed_endpoints = []
 
     try:
-        for dep_combo in deployment_combos:
-            dep_dir = (
-                env.NextArtifactDir(dep_combo.artifact_dirname)
-                if dep_combo.artifact_dirname
-                else contextlib.nullcontext()
+        with env.NextArtifactDir("test"):
+            _run_test_matrix(
+                simulator_combos,
+                deployment_combos,
+                workload_combos,
+                test_namespace,
+                maas_cfg,
+                run_benchmark,
+                completed_endpoints,
             )
-            with activate_combination(dep_combo), dep_dir:
-                endpoints, model_name, maas_endpoint = _prepare_test_endpoints(
-                    test_namespace, maas_cfg
-                )
-                for wl_combo in workload_combos:
-                    wl_dir = (
-                        env.NextArtifactDir(wl_combo.artifact_dirname)
-                        if wl_combo.artifact_dirname
-                        else contextlib.nullcontext()
-                    )
-                    with activate_combination(wl_combo), wl_dir:
-                        if run_benchmark:
-                            _validate_benchmark_rates()
-
-                        merged_labels = {**dep_combo.labels, **wl_combo.labels}
-
-                        _run_endpoint_benchmarking(
-                            endpoints,
-                            test_namespace,
-                            maas_cfg,
-                            model_name,
-                            run_benchmark,
-                            completed_endpoints,
-                            matrix_labels=merged_labels,
-                        )
-
-        if not run_benchmark:
-            _write_benchmark_dry_run(maas_endpoint)
 
     except Exception:
         primary_exc = sys.exc_info()

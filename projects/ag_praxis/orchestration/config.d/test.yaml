@@ -17,6 +17,11 @@ endpoints:
 - maas/praxis
 
 matrix_benchmarking:
+  simulator_level:
+    enabled: false
+    labels: {}
+    dimensions: {}
+
   deployment_level:
     enabled: false
     labels: {}
