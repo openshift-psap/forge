@@ -694,13 +694,72 @@ def _run_endpoint_benchmarking(
             )
 
 
+def _run_test_matrix(
+    simulator_combos,
+    deployment_combos,
+    workload_combos,
+    test_namespace,
+    maas_cfg,
+    run_benchmark,
+    completed_endpoints,
+):
+    """Run the test matrix: simulator combos x deployment combos x workload combos x endpoints."""
+    from projects.core.library.matrix import activate_combination
+
+    for sim_combo in simulator_combos:
+        sim_dir = (
+            env.NextArtifactDir(sim_combo.artifact_dirname)
+            if sim_combo.artifact_dirname
+            else contextlib.nullcontext()
+        )
+        with activate_combination(sim_combo), sim_dir:
+            for dep_combo in deployment_combos:
+                dep_dir = (
+                    env.NextArtifactDir(dep_combo.artifact_dirname)
+                    if dep_combo.artifact_dirname
+                    else contextlib.nullcontext()
+                )
+                with activate_combination(dep_combo), dep_dir:
+                    endpoints, model_name, maas_endpoint = _prepare_test_endpoints(
+                        test_namespace, maas_cfg
+                    )
+                    for wl_combo in workload_combos:
+                        wl_dir = (
+                            env.NextArtifactDir(wl_combo.artifact_dirname)
+                            if wl_combo.artifact_dirname
+                            else contextlib.nullcontext()
+                        )
+                        with activate_combination(wl_combo), wl_dir:
+                            if run_benchmark:
+                                _validate_benchmark_rates()
+
+                            merged_labels = {
+                                **sim_combo.labels,
+                                **dep_combo.labels,
+                                **wl_combo.labels,
+                            }
+
+                            _run_endpoint_benchmarking(
+                                endpoints,
+                                test_namespace,
+                                maas_cfg,
+                                model_name,
+                                run_benchmark,
+                                completed_endpoints,
+                                matrix_labels=merged_labels,
+                            )
+
+    if not run_benchmark:
+        _write_benchmark_dry_run(maas_endpoint)
+
+
 def do_test_praxis():
     logger.info("=== AG Praxis Project Test Phase ===")
     from projects.cluster.library.prom.collection import (
         prepare_user_workload_monitoring,
         validate_user_workload_monitoring,
     )
-    from projects.core.library.matrix import activate_combination, compute_matrix
+    from projects.core.library.matrix import compute_matrix
     from projects.core.orchestration.utils.k8s import ensure_namespace
 
     validate_user_workload_monitoring()
@@ -731,13 +790,19 @@ def do_test_praxis():
 
     matrix_cfg = config.project.get_config("test.matrix_benchmarking", default_value={})
 
+    simulator_config = matrix_cfg.get("simulator_level", {})
     workload_config = matrix_cfg.get("workload_level", {})
     deployment_config = matrix_cfg.get("deployment_level", {})
 
+    simulator_combos = compute_matrix(simulator_config)
     workload_combos = compute_matrix(workload_config)
     deployment_combos = compute_matrix(deployment_config)
 
-    matrix_enabled = workload_config.get("enabled") or deployment_config.get("enabled")
+    matrix_enabled = (
+        simulator_config.get("enabled")
+        or workload_config.get("enabled")
+        or deployment_config.get("enabled")
+    )
     if matrix_enabled:
         _configure_matrix_visualization(matrix_cfg)
 
@@ -745,40 +810,16 @@ def do_test_praxis():
     completed_endpoints = []
 
     try:
-        for dep_combo in deployment_combos:
-            dep_dir = (
-                env.NextArtifactDir(dep_combo.artifact_dirname)
-                if dep_combo.artifact_dirname
-                else contextlib.nullcontext()
+        with env.NextArtifactDir("test"):
+            _run_test_matrix(
+                simulator_combos,
+                deployment_combos,
+                workload_combos,
+                test_namespace,
+                maas_cfg,
+                run_benchmark,
+                completed_endpoints,
             )
-            with activate_combination(dep_combo), dep_dir:
-                endpoints, model_name, maas_endpoint = _prepare_test_endpoints(
-                    test_namespace, maas_cfg
-                )
-                for wl_combo in workload_combos:
-                    wl_dir = (
-                        env.NextArtifactDir(wl_combo.artifact_dirname)
-                        if wl_combo.artifact_dirname
-                        else contextlib.nullcontext()
-                    )
-                    with activate_combination(wl_combo), wl_dir:
-                        if run_benchmark:
-                            _validate_benchmark_rates()
-
-                        merged_labels = {**dep_combo.labels, **wl_combo.labels}
-
-                        _run_endpoint_benchmarking(
-                            endpoints,
-                            test_namespace,
-                            maas_cfg,
-                            model_name,
-                            run_benchmark,
-                            completed_endpoints,
-                            matrix_labels=merged_labels,
-                        )
-
-        if not run_benchmark:
-            _write_benchmark_dry_run(maas_endpoint)
 
     except Exception:
         primary_exc = sys.exc_info()
