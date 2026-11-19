@@ -1,10 +1,13 @@
 """Load the MLflow connection selected by Forge project configuration."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from projects.caliper.public.mlflow import load_mlflow_connection_file, validate_mlflow_secrets
 from projects.core.library import config, vault
+
+logger = logging.getLogger(__name__)
 
 INSTANCE_CONFIG_PATH = "caliper.export.backend.mlflow.instance"
 INSTANCE_SECRET_KEY = "mlflow-instance-secrets.yaml"
@@ -30,6 +33,7 @@ def _resolve_mlflow_credentials(vault_name: str, default_key: str) -> tuple[Path
 def load_mlflow_connection(vault_name: str, default_key: str) -> dict[str, Any]:
     """Load and validate credentials for the configured MLflow instance."""
     path, instance = _resolve_mlflow_credentials(vault_name, default_key)
+    logger.info("Using MLflow instance: %s", instance or "default")
     connection = load_mlflow_connection_file(path, mlflow_instance=instance)
     validate_mlflow_secrets(connection)
     return connection
