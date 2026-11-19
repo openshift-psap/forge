@@ -50,29 +50,18 @@ def oc(
         log_stdout = False
         log_stderr = False
 
-    try:
-        return shell.run(
-            cmd,
-            check=check,
-            shell=False,
-            log_stdout=log_stdout,
-            log_stderr=log_stderr,
-            stdout_dest=stdout_dest,
-            input_text=input_text,
-            timeout_seconds=timeout_seconds,
-            text=text,
-        )
-    except subprocess.CalledProcessError as e:
-        if not handled_secretly:
-            raise
-
-        # When handled secretly, sanitize error to prevent credential leakage
-        raise subprocess.CalledProcessError(
-            e.returncode,
-            "oc command failed",
-            "",
-            "Error output suppressed for secret handling",
-        ) from e
+    return shell.run(
+        cmd,
+        check=check,
+        shell=False,
+        log_stdout=log_stdout,
+        log_stderr=log_stderr,
+        stdout_dest=stdout_dest,
+        input_text=input_text,
+        timeout_seconds=timeout_seconds,
+        text=text,
+        handled_secretly=handled_secretly,
+    )
 
 
 def oc_get_json(
