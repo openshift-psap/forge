@@ -453,7 +453,10 @@ def _test_endpoint(
         )
 
         if run_benchmark:
-            _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name)
+            with env.NextArtifactDir("benchmarking"):
+                _run_guidellm(
+                    test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name
+                )
     except Exception as e:
         primary_exc = sys.exc_info()
         update_test_labels_with_status(test_dir, False, f"Endpoint test failed: {e}")
