@@ -105,14 +105,38 @@ def format_parameter_matrix_summary(analysis: dict[str, Any], max_combinations: 
 
     lines.append("")
 
-    # Show coverage matrix
-    lines.append("📈 Parameter Value Coverage:")
+    # Split parameters into varying (>1 value) and constant (==1 value)
+    total_records = analysis["total_records"]
+    varying_keys = []
+    constant_keys = []
     for key in analysis["parameter_keys"]:
-        coverage = analysis["coverage_matrix"][key]
-        total_for_param = sum(coverage.values())
-        lines.append(f"   {key}: {total_for_param} records")
-        for value, count in coverage.items():
-            lines.append(f"      {value}: {count} records")
+        if len(analysis["parameter_values"][key]) > 1:
+            varying_keys.append(key)
+        else:
+            constant_keys.append(key)
+
+    def _format_coverage(keys):
+        for key in keys:
+            coverage = analysis["coverage_matrix"][key]
+            total_for_param = sum(coverage.values())
+            missing = total_records - total_for_param
+            missing_str = f" ({missing} undefined)" if missing else ""
+            lines.append(f"   {key}: {total_for_param} records{missing_str}")
+            for value, count in coverage.items():
+                lines.append(f"      {value}: {count} records")
+
+    lines.append(f"📈 Varying Parameters ({len(varying_keys)}):")
+    if varying_keys:
+        _format_coverage(varying_keys)
+    else:
+        lines.append("   (none)")
+
+    lines.append("")
+    lines.append(f"📌 Constant Parameters ({len(constant_keys)}):")
+    if constant_keys:
+        _format_coverage(constant_keys)
+    else:
+        lines.append("   (none)")
 
     # Show some example parameter combinations
     lines.append("")
