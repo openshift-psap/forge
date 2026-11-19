@@ -646,7 +646,7 @@ def test_prepare_rhoai_pull_secret_merges_dockerconfigjson_registry_auths(
 
     rc_pull_secret_path = tmp_path / "rhoai_rc.secret"
     rc_pull_secret_path.write_text(
-        "rhoai+rhoai_external_readonly_bot:token-c",
+        "test-user:test-token",
         encoding="utf-8",
     )
 
@@ -689,24 +689,6 @@ def test_prepare_rhoai_pull_secret_merges_dockerconfigjson_registry_auths(
             payload_path = Path(from_file.rsplit("=", 1)[1])
             merged_payload.update(json.loads(payload_path.read_text(encoding="utf-8")))
             return type("Result", (), {"stdout": "", "returncode": 0})()
-        if args[:2] == ("registry", "login"):
-            registry = next(
-                arg.split("=", 1)[1] for arg in args if str(arg).startswith("--registry=")
-            )
-            auth_basic = next(
-                arg.split("=", 1)[1] for arg in args if str(arg).startswith("--auth-basic=")
-            )
-            temp_path = Path(
-                next(
-                    arg
-                    for arg in args
-                    if not str(arg).startswith("--") and arg != "registry" and arg != "login"
-                )
-            )
-            current = json.loads(temp_path.read_text(encoding="utf-8"))
-            current.setdefault("auths", {})[registry] = {"auth": auth_basic}
-            temp_path.write_text(json.dumps(current, indent=2, sort_keys=True), encoding="utf-8")
-            return type("Result", (), {"stdout": "", "returncode": 0})()
         raise AssertionError(f"Unexpected oc call: {args}")
 
     monkeypatch.setattr(rhoai_deploy, "oc", _fake_oc)
@@ -732,10 +714,9 @@ def test_prepare_rhoai_pull_secret_merges_dockerconfigjson_registry_auths(
         )
     )
 
-    assert (
-        merged_payload["auths"]["quay.io/rhoai"]["auth"]
-        == "rhoai+rhoai_external_readonly_bot:token-c"
-    )
+    assert merged_payload["auths"]["quay.io/rhoai"]["auth"] == base64.b64encode(
+        b"test-user:test-token"
+    ).decode("utf-8")
     assert merged_payload["auths"]["registry.stage.redhat.io/rhaii"]["auth"] == "token-a"
     assert (
         merged_payload["auths"]["registry.stage.redhat.io/rhaii-early-access"]["auth"] == "token-b"
