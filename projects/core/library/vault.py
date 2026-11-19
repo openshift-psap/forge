@@ -179,9 +179,24 @@ class VaultManager:
             return None
         return self._vault_cache.get(vault_name)
 
+    def get_vault_unchecked(self, vault_name: str) -> VaultDefinition | None:
+        """Get a vault definition by name, regardless of initialization status.
+
+        Use only for censoring — normal code should use get_vault().
+        """
+        return self._vault_cache.get(vault_name)
+
     def list_vaults(self) -> list[str]:
         """List initialized vault names"""
         return list(self._initialized_vaults)
+
+    def list_all_available_vaults(self) -> list[str]:
+        """List all vault names that have their secret directory available on disk."""
+        return [
+            name
+            for name, vault_def in self._vault_cache.items()
+            if vault_def.secret_dir and vault_def.secret_dir.exists()
+        ]
 
     def validate_vault(self, vault_name: str, strict: bool = True) -> bool:
         """
