@@ -82,6 +82,7 @@ class RhoaiCustomCatalogConfig(BaseModel):
     image: str | None = None
     display_name: str | None = None
     publisher: str | None = None
+    force_pull_secret_update: bool = False
     pull_secret: _RhoaiCustomCatalogPullSecretConfig
     staging_pull_secret: _RhoaiCustomCatalogPullSecretConfig | None = None
 
@@ -375,7 +376,10 @@ def prepare_rhoai_pull_secret(custom_catalog: RhoaiCustomCatalogConfig) -> None:
     current_secret = _current_pull_secret_json()
     required_registries = (*RHOAI_CATALOG_REGISTRIES, *RHOAI_REGISTRIES)
 
-    if _registries_present(current_secret, required_registries):
+    if (
+        _registries_present(current_secret, required_registries)
+        and not custom_catalog.force_pull_secret_update
+    ):
         logger.info(
             "RHOAI registries already present in cluster pull secret: %s",
             ", ".join(required_registries),
