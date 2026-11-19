@@ -424,6 +424,16 @@ def get_title(context):
     return f"PR #{context.pr_number}: {title}"
 ```
 
+## Linter: Unused Import Removal
+
+The project's linter (run as a post-save hook) **automatically removes unused imports**.
+When extracting code into a new function or moving code between functions, verify that
+every `import` the moved code depends on is actually used in its original location.
+If the import is only needed by the extracted function, add it inside that function
+(or at the top of the file if it is used in multiple places). Do not assume an import
+will survive just because it exists in the file — the linter will erase it if the
+remaining code in its scope no longer references it.
+
 ## Legacy support
 
 Overall, we do not want legacy support. Do not implement legacy fallback, unless explicitly requested by the user.
