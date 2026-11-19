@@ -415,8 +415,8 @@ config {
     payload_processing_cpu_request: String = "100m"
     payload_processing_cpu_limit: String = "4"
     payload_processing_memory_limit: String = "2Gi"
-    -- platform.praxis.version / .replicas only feed deploy_praxis, which is
-    -- never invoked; they have no effect on the tested path.
+    -- Not sourced from config: only passed by the deploy_praxis command
+    -- invocation, which is never reached from orchestration.
     praxis_version: String = "0.6"
     -- platform.praxis.extproc_max_requests: ExtProc concurrency budget
     -- annotated on the MaasTenantConfig at praxis activation. Out-of-range
@@ -1325,4 +1325,7 @@ open question "Should there be an oversized-body probe (>10Mi rejected; no unbou
 open question "Should there be a spoofed X-Gateway-Model-Name test? The unreached setup_maas_external_models and the unused httproute.yaml.j2 template route on a caller-supplied value of that header, which conflicts with the PR's stripping."
 open question "Should Prometheus capture include a praxis/ExtProc metrics group and a check that the controller's ServiceMonitor and metrics ClusterRoleBindings exist and are scraped?"
 open question "Are deploy_praxis, teardown_praxis, add_gateway_route, setup/teardown_maas_external_models and maas_sim_test (which runs an untracked-directory poc script) still meant to be part of the harness, or dead code to remove?"
-open question "platform.praxis.version and platform.praxis.replicas are only consumed by the unreached deploy_praxis: should the harness pin or record the operator-delivered praxis ExtProc image instead?"
+-- Resolved: platform.praxis.version and platform.praxis.replicas were removed from
+-- the project config; deploy_praxis takes praxis_version/replicas as command
+-- parameters instead. The operator-delivered praxis ExtProc image is not pinned
+-- or recorded by the harness.
