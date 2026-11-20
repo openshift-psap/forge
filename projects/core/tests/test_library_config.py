@@ -113,3 +113,37 @@ def test_init_supports_yml_config_chunks(tmp_path: Path) -> None:
     core_config.init(orchestration_dir, apply_cluster_config=False)
 
     assert core_config.project.get_config("runtime.default_preset", print=False) == "smoke"
+
+
+def test_config_chunk_starts_from_shared_defaults(tmp_path: Path, monkeypatch) -> None:
+    forge_home = tmp_path / "forge"
+    _write_yaml(
+        forge_home / "component" / "defaults.yaml",
+        {"mode": "off", "collector": {"image": "img:1", "storage_size": "10Gi"}},
+    )
+    monkeypatch.setattr(env, "FORGE_HOME", forge_home)
+    orchestration_dir = tmp_path / "orchestration"
+    _write_yaml(
+        orchestration_dir / "config.d" / "tracing.yaml",
+        {"__defaults": "component/defaults.yaml", "collector": {"storage_size": "20Gi"}},
+    )
+
+    core_config.init(orchestration_dir, apply_cluster_config=False)
+
+    consolidated = yaml.safe_load((env.ARTIFACT_DIR / "config.yaml").read_text())
+    assert consolidated["tracing"] == {
+        "mode": "off",
+        "collector": {"image": "img:1", "storage_size": "20Gi"},
+    }
+
+
+def test_config_chunk_rejects_missing_defaults_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(env, "FORGE_HOME", tmp_path)
+    orchestration_dir = tmp_path / "orchestration"
+    _write_yaml(
+        orchestration_dir / "config.d" / "tracing.yaml",
+        {"__defaults": "missing/defaults.yaml"},
+    )
+
+    with pytest.raises(ValueError, match="__defaults file not found"):
+        core_config.init(orchestration_dir, apply_cluster_config=False)

@@ -300,6 +300,7 @@ def run_finalizers(
     primary_exc: tuple[type[BaseException], BaseException, Any] | None,
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None,
     benchmark_times: tuple[datetime, datetime] | None = None,
+    capture_session: Any = None,
 ) -> tuple[type[BaseException], BaseException, Any] | None:
     def _run_finalizer(
         description: str,
@@ -359,6 +360,16 @@ def run_finalizers(
     else:
         logging.error("No benchmark times received, cannot capture the Prometheus metrics.")
 
+    # Reconcile a started collector before cleanup removes the serving
+    # resources, including when the test failed before the benchmark.
+    if capture_session is not None:
+        finalizer_exc = _run_finalizer(
+            "capturing traces",
+            _capture_traces_finalizer,
+            benchmark_times=benchmark_times,
+            capture_session=capture_session,
+        )
+
     finalizer_exc = _run_finalizer(
         "cleaning up runtime resources",
         cleanup_test_resources,
@@ -366,6 +377,112 @@ def run_finalizers(
     )
 
     return primary_exc, finalizer_exc
+
+
+def _start_trace_capture(deployment_id: str, *, manifest_path: Path):
+    """Deploy the trace collector for this capture, or return None when disabled.
+
+    A startup failure raises: requested tracing must fail setup rather than run
+    without collecting.
+    """
+    from projects.llm_d.orchestration import tracing_adapter
+
+    settings = tracing_adapter.resolve_tracing()
+    if not settings.enabled:
+        return None
+
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.instrumentation import build_capture_id
+
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    job_id = _tracing_job_id()
+    namespace = runtime_config.get_namespace()
+    session = lifecycle.start_capture(
+        job_id=job_id,
+        capture_id=build_capture_id(job_id, namespace),
+        project="llm_d",
+        namespace=namespace,
+        deployment_id=deployment_id,
+        output_root=env.ARTIFACT_DIR,
+        settings=settings,
+        roles=tracing_adapter.instrumentation_roles(manifest),
+    )
+    return session
+
+
+def _tracing_job_id() -> str:
+    """Return the FournosJob name, or the local job name outside CI."""
+    return config.project.get_config("ci_job.fjob_name", None) or runtime_config.get_job_name()
+
+
+def _capture_traces_finalizer(
+    benchmark_times: tuple[datetime, datetime] | None,
+    capture_session: Any,
+) -> None:
+    """Record the benchmark window, capture trace bundles, and clean up.
+
+    Runs before cleanup so the collector spool is still available. A capture
+    failure is surfaced through a notification and re-raised so the finalizer
+    reports it, while the primary test exception is preserved by the caller.
+    The collector and spool are always removed afterwards; without a benchmark
+    window there is nothing to capture, so the collector is removed directly.
+    """
+    from projects.cluster.library.tracing import lifecycle
+
+    if benchmark_times is None:
+        logger.info("No benchmark window recorded; removing the trace collector")
+        lifecycle.cleanup(capture_session)
+        return
+
+    settings = capture_session.settings
+    session = capture_session
+    start_time, end_time = benchmark_times
+    lifecycle.record_window(
+        session,
+        test_id=_current_test_id(),
+        start=start_time,
+        end=end_time,
+        artifact_dir=env.ARTIFACT_DIR,
+    )
+    try:
+        status = lifecycle.capture(session)
+    except Exception as exc:
+        from projects.core.library.ci import add_notification_file
+
+        add_notification_file(
+            "tracing-capture-failed",
+            "Requested trace collection failed for this test; see the test logs. "
+            "The trace collector was removed.",
+        )
+        lifecycle.cleanup(session)
+        raise RuntimeError("requested trace collection failed") from exc
+
+    # Nothing recovers a preserved collector, so it is removed whatever the
+    # capture outcome; any published bundles are already in the artifacts.
+    lifecycle.cleanup(session)
+
+    # An empty capture is expected at low sampling or for a tiny workload, but
+    # at full sampling it means instrumentation or the collector endpoint is
+    # misconfigured and the trace evidence must not pass silently.
+    empty_at_full_sampling = status.value == "empty" and settings.sample_ratio >= 1.0
+    if status.value in ("failed", "incomplete") or empty_at_full_sampling:
+        # A drain timeout still yields a valid partial bundle, but requested
+        # tracing is not successful and must be reported as such.
+        from projects.core.library.ci import add_notification_file
+
+        reason = "empty-at-full-sampling" if empty_at_full_sampling else status.value
+        add_notification_file(
+            f"tracing-collection-{reason}",
+            "Requested trace collection did not complete successfully; partial "
+            "bundles were retained in the artifacts.",
+        )
+        raise RuntimeError(f"requested trace collection {reason}")
+
+
+def _current_test_id() -> str:
+    """Return a stable test identifier from the current artifact directory name."""
+    return env.ARTIFACT_DIR.name
 
 
 def do_test() -> int:
@@ -397,6 +514,7 @@ def do_test() -> int:
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None = None
 
     actual_llmisvc_name = "llmisvc-na-not-computed"
+    capture_session = None
     test_dir = env.ARTIFACT_DIR
     try:
         # Create test labels with actual model and profile information
@@ -418,6 +536,11 @@ def do_test() -> int:
         initial_llmisvc_name = slugify_identifier(initial_llmisvc_name)
 
         manifest_path, actual_llmisvc_name = build_inference_service_manifest(initial_llmisvc_name)
+
+        # Start the trace collector before the instrumented serving pods, so no
+        # spans are lost at startup. Tracing off is a no-op.
+        if not dry_run:
+            capture_session = _start_trace_capture(actual_llmisvc_name, manifest_path=manifest_path)
 
         # Step 2: Deploy using the actual name from the manifest
         endpoint_url = deploy_inference_service_from_manifest(manifest_path, actual_llmisvc_name)
@@ -470,6 +593,7 @@ def do_test() -> int:
                 primary_exc,
                 finalizer_exc,
                 benchmark_times=benchmark_times,
+                capture_session=capture_session,
             )
 
     if primary_exc is not None:
@@ -720,6 +844,29 @@ def _build_inference_service_manifest() -> Path:
         deployment_profile_name=deployment_profile_name,
         workload=workload,
     )
+
+    # Apply tracing instrumentation (off by default; a no-op when disabled).
+    from projects.llm_d.orchestration import tracing_adapter
+
+    tracing_settings = tracing_adapter.resolve_tracing()
+    if tracing_settings.enabled:
+        from projects.cluster.library.tracing.instrumentation import build_capture_id
+
+        engine = deployment_profile.get("engine", "vllm")
+        job_id = _tracing_job_id()
+        identity = tracing_adapter.capture_identity_for_run(
+            job_id=job_id,
+            capture_id=build_capture_id(job_id, namespace),
+            namespace=namespace,
+            deployment_id=manifest["metadata"]["name"],
+        )
+        tracing_adapter.instrument_manifest(
+            manifest,
+            settings=tracing_settings,
+            identity=identity,
+            namespace=namespace,
+            engine=engine,
+        )
 
     # Write the manifest to artifacts
     artifacts_dir = env.ARTIFACT_DIR / "artifacts"

@@ -1,0 +1,13 @@
+__multiple: true
+
+# Smoke preset that enables distributed request tracing end-to-end.
+#
+# Standard mode, full sampling, and native MLflow trace export on. An untraced
+# run is unaffected: `tracing.mode` defaults to off and
+# `caliper.export.traces.enabled` defaults to false.
+tracing-smoke:
+  extends:
+    - smoke
+  tracing.mode: standard
+  tracing.sample_ratio: 1.0
+  caliper.export.traces.enabled: true
