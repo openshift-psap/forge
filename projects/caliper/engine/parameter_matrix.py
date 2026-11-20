@@ -199,57 +199,67 @@ def filter_records_by_parameters(
     return filtered
 
 
+def _key_varies(records: list[UnifiedResultRecord], key: str) -> bool:
+    """Check whether a label key takes more than one value across records."""
+    values = {
+        str(record.distinguishing_labels[key])
+        for record in records
+        if key in record.distinguishing_labels
+    }
+    return len(values) > 1
+
+
 def get_varying_parameters(
     records: list[UnifiedResultRecord],
-    candidate_keys: list[str] | None = None,
-) -> set[str]:
+    priority_keys: list[str] | None = None,
+) -> list[str]:
     """
-    Get parameter keys that have varying values across records.
+    Get parameter keys that have varying values across records, in legend order.
+
+    Every varying key is returned: filtering the legend to a configured subset
+    hides real differences between runs. When ``priority_keys`` is provided,
+    the varying keys it names are placed first (in that order); the remaining
+    varying keys follow, sorted alphabetically.
 
     Args:
         records: List of unified result records to analyze
-        candidate_keys: When provided, only these keys are considered
-            (whitelist of candidates). When None, all label keys are considered.
+        priority_keys: When provided, these keys are ordered first in the
+            result. Keys that do not vary across records are never included.
 
     Returns:
-        Set of parameter keys that vary across records
+        Ordered list of parameter keys that vary across records
     """
     if not records:
-        return set()
+        return []
 
-    varying_params = set()
+    all_keys: set[str] = set()
+    for record in records:
+        all_keys.update(record.distinguishing_labels.keys())
 
-    if candidate_keys is not None:
-        all_keys = set(candidate_keys)
-    else:
-        all_keys = set()
-        for record in records:
-            all_keys.update(record.distinguishing_labels.keys())
+    varying = sorted(key for key in all_keys if _key_varies(records, key))
 
-    for key in all_keys:
-        values = set()
-        for record in records:
-            if key in record.distinguishing_labels:
-                values.add(str(record.distinguishing_labels[key]))
+    if not priority_keys:
+        return varying
 
-        if len(values) > 1:
-            varying_params.add(key)
-
-    return varying_params
+    prioritized = [key for key in dict.fromkeys(priority_keys) if key in varying]
+    remaining = [key for key in varying if key not in prioritized]
+    return prioritized + remaining
 
 
 def create_legend_name(
-    record: UnifiedResultRecord, varying_params: set[str], max_length: int = 50
+    record: UnifiedResultRecord, varying_params: list[str] | set[str], max_length: int = 50
 ) -> str:
     """
     Create a meaningful legend name using only varying parameters.
 
     When exactly one parameter varies, shows value only ("XS").
-    When multiple parameters vary, shows key=value pairs ("endpoint=maas, payload=XS").
+    When multiple parameters vary, shows key=value pairs ("endpoint=maas, payload=XS"),
+    in the order given by ``varying_params`` — configured priority keys first,
+    see ``get_varying_parameters``. Set inputs are sorted alphabetically.
 
     Args:
         record: The record to create a name for
-        varying_params: Set of parameter keys that vary across all records
+        varying_params: Varying parameter keys, in display order
         max_length: Maximum length for the legend name
 
     Returns:
@@ -258,7 +268,10 @@ def create_legend_name(
     if not varying_params:
         return "default"
 
-    present_keys = sorted(k for k in varying_params if k in record.distinguishing_labels)
+    if isinstance(varying_params, set | frozenset):
+        present_keys = sorted(k for k in varying_params if k in record.distinguishing_labels)
+    else:
+        present_keys = [k for k in varying_params if k in record.distinguishing_labels]
 
     if not present_keys:
         return "default"
@@ -267,3 +280,16 @@ def create_legend_name(
         return str(record.distinguishing_labels[present_keys[0]])
 
     return ", ".join(f"{k}={record.distinguishing_labels[k]}" for k in present_keys)
+
+
+def create_legend_title(varying_params: list[str] | set[str]) -> str | None:
+    """Return a legend title from the varying parameter key names.
+
+    With a single key the title tells the reader what the bare values mean.
+    With multiple keys it is redundant (entries already show key=value) so
+    returns None.
+    """
+    if not varying_params or len(varying_params) > 1:
+        return None
+
+    return next(iter(varying_params))
