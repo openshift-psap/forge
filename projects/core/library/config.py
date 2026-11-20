@@ -569,6 +569,35 @@ def _get_config_chunk_files(config_dir_src):
     return sorted([*config_dir_src.glob("*.yaml"), *config_dir_src.glob("*.yml")])
 
 
+# A config.d chunk can start from defaults owned by a shared component:
+# `__defaults: <path relative to FORGE_HOME>`; the chunk's other keys override them.
+DEFAULTS_KEY = "__defaults"
+
+
+def _apply_chunk_defaults(chunk_file, chunk_value):
+    overrides = dict(chunk_value)
+    defaults_path = env.FORGE_HOME / overrides.pop(DEFAULTS_KEY)
+    if not defaults_path.is_file():
+        raise ValueError(f"{chunk_file}: {DEFAULTS_KEY} file not found: {defaults_path}")
+
+    with open(defaults_path) as defaults_f:
+        defaults = yaml.safe_load(defaults_f)
+    if not isinstance(defaults, dict):
+        raise ValueError(f"{chunk_file}: {DEFAULTS_KEY} file must be a mapping: {defaults_path}")
+
+    return _deep_merge(defaults, overrides)
+
+
+def _deep_merge(base, overrides):
+    merged = copy.deepcopy(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
 def _load_project_config(config_file_src, config_chunk_files):
     config = {}
     if config_file_src.exists():
@@ -585,6 +614,9 @@ def _load_project_config(config_file_src, config_chunk_files):
 
         with open(chunk_file) as chunk_f:
             chunk_value = yaml.safe_load(chunk_f)
+
+        if isinstance(chunk_value, dict) and DEFAULTS_KEY in chunk_value:
+            chunk_value = _apply_chunk_defaults(chunk_file, chunk_value)
 
         key = chunk_file.stem
         if key in config:

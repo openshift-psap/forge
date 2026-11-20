@@ -2,8 +2,8 @@
 
 These types are shared by project orchestration (which resolves configuration),
 toolbox commands (which receive explicit typed inputs), and Caliper export
-(which validates bundles). They perform no I/O and import no project
-orchestration.
+(which validates bundles). Apart from reading the component's ``defaults.yaml``
+at import, they perform no I/O and import no project orchestration.
 
 Configuration validation never coerces values: malformed YAML types are
 rejected rather than silently converted.
@@ -14,7 +14,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 # Bump when the trace-summary schema changes in an incompatible way.
 SUMMARY_SCHEMA_VERSION = 1
@@ -43,19 +46,22 @@ class TracingMode(StrEnum):
         return self is TracingMode.DETAILED
 
 
-# Collector image is pinned in the first implementation stage. The file
-# exporter used for the spool is alpha, so an exact digest is a release gate:
-# see docs/tracing/OPERATING.md ("Collector image and file contract").
-DEFAULT_COLLECTOR_IMAGE = (
-    "ghcr.io/open-telemetry/opentelemetry-collector-releases/"
-    "opentelemetry-collector-contrib:0.115.1"
-)
-DEFAULT_STORAGE_SIZE = "10Gi"
-DEFAULT_READY_TIMEOUT_SECONDS = 300
-DEFAULT_SETTLE_TIMEOUT_SECONDS = 300
+# The defaults of the `tracing` configuration section. Projects load the same
+# file through their `config.d/tracing.yaml` (`__defaults:`), so it is the only
+# place where they are defined.
+DEFAULTS_FILE = Path(__file__).with_name("defaults.yaml")
+_DEFAULTS = yaml.safe_load(DEFAULTS_FILE.read_text(encoding="utf-8"))
+
+DEFAULT_SAMPLE_RATIO: float = _DEFAULTS["sample_ratio"]
+# The collector image is pinned: the file exporter used for the spool is alpha,
+# so an exact image is a release gate (see docs/tracing/OPERATING.md).
+DEFAULT_COLLECTOR_IMAGE: str = _DEFAULTS["collector"]["image"]
+DEFAULT_STORAGE_SIZE: str = _DEFAULTS["collector"]["storage_size"]
+DEFAULT_READY_TIMEOUT_SECONDS: int = _DEFAULTS["collector"]["ready_timeout_seconds"]
+DEFAULT_SETTLE_TIMEOUT_SECONDS: int = _DEFAULTS["collector"]["settle_timeout_seconds"]
 # Size beyond which the transfer/publish step refuses to load the whole archive
 # into memory and streams it instead. Recorded so operators can tune storage.
-DEFAULT_MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_MAX_BUNDLE_BYTES: int = _DEFAULTS["collector"]["max_bundle_bytes"]
 
 
 @dataclass(frozen=True)
@@ -63,7 +69,7 @@ class TracingSettings:
     """Fully validated tracing settings for one job."""
 
     mode: TracingMode = TracingMode.OFF
-    sample_ratio: float = 0.1
+    sample_ratio: float = DEFAULT_SAMPLE_RATIO
     collector_image: str = DEFAULT_COLLECTOR_IMAGE
     storage_size: str = DEFAULT_STORAGE_SIZE
     storage_class: str | None = None
@@ -285,7 +291,9 @@ def settings_from_config(
         # malformed; off is always valid and enables nothing.
         return TracingSettings(mode=TracingMode.OFF)
 
-    sample_ratio = parse_sample_ratio(_config_value(get_config, f"{section}.sample_ratio", 0.1))
+    sample_ratio = parse_sample_ratio(
+        _config_value(get_config, f"{section}.sample_ratio", DEFAULT_SAMPLE_RATIO)
+    )
 
     def _optional_int(path: str, default: int) -> int:
         raw = _config_value(get_config, path, default)

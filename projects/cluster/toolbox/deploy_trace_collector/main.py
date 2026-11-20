@@ -26,6 +26,9 @@ from projects.cluster.library.tracing.collection import (
     load_collector_config,
 )
 from projects.cluster.library.tracing.models import (
+    DEFAULT_READY_TIMEOUT_SECONDS,
+    DEFAULT_SAMPLE_RATIO,
+    DEFAULT_STORAGE_SIZE,
     CaptureIdentity,
     TracingSettings,
 )
@@ -46,11 +49,11 @@ def run(
     deployment_id: str,
     *,
     mode: str = "standard",
-    sample_ratio: float = 0.1,
+    sample_ratio: float = DEFAULT_SAMPLE_RATIO,
     collector_image: str | None = None,
-    storage_size: str = "10Gi",
+    storage_size: str = DEFAULT_STORAGE_SIZE,
     storage_class: str | None = None,
-    ready_timeout_seconds: int = 300,
+    ready_timeout_seconds: int = DEFAULT_READY_TIMEOUT_SECONDS,
     manifest_dir: str | Path | None = None,
 ) -> int:
     """

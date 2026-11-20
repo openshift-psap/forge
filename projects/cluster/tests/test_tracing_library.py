@@ -250,33 +250,27 @@ def test_collector_config_uses_valid_file_exporter_schema():
     assert "rotation" not in file_exporter
 
 
-def test_shipped_project_config_defaults_to_off(tmp_path):
-    """The checked-in config.d/tracing.yaml must parse as mode "off".
+def test_shipped_tracing_defaults_are_off():
+    """The shipped defaults.yaml must parse as mode "off".
 
     YAML 1.1 reads a bare ``off`` as boolean false, which strict config
-    validation correctly rejects, so the shipped files must quote it.
+    validation correctly rejects, so the shipped file must quote it.
     """
-    from pathlib import Path as _Path
-
     import yaml
 
-    from projects.cluster.library.tracing.models import TracingMode, settings_from_config
+    from projects.cluster.library.tracing.models import (
+        DEFAULTS_FILE,
+        TracingMode,
+        settings_from_config,
+    )
 
-    repo_root = _Path(__file__).resolve().parents[3]
-    for project in ("llm_d", "rhaiis"):
-        config_path = (
-            repo_root / "projects" / project / "orchestration" / "config.d" / "tracing.yaml"
-        )
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert data["mode"] == "off", f'{project} must quote mode: "off"'
+    data = yaml.safe_load(DEFAULTS_FILE.read_text(encoding="utf-8"))
+    assert data["mode"] == "off", 'defaults.yaml must quote mode: "off"'
 
-        def get_config(path, default=None, _data=data):
-            key = path.removeprefix("tracing.")
-            return _data.get(key, default)
+    def get_config(path, default=None):
+        return data.get(path.removeprefix("tracing."), default)
 
-        settings = settings_from_config(get_config)
-        assert settings.mode is TracingMode.OFF
-        assert settings.enabled is False
+    assert settings_from_config(get_config).mode is TracingMode.OFF
 
 
 # --- Isolation -------------------------------------------------------------
@@ -404,3 +398,19 @@ def test_capture_id_is_distinct_per_job():
     assert first != second
     assert first.startswith("forge-llm-d-20261106-095538-")
     assert build_capture_id("forge-llm-d-20261106-095538", "forge-llm-d") == first
+
+
+@pytest.mark.parametrize("project", ["llm_d", "rhaiis"])
+def test_project_tracing_config_uses_the_component_defaults(project):
+    import yaml
+
+    from projects.cluster.library.tracing.models import DEFAULTS_FILE
+    from projects.core.library import config as core_config
+    from projects.core.library import env as core_env
+
+    chunk = (
+        core_env.FORGE_HOME / "projects" / project / "orchestration" / "config.d" / "tracing.yaml"
+    )
+    section = core_config._apply_chunk_defaults(chunk, yaml.safe_load(chunk.read_text()))
+
+    assert section == yaml.safe_load(DEFAULTS_FILE.read_text())

@@ -30,29 +30,31 @@ failed upload recoverable without repeating the benchmark.
 ## Configuration
 
 A common top-level `tracing` section enables collection, and a Caliper switch
-enables native export:
+enables native export. The `tracing` keys and their defaults are defined once,
+in `projects/cluster/library/tracing/defaults.yaml`: `mode` (`"off"`,
+`standard` or `detailed`; quote `"off"` for YAML 1.1), `sample_ratio` (0.0 - 1.0,
+parent-based trace-ID-ratio sampling) and the `collector` settings (pinned
+image, spool storage, timeouts, bundle size limit).
+
+A project loads them with a `config.d/tracing.yaml` chunk, and only lists the
+values it changes:
 
 ```yaml
-tracing:
-  mode: "off"          # "off" | standard | detailed (quote off for YAML 1.1)
-  sample_ratio: 0.1    # 0.0 - 1.0, parent-based trace-ID-ratio sampling
-  collector:
-    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.115.1
-    storage_size: 10Gi
-    storage_class: null
-    ready_timeout_seconds: 300
-    settle_timeout_seconds: 300
-    max_bundle_bytes: 2147483648
+__defaults: projects/cluster/library/tracing/defaults.yaml
+collector:
+  storage_class: my-storage-class   # optional project override
+```
 
+The Caliper switch:
+
+```yaml
 caliper:
   export:
     traces:
       enabled: true    # ingest discovered bundles natively when MLflow export runs
 ```
 
-For projects using `config.d/tracing.yaml`, the file contents are the `tracing`
-section (starting with `mode`). Enable tracing with an ordinary preset, for
-example:
+Enable tracing with an ordinary preset, for example:
 
 ```yaml
 tracing-smoke:

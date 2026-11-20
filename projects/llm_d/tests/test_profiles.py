@@ -1146,3 +1146,16 @@ def test_workload_node_selector_handles_null_template_selector() -> None:
     _apply_workload_node_selector(manifest, {"node_selector": {"zone": "a"}})
 
     assert manifest["spec"]["template"]["nodeSelector"] == {"zone": "a"}
+
+
+def test_tracing_smoke_preset_enables_tracing_over_the_shared_defaults() -> None:
+    from projects.cluster.library.tracing.lifecycle import resolve_settings
+    from projects.cluster.library.tracing.models import DEFAULT_COLLECTOR_IMAGE, TracingMode
+
+    _init_project_config()
+    core_config.project.apply_preset("tracing-smoke")
+
+    settings = resolve_settings()
+    assert settings.mode is TracingMode.STANDARD
+    assert settings.sample_ratio == 1.0
+    assert settings.collector_image == DEFAULT_COLLECTOR_IMAGE

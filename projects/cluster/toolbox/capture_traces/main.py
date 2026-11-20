@@ -50,6 +50,9 @@ from projects.cluster.library.tracing.collection import (
     SPOOL_MOUNT_PATH,
 )
 from projects.cluster.library.tracing.models import (
+    DEFAULT_MAX_BUNDLE_BYTES,
+    DEFAULT_SAMPLE_RATIO,
+    DEFAULT_SETTLE_TIMEOUT_SECONDS,
     SUMMARY_SCHEMA_VERSION,
     CollectionQuality,
     CollectionStatus,
@@ -90,11 +93,11 @@ def run(
     job_id: str = "",
     deployment_id: str = "",
     mode: str = "standard",
-    sample_ratio: float = 0.1,
+    sample_ratio: float = DEFAULT_SAMPLE_RATIO,
     collector_image: str = "",
     instrumentation_roles: str = "",
-    settle_timeout_seconds: int = 300,
-    max_bundle_bytes: int = 2 * 1024 * 1024 * 1024,
+    settle_timeout_seconds: int = DEFAULT_SETTLE_TIMEOUT_SECONDS,
+    max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
     interrupted: bool = False,
 ) -> int:
     """
