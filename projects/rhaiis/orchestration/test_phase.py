@@ -11,12 +11,25 @@ import yaml
 from projects.core.library import env
 from projects.core.library.fournos_status import patch_fjob_relevant_deployments
 from projects.core.library.postprocess import create_test_metadata, run_and_postprocess
+from projects.guidellm.library import benchconf as benchconf_lib
 from projects.rhaiis.orchestration import runtime_config
 from projects.rhaiis.postprocess.csv_dashboard import serialize_env_vars
 
 logger = logging.getLogger(__name__)
 
 _K8S_NAME_MAX = 63
+_SCENARIO_OWNED_ARGS = {
+    "data",
+    "rate",
+    "profile",
+    "constraint",
+    "max_seconds",
+    "max_requests",
+    "rampup",
+    "warmup",
+    "request_type",
+    "request_format",
+}
 _warnings: list[str] = []
 
 
@@ -44,6 +57,46 @@ def _postprocess_enabled() -> bool:
     from projects.core.library import config
 
     return config.project.get_config("tests.rhaiis.run_benchmark", True)
+
+
+def _load_workloads(workload_keys: list[str]) -> dict[str, dict]:
+    """Resolve BenchConf references for the selected workloads."""
+    workloads = {key: runtime_config.get_workload(key) for key in workload_keys}
+    benchconf_keys = [key for key in workload_keys if workloads[key].get("benchconf")]
+    if not benchconf_keys:
+        return workloads
+    if not benchconf_lib._is_enabled():
+        raise RuntimeError(f"Workload {benchconf_keys[0]} references BenchConf but it is disabled")
+
+    benchconf_lib.maybe_install_custom_version()
+    benchconf_lib.save_version()
+    for key in benchconf_keys:
+        workload = workloads[key]
+        ref = workload["benchconf"]
+        path = benchconf_lib.resolve_config_path(ref)
+        scenario = yaml.safe_load(path.read_text())
+        spec = scenario["spec"]
+        profile = spec["profile"]
+        if profile.get("kind") != "knee":
+            raise ValueError(f"ConfigIQ BenchConf profile must be knee: {ref}")
+
+        rates = profile["initial_streams"]
+        duration = next(
+            (item["seconds"] for item in spec["constraints"] if item["kind"] == "max_duration"),
+            None,
+        )
+        if not rates or duration is None:
+            raise ValueError(f"Missing initial_streams or max_duration in {ref}")
+
+        # max_duration applies to each stream count in a knee run.
+        per_stream = duration + profile.get("warmup", 0) + profile.get("rampup_duration", 0)
+        workload.update(
+            config_path=path,
+            rates=rates,
+            max_seconds=duration,
+            timeout_seconds=len(rates) * per_stream + 600,
+        )
+    return workloads
 
 
 def _write_manifest(manifest: dict, path: Path) -> None:
@@ -123,6 +176,7 @@ def _run_test(
     deployment_name: str | None = None,
 ) -> int:
     _warnings.clear()
+    workloads = _load_workloads(workload_keys)
     model_cfg = runtime_config.get_model(model_key)
     accelerator = runtime_config.get_accelerator()
     gpu_type = runtime_config.get_gpu_type(accelerator) or accelerator
@@ -150,7 +204,7 @@ def _run_test(
     serving_image = runtime_config.get_serving_image(accelerator, engine)
     engine_defaults = runtime_config.get_engine_args(engine)
     engine_port = runtime_config.get_engine_port(engine)
-    first_workload = runtime_config.get_workload(workload_keys[0])
+    first_workload = workloads[workload_keys[0]]
     engine_args = runtime_config.merge_engine_args(
         engine_defaults, model_cfg, first_workload, engine
     )
@@ -212,7 +266,14 @@ def _run_test(
     optional_phase_workload_keys = _optional_phase_workload_keys(
         workload_keys, excluded_optional_phase_workloads
     )
-    profiler_enabled = _effective_profiler_enabled(profiler_cfg, workload_keys, engine)
+    # Knee scenarios include their own warmup; separate warmup/profiler runs
+    # would alter the intended ConfigIQ workload and may require huge contexts.
+    optional_phase_workload_keys = [
+        key for key in optional_phase_workload_keys if not workloads[key].get("benchconf")
+    ]
+    profiler_enabled = _effective_profiler_enabled(
+        profiler_cfg, optional_phase_workload_keys, engine
+    )
     if profiler_requested and engine != "vllm":
         logger.warning("Profiler is only supported with vLLM engine, skipping profiler")
     skipped_optional_phase_workloads = [
@@ -220,8 +281,8 @@ def _run_test(
     ]
     if skipped_optional_phase_workloads:
         logger.info(
-            "Configured to exclude workload(s) %s from optional warmup and profiling phases "
-            "via rhaiis.optional_phase.excluded_workloads; their normal benchmark path is unchanged",
+            "Skipping separate warmup and profiling for workload(s) %s "
+            "(BenchConf knee scenario or optional-phase exclusion)",
             skipped_optional_phase_workloads,
         )
     run_benchmark = config.project.get_config("tests.rhaiis.run_benchmark", True)
@@ -245,7 +306,11 @@ def _run_test(
         return 1 if _warnings else 0
 
     benchmark_timeout = benchmark_cfg.get("timeout", 14400)
-    wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, benchmark_timeout // 10)
+    wait_timeout = max(
+        benchmark_timeout,
+        *(workload.get("timeout_seconds", 0) for workload in workloads.values()),
+    )
+    wait_guidellm_benchmark_task._retry_config["attempts"] = max(1, wait_timeout // 10)
 
     try:
         isvc_labels = {
@@ -353,7 +418,7 @@ def _run_test(
                 endpoint_url=endpoint_url,
                 benchmark_cfg=benchmark_cfg,
                 model_cfg=model_cfg,
-                workload=runtime_config.get_workload(wl_key),
+                workload=workloads[wl_key],
                 workload_key=wl_key,
                 benchmark_timeout=benchmark_timeout,
             )
@@ -396,6 +461,7 @@ def _run_test(
             _run_workload_benchmark(
                 model_key=model_key,
                 workload_key=wl_key,
+                workload=workloads[wl_key],
                 model_cfg=model_cfg,
                 accelerator=accelerator,
                 accelerator_key=accelerator_key,
@@ -434,7 +500,7 @@ def _run_test(
                 _warnings.append("Standalone analysis failed")
 
         try:
-            first_workload = runtime_config.get_workload(workload_keys[0])
+            first_workload = workloads[workload_keys[0]]
             first_rates = first_workload.get("rates", [1])
             first_max_seconds = first_workload.get("max_seconds", 180)
             _set_mlflow_metadata(
@@ -477,6 +543,7 @@ def _run_workload_benchmark(
     *,
     model_key: str,
     workload_key: str,
+    workload: dict,
     model_cfg: dict,
     accelerator: str,
     accelerator_key: str,
@@ -502,7 +569,6 @@ def _run_workload_benchmark(
     """
     logger.info("=== Benchmark %s (UUID: %s) ===", workload_key, run_uuid)
 
-    workload = runtime_config.get_workload(workload_key)
     rates = workload.get("rates", [1])
     max_seconds = workload.get("max_seconds", 180)
     rampup = workload.get("rampup")
@@ -536,14 +602,27 @@ def _run_workload_benchmark(
         else:
             logger.info("Running benchmark at rates=%s for workload=%s", rates, workload_key)
 
+            config_path = workload.get("config_path")
+            benchmark_args = benchmark_cfg
+            if config_path:
+                # Keep runner options while the BenchConf scenario owns its
+                # request format, data, profile, and stopping constraints.
+                benchmark_args = {
+                    **benchmark_cfg,
+                    "args": {
+                        key: value
+                        for key, value in benchmark_cfg.get("args", {}).items()
+                        if key not in _SCENARIO_OWNED_ARGS
+                    },
+                }
             guidellm_args = runtime_config.build_guidellm_args(
-                benchmark_cfg=benchmark_cfg,
+                benchmark_cfg=benchmark_args,
                 model_id=model_cfg["hf_model_id"],
-                data=workload["data"],
-                rates=rates,
-                max_seconds=max_seconds,
-                rampup=rampup,
-                warmup=warmup,
+                data=None if config_path else workload["data"],
+                rates=None if config_path else rates,
+                max_seconds=None if config_path else max_seconds,
+                rampup=None if config_path else rampup,
+                warmup=None if config_path else warmup,
             )
 
             run_guidellm_benchmark(
@@ -551,9 +630,10 @@ def _run_workload_benchmark(
                 name=_guidellm_job_name("guidellm-bench", workload_key, deployment_name),
                 namespace=namespace,
                 image=benchmark_cfg.get("image"),
-                timeout=benchmark_timeout,
+                timeout=max(benchmark_timeout, workload.get("timeout_seconds", 0)),
                 pvc_size=benchmark_cfg.get("pvc_size", "5Gi"),
                 guidellm_args=guidellm_args,
+                config_path=config_path,
                 hf_token_secret=benchmark_cfg.get("hf_token_secret", ""),
                 fs_group=benchmark_cfg.get("fs_group"),
             )

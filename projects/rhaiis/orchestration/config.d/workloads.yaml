@@ -54,6 +54,25 @@ profile7:
   rampup: 35
   warmup: 0
 
+# ConfigIQ benchmark shapes and knee profiles are defined in BenchConf.
+configiq-interactive-chat:
+  benchconf: configiq/interactive-chat
+
+configiq-reasoning:
+  benchconf: configiq/reasoning
+
+configiq-code-generation:
+  benchconf: configiq/code-generation
+
+configiq-deep-research:
+  benchconf: configiq/deep-research
+
+configiq-batch-summarization-rag:
+  benchconf: configiq/batch-summarization-rag
+
+configiq-batch-synthetic-data-generation:
+  benchconf: configiq/batch-synthetic-data-generation
+
 # Dashboard override stub (set data, rates, max_seconds, rampup, and warmup at runtime)
 custom:
   data: "prompt_tokens=1000,output_tokens=1000"
