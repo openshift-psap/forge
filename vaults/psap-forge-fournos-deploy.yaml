@@ -1,4 +1,4 @@
-env_key: PSAP_FORGE_FOURNOS_DEPLOY_SECRET_PATH
+env_key: PSAP_FORGE_FOURNOS_CI_SECRET_PATH
 description: |
   Vault to access FOURNOS Kube API in the PSAP-mgmt cluster
 
