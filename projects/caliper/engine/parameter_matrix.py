@@ -267,3 +267,16 @@ def create_legend_name(
         return str(record.distinguishing_labels[present_keys[0]])
 
     return ", ".join(f"{k}={record.distinguishing_labels[k]}" for k in present_keys)
+
+
+def create_legend_title(varying_params: set[str]) -> str | None:
+    """Return a legend title from the varying parameter key names.
+
+    With a single key the title tells the reader what the bare values mean.
+    With multiple keys it is redundant (entries already show key=value) so
+    returns None.
+    """
+    if not varying_params or len(varying_params) > 1:
+        return None
+
+    return next(iter(varying_params))
