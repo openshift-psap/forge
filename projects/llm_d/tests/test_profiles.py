@@ -180,9 +180,9 @@ def test_benchmark_workloads_are_available() -> None:
         assert benchmark["timeout_seconds"] == 3600
     assert multi_turn["timeout_seconds"] == 7200
 
-    assert concurrent["benchconf"] == "llm-d/concurrent-1k-1k"
-    assert heavy["benchconf"] == "llm-d/concurrent-heavy-heterogeneous"
-    assert multi_turn["benchconf"] == "llm-d/multi-turn"
+    assert concurrent["benchconf"] == "psap-inference/concurrent-1k-1k-equal"
+    assert heavy["benchconf"] == "psap-inference/concurrent-8k-800-norm"
+    assert multi_turn["benchconf"] == "psap-inference/concurrent-128-128-multiturn"
 
 
 def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overrides() -> None:
