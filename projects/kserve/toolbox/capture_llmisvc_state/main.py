@@ -5,18 +5,35 @@ LLMInferenceService state capture using task-based DSL
 Replaces llmd_capture_llmisvc_state Ansible role
 """
 
+import json
+import logging
+
+import yaml
+
 from projects.core.dsl import entrypoint, execute_tasks, shell, task
-from projects.core.dsl.utils.k8s import oc_get_json
+from projects.core.dsl.utils.k8s import oc, oc_get_json
+
+logger = logging.getLogger(__name__)
 
 
 @entrypoint
-def run(llmisvc_name: str, *, namespace: str = ""):
+def run(
+    llmisvc_name: str,
+    *,
+    namespace: str = "",
+    gateway_name: str = "",
+    gateway_namespace: str = "",
+    since_time: str = "",
+):
     """
     Capture LLMInferenceService state using task-based DSL
 
     Args:
         llmisvc_name: Name of the LLMInferenceService to capture
         namespace: Namespace of the LLMInferenceService (empty string auto-detects current namespace)
+        gateway_name: Gateway to capture when provided
+        gateway_namespace: Namespace of the Gateway
+        since_time: Only capture Gateway logs since this ISO 8601 time, when provided
     """
 
     if not llmisvc_name:
@@ -536,6 +553,195 @@ def capture_used_nodes_yaml(args, context):
         captured_count += 1
 
     return f"Captured YAML for {captured_count} nodes in {nodes_dir}"
+
+
+@task
+def capture_routing_resources(args, context):
+    """Capture this service's HTTPRoutes and InferencePools, with their status."""
+    artifacts = args.artifact_dir / "artifacts"
+    context.routing_capture_warnings = []
+    selector = f"app.kubernetes.io/name={args.llmisvc_name}"
+    resources = (
+        ("httproutes.gateway.networking.k8s.io", "http_routes.yaml"),
+        ("inferencepools.inference.networking.k8s.io", "inference_pools_v1.yaml"),
+        ("inferencepools.inference.networking.x-k8s.io", "inference_pools_v1alpha2.yaml"),
+    )
+    pool_found = False
+    for kind, filename in resources:
+        result = oc(
+            "get",
+            kind,
+            "-n",
+            context.target_namespace,
+            "-l",
+            selector,
+            "-o",
+            "yaml",
+            check=False,
+            log_stdout=False,
+            log_stderr=False,
+        )
+        if result.returncode == 0:
+            (artifacts / filename).write_text(result.stdout, encoding="utf-8")
+            items = (yaml.safe_load(result.stdout) or {}).get("items", [])
+            if kind.startswith("inferencepools."):
+                pool_found |= bool(items)
+            elif not items:
+                context.routing_capture_warnings.append(
+                    f"No HTTPRoutes found for {args.llmisvc_name}"
+                )
+        elif not kind.startswith("inferencepools."):
+            context.routing_capture_warnings.append(
+                f"Could not capture {kind}: {result.stderr.strip()}"
+            )
+
+    if not pool_found:
+        context.routing_capture_warnings.append(f"No InferencePools found for {args.llmisvc_name}")
+
+    if args.gateway_name:
+        result = oc(
+            "get",
+            "gateways.gateway.networking.k8s.io",
+            args.gateway_name,
+            "-n",
+            args.gateway_namespace,
+            "-o",
+            "yaml",
+            check=False,
+            log_stdout=False,
+            log_stderr=False,
+        )
+        if result.returncode == 0:
+            (artifacts / "gateway.yaml").write_text(result.stdout, encoding="utf-8")
+        else:
+            context.routing_capture_warnings.append(
+                f"Could not capture Gateway: {result.stderr.strip()}"
+            )
+
+    return "Captured routing YAML, including resource status"
+
+
+@task
+def capture_gateway_pod_logs(args, context):
+    """Capture Gateway data-plane pod logs using the Gateway Service selectors."""
+    if not args.gateway_name:
+        return "No Gateway configured for log capture"
+
+    artifacts = args.artifact_dir / "artifacts"
+    services_result = oc(
+        "get",
+        "service",
+        "-n",
+        args.gateway_namespace,
+        "-o",
+        "json",
+        check=False,
+        log_stdout=False,
+        log_stderr=False,
+    )
+    if services_result.returncode != 0:
+        context.routing_capture_warnings.append(
+            f"Could not list Gateway Services: {services_result.stderr.strip()}"
+        )
+        return "Gateway Service discovery failed"
+
+    services = [
+        service
+        for service in json.loads(services_result.stdout)["items"]
+        if service.get("spec", {}).get("selector", {}).get("gateway.networking.k8s.io/gateway-name")
+        == args.gateway_name
+    ]
+    (artifacts / "gateway.services.yaml").write_text(
+        yaml.safe_dump({"items": services}, sort_keys=False), encoding="utf-8"
+    )
+    if not services:
+        context.routing_capture_warnings.append("No Services found for the configured Gateway")
+
+    seen_pods = set()
+    for service in services:
+        service_namespace = service["metadata"]["namespace"]
+        selector = service.get("spec", {}).get("selector", {})
+        if not selector:
+            context.routing_capture_warnings.append(
+                f"Gateway Service {service_namespace}/{service['metadata']['name']} has no pod selector"
+            )
+            continue
+
+        pods_result = oc(
+            "get",
+            "pod",
+            "-n",
+            service_namespace,
+            "-l",
+            ",".join(f"{key}={value}" for key, value in selector.items()),
+            "-o",
+            "json",
+            check=False,
+            log_stdout=False,
+            log_stderr=False,
+        )
+        if pods_result.returncode != 0:
+            context.routing_capture_warnings.append(
+                f"Could not list Gateway pods in {service_namespace}: {pods_result.stderr.strip()}"
+            )
+            continue
+
+        for pod in json.loads(pods_result.stdout)["items"]:
+            pod_name = pod["metadata"]["name"]
+            pod_key = (service_namespace, pod_name)
+            if pod_key in seen_pods:
+                continue
+            seen_pods.add(pod_key)
+            pod_dir = artifacts / "gateway-pods"
+            pod_dir.mkdir(exist_ok=True)
+            (pod_dir / f"{service_namespace}.{pod_name}.yaml").write_text(
+                yaml.safe_dump(pod, sort_keys=False), encoding="utf-8"
+            )
+            for container in pod["spec"]["containers"]:
+                container_name = container["name"]
+                logs = oc(
+                    "logs",
+                    pod_name,
+                    "-n",
+                    service_namespace,
+                    "-c",
+                    container_name,
+                    "--timestamps",
+                    *(["--since-time", args.since_time] if args.since_time else []),
+                    check=False,
+                    log_stdout=False,
+                    log_stderr=False,
+                )
+                if logs.returncode == 0:
+                    logs_dir = artifacts / "gateway-logs"
+                    logs_dir.mkdir(exist_ok=True)
+                    (logs_dir / f"{service_namespace}.{pod_name}.{container_name}.log").write_text(
+                        logs.stdout, encoding="utf-8"
+                    )
+                else:
+                    context.routing_capture_warnings.append(
+                        f"Could not capture logs for {service_namespace}/{pod_name}/{container_name}: "
+                        f"{logs.stderr.strip()}"
+                    )
+
+    if not seen_pods:
+        context.routing_capture_warnings.append(
+            "No Gateway pods found through Gateway Service selectors"
+        )
+    return f"Captured {len(seen_pods)} Gateway pods"
+
+
+@task
+def record_routing_capture_warnings(args, context):
+    """Make missing diagnostics visible without masking the test result."""
+    warnings = context.routing_capture_warnings
+    if warnings:
+        for warning in warnings:
+            logger.warning(warning)
+        (args.artifact_dir / "artifacts" / "routing_capture_warnings.txt").write_text(
+            "\n".join(warnings) + "\n", encoding="utf-8"
+        )
+    return f"{len(warnings)} routing capture warnings"
 
 
 def _container_crash(pod_name: str, status: dict) -> str | None:

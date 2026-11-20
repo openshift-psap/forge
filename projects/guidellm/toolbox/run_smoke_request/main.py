@@ -221,7 +221,7 @@ def set_secret_owner_ref(args, ctx):
     return f"Set owner ref on {ctx.api_key_secret_name} → pod {ctx.pod_name}"
 
 
-@retry(attempts=12, delay=5, backoff=1.0)
+@retry(attempts=36, delay=5, backoff=1.0)
 @task
 def wait_smoke_pod_running(args, ctx):
     """Wait for smoke pod to be running"""
