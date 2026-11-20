@@ -380,6 +380,34 @@ def oc_cp_from_pod(
     return oc(*args, **kwargs)
 
 
+def oc_cp_to_pod(
+    local_path: str | Path,
+    remote_path: str,
+    *,
+    namespace: str,
+    pod: str,
+    container: str | None = None,
+    **kwargs,
+) -> shell.CommandResult:
+    """Copy a local file to a path inside a pod.
+
+    Args:
+        local_path: Local file to copy
+        remote_path: Absolute destination path inside the pod
+        namespace: Namespace of the pod
+        pod: Pod name
+        container: Container name (optional if pod has a single container)
+        **kwargs: Additional keyword arguments passed to ``oc``
+
+    Returns:
+        CommandResult with execution details
+    """
+    args = ["cp", "--retries=99", str(local_path), f"{namespace}/{pod}:{remote_path}"]
+    if container:
+        args.extend(["-c", container])
+    return oc(*args, **kwargs)
+
+
 def best_effort_oc(*oc_args: str, description: str | None = None) -> None:
     """Run an oc command, swallowing timeout and other errors.
 

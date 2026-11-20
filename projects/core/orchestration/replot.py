@@ -8,20 +8,22 @@ post-processing pipeline execution.
 from __future__ import annotations
 
 import logging
-import re
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import click
 
+from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
 from projects.caliper.orchestration.postprocess import run_postprocess_from_orchestration_config
 from projects.caliper.orchestration.postprocess_outcome import TestPhaseOutcome
+from projects.caliper.public.mlflow import (
+    download_mlflow_artifacts,
+    parse_mlflow_url,
+    resolve_mlflow_tracking_uri,
+)
 from projects.cluster.library.prom.replay import replay_metrics_from_config
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
-from projects.core.library import vault as vault_lib
 from projects.core.library.ci import ExitCategory
 
 logger = logging.getLogger(__name__)
@@ -37,90 +39,6 @@ def _get_step_from_list(steps_list: list, step_name: str) -> dict:
         if step_name in step:
             return step[step_name]
     return {}
-
-
-def _download_mlflow_artifacts_via_import(
-    replot_url: str,
-    replot_download_dir: Path,
-    mlflow_secrets_path: Path,
-) -> dict:
-    run_id_match = re.search(r"[/#]runs/([^/?#]+)", replot_url)
-    if not run_id_match:
-        raise ValueError(f"Could not parse MLflow run ID from URL: {replot_url}")
-
-    run_id = run_id_match.group(1)
-
-    logger.info("Downloading artifacts using import command for run ID: %s", run_id)
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "projects.caliper.cli.main",
-        "artifacts",
-        "import",
-        "--from-mlflow-url",
-        replot_url,
-        "--output-dir",
-        str(replot_download_dir),
-        "--mlflow-secrets",
-        str(mlflow_secrets_path),
-        "--mlflow-insecure-tls",
-    ]
-
-    logger.info("Running import command: %s", " ".join(cmd))
-    logger.info("Target download directory: %s", replot_download_dir)
-
-    files_before: set[Path] = set()
-    if replot_download_dir.exists():
-        files_before = {f for f in replot_download_dir.rglob("*") if f.is_file()}
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-
-        logger.info("Import command completed successfully")
-        if result.stdout:
-            logger.debug("Import stdout: %s", result.stdout)
-        if result.stderr:
-            logger.debug("Import stderr: %s", result.stderr)
-
-        files_after: set[Path] = set()
-        if replot_download_dir.exists():
-            files_after = {f for f in replot_download_dir.rglob("*") if f.is_file()}
-
-        downloaded_files = list(files_after - files_before)
-
-        if not downloaded_files:
-            raise RuntimeError(
-                f"Import command completed but no new files found in {replot_download_dir}"
-            )
-
-        logger.info("Downloaded %d files to %s", len(downloaded_files), replot_download_dir)
-        for file in downloaded_files[:10]:
-            try:
-                logger.info("  %s", file.relative_to(replot_download_dir))
-            except ValueError:
-                logger.info("  %s", file)
-        if len(downloaded_files) > 10:
-            logger.info("  ... and %d more", len(downloaded_files) - 10)
-
-        return {
-            "download_status": "success",
-            "downloaded_files": len(downloaded_files),
-            "run_id": run_id,
-            "import_command": " ".join(cmd),
-        }
-
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Import command failed with exit code {e.returncode}"
-        if e.stdout:
-            error_msg += f"\nStdout: {e.stdout}"
-        if e.stderr:
-            error_msg += f"\nStderr: {e.stderr}"
-
-        logger.error(error_msg)
-        raise RuntimeError(f"MLflow artifact download via import failed: {error_msg}") from e
-    except Exception as e:
-        raise RuntimeError(f"MLflow artifact download via import failed: {e}") from e
 
 
 def _log_existing_files(directory: Path, limit: int = 10) -> list[Path]:
@@ -173,12 +91,6 @@ def _run_download_step(
     logger.info("Replotting artifacts from URL: %s", replot_url)
     logger.info("Download directory: %s", replot_download_dir)
 
-    mlflow_secrets_path = vault_lib.get_vault_content_path(vault_name, vault_mlflow_secret)
-    if mlflow_secrets_path is None or not mlflow_secrets_path.exists():
-        raise FileNotFoundError(
-            f"MLflow secrets not found in vault {vault_name}/{vault_mlflow_secret}"
-        )
-
     if replot_download_dir.exists() and any(replot_download_dir.iterdir()):
         logger.info(
             "Replot download directory already exists with content, skipping download: %s",
@@ -194,17 +106,29 @@ def _run_download_step(
         )
         return
 
-    replot_download_dir.mkdir(parents=True, exist_ok=True)
+    if not vault_name or not vault_mlflow_secret:
+        raise ValueError("MLflow vault configuration is missing")
+    destination = parse_mlflow_url(replot_url)
+    run_id = destination["run_id"]
+    workspace = destination["workspace"]
+    if not run_id or not workspace:
+        raise ValueError("The replot URL must contain an MLflow run ID and workspace")
 
-    if "mlflow" in replot_url.lower() and "runs" in replot_url:
-        download_result = _download_mlflow_artifacts_via_import(
-            replot_url, replot_download_dir, mlflow_secrets_path
-        )
-        status["replot"].update(download_result)
-    else:
-        raise ValueError(
-            f"Unsupported replot URL type: {replot_url}. Only MLflow URLs are currently supported."
-        )
+    connection = load_mlflow_connection(vault_name, vault_mlflow_secret)
+    resolve_mlflow_tracking_uri(connection, destination["tracking_uri"])
+    downloaded = download_mlflow_artifacts(
+        connection=connection,
+        run_id=run_id,
+        workspace=workspace,
+        artifact_path=destination["artifact_path"] or "",
+        output_dir=replot_download_dir,
+    )
+    if not downloaded:
+        raise RuntimeError(f"No MLflow artifacts downloaded to {replot_download_dir}")
+
+    status["replot"].update(
+        {"download_status": "success", "downloaded_files": downloaded, "run_id": run_id}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,11 +144,11 @@ def _run_replay_step(artifact_directory: Path, status: dict) -> None:
             status["replot"]["replay_status"] = "skipped"
             return
 
-        force_refresh = config.project.get_config(
-            "prom.capture.metrics.force_refresh", False, print=False, warn=False
+        allow_refresh = config.project.get_config(
+            "caliper.replot.prom.metrics.allow_refresh", False, print=False, warn=False
         )
         logger.info("Checking for Prometheus metrics to replay...")
-        replay_errors = replay_metrics_from_config(artifact_directory, force_refresh=force_refresh)
+        replay_errors = replay_metrics_from_config(artifact_directory, force_refresh=allow_refresh)
 
         if replay_errors:
             logger.warning("Prometheus replay had errors for groups: %s", ", ".join(replay_errors))

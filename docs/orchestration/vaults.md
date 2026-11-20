@@ -76,7 +76,30 @@ content:
     file: api.token
     description: |
       Authentication token for API access
+
+  old_secret:
+    file: secret.key
+    description: |
+      Secret that used to be stored under another name
+    deprecated_filenames:
+      - secret.2024-01-01.key  # old filenames, still resolved with an error log
 ```
+
+### Deprecated Filenames
+
+When a secret file cannot be stored under its canonical name (e.g. the CI
+writes it with a dated name that cannot be changed), list the old names in
+`deprecated_filenames`. Resolution then works as follows:
+
+1. If the canonical file exists, it is used silently.
+2. If the canonical file is missing but a deprecated filename exists, an
+   **error is logged** and the deprecated file is used. Validation still
+   passes, and a CI notification is raised so the file gets renamed.
+3. If none of them exist, validation reports the content as missing, as usual.
+
+Deprecated filenames are also accepted by the "no extra files" validation
+rule, so a vault directory containing only the deprecated file is not
+flagged.
 
 ### File Path Resolution
 
@@ -309,7 +332,7 @@ from projects.core.library import vault
 vault.init()
 
 # Initialize with specific vaults only
-vault.init(["psap-forge-ci", "forge-llm-d"])
+vault.init(["psap-forge-ci", "..."])
 ```
 
 ### Runtime Usage
@@ -325,9 +348,8 @@ if not vault_manager.validate_project_vaults("llm_d"):
     raise RuntimeError("Vault validation failed")
 
 # Get paths to vault content
-vault = vault_manager.get_vault("forge-llm-d")
-hf_token_path = vault.content["hf_token"].file_path
-pull_secret_path = vault.content["rhoai_pull_secret"].file_path
+vault = vault_manager.get_vault("psap-rhoai-rc")
+pull_secret_path = vault.content["rhoai_rc.secret"].file_path
 ```
 
 ## Error Handling
@@ -357,3 +379,10 @@ Solution: Either remove the file or add it to the vault definition
 Vault 'my-vault' missing content 'api_key' at: /path/vault/api_key
 ```
 Solution: Create the missing secret file
+
+**Deprecated filename in use:**
+```
+Vault 'my-vault' content 'api_key': canonical file 'api_key' not found, resolving to deprecated filename 'api_key.old'. Rename the file to 'api_key' in the vault directory.
+```
+Solution: Rename the file in the vault directory to its canonical name
+(and remove the `deprecated_filenames` entry once no vault uses it anymore)

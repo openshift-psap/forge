@@ -902,6 +902,19 @@ def postchecks(
         # placeholder for future exist status (eg, performance regression, flake, ...)
         logger.warning(f"postchecks: unhandled finish reason: {finish_reason}")
 
+    # Surface the non-fatal warnings recorded through the exit status mechanism
+    # (does not affect the status: a warning keeps the execution successful)
+    try:
+        exit_status = ci_lib.ExitStatus.load(artifact_path / CI_METADATA_DIRNAME)
+        warning_records = [
+            record
+            for record in exit_status.records
+            if record.category == ci_lib.ExitCategory.WARNING
+        ]
+    except Exception as e:
+        logger.warning(f"postchecks: failed to read the exit status: {e}")
+        warning_records = []
+
     # Generate duration string and timing file
     duration_str = generate_duration_and_timing_file(start_time, artifact_path)
 
@@ -913,5 +926,10 @@ def postchecks(
         status = f"❌ Execution of '{command_str}' failed after{duration_str}."
     else:
         status = f"✅ Execution of '{command_str}' succeeded after{duration_str}."
+
+    if warning_records:
+        status += "\n⚠️  Warning(s) raised during the execution:"
+        for record in warning_records:
+            status += f"\n  - {record.reason}"
 
     return status

@@ -134,7 +134,7 @@ def test_no_data_metric_placeholder_in_report(tmp_path):
         description="Missing metric",
         unit="count",
         source_file="workload",
-        query="",
+        query="sum(rate(http_requests_total[5m]))",
         legend_labels=[],
         series=[],
     )
@@ -144,6 +144,7 @@ def test_no_data_metric_placeholder_in_report(tmp_path):
 
     assert "Missing metric" in content
     assert "No data available" in content
+    assert "sum(rate(http_requests_total[5m]))" in content
 
 
 def test_no_data_metric_embeddable(tmp_path):

@@ -180,6 +180,12 @@ def create_configmap(args, ctx):
     kb_profiles_dir = src_dir / "kube-burner_profiles"
     kb_profiles_dir.mkdir(parents=True, exist_ok=True)
 
+    if "=" in str(config_path):
+        raise ValueError(
+            f"Artifact path contains '=' which is incompatible with "
+            f"oc create configmap --from-file: {config_path}"
+        )
+
     from_file_args = [f"--from-file=config.yaml={config_path}"]
     for p in ctx.metric_profiles:
         shutil.copy2(p, metric_profiles_dir / p.name)

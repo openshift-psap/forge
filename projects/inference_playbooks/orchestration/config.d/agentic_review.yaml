@@ -1,6 +1,6 @@
 # this is to configure the agentic _REVIEW_ module of Forge
 enabled: false
-model_key: qwen-3-6-35b
+model_key: default
 failure_review:
   enabled: true
 config_review:

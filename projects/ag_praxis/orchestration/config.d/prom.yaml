@@ -16,18 +16,40 @@ capture:
     enabled: true
     include_dirs:
       - projects/cluster/metrics
+      - projects/kserve/metrics
     params:
       namespace: "@test.namespace"
+      llmisvc_name: "@platform.maas.llmisvc_name"
     groups:
+      vllm:
+        enabled: true
+        files: [vllm_latency, vllm_throughput]
+        variables:
+          LLMISVC_NAMESPACE: "{namespace}"
+          LLMISVC_NAME: "{llmisvc_name}"
+      scheduler:
+        enabled: true
+        files: [scheduler]
+        variables:
+          LLMISVC_NAMESPACE: "{namespace}"
+          LLMISVC_NAME: "{llmisvc_name}"
       resource_load-generator:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
         variables:
           NAMESPACE: "{namespace}"
-          POD_NAME: ".*"
+          POD_NAME: "guidellm.*"
+          CONTAINER: "guidellm-main"
+      resource_sim:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        variables:
+          NAMESPACE: "{namespace}"
+          POD_NAME: "{llmisvc_name}-.*"
+          CONTAINER: "main"
       resource_ingress:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: ".*"
@@ -38,6 +60,12 @@ capture:
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: "payload-.*"
+      resource_kuadrant:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        variables:
+          NAMESPACE: "kuadrant-system"
+          POD_NAME: ".*"
       worker_node:
         enabled: true
         files: [worker_node]

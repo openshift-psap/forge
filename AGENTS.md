@@ -292,6 +292,64 @@ finally:
         os.environ["MLFLOW_WORKSPACE"] = old_value
 ```
 
+## Pull Requests: A Tracking Issue Is Required
+
+**Every PR must reference an existing tracking issue — a GitHub issue or a Jira issue.**
+A PR without a tracking issue has no agreed problem statement, no acceptance criteria, and
+nowhere to record follow-ups.
+
+### Rules
+
+1. **Check for the issue before creating the PR.**
+   Before opening a PR, confirm an issue exists that describes the problem and the intended change.
+
+2. **No issue yet? Create it first.**
+   If no issue exists, create one (or ask the user to create it) with the problem statement,
+   the proposed change, and acceptance criteria. Do not open the PR until it has an issue
+   number — do not backfill the issue after the PR is up.
+
+3. **Link the issue in the PR body.**
+   Use `Fixes #NNN` when the PR closes a GitHub issue, or `Refs #NNN` for partial work.
+   For Jira, include the issue key (e.g. `PSAP-123`, `RHAIRFE-45`, `INFERENG-67`), or a full
+   browse URL such as `https://issues.redhat.com/browse/RHEL-123` for any project.
+   Jira issues are usually private, so the reference is matched as text and is not resolved
+   or verified by CI.
+   Never leave placeholders such as `Fixes #TBD` or "no issue" in a PR that is ready for review.
+
+4. **One issue per PR.** If a change spans multiple issues, link each one with `Refs`,
+   or split the PR so each maps to a single issue.
+
+### Enforcement
+
+The `Require tracking issue` GitHub Actions workflow checks the PR body on open, edit, and
+synchronize, and fails the PR when no issue is referenced. It accepts GitHub issue references
+(`Fixes #NNN`, `Refs #NNN`, issue URLs), Jira keys for the PSAP, RHAIRFE, and INFERENG
+projects, and Jira browse URLs for any project (string match only; Jira issues are private
+and are not resolved). It applies to every PR regardless of the tool or agent used. Once the
+check is required by branch protection, a PR without an issue reference cannot merge.
+
+### Forbidden
+
+```
+# BAD: PR opened with no tracking issue
+gh pr create --title "fix(rhaiis): ..." --body "Fixes a bug."
+
+# BAD: Placeholder left in the body
+Fixes #TBD
+
+# BAD: Issue opened only after the PR is already up for review
+```
+
+### Correct
+
+```
+# GOOD: issue created/found first, then referenced from the PR body
+Fixes #412
+
+# GOOD: Jira tracking issue key
+PSAP-123
+```
+
 ## Comment Interaction Rules
 
 When processing, posting, or replying to user comments (GitHub PR reviews, issue comments, etc.):

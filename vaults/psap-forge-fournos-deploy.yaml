@@ -6,3 +6,7 @@ content:
   kubeconfig:
     description: |
       KUBECONFIG file to access the PSAP-mgmt cluster
+
+    rotate_info: |
+      from the mgmt cluster:
+      $ ./bin/run_toolbox cluster create-sa-kubeconfig ocpci --kubeconfig-file forge.kconfig

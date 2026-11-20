@@ -19,14 +19,14 @@ from projects.caliper.engine.file_export.mlflow_config import (
     project_metadata_fields,
     validate_mlflow_config,
 )
-from projects.caliper.engine.file_export.mlflow_secrets import (
-    artifacts_export_mlflow_verbose_lines,
+from projects.caliper.engine.file_export.runner import run_file_export
+from projects.caliper.engine.mlflow_connection import (
     assert_tracking_uri_has_no_userinfo,
-    load_mlflow_secrets_yaml,
+    load_mlflow_connection_file,
     project_secrets_fields,
+    resolve_mlflow_tracking_uri,
     validate_mlflow_secrets,
 )
-from projects.caliper.engine.file_export.runner import run_file_export
 from projects.caliper.engine.model import FileExportBackendResult
 
 
@@ -71,6 +71,10 @@ def merge_mlflow_files_with_cli(
                 merged[yaml_key] = value
 
     apply_str("mlflow_tracking_uri", "tracking_uri", cli_tracking_uri)
+    if secrets_data:
+        merged["tracking_uri"] = resolve_mlflow_tracking_uri(
+            secrets_data, merged.get("tracking_uri")
+        )
     apply_str("mlflow_experiment", "experiment", cli_experiment)
     apply_str("mlflow_run_id", "run_id", cli_run_id)
     apply_str("mlflow_run_name", "run_name", cli_run_name)
@@ -100,18 +104,19 @@ def _load_mlflow_inputs(
     *,
     mlflow_secrets_path: Path | None,
     mlflow_config_data: dict[str, Any] | None,
+    mlflow_secrets_data: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None] | int:
     """Load and validate MLflow secrets + config.
 
     Returns ``(secrets_data, config_data)`` on success, or an int exit code on
     validation failure.
     """
-    secrets_data: dict[str, Any] | None = None
+    secrets_data = mlflow_secrets_data
     config_data: dict[str, Any] | None = None
 
     if mlflow_secrets_path is not None:
         try:
-            secrets_data = load_mlflow_secrets_yaml(mlflow_secrets_path)
+            secrets_data = load_mlflow_connection_file(mlflow_secrets_path)
             validate_mlflow_secrets(secrets_data)
         except (OSError, ValueError, TypeError, yaml.YAMLError) as e:
             click.echo(
@@ -181,6 +186,7 @@ def run_artifacts_export(
     mlflow_run_name: str | None = None,
     mlflow_insecure_tls: bool = False,
     mlflow_secrets_path: Path | None = None,
+    mlflow_secrets_data: dict[str, Any] | None = None,
     mlflow_config_data: dict[str, Any] | None = None,
     dry_run: bool = False,
     verbose: bool = False,
@@ -197,7 +203,8 @@ def run_artifacts_export(
     ``mlflow_config_data`` (a dict). The CLI and orchestration load a YAML file themselves
     when needed, then call this with the resulting dict.
 
-    TLS and credentials belong in ``mlflow_secrets_path``.
+    TLS and credentials can be loaded from ``mlflow_secrets_path`` or supplied as
+    ``mlflow_secrets_data`` by Forge orchestration.
     """
     backends = [b.strip().lower() for b in backend if b.strip()]
     if not backends:
@@ -210,6 +217,7 @@ def run_artifacts_export(
 
     loaded = _load_mlflow_inputs(
         mlflow_secrets_path=mlflow_secrets_path,
+        mlflow_secrets_data=mlflow_secrets_data,
         mlflow_config_data=mlflow_config_data,
     )
     if isinstance(loaded, int):
@@ -447,3 +455,32 @@ def run_multi_run_artifacts_export(
         results = [FileExportBackendResult(backend="mlflow", status="failure", detail=str(e))]
 
     return _finalize_results(results, status_yaml_path)
+
+
+def artifacts_export_mlflow_verbose_lines(
+    *,
+    tracking_uri: str | None,
+    experiment: str | None,
+    run_id: str | None,
+    run_name: str | None = None,
+    config_is_inline: bool = False,
+    secrets_path: Path | None = None,
+) -> list[str]:
+    """
+    Human-readable MLflow settings for ``--verbose`` (no secrets or tokens are printed).
+    """
+    lines: list[str] = ["  MLflow:"]
+    lines.append(f"    Tracking URI: {tracking_uri or '(not set)'}")
+    if secrets_path is not None:
+        lines.append(f"    Secrets file: {secrets_path}")
+    if config_is_inline:
+        lines.append("    Settings: (non-secret config dict passed to the export runner)")
+
+    lines.append(f"    Experiment: {experiment or '(default)'}")
+    if run_id:
+        lines.append(f"    Run ID: {run_id} (existing run; --mlflow-run-name ignored)")
+    elif run_name:
+        lines.append(f"    Run name (new run): {run_name}")
+    else:
+        lines.append("    Run name (new run): (MLflow default random name)")
+    return lines

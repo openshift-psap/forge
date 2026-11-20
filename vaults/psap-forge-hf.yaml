@@ -8,3 +8,6 @@ content:
       Token to access HuggingFace git repositories
     format: |
       hf_TOKEN
+    rotate_info: |
+      Goto https://huggingface.co/settings/tokens
+      Create a Forge CI READ access token
