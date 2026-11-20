@@ -24,6 +24,11 @@ platform:
   kustomize_base: null
   platform_repo: https://github.com/Kuadrant/mcp-gateway.git
   platform_repo_subdir: config/openshift
+  # Upstream mcp-gateway still pins EOL v1.26-latest; Sail/OSSM 3 rejects it.
+  # Forge patches Istio + IstioCNI manifests to this version before apply.
+  # Set to "auto" to detect the highest supported version from the Istio CRD,
+  # or pin a specific version (e.g. "v1.27-latest") if needed.
+  istio_version: auto
 
   steps:
     - name: service-mesh-operator
