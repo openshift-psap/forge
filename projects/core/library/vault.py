@@ -74,7 +74,7 @@ class VaultContent:
             if not deprecated_path.exists():
                 continue
 
-            logger.error(
+            logger.warning(
                 f"Vault '{self._vault.name}' content '{self.name}': "
                 f"canonical file '{self.filename}' not found, resolving to "
                 f"deprecated filename '{deprecated_filename}'. "
