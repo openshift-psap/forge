@@ -28,6 +28,7 @@ from projects.core.library.export import (
 )
 from projects.core.library.postprocess import run_postprocess_after_test
 from projects.core.orchestration.replot import caliper_replot_entrypoint
+from projects.llm_d.orchestration import dashboard_csv
 from projects.llm_d.orchestration.cleanup_phase import (
     cleanup_operators,
 )
@@ -126,6 +127,16 @@ def preflight(ctx) -> int:
     return preflight_toolbox_run()
 
 
+def _sync_dashboard_csv() -> None:
+    try:
+        dashboard_csv.sync_dashboard_csv(dashboard_csv.find_dashboard_csv())
+    except Exception as e:
+        ci_lib.add_notification_file(
+            "DASHBOARD_CSV_SYNC_FAILED", f"Could not append the results to the dashboard CSV: {e}"
+        )
+        raise
+
+
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
@@ -158,6 +169,10 @@ def test(ctx) -> int:
         if status is None or not status.get("success", False):
             if max_exit_code == 0:
                 max_exit_code = 1  # Set exit code to 1 if post-processing failed but tests passed
+
+        # Only results of fully successful test runs go to the dashboard
+        if max_exit_code == 0 and dashboard_csv.is_enabled():
+            _sync_dashboard_csv()
 
     except Exception as e:
         exit_msg = f"Test failed: {e}"
@@ -222,6 +237,7 @@ main.add_command(
             caliper_export_list_vaults,
             caliper_export_list_optional_vaults,
             caliper_agentic_list_vaults,
+            dashboard_csv.list_vaults,
         ],
         spec_resolver_func=_resolve_spec_defaults,
     )
