@@ -125,7 +125,7 @@ def test_link_retries_transient_failure(monkeypatch: pytest.MonkeyPatch, no_back
     import contextlib
     import sys
 
-    import projects.caliper.engine.file_export.mlflow_secrets as secrets
+    import projects.caliper.engine.mlflow_connection as secrets
 
     monkeypatch.setattr(secrets, "mlflow_connection_env", lambda _c: contextlib.nullcontext())
     monkeypatch.setitem(sys.modules, "mlflow", FakeMlflow)

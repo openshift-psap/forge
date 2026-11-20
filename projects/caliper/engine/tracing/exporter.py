@@ -368,7 +368,7 @@ def _link_traces(
     connection: dict[str, Any],
 ) -> None:
     """Link traces to a run in batches, bounded-retrying transient failures."""
-    from projects.caliper.engine.file_export.mlflow_secrets import mlflow_connection_env
+    from projects.caliper.engine.mlflow_connection import mlflow_connection_env
 
     for start in range(0, len(trace_ids), LINK_BATCH_SIZE):
         batch = trace_ids[start : start + LINK_BATCH_SIZE]
