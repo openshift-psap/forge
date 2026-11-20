@@ -54,6 +54,28 @@ def _log_existing_files(directory: Path, limit: int = 10) -> list[Path]:
     return existing_files
 
 
+def _save_replot_source_metadata(artifact_directory: Path, replot_status: dict) -> None:
+    if replot_status.get("download_status") != "success":
+        return
+
+    import datetime
+
+    import yaml
+
+    metadata = {
+        "source_url": replot_status.get("url"),
+        "run_id": replot_status.get("run_id"),
+        "download_time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+        "downloaded_files": replot_status.get("downloaded_file_list", []),
+    }
+
+    metadata_path = artifact_directory / "_replot_source.yaml"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(yaml.safe_dump(metadata, sort_keys=False))
+
+    logger.info("Saved replot source metadata to %s", metadata_path)
+
+
 # ---------------------------------------------------------------------------
 # Download step
 # ---------------------------------------------------------------------------
@@ -127,7 +149,12 @@ def _run_download_step(
         raise RuntimeError(f"No MLflow artifacts downloaded to {replot_download_dir}")
 
     status["replot"].update(
-        {"download_status": "success", "downloaded_files": downloaded, "run_id": run_id}
+        {
+            "download_status": "success",
+            "downloaded_files_count": len(downloaded),
+            "downloaded_file_list": downloaded,
+            "run_id": run_id,
+        }
     )
 
 
@@ -251,6 +278,8 @@ def run_replot_from_orchestration_config(
         # Step 1: Download artifacts
         _run_download_step(replot_url, replot_download_dir, vault_name, vault_mlflow_secret, status)
         logger.info("Download step completed")
+
+        _save_replot_source_metadata(artifact_directory, status["replot"])
 
         # Step 2: Replay Prometheus metrics from captured TSDB
         _run_replay_step(artifact_directory, status)

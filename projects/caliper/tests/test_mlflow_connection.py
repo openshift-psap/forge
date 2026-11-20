@@ -71,7 +71,7 @@ def test_direct_download_restores_tracking_state(monkeypatch, tmp_path, fail):
         with pytest.raises(RuntimeError, match="test download failure"):
             download_mlflow_artifacts(**download)
     else:
-        assert download_mlflow_artifacts(**download) == 1
+        assert download_mlflow_artifacts(**download) == ["report.txt"]
         assert (tmp_path / "report.txt").read_text() == "result"
 
     assert tracking_uri == prod_uri

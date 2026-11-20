@@ -93,7 +93,7 @@ def run_artifacts_import(
         artifact_path=artifact_path,
         output_dir=output_dir,
     )
-    click.echo(f"Downloaded {downloaded} file(s) to {output_dir}")
+    click.echo(f"Downloaded {len(downloaded)} file(s) to {output_dir}")
 
 
 def download_mlflow_artifacts(
@@ -103,8 +103,11 @@ def download_mlflow_artifacts(
     workspace: str,
     artifact_path: str,
     output_dir: Path,
-) -> int:
-    """Download a run's files using a resolved connection."""
+) -> list[str]:
+    """Download a run's files using a resolved connection.
+
+    Returns the list of downloaded file paths relative to *output_dir*.
+    """
     try:
         import mlflow
     except ImportError as e:
@@ -140,11 +143,14 @@ def download_mlflow_artifacts(
             files = [path for path in downloaded_path.rglob("*") if path.is_file()]
             root = downloaded_path
 
+        relative_paths = []
         for path in files:
-            destination = output_dir / path.relative_to(root)
+            rel = path.relative_to(root)
+            destination = output_dir / rel
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(path), destination)
-        return len(files)
+            relative_paths.append(str(rel))
+        return sorted(relative_paths)
 
 
 def _try_load_mlflow_secrets_from_vault() -> dict | None:
