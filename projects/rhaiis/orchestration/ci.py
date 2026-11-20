@@ -62,7 +62,7 @@ def main(ctx):
     if ctx.invoked_subcommand == "resolve-fournos-config":
         return
 
-    vault.init(runtime_config.get_vaults())
+    vault.init(runtime_config.get_vaults(include_observability=ctx.invoked_subcommand == "prepare"))
     ensure_mlflow_destination_marker()
 
     if ctx.invoked_subcommand == "export-artifacts":

@@ -1,0 +1,40 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ monitor.name | tojson }}
+  namespace: {{ namespace | tojson }}
+  labels:
+    forge.openshift.io/component: observability
+    forge.openshift.io/run-suffix: {{ run_suffix | tojson }}
+    thanos_metrics: "true"
+  annotations:
+    forge.openshift.io/run-id: {{ run_id | tojson }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ namespace | tojson }}
+  selector:
+    matchLabels: {{ monitor.selector | tojson }}
+  endpoints:
+    - port: {{ monitor.port | tojson }}
+      path: {{ monitor.path | tojson }}
+      interval: {{ monitor.interval | tojson }}
+      scrapeTimeout: {{ monitor.scrape_timeout | tojson }}
+      scheme: {{ monitor.scheme | tojson }}
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: deployment_pod_name
+          action: replace
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+          action: replace
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+          action: replace
+        - sourceLabels: [__meta_kubernetes_pod_label_deployment_uuid]
+          targetLabel: deployment_uuid
+          action: replace
+          regex: (.+)
+        - targetLabel: thanos_metrics
+          replacement: "true"
+          action: replace

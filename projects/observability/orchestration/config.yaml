@@ -1,0 +1,39 @@
+observability:
+  # Fournos supplies the stable run_id through FJOB_NAME. Local runs must set
+  # run_id explicitly. Forge locks the workload namespace for this run.
+  enabled: false
+  run_id: null
+  cluster_label: null
+  workload_namespace: null
+
+  receiver:
+    # Forge appends a deterministic run suffix to this namespace.
+    namespace: forge-observability
+    name: thanos-receiver
+    image: quay.io/thanos/thanos:v0.35.0
+    storage_class: null
+    pvc_size: 50Gi
+    # New receivers keep Thanos' out-of-order window disabled by default.
+    # If enabled, verify block uploads and configure vertical compaction centrally.
+    # out_of_order_window: 6h
+    objstore_vault:
+      name: psap-forge-thanos
+      content: objstore.yaml
+
+  monitoring:
+    # Forge appends the same run suffix to this queue name.
+    queue_name: forge-observability
+    # Null selects only workload_namespace. Wider regexes are rejected.
+    namespace_regex: null
+    container_names:
+      - kserve-container
+      - main
+    # DCGM series without a matching exported_namespace are excluded.
+    # Enable only when exported_namespace identifies this workload's GPU use.
+    forward_gpu_metrics: false
+    gpu_namespaces:
+      - nvidia-gpu-operator
+      - openshift-amd-gpu
+
+  # Host projects can supply ServiceMonitors for their own workloads.
+  service_monitors: []
