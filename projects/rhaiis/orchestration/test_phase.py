@@ -884,6 +884,7 @@ def _run_profiler_step(
     copy_result = copy_profiler_traces(
         name=deployment_name,
         namespace=namespace,
+        flush_timeout=profiler_cfg.get("flush_timeout", 300),
         transfer_timeout_seconds=profiler_cfg.get("transfer_timeout_seconds", 300),
     )
     return [Path(path) for path in copy_result.copied_traces]
