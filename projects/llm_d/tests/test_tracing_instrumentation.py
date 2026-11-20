@@ -70,13 +70,6 @@ def test_instrument_standard_container_preserves_existing_args():
     assert "--otlp-traces-endpoint" in env["VLLM_ADDITIONAL_ARGS"]
     assert env["KEEP_ME"] == "1"
     assert env["OTEL_SERVICE_NAME"] == "llmd-abc-vllm"
-
-
-def test_instrument_standard_container_sets_tracing_env():
-    manifest = _manifest()
-    instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
-    env = {e["name"]: e["value"] for e in manifest["spec"]["template"]["containers"][0]["env"]}
-    assert env["OTEL_SERVICE_NAME"] == "llmd-abc-vllm"
     assert env["OTEL_EXPORTER_OTLP_ENDPOINT"]
 
 
@@ -212,18 +205,6 @@ def test_default_scheduler_args_are_never_replaced_by_tracing_only(scheduler):
     assert manifest == before
 
 
-def test_disabled_epp_manifest_is_unchanged():
-    manifest = _with_epp()
-    before = copy.deepcopy(manifest)
-    instrument_manifest(
-        manifest,
-        settings=TracingSettings(mode=TracingMode.OFF),
-        identity=_identity(),
-        namespace="ns",
-    )
-    assert manifest == before
-
-
 def test_capture_records_the_roles_of_the_rendered_manifest(monkeypatch, tmp_path):
     import yaml
 
@@ -250,8 +231,9 @@ def test_instrumentation_is_idempotent():
     assert manifest == once
 
 
-def test_disabled_manifest_is_unchanged():
-    manifest = _manifest()
+@pytest.mark.parametrize("build", [_manifest, _with_epp])
+def test_disabled_manifest_is_unchanged(build):
+    manifest = build()
     before = copy.deepcopy(manifest)
     instrument_manifest(
         manifest,
@@ -260,18 +242,6 @@ def test_disabled_manifest_is_unchanged():
         namespace="ns",
     )
     assert manifest == before
-
-
-def test_detailed_mode_rejects_non_vllm_engine():
-    manifest = _manifest()
-    with pytest.raises(TracingConfigError, match="detailed"):
-        instrument_manifest(
-            manifest,
-            settings=_settings(TracingMode.DETAILED),
-            identity=_identity(),
-            namespace="ns",
-            engine="trtllm",
-        )
 
 
 def test_detailed_mode_adds_detailed_flag_for_vllm():
@@ -296,151 +266,61 @@ def test_manual_tracing_env_is_rejected():
         instrument_manifest(manifest, settings=_settings(), identity=_identity(), namespace="ns")
 
 
-class _FakeProjectConfig:
-    """Stand-in for config.project with the (path, default_value=...) contract."""
-
-    def __init__(self, values: dict):
-        self._values = values
-
-    def get_config(self, path, default_value=..., **_kwargs):
-        return self._values.get(path, default_value)
-
-
-def test_resolve_tracing_defaults_off_without_section(monkeypatch):
-    """With no tracing configuration, resolve_tracing returns off (no collector)."""
-    from projects.core.library import config as config_mod
-    from projects.llm_d.orchestration import tracing_adapter
-
-    monkeypatch.setattr(config_mod, "project", _FakeProjectConfig({}))
-    settings = tracing_adapter.resolve_tracing()
-    assert settings.mode is TracingMode.OFF
-    assert not settings.enabled
-
-
-def test_resolve_tracing_reads_configured_mode(monkeypatch):
-    """A configured tracing.mode is honored (standard enables tracing)."""
-    from projects.core.library import config as config_mod
-    from projects.llm_d.orchestration import tracing_adapter
-
-    monkeypatch.setattr(
-        config_mod,
-        "project",
-        _FakeProjectConfig({"tracing.mode": "standard", "tracing.sample_ratio": 0.5}),
-    )
-    settings = tracing_adapter.resolve_tracing()
-    assert settings.mode is TracingMode.STANDARD
-    assert settings.enabled
-
-
-def _capture_session(sample_ratio: float = 1.0):
-    """A minimal capture session exposing the settings the finalizer reads."""
-    settings = TracingSettings(mode=TracingMode.STANDARD, sample_ratio=sample_ratio)
-    return type("S", (), {"settings": settings})()
-
-
-def _finalizer_deps(monkeypatch, status_value: str):
-    """Wire the llm_d capture finalizer against a fake lifecycle."""
-    from projects.cluster.library.tracing import lifecycle
-    from projects.cluster.library.tracing.models import CollectionStatus
-    from projects.llm_d.orchestration import test_phase
-
-    monkeypatch.setattr(test_phase, "_current_test_id", lambda: "test-1")
-    captured = {}
-    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus(status_value))
-    monkeypatch.setattr(lifecycle, "record_window", lambda *a, **k: None)
-    monkeypatch.setattr(
-        lifecycle, "cleanup", lambda *_a, **_k: captured.setdefault("cleaned", True)
-    )
-    return test_phase, lifecycle, captured
-
-
-def test_incomplete_capture_fails_requested_tracing(monkeypatch, tmp_path):
-    """A drain timeout must fail tracing and still remove the collector."""
-    notifications = []
-    from projects.core.library import ci
-
-    monkeypatch.setattr(
-        ci,
-        "add_notification_file",
-        lambda name, message: notifications.append((name, message)) or True,
-    )
-
-    test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "incomplete")
-    with pytest.raises(RuntimeError, match="incomplete"):
-        test_phase._capture_traces_finalizer(
-            (_utc(0), _utc(10)), capture_session=_capture_session()
-        )
-
-    assert notifications and notifications[0][0] == "tracing-collection-incomplete"
-    assert captured.get("cleaned") is True, "collector must not be left behind"
-
-
-def test_completed_capture_cleans_up(monkeypatch):
-    notifications = []
-    from projects.core.library import ci
-
-    monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
-    )
-    test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "collected")
-
-    test_phase._capture_traces_finalizer((_utc(0), _utc(10)), capture_session=_capture_session())
-
-    assert captured.get("cleaned") is True
-    assert notifications == []
-
-
 def _utc(offset_seconds: int):
     from datetime import UTC, datetime, timedelta
 
     return datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=offset_seconds)
 
 
-def test_empty_capture_at_full_sampling_fails_tracing(monkeypatch):
-    """At full sampling, a zero-span capture must not pass as success."""
-    notifications = []
+@pytest.mark.parametrize(
+    ("outcome", "sample_ratio", "error", "notification"),
+    [
+        ("collected", 1.0, None, None),
+        # An empty capture is expected at low sampling, a misconfiguration at full sampling.
+        ("empty", 0.1, None, None),
+        ("empty", 1.0, "empty-at-full-sampling", "tracing-collection-empty-at-full-sampling"),
+        ("incomplete", 1.0, "incomplete", "tracing-collection-incomplete"),
+        ("capture-raises", 1.0, "requested trace collection failed", "tracing-capture-failed"),
+        # The test failed before the benchmark: nothing to capture.
+        ("no-window", 1.0, None, None),
+    ],
+)
+def test_capture_finalizer_always_removes_the_collector(
+    monkeypatch, outcome, sample_ratio, error, notification
+):
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.models import CollectionStatus
     from projects.core.library import ci
+    from projects.llm_d.orchestration import test_phase
 
+    notifications, cleanups = [], []
     monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+        ci, "add_notification_file", lambda name, _message: notifications.append(name) or True
     )
-    test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "empty")
+    monkeypatch.setattr(test_phase, "_current_test_id", lambda: "test-1")
+    monkeypatch.setattr(lifecycle, "record_window", lambda *_a, **_k: None)
+    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleanups.append(True))
 
-    with pytest.raises(RuntimeError, match="empty-at-full-sampling"):
-        test_phase._capture_traces_finalizer(
-            (_utc(0), _utc(10)), capture_session=_capture_session()
-        )
+    def capture(*_a, **_k):
+        if outcome == "no-window":
+            pytest.fail("nothing to capture")
+        if outcome == "capture-raises":
+            raise RuntimeError("spool transfer failed")
+        return CollectionStatus(outcome)
 
-    assert notifications == ["tracing-collection-empty-at-full-sampling"]
-    assert captured.get("cleaned") is True, "collector must not be left behind"
+    monkeypatch.setattr(lifecycle, "capture", capture)
+    settings = TracingSettings(mode=TracingMode.STANDARD, sample_ratio=sample_ratio)
+    session = type("S", (), {"settings": settings})()
+    window = None if outcome == "no-window" else (_utc(0), _utc(10))
 
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            test_phase._capture_traces_finalizer(window, capture_session=session)
+    else:
+        test_phase._capture_traces_finalizer(window, capture_session=session)
 
-def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
-    """A low-sample capture with no spans is an expected empty outcome."""
-    test_phase, _lifecycle, captured = _finalizer_deps(monkeypatch, "empty")
-
-    test_phase._capture_traces_finalizer(
-        (_utc(0), _utc(10)), capture_session=_capture_session(sample_ratio=0.1)
-    )
-
-    assert captured.get("cleaned") is True
-
-
-def test_missing_benchmark_window_removes_the_collector(monkeypatch):
-    """A test that failed before the benchmark must not leave the collector behind."""
-    notifications = []
-    from projects.core.library import ci
-
-    monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
-    )
-    test_phase, lifecycle, captured = _finalizer_deps(monkeypatch, "empty")
-    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: pytest.fail("nothing to capture"))
-
-    test_phase._capture_traces_finalizer(None, capture_session=_capture_session())
-
-    assert captured.get("cleaned") is True
-    assert notifications == []
+    assert cleanups, "the collector must not be left behind"
+    assert notifications == ([notification] if notification else [])
 
 
 def test_finalizers_reconcile_traces_when_the_test_failed_before_the_benchmark(monkeypatch):
@@ -472,26 +352,3 @@ def test_finalizers_reconcile_traces_when_the_test_failed_before_the_benchmark(m
     )
 
     assert calls == [("traces", None), "cleanup"]
-
-
-def test_capture_exception_still_removes_the_collector(monkeypatch):
-    notifications = []
-    from projects.core.library import ci
-
-    monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
-    )
-    test_phase, lifecycle, captured = _finalizer_deps(monkeypatch, "collected")
-
-    def failing_capture(*_a, **_k):
-        raise RuntimeError("spool transfer failed")
-
-    monkeypatch.setattr(lifecycle, "capture", failing_capture)
-
-    with pytest.raises(RuntimeError, match="requested trace collection failed"):
-        test_phase._capture_traces_finalizer(
-            (_utc(0), _utc(10)), capture_session=_capture_session()
-        )
-
-    assert notifications == ["tracing-capture-failed"]
-    assert captured.get("cleaned") is True

@@ -48,9 +48,17 @@ def _post(**kwargs):
     )
 
 
-def test_post_retries_429_then_succeeds(monkeypatch: pytest.MonkeyPatch, no_backoff: None):
-    responses = [_http_error(429), _http_error(503), None]
-
+@pytest.mark.parametrize(
+    "failures",
+    [
+        [_http_error(429), _http_error(503)],
+        [TimeoutError("client timed out")],
+    ],
+    ids=["http-429-503", "timeout"],
+)
+def test_post_retries_transient_failures_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch, no_backoff: None, failures
+):
     class Response:
         def __enter__(self):
             return self
@@ -59,36 +67,13 @@ def test_post_retries_429_then_succeeds(monkeypatch: pytest.MonkeyPatch, no_back
             return False
 
     def fake_urlopen(_request, timeout=None, context=None):
-        response = responses.pop(0)
-        if response is not None:
-            raise response
+        if failures:
+            raise failures.pop(0)
         return Response()
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     _post()
-    assert responses == []
-
-
-def test_post_retries_timeout_then_succeeds(monkeypatch: pytest.MonkeyPatch, no_backoff: None):
-    calls = 0
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-    def fake_urlopen(_request, timeout=None, context=None):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise TimeoutError("client timed out")
-        return Response()
-
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    _post()
-    assert calls == 2
+    assert failures == []
 
 
 def test_post_gives_up_after_bounded_attempts(monkeypatch: pytest.MonkeyPatch, no_backoff: None):

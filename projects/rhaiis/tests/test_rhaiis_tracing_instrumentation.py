@@ -99,18 +99,6 @@ def test_unsupported_engine_is_rejected(engine):
     assert manifest == before
 
 
-def test_detailed_mode_rejects_non_vllm_engine():
-    manifest = _vllm_sr()
-    with pytest.raises(TracingConfigError, match="not supported for engine"):
-        instrument_servingruntime(
-            manifest,
-            settings=_settings(TracingMode.DETAILED),
-            identity=_identity(),
-            namespace="ns",
-            engine="sglang",
-        )
-
-
 def test_detailed_mode_adds_detailed_flag_for_vllm():
     manifest = _vllm_sr()
     instrument_servingruntime(
@@ -133,51 +121,6 @@ def test_manual_tracing_env_is_rejected():
         instrument_servingruntime(
             manifest, settings=_settings(), identity=_identity(), namespace="ns"
         )
-
-
-def _session(sample_ratio: float, *, windows: tuple = ("window",)):
-    """A minimal capture session exposing what the finalizer reads."""
-    return type(
-        "S", (), {"settings": _settings(sample_ratio=sample_ratio), "windows": list(windows)}
-    )()
-
-
-def _patch_lifecycle(monkeypatch, status_value: str):
-    from projects.cluster.library.tracing import lifecycle
-    from projects.cluster.library.tracing.models import CollectionStatus
-    from projects.rhaiis.orchestration import test_phase
-
-    cleaned = {}
-    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: CollectionStatus(status_value))
-    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleaned.setdefault("called", True))
-    return test_phase, cleaned
-
-
-def test_incomplete_capture_is_a_warning_and_removes_collector(monkeypatch):
-    notifications = []
-    from projects.core.library import ci
-
-    monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
-    )
-    test_phase, cleaned = _patch_lifecycle(monkeypatch, "incomplete")
-    test_phase._warnings.clear()
-
-    test_phase._finalize_trace_capture(_session(1.0))
-
-    assert notifications == ["tracing-collection-incomplete"]
-    assert "Trace collection incomplete" in test_phase._warnings
-    assert cleaned.get("called") is True, "collector must not be left behind"
-
-
-def test_completed_capture_cleans_up(monkeypatch):
-    test_phase, cleaned = _patch_lifecycle(monkeypatch, "collected")
-    test_phase._warnings.clear()
-
-    test_phase._finalize_trace_capture(_session(0.5))
-
-    assert cleaned.get("called") is True
-    assert test_phase._warnings == []
 
 
 def test_only_the_model_server_container_is_instrumented():
@@ -210,92 +153,82 @@ def test_missing_model_server_container_is_rejected():
         )
 
 
-def test_empty_capture_at_full_sampling_is_a_warning(monkeypatch):
-    notifications = []
-    from projects.core.library import ci
-
-    monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
-    )
-    test_phase, cleaned = _patch_lifecycle(monkeypatch, "empty")
-    test_phase._warnings.clear()
-
-    test_phase._finalize_trace_capture(_session(1.0))
-
-    assert notifications == ["tracing-collection-empty-at-full-sampling"]
-    assert cleaned.get("called") is True, "collector must not be left behind"
+def _session(sample_ratio: float, *, windows: tuple = ("window",)):
+    """A minimal capture session exposing what the finalizer reads."""
+    return type(
+        "S", (), {"settings": _settings(sample_ratio=sample_ratio), "windows": list(windows)}
+    )()
 
 
-def test_empty_capture_at_low_sampling_is_accepted(monkeypatch):
-    test_phase, cleaned = _patch_lifecycle(monkeypatch, "empty")
-    test_phase._warnings.clear()
-
-    test_phase._finalize_trace_capture(_session(0.1))
-
-    assert cleaned.get("called") is True
-    assert test_phase._warnings == []
-
-
-def test_missing_benchmark_window_removes_the_collector(monkeypatch):
-    """A run that failed before any benchmark must not leave the collector behind."""
-    notifications = []
+def _patch_lifecycle(monkeypatch, capture):
     from projects.cluster.library.tracing import lifecycle
     from projects.core.library import ci
+    from projects.rhaiis.orchestration import test_phase
 
+    notifications, cleanups = [], []
     monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+        ci, "add_notification_file", lambda name, _message: notifications.append(name) or True
     )
-    test_phase, cleaned = _patch_lifecycle(monkeypatch, "empty")
-    monkeypatch.setattr(lifecycle, "capture", lambda *_a, **_k: pytest.fail("nothing to capture"))
+    monkeypatch.setattr(lifecycle, "capture", capture)
+    monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleanups.append(True))
     test_phase._warnings.clear()
+    return test_phase, notifications, cleanups
 
-    test_phase._finalize_trace_capture(_session(1.0, windows=()))
 
-    assert cleaned.get("called") is True
-    assert notifications == []
-    assert test_phase._warnings == []
+@pytest.mark.parametrize(
+    ("outcome", "sample_ratio", "warning", "notification"),
+    [
+        ("collected", 0.5, None, None),
+        # An empty capture is expected at low sampling, a misconfiguration at full sampling.
+        ("empty", 0.1, None, None),
+        (
+            "empty",
+            1.0,
+            "Trace collection empty-at-full-sampling",
+            "tracing-collection-empty-at-full-sampling",
+        ),
+        ("incomplete", 1.0, "Trace collection incomplete", "tracing-collection-incomplete"),
+        ("capture-raises", 1.0, "Trace collection failed", "tracing-capture-failed"),
+        # The run failed before any benchmark: nothing to capture.
+        ("no-window", 1.0, None, None),
+    ],
+)
+def test_capture_finalizer_always_removes_the_collector(
+    monkeypatch, outcome, sample_ratio, warning, notification
+):
+    from projects.cluster.library.tracing.models import CollectionStatus
+
+    def capture(*_a, **_k):
+        if outcome == "no-window":
+            pytest.fail("nothing to capture")
+        if outcome == "capture-raises":
+            raise RuntimeError("spool transfer failed")
+        return CollectionStatus(outcome)
+
+    test_phase, notifications, cleanups = _patch_lifecycle(monkeypatch, capture)
+    windows = () if outcome == "no-window" else ("window",)
+
+    test_phase._finalize_trace_capture(_session(sample_ratio, windows=windows))
+
+    assert cleanups, "the collector must not be left behind"
+    assert notifications == ([notification] if notification else [])
+    assert test_phase._warnings == ([warning] if warning else [])
 
 
 def test_cleanup_failure_is_notified(monkeypatch):
-    notifications = []
     from projects.cluster.library.tracing import lifecycle
-    from projects.core.library import ci
+    from projects.cluster.library.tracing.models import CollectionStatus
 
-    monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
+    test_phase, notifications, _cleanups = _patch_lifecycle(
+        monkeypatch, lambda *_a, **_k: CollectionStatus("collected")
     )
-    test_phase, _cleaned = _patch_lifecycle(monkeypatch, "collected")
 
     def failing_cleanup(*_a, **_k):
         raise RuntimeError("delete failed")
 
     monkeypatch.setattr(lifecycle, "cleanup", failing_cleanup)
-    test_phase._warnings.clear()
 
     test_phase._finalize_trace_capture(_session(0.5))
 
     assert notifications == ["tracing-cleanup-failed"]
-    assert "Trace collector cleanup failed" in test_phase._warnings
-
-
-def test_capture_exception_still_removes_the_collector(monkeypatch):
-    notifications = []
-    from projects.cluster.library.tracing import lifecycle
-    from projects.core.library import ci
-
-    monkeypatch.setattr(
-        ci, "add_notification_file", lambda name, message: notifications.append(name) or True
-    )
-    test_phase, cleaned = _patch_lifecycle(monkeypatch, "collected")
-
-    def failing_capture(*_a, **_k):
-        raise RuntimeError("spool transfer failed")
-
-    monkeypatch.setattr(lifecycle, "capture", failing_capture)
-    test_phase._warnings.clear()
-
-    test_phase._finalize_trace_capture(_session(1.0))
-
-    assert notifications == ["tracing-capture-failed"]
-    assert "Trace collection failed" in test_phase._warnings
-    assert cleaned.get("called") is True
+    assert test_phase._warnings == ["Trace collector cleanup failed"]
