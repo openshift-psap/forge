@@ -9,14 +9,14 @@
     CONTAINER: ".*"
 
 - query: >-
-    container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}", container=~"{{.CONTAINER}}"}
+    sum by (pod) (container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}", container=~"{{.CONTAINER}}", container!="", container!="POD"})
   metricName: memory_working_set_bytes_by_pod
   description: Memory working set bytes by pod
   unit: bytes
-  legendLabels: [container, pod]
+  legendLabels: [pod]
 
 - query: >-
-    avg(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}", container=~"{{.CONTAINER}}"})
+    avg(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", pod!~"{{.POD_NAME_EXCLUDE}}", container=~"{{.CONTAINER}}", container!="", container!="POD"})
   metricName: avg_memory_working_set_bytes
   description: Avg memory working set bytes
   unit: bytes
