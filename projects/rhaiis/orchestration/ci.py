@@ -94,17 +94,31 @@ def list_vaults() -> list[str]:
 def resolve_hardware_request(hardware_spec: dict) -> dict:
     test_rhaiis.init()
 
-    if hardware_spec.get("gpuType"):
-        return hardware_spec
-
     from projects.core.library import config as _cfg
 
     model_key = runtime_config.get_test_model_key()
     model = runtime_config.get_model(model_key)
     engine = runtime_config.get_engine()
-    engine_defaults = _cfg.project.get_config(f"rhaiis.engines.{engine}.args") or {}
-    ea = runtime_config.merge_engine_args(engine_defaults, model, {}, engine)
+    engine_defaults = runtime_config.get_engine_args(engine)
+    # The test phase merges the first selected workload's engine args before
+    # deploying, so the resolver must merge the same workload or the reported
+    # TP size can differ from the one the pod is created with.
+    workload_keys = _cfg.project.get_config("tests.rhaiis.workload_keys", []) or []
+    workload_key = workload_keys[0] if workload_keys else runtime_config.get_test_workload_key()
+    workload = runtime_config.get_workload(workload_key)
+    ea = runtime_config.merge_engine_args(engine_defaults, model, workload, engine)
     tp_size = int(ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or 1)
+
+    # One KServe replica is one pod holding tp_size GPUs. Fournos uses this
+    # shape to check that each replica fits on a single node before admitting
+    # the job, which cluster-level GPU quota alone cannot tell it.
+    deploy_cfg = runtime_config.get_deploy_config()
+    replicas = deploy_cfg.get("replicas", 1)
+    hardware_spec.setdefault("replicas", int(replicas if replicas is not None else 1))
+    hardware_spec.setdefault("gpusPerReplica", tp_size)
+
+    if hardware_spec.get("gpuType"):
+        return hardware_spec
 
     accelerator = runtime_config.get_accelerator()
     gpu_type = runtime_config.get_gpu_type(accelerator)
