@@ -82,6 +82,7 @@ class RhoaiCustomCatalogConfig(BaseModel):
     image: str | None = None
     display_name: str | None = None
     publisher: str | None = None
+    force_pull_secret_update: bool = False
     pull_secret: _RhoaiCustomCatalogPullSecretConfig
     staging_pull_secret: _RhoaiCustomCatalogPullSecretConfig | None = None
 
@@ -266,16 +267,11 @@ def _apply_vault_pull_secret(
         temp_path.write_text(json.dumps(merged_secret, indent=2, sort_keys=True), encoding="utf-8")
         return merged_secret
 
-    for registry in registries:
-        oc(
-            "registry",
-            "login",
-            f"--registry={registry}",
-            f"--auth-basic={pull_secret_payload}",
-            "--to",
-            str(temp_path),
-        )
-    return json.loads(temp_path.read_text(encoding="utf-8"))
+    encoded_auth = base64.b64encode(pull_secret_payload.encode("utf-8")).decode("utf-8")
+    vault_auths = {registry: {"auth": encoded_auth} for registry in registries}
+    merged_secret = _merge_pull_secret_auths(current_secret, {"auths": vault_auths})
+    temp_path.write_text(json.dumps(merged_secret, indent=2, sort_keys=True), encoding="utf-8")
+    return merged_secret
 
 
 def _current_pull_secret_json() -> dict[str, Any]:
@@ -375,7 +371,10 @@ def prepare_rhoai_pull_secret(custom_catalog: RhoaiCustomCatalogConfig) -> None:
     current_secret = _current_pull_secret_json()
     required_registries = (*RHOAI_CATALOG_REGISTRIES, *RHOAI_REGISTRIES)
 
-    if _registries_present(current_secret, required_registries):
+    if (
+        _registries_present(current_secret, required_registries)
+        and not custom_catalog.force_pull_secret_update
+    ):
         logger.info(
             "RHOAI registries already present in cluster pull secret: %s",
             ", ".join(required_registries),

@@ -35,34 +35,34 @@ capture:
           LLMISVC_NAME: "{llmisvc_name}"
       resource_load-generator:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "{namespace}"
           POD_NAME: "guidellm.*"
           CONTAINER: "guidellm-main"
       resource_sim:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "{namespace}"
           POD_NAME: "{llmisvc_name}-.*"
           CONTAINER: "main"
       resource_ingress:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: ".*"
           POD_NAME_EXCLUDE: "payload-.*"
       resource_payload:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: "payload-.*"
       resource_kuadrant:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "kuadrant-system"
           POD_NAME: ".*"

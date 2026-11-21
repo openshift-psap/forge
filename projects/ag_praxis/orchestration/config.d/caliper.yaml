@@ -43,6 +43,9 @@ postprocess:
     reports: []
     report_group: comprehensive
     visualize_config: projects/ag_praxis/postprocess/ag_praxis/visualize-groups.yaml
+    plugin_settings:
+      group_keys: [guidellm_loadshape]
+      legend_keys: [endpoints]
 
   kpi:
     enabled: true

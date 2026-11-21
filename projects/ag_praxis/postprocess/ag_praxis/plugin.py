@@ -42,6 +42,7 @@ class AgPraxisPlugin(GuideLLMPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
+        plugin_settings: dict[str, Any] | None = None,
     ) -> list[ReportFile]:
         wanted = list(dict.fromkeys(report_ids or ()))
         our_ids = {PROMETHEUS_REPORT_ID, RESOURCE_REPORT_ID, OVERHEAD_REPORT_ID}
@@ -50,7 +51,14 @@ class AgPraxisPlugin(GuideLLMPlugin):
         overhead_requested = OVERHEAD_REPORT_ID in wanted
         parent_ids = [r for r in wanted if r not in our_ids] or None
 
-        reports = super().visualize(model, output_dir, parent_ids, group_id, visualize_config)
+        reports = super().visualize(
+            model,
+            output_dir,
+            parent_ids,
+            group_id,
+            visualize_config,
+            plugin_settings=plugin_settings,
+        )
 
         if prom_requested:
             prom_reports = _generate_prometheus_reports(model, output_dir)
@@ -118,8 +126,8 @@ def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list
         if not capture_dirs:
             continue
 
-        node_name = Path(node.directory).name
-        source_dir = output_dir / node_name / "resource_usage_vs_limits"
+        node_scope = str(node.test_path)
+        source_dir = output_dir / node.test_path / "resource_usage_vs_limits"
 
         group_results = []
         for capture_dir in capture_dirs:
@@ -134,7 +142,7 @@ def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list
         try:
             report_path = generate_resource_report(group_results, source_dir)
         except Exception:
-            logger.warning("Failed to generate resource report for %s", node_name, exc_info=True)
+            logger.warning("Failed to generate resource report for %s", node_scope, exc_info=True)
             continue
 
         if report_path:
@@ -142,7 +150,7 @@ def _generate_resource_reports(model: UnifiedRunModel, output_dir: Path) -> list
             reports.append(
                 ReportFile(
                     source="resource_usage_vs_limits",
-                    scope=node_name,
+                    scope=node_scope,
                     title="Resource Usage vs Limits",
                     path=rel_path,
                 )
@@ -160,8 +168,8 @@ def _generate_prometheus_reports(model: UnifiedRunModel, output_dir: Path) -> li
         if not capture_dirs:
             continue
 
-        node_name = Path(node.directory).name
-        source_dir = output_dir / node_name / "prometheus_metrics"
+        node_scope = str(node.test_path)
+        source_dir = output_dir / node.test_path / "prometheus_metrics"
 
         for capture_dir in capture_dirs:
             try:
@@ -171,7 +179,7 @@ def _generate_prometheus_reports(model: UnifiedRunModel, output_dir: Path) -> li
                 reports.append(
                     ReportFile(
                         source="prometheus_metrics",
-                        scope=node_name,
+                        scope=node_scope,
                         title=group_result.group_name,
                         path=rel_path,
                     )

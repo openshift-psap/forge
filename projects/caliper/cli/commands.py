@@ -339,6 +339,11 @@ def parse_cmd(
     default=False,
     help="Enable verbose parsing logs.",
 )
+@click.option(
+    "--plugin-settings-json",
+    default=None,
+    help="JSON-encoded dict of plugin-specific settings (opaque to caliper).",
+)
 @click.pass_context
 def visualize_cmd(
     ctx: click.Context,
@@ -350,6 +355,7 @@ def visualize_cmd(
     output_dir: Path,
     status_file: Path | None,
     verbose_parsing: bool,
+    plugin_settings_json: str | None,
     artifacts_dir: Path | None,
     postprocess_config: Path | None,
     plugin_module_override: str | None,
@@ -367,6 +373,10 @@ def visualize_cmd(
         mod, plugin = _plugin_tuple(ctx)
         artifact_root: Path = _root_obj(ctx)["base_dir"]
 
+        import json as _json
+
+        settings = _json.loads(plugin_settings_json) if plugin_settings_json else {}
+
         paths = run_visualize(
             base_dir=artifact_root,
             plugin_module=mod,
@@ -380,6 +390,7 @@ def visualize_cmd(
             use_cache=True,
             cache_path=None,
             verbose_parsing=verbose_parsing,
+            plugin_settings=settings or None,
         )
 
         if not paths:

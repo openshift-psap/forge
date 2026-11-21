@@ -43,14 +43,14 @@ def retrieve_vault_secrets(
 
     try:
         vault_manager = vault_lib.get_vault_manager()
-        vault_names = vault_manager.list_vaults()
+        vault_names = vault_manager.list_all_available_vaults()
 
         if verbose:
-            logger.info(f"Retrieving vault secrets from {len(vault_names)} vaults")
+            logger.info(f"Retrieving vault secrets from {len(vault_names)} available vaults")
 
         secrets_discovered = 0
         for vault_name in vault_names:
-            vault = vault_manager.get_vault(vault_name)
+            vault = vault_manager.get_vault_unchecked(vault_name)
             if not vault:
                 continue
 

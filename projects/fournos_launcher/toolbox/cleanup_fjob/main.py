@@ -72,6 +72,9 @@ def check_job_exists(args, ctx):
         check=False,
     )
 
+    ctx.missing_mlflow_link = False
+    ctx.should_preserve_reason = None
+
     if not result.success:
         if "not found" in result.stderr.lower():
             ctx.job_exists = False
@@ -101,11 +104,38 @@ def check_shutdown_state(args, ctx):
     if shutdown_result.success and shutdown_result.stdout.strip():
         shutdown_value = shutdown_result.stdout.strip()
         ctx.should_preserve = True
-        ctx.shutdown_reason = shutdown_value
+        ctx.should_preserve_reason = f"shutdown state: {shutdown_value}"
         return f"Job has spec.shutdown={shutdown_value} - should be preserved to let it export artifacts"
 
     ctx.should_preserve = False
     return "No shutdown detected - safe to cleanup"
+
+
+@task
+def check_mlflow_link(args, ctx):
+    """Check if the job has an MLFlow link in its status"""
+
+    if not ctx.job_exists:
+        ctx.missing_mlflow_link = False
+        return "Job doesn't exist - skipping MLFlow check"
+
+    result = shell.run(
+        f"oc get fournosjob {args.job_name} -n {args.namespace}"
+        ' -o jsonpath="{.status.engineStatus.forge.exportArtifacts'
+        '.caliper_artifacts_export.backends.mlflow.run_url}"',
+        check=False,
+    )
+
+    mlflow_url = result.stdout.strip().strip('"') if result.success else ""
+
+    if not mlflow_url:
+        ctx.should_preserve = True
+        ctx.should_preserve_reason = "no MLFlow link"
+        ctx.missing_mlflow_link = True
+        return f"Job {args.job_name} has no MLFlow link - preserving for investigation"
+
+    ctx.missing_mlflow_link = False
+    return f"MLFlow link found: {mlflow_url}"
 
 
 @task
@@ -116,7 +146,7 @@ def cleanup_fjob(args, ctx):
         return "Job doesn't exist - nothing to cleanup"
 
     if ctx.should_preserve:
-        return f"Job preserved due to shutdown state: {ctx.shutdown_reason}"
+        return f"Job preserved: {ctx.should_preserve_reason}"
 
     shell.run(
         f"oc delete fournosjob {args.job_name} -n {args.namespace} --ignore-not-found",

@@ -1,0 +1,27 @@
+__multiple: true
+
+payload_size:
+  test.matrix_benchmarking.workload_level.enabled: true
+  test.matrix_benchmarking.workload_level.dimensions:
+    test.payload: [XS, default, L, XL]
+  test.matrix_benchmarking.workload_level.labels:
+    test.payload: payload
+  test.matrix_benchmarking.visualization:
+    legend_keys: [payload]
+    group_keys: []
+
+extproc_max_requests:
+  test.endpoints: [maas/praxis]
+  test.sweep: large
+  workloads.replica_count: 4
+  workloads.sweeps.large: [512, 1024, 2048, 3072, 4096]
+  prom.capture.enabled: false
+  test.matrix_benchmarking.deployment_level.enabled: true
+  test.matrix_benchmarking.deployment_level.dimensions:
+    platform.praxis.extproc_max_requests: [224, 256, 288, 320]
+
+  test.matrix_benchmarking.deployment_level.labels:
+    platform.praxis.extproc_max_requests: max_requests
+  test.matrix_benchmarking.visualization:
+    legend_keys: [max_requests]
+    group_keys: []

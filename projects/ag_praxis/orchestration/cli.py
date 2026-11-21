@@ -56,7 +56,7 @@ def test(ctx):
 @main.command()
 @click.option(
     "--benchmark",
-    type=click.Choice(["svc", "maas/ipp", "maas/praxis"]),
+    type=click.Choice(["svc", "gw", "maas/ipp", "maas/praxis"]),
     default=None,
     help="Run benchmark against 'svc' (direct LLMInferenceService), 'maas/ipp' or 'maas/praxis' (MaaS external gateway)",
 )
