@@ -104,6 +104,11 @@ exclude = '''
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+extend-exclude = [
+    # Vendored verbatim from openshift-psap/vllm-profiler; kept byte-identical
+    # to the upstream source, so it must not be linted or reformatted.
+    "projects/kserve/toolbox/deploy_profiler_injector/templates",
+]
 
 [tool.ruff.lint]
 select = [

@@ -11,6 +11,23 @@ from projects.llm_d.orchestration import prepare_phase, runtime_config
 logger = logging.getLogger(__name__)
 
 
+def prepare_profiler_injector(namespace: str) -> None:
+    """Deploy the vLLM profiler env-injector for the test namespace.
+
+    Deployed only when the profiler is enabled, so profiling works on a
+    clean cluster without manual injector setup (the injection itself only
+    affects pods labelled vllm-profiler/enabled=true in the namespace).
+    """
+    from projects.kserve.toolbox.deploy_profiler_injector.main import (
+        run as deploy_profiler_injector,
+    )
+
+    deploy_profiler_injector(
+        namespace=namespace,
+        profiling_ranges=config.project.get_config("profiler.ranges", default_value="500-503"),
+    )
+
+
 def run_prepare_sequence() -> int:
     """Run the prepare phase sequence using global config"""
     prepare_phase.verify_oc_access()
@@ -36,6 +53,8 @@ def run_prepare_sequence() -> int:
         with runtime_config.activate_run_spec(run_spec):
             with env.NextArtifactDir(f"prepare_{run_spec.artifact_dirname}"):
                 prepare_phase.ensure_test_namespace()
+                if config.project.get_config("profiler.enabled", default_value=False):
+                    prepare_profiler_injector(run_spec.namespace)
                 prepare_phase.cleanup_previous_run()
                 prepare_phase.prepare_model_cache()
                 if not skip_gpu:

@@ -1,0 +1,21 @@
+# Chunk merged under the "profiler" key (from the filename).
+enabled: false
+# vLLM only: the env-injector wraps vllm Worker.execute_model.
+ranges: "500-503"
+s3_bucket: psap-dashboard-data
+s3_prefix: pytorch-profiles/llm-d
+vault: psap-forge-dashboard-s3
+credentials_file: aws.credentials
+# Accelerator folder in the S3 key layout (H200, B200, MI300x, ...).
+# Set per cluster (e.g. in a cluster preset) when the GPU type matters
+# for the dashboard layout; "unknown" is used when unset.
+accelerator: null
+# Serving version label in the S3 key layout (e.g. vLLM-0.24.0).
+# Required when enabled; validated before deploying.
+version: ""
+# Gate labels like isl1000_osl1000. Derived from the benchconf workload
+# (spec.data prompt/output tokens) when empty.
+labels: []
+rates: [200]
+max_seconds: 200
+transfer_timeout_seconds: 300
