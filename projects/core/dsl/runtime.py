@@ -163,7 +163,12 @@ def execute_tasks(function_args: dict = None):
         script_manager = None
         try:
             # Log execution banner (now captured in file)
-            log_execution_banner(function_args, log_file)
+            log_execution_banner(
+                function_args,
+                log_file,
+                artifact_dirname_prefix=prefix,
+                artifact_dirname_suffix=suffix,
+            )
 
             # Generate metadata files
             _generate_execution_metadata(function_args, caller_frame, meta_dir)

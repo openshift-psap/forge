@@ -7,6 +7,9 @@ from projects.cluster.toolbox.wait_for_crds import main as wait_for_crds_command
 from projects.core.dsl.utils.k8s import oc, oc_get_json
 from projects.core.library import config
 from projects.rhoai.library.deploy import (
+    cleanup_rhoai_custom_catalog,
+)
+from projects.rhoai.library.deploy import (
     prepare_rhoai_operator as rhoai_prepare_rhoai_operator,
 )
 from projects.rhoai.toolbox.apply_datasciencecluster import main as apply_datasciencecluster_command
@@ -127,6 +130,21 @@ def ensure_required_crds() -> None:
     )
 
 
+def ensure_default_gateway():
+    """Ensure the default (non-MaaS) gateway exists and is programmed."""
+    from projects.llm_d.toolbox.ensure_gateway import main as ensure_gateway_command
+
+    gw_cfg = config.project.get_config("platform.default_gateway")
+    ensure_gateway_command.run(
+        config_dir=str(Path(__file__).resolve().parent),
+        namespace=gw_cfg["namespace"],
+        name=gw_cfg["name"],
+        gateway_class_name=gw_cfg["gateway_class_name"],
+        status_address_name=gw_cfg["status_address_name"],
+        create_if_missing=gw_cfg["create_if_missing"],
+    )
+
+
 def prepare():
     logger.info("=== AG Praxis Project Prepare Phase ===")
 
@@ -137,28 +155,38 @@ def prepare():
     prepare_rhoai_operator()
     apply_datasciencecluster()
 
-    maas_cfg = config.project.get_config("platform.maas")
+    selected = config.project.get_config("test.endpoints")
+    has_maas = any(ep.startswith("maas") for ep in selected)
+    has_gw = "gw" in selected
 
-    from projects.ag_praxis.toolbox.deploy_maas import main as deploy_maas_command
+    if has_maas:
+        maas_cfg = config.project.get_config("platform.maas")
 
-    deploy_maas_command.run(
-        namespace=maas_cfg["namespace"],
-        repo_url=maas_cfg["repo_url"],
-        repo_ref=maas_cfg["repo_ref"],
-        operator_type=maas_cfg["operator_type"],
-    )
+        from projects.ag_praxis.toolbox.deploy_maas import main as deploy_maas_command
+
+        deploy_maas_command.run(
+            namespace=maas_cfg["namespace"],
+            repo_url=maas_cfg["repo_url"],
+            repo_ref=maas_cfg["repo_ref"],
+            operator_type=maas_cfg["operator_type"],
+        )
 
     wait_for_datasciencecluster_ready()
     ensure_required_crds()
 
     test_namespace = config.project.get_config("test.namespace")
 
-    gateway_cfg = maas_cfg["gateway"]
-    _register_namespace_in_gateway(
-        test_namespace,
-        gateway_name=gateway_cfg["name"],
-        gateway_namespace=gateway_cfg["namespace"],
-    )
+    if has_maas:
+        maas_cfg = config.project.get_config("platform.maas")
+        gateway_cfg = maas_cfg["gateway"]
+        _register_namespace_in_gateway(
+            test_namespace,
+            gateway_name=gateway_cfg["name"],
+            gateway_namespace=gateway_cfg["namespace"],
+        )
+
+    if has_gw:
+        ensure_default_gateway()
 
 
 def cleanup():
@@ -169,3 +197,9 @@ def cleanup():
     cleanup_maas_command.run(
         namespace=maas_cfg.get("namespace", "default"),
     )
+
+    # Delete the forge-managed custom CatalogSource deployed by
+    # prepare_rhoai_operator(). Runs even when the custom catalog is disabled
+    # in this run, so that leftovers from a previous run are removed.
+    platform = config.project.get_config("platform")
+    cleanup_rhoai_custom_catalog(rhoai=platform["rhoai"])

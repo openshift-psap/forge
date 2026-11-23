@@ -2,7 +2,7 @@
 Task-based DSL for FORGE operations
 """
 
-from . import context, shell, template, toolbox
+from . import context, shell, template, toolbox, user_notification
 from .control_flow import EarlyReturn
 from .runtime import clear_tasks, execute_tasks
 from .script_manager import get_script_manager, reset_script_manager
@@ -24,5 +24,6 @@ __all__ = [
     "task",
     "template",
     "toolbox",
+    "user_notification",
     "when",
 ]

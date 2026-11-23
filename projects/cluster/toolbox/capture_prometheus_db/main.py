@@ -172,18 +172,25 @@ def dump_metrics(args, ctx):
     """Run promtool tsdb dump-openmetrics with time filtering against the temp dir."""
 
     output_file = ctx.output_dir / "open_metrics.gz"
-    oc_exec(
+    result = oc_exec(
         "sh",
         "-c",
-        f"set -o pipefail && promtool tsdb dump-openmetrics"
+        f"promtool tsdb dump-openmetrics"
         f" --min-time={ctx.start_ms} --max-time={ctx.end_ms}"
         f" {ctx.temp_dir if args.head_only else TSDB_PATH}"
         f" | gzip",
         timeout_seconds=1800,
         stdout_dest=output_file,
         text=False,
+        check=False,
         **_pod_kwargs(ctx),
     )
+
+    if result.returncode != 0:
+        logger.warning(
+            "promtool exited with code %d (torn WAL record is expected on live Prometheus)",
+            result.returncode,
+        )
 
     size_result = shell.run(["stat", "-c", "%s", str(output_file)], shell=False, check=False)
 

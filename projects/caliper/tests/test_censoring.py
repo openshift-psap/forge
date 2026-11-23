@@ -175,6 +175,23 @@ class TestKeywordPatterns:
     def test_aws_access_key(self):
         assert self._matches_any_pattern("AKIAIOSFODNN7EXAMPLE")
 
+    def test_aws_access_key_in_presigned_url_not_flagged(self):
+        """CDN presigned URLs contain X-Amz-Credential=AKIA... which is not a leaked key."""
+        presigned_credential = (
+            "X-Amz-Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request"
+        )
+        assert not self._matches_any_pattern(presigned_credential)
+
+    def test_aws_access_key_in_quay_cdn_url_not_flagged(self):
+        """Full Quay CDN presigned URL should not be flagged as a leaked AWS key."""
+        quay_cdn_url = (
+            "https://cdn01.quay.io/sha256/ab/abc123?Expires=1700000000"
+            "&Signature=xyz&X-Amz-Algorithm=AWS4-HMAC-SHA256"
+            "&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request"
+            "&X-Amz-Date=20130524T000000Z&X-Amz-SignedHeaders=host"
+        )
+        assert not self._matches_any_pattern(quay_cdn_url)
+
     def test_mongodb_uri(self):
         assert self._matches_any_pattern("mongodb://user:pass@host")
 

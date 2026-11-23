@@ -50,29 +50,18 @@ def oc(
         log_stdout = False
         log_stderr = False
 
-    try:
-        return shell.run(
-            cmd,
-            check=check,
-            shell=False,
-            log_stdout=log_stdout,
-            log_stderr=log_stderr,
-            stdout_dest=stdout_dest,
-            input_text=input_text,
-            timeout_seconds=timeout_seconds,
-            text=text,
-        )
-    except subprocess.CalledProcessError as e:
-        if not handled_secretly:
-            raise
-
-        # When handled secretly, sanitize error to prevent credential leakage
-        raise subprocess.CalledProcessError(
-            e.returncode,
-            "oc command failed",
-            "",
-            "Error output suppressed for secret handling",
-        ) from e
+    return shell.run(
+        cmd,
+        check=check,
+        shell=False,
+        log_stdout=log_stdout,
+        log_stderr=log_stderr,
+        stdout_dest=stdout_dest,
+        input_text=input_text,
+        timeout_seconds=timeout_seconds,
+        text=text,
+        handled_secretly=handled_secretly,
+    )
 
 
 def oc_get_json(
@@ -375,6 +364,34 @@ def oc_cp_from_pod(
         CommandResult with execution details
     """
     args = ["cp", "--retries=99", f"{namespace}/{pod}:{remote_path}", str(local_path)]
+    if container:
+        args.extend(["-c", container])
+    return oc(*args, **kwargs)
+
+
+def oc_cp_to_pod(
+    local_path: str | Path,
+    remote_path: str,
+    *,
+    namespace: str,
+    pod: str,
+    container: str | None = None,
+    **kwargs,
+) -> shell.CommandResult:
+    """Copy a local file to a path inside a pod.
+
+    Args:
+        local_path: Local file to copy
+        remote_path: Absolute destination path inside the pod
+        namespace: Namespace of the pod
+        pod: Pod name
+        container: Container name (optional if pod has a single container)
+        **kwargs: Additional keyword arguments passed to ``oc``
+
+    Returns:
+        CommandResult with execution details
+    """
+    args = ["cp", "--retries=99", str(local_path), f"{namespace}/{pod}:{remote_path}"]
     if container:
         args.extend(["-c", container])
     return oc(*args, **kwargs)

@@ -16,6 +16,10 @@ import yaml
 
 from projects.core.dsl import template
 
+# Marker file written next to the results of a run that GuideLLM post-processing
+# must ignore (``skip_from_postprocessing=True``, e.g. a burn-in run).
+SKIP_FROM_POSTPROCESSING_MARKER = "skip_from_postprocessing"
+
 logger = logging.getLogger(__name__)
 
 _CONFIG_FILE_PATH = "/tmp/guidellm-config.yaml"
@@ -191,6 +195,7 @@ def _build_run_args(
     max_requests = None
     rampup = None
     warmup = None
+    cooldown = None
     request_format = None
     processor = None
     processor_args: dict | None = None
@@ -218,6 +223,8 @@ def _build_run_args(
             rampup = val
         elif key == "--warmup":
             warmup = val
+        elif key == "--cooldown":
+            cooldown = val
         elif key in ("--processor", "--processor-args"):
             if key == "--processor":
                 processor = val
@@ -281,6 +288,8 @@ def _build_run_args(
             profile_spec = f"kind={rate_type},{rate_key}={rate_values[0]}"
             if warmup:
                 profile_spec += f",warmup={warmup}"
+            if cooldown:
+                profile_spec += f",cooldown={cooldown}"
             if rampup:
                 profile_spec += f",rampup_duration={rampup}"
             new_args.append(f"--profile={profile_spec}")
@@ -293,6 +302,9 @@ def _build_run_args(
             if warmup:
                 f = float(warmup)
                 profile_spec += f",warmup={int(f) if f == int(f) else f}"
+            if cooldown:
+                f = float(cooldown)
+                profile_spec += f",cooldown={int(f) if f == int(f) else f}"
             if rampup:
                 f = float(rampup)
                 profile_spec += f",rampup_duration={int(f) if f == int(f) else f}"
@@ -303,6 +315,8 @@ def _build_run_args(
             profile_spec = f"kind={rate_type}"
         if warmup:
             profile_spec += f",warmup={warmup}"
+        if cooldown:
+            profile_spec += f",cooldown={cooldown}"
         if rampup:
             profile_spec += f",rampup_duration={rampup}"
         new_args.append(f"--profile={profile_spec}")

@@ -1,5 +1,7 @@
 """Public API surface for caliper — safe for orchestration-layer imports."""
 
+from projects.caliper.engine.model import ReportFile
+
 from .postprocess_models import (
     AiDataStepResult,
     BaseStepResult,
@@ -58,6 +60,8 @@ __all__ = [
     "AiDataStepResult",
     "S3StepResult",
     "CsvExportStepResult",
+    # Engine Models
+    "ReportFile",
     # Postprocess Models
     "FinalPostprocessStatus",
     "PostprocessTestPhase",

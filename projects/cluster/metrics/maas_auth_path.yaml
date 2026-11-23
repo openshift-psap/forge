@@ -1,0 +1,31 @@
+# Kubernetes API review request rates on the maas/praxis auth path.
+#
+# No params required — queries are cluster-scoped.
+#
+# Purpose: distinguish the two auth-stage failure modes of the maas gateway.
+#   - If TokenReview/SubjectAccessReview rates track the request rate under
+#     load, authorino is firing uncached Kubernetes reviews per request and is
+#     capped by its Kubernetes client budget (5 req/s per pod) — the RHAI-48802
+#     failure mode.
+#   - If the review rates stay at their background level (a few per second,
+#     present on quiet days too) while the gateway fails, the auth cost is
+#     authorino-internal (CEL/JSON evaluation CPU) — see Finding 5 of
+#     ag_praxis/orchestration/poc/maas-praxis-500-ext-proc-overflow.md.
+
+- query: >-
+    sum(rate(apiserver_request_total{resource="tokenreviews"}[2m]))
+  metricName: apiserver_tokenreviews_rate
+  description: TokenReview request rate at the Kubernetes API (all clients)
+  unit: req/s
+
+- query: >-
+    sum(rate(apiserver_request_total{resource=~"subjectaccessreviews|localsubjectaccessreviews"}[2m]))
+  metricName: apiserver_subjectaccessreviews_rate
+  description: SubjectAccessReview request rate at the Kubernetes API (all clients)
+  unit: req/s
+
+- query: >-
+    sum(rate(apiserver_flowcontrol_rejected_requests_total[2m]))
+  metricName: apiserver_flowcontrol_rejected_rate
+  description: Requests rejected by API Priority and Fairness (server-side throttling)
+  unit: req/s

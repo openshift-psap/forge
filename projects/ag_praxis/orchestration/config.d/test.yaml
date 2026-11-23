@@ -1,7 +1,7 @@
 namespace: forge-praxis
 
 payload: default
-sweep: small
+sweep: smoke
 
 run_benchmark: true
 run_warmup: true
@@ -12,5 +12,26 @@ skip_finalizers: false
 
 endpoints:
 - svc
-- maas
+- gw
+- maas/ipp
 - maas/praxis
+
+matrix_benchmarking:
+  simulator_level:
+    enabled: false
+    labels: {}
+    dimensions: {}
+
+  deployment_level:
+    enabled: false
+    labels: {}
+    dimensions: {}
+
+  workload_level:
+    enabled: false
+    labels: {}
+    dimensions: {}
+
+  visualization:
+    legend_keys: {}
+    group_keys: null

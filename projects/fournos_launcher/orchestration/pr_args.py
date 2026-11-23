@@ -77,6 +77,11 @@ def get_supported_fournos_directives() -> dict[str, str]:
                             /skip pre_cleanup post_cleanup
                    Valid phases: pre_cleanup, prepare, test, post_cleanup
                    Effect: Sets skip.<phase> to true in configuration.""",
+        "/interruptible": """Skip job shutdown when the CI process is interrupted.
+                             Format: /interruptible false
+                             Example: /interruptible false
+                             Effect: Sets fournos.job.interrupt_on_push to false.
+                             Note: Only 'false' is accepted. Jobs are interruptible by default.""",
         "/help": """Show all supported FOURNOS directives.
                    Format: /help
                    Effect: Logs available directive information.""",
@@ -356,6 +361,34 @@ def handle_skip_directive(line: str) -> dict[str, str]:
     return config
 
 
+def handle_interruptible_directive(line: str) -> dict[str, str]:
+    """
+    Handle /interruptible directive for disabling job interruption on push.
+
+    Format: /interruptible false
+
+    Args:
+        line: The directive line
+
+    Returns:
+        Dictionary with interrupt_on_push configuration
+
+    Raises:
+        ValueError: If value is not 'false'
+    """
+    value = line.removeprefix("/interruptible ").strip().lower()
+
+    if not value:
+        raise ValueError(f"Invalid /interruptible directive: value cannot be empty in '{line}'")
+
+    if value != "false":
+        raise ValueError(
+            f"Invalid /interruptible directive: only 'false' is accepted, got '{value}' in '{line}'"
+        )
+
+    return {"fournos.job.interrupt_on_push": False}
+
+
 def handle_help_directive(line: str) -> dict[str, str]:
     """Handle /help directive for FOURNOS directives."""
     # Create help directive handler using the factory
@@ -444,6 +477,7 @@ def get_fournos_directive_handlers() -> dict[str, callable]:
         "/external": handle_external_directive,
         "/replot.url": handle_replot_url_directive,
         "/skip": handle_skip_directive,
+        "/interruptible": handle_interruptible_directive,
         "/help": handle_help_directive,
     }
 

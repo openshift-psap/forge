@@ -433,11 +433,19 @@ def convert_status_yaml_to_html(
 
         if step_name == "visualize" and step_status in ["ok", "success"]:
             output_files = step_info.get("output_files", [])
+            output_dir = step_info.get("output_dir", "")
 
-            for path in output_files[:8]:  # Show first 8 files
+            for entry in output_files[:8]:  # Show first 8 files
+                if isinstance(entry, dict):
+                    path = entry.get("path", "")
+                    title = entry.get("title", Path(path).name if path else "report")
+                    if output_dir and path:
+                        path = str(Path(output_dir) / path)
+                else:
+                    path = str(entry)
+                    title = Path(path).name
                 full_path = _get_full_path(path)
-                file_name = Path(path).name
-                file_links.append((file_name, full_path))
+                file_links.append((title, full_path))
 
             if len(output_files) > 8:
                 file_links.append((f"... and {len(output_files) - 8} more files", ""))

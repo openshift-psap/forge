@@ -83,7 +83,12 @@ def log_task_header(
     logger.info("")
 
 
-def log_execution_banner(function_args: dict = None, log_file: str = None):
+def log_execution_banner(
+    function_args: dict = None,
+    log_file: str = None,
+    artifact_dirname_prefix: str = None,
+    artifact_dirname_suffix: str = None,
+):
     """Log the execution banner with function info and arguments"""
     frame = inspect.currentframe()
     caller_frame = frame.f_back.f_back
@@ -107,6 +112,13 @@ def log_execution_banner(function_args: dict = None, log_file: str = None):
                 continue
 
             logger.info(f"|   {key}: {value}")
+
+    # The dirname parameters are popped from function_args by execute_tasks
+    # before the banner is logged, so they are passed explicitly instead
+    if artifact_dirname_prefix:
+        logger.info(f"|   artifact_dirname_prefix: {artifact_dirname_prefix}")
+    if artifact_dirname_suffix:
+        logger.info(f"|   artifact_dirname_suffix: {artifact_dirname_suffix}")
 
     logger.info(f"| ARTIFACT_DIR: {env.ARTIFACT_DIR}")
     logger.info(f"| LOG_FILE: {log_file}")

@@ -11,8 +11,27 @@ Key paths:
 - `projects/NAME/toolbox` — lower layer of the test harness (toolbox of scripts altering the state of the cluster, using the DSL language)
 - `projects/NAME/test` — unit testing of the test harness
 - `projects/core/dsl/` — shared DSL (task execution, k8s utilities, shell helpers)
-- `fournos/gitops/` — Tekton pipelines and GitOps base workflows
+- `fournos/gitops/` — Tekton pipelines and GitOps base workflows (irrelevant for most Forge work — do not explore unless explicitly asked)
+- `projects/fournos_launcher/` — Fournos launcher orchestration (irrelevant for most Forge work — do not explore unless explicitly asked)
 - `docs/` — project documentation
+
+## Architectural Boundaries & Layering
+This codebase enforces strict directory-based module layering. When modifying a file, look at its directory path to determine its allowed dependencies. You are strictly forbidden from creating circular dependencies or importing from higher-level layers.
+
+* **Orchestration Layer (`projects/NAME/orchestration/`):**
+  - *Allowed:* May import from `projects/*/toolbox/` and `projects/caliper/orchestration`.
+  - *Constraint:* You may only import public exports (defined in `__init__.py` or explicitly public functions). Do not deep-import internal files.
+  - *Constraint:* NEVER import from `projects/caliper/engine`.
+
+* **Toolbox Layer (`projects/NAME/toolbox/`):**
++  - *Allowed:* Agnostic utilities, standard library and external pip dependencies, `projects/core/dsl`, and other projects' `projects/*/toolbox/` commands.
+  - *Constraint:* NEVER import from `projects/*/orchestration/` or `projects/core/library`.
+
+* **Caliper Layer (`projects/caliper/`):**
+  - *Allowed:* `projects/caliper/orchestration` may import from `projects/core/library/`.
+  - *Standalone:* `projects/caliper/engine` NEVER imports from any other `project/*`.
+
+If a requested change requires violating these directory boundaries, reject the task and state that the architecture forbids it.
 
 ## Security: Secret Handling (CRITICAL)
 
@@ -166,6 +185,7 @@ Orchestration is the **upper layer** — CI phases, config, presets.
 
 1. **Toolbox must never import from orchestration.**
    No `from projects.NAME.orchestration.runtime_config import cfg` in toolbox code.
+   No `from projects.library.core import config` in toolbox code.
    All inputs come through the `run()` entrypoint parameters for strong isolation.
 
 2. **Pass all values explicitly via `run()` parameters.**
@@ -272,15 +292,74 @@ finally:
         os.environ["MLFLOW_WORKSPACE"] = old_value
 ```
 
-## Comment Interaction Rules
+## Pull Requests: A Tracking Issue Is Required
 
-When processing, posting, or replying to user comments (GitHub PR reviews, issue comments, etc.):
+**Every PR must reference an existing tracking issue — a GitHub issue or a Jira issue.**
+A PR without a tracking issue has no agreed problem statement, no acceptance criteria, and
+nowhere to record follow-ups.
+
+### Rules
+
+1. **Check for the issue before creating the PR.**
+   Before opening a PR, confirm an issue exists that describes the problem and the intended change.
+
+2. **No issue yet? Create it first.**
+   If no issue exists, create one (or ask the user to create it) with the problem statement,
+   the proposed change, and acceptance criteria. Do not open the PR until it has an issue
+   number — do not backfill the issue after the PR is up.
+
+3. **Link the issue in the PR body.**
+   Use `Fixes #NNN` when the PR closes a GitHub issue, or `Refs #NNN` for partial work.
+   For Jira, include the issue key (e.g. `PSAP-123`, `RHAIRFE-45`, `INFERENG-67`), or a full
+   browse URL such as `https://issues.redhat.com/browse/RHEL-123` for any project.
+   Jira issues are usually private, so the reference is matched as text and is not resolved
+   or verified by CI.
+   Never leave placeholders such as `Fixes #TBD` or "no issue" in a PR that is ready for review.
+
+4. **One issue per PR.** If a change spans multiple issues, link each one with `Refs`,
+   or split the PR so each maps to a single issue.
+
+### Enforcement
+
+The `Require tracking issue` GitHub Actions workflow checks the PR body on open, edit, and
+synchronize, and fails the PR when no issue is referenced. It accepts GitHub issue references
+(`Fixes #NNN`, `Refs #NNN`, issue URLs), Jira keys for the PSAP, RHAIRFE, and INFERENG
+projects, and Jira browse URLs for any project (string match only; Jira issues are private
+and are not resolved). It applies to every PR regardless of the tool or agent used. Once the
+check is required by branch protection, a PR without an issue reference cannot merge.
+
+### Forbidden
+
+```
+# BAD: PR opened with no tracking issue
+gh pr create --title "fix(rhaiis): ..." --body "Fixes a bug."
+
+# BAD: Placeholder left in the body
+Fixes #TBD
+
+# BAD: Issue opened only after the PR is already up for review
+```
+
+### Correct
+
+```
+# GOOD: issue created/found first, then referenced from the PR body
+Fixes #412
+
+# GOOD: Jira tracking issue key
+PSAP-123
+```
+
+## GitHub Interaction Rules
+
+When creating or posting any content to GitHub (issues, PR descriptions, comments, replies, etc.):
 
 ### Rules
 
 1. **Always identify as an agent.**
-   Every comment or reply posted by an agent must clearly state that it was written by an agent,
-   not a human. Include an explicit marker such as `[Agent response]` at the start of the comment.
+   Every piece of content posted to GitHub by an agent must clearly state that it was written by
+   an agent, not a human. This includes issue bodies, PR descriptions, comments, and replies.
+   Include an explicit marker such as `[Agent generated]` at the start of the content.
 
 2. **Never use first person.**
    Do not use "I", "me", "my", or "mine" when writing comment text. Use impersonal phrasing instead
@@ -344,6 +423,16 @@ def get_title(context):
 
     return f"PR #{context.pr_number}: {title}"
 ```
+
+## Linter: Unused Import Removal
+
+The project's linter (run as a post-save hook) **automatically removes unused imports**.
+When extracting code into a new function or moving code between functions, verify that
+every `import` the moved code depends on is actually used in its original location.
+If the import is only needed by the extracted function, add it inside that function
+(or at the top of the file if it is used in multiple places). Do not assume an import
+will survive just because it exists in the file — the linter will erase it if the
+remaining code in its scope no longer references it.
 
 ## Legacy support
 

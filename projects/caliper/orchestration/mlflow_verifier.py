@@ -15,17 +15,11 @@ every FORGE project already has.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
-import warnings
 
-from projects.caliper.engine.file_export.mlflow_secrets import (
-    load_mlflow_secrets_yaml,
-    mlflow_connection_env,
-    validate_mlflow_secrets,
-)
-from projects.core.library import vault
+from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
+from projects.caliper.public.mlflow import mlflow_tracking_context
 from projects.core.library.config import requires
 from projects.core.nightly.base_verifier import NightlyVerifier
 
@@ -67,7 +61,7 @@ class CaliperMLflowVerifier(NightlyVerifier):
         last_error = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                with mlflow_connection_env(connection):
+                with mlflow_tracking_context(connection, workspace=self.workspace):
                     return self._query_latest_run()
             except Exception as e:
                 last_error = e
@@ -83,57 +77,34 @@ class CaliperMLflowVerifier(NightlyVerifier):
         raise RuntimeError(f"MLflow verifier failed after {MAX_ATTEMPTS} attempts") from last_error
 
     def _load_connection(self) -> dict:
-        secret_path = vault.get_vault_content_path(self.secret_name, self.secret_file)
-
-        if secret_path is None or not secret_path.exists():
-            raise FileNotFoundError(
-                f"MLflow secret '{self.secret_name}/{self.secret_file}' not found in vault. "
-                "Ensure the vault configuration is correct."
-            )
-
-        data = load_mlflow_secrets_yaml(secret_path)
-        validate_mlflow_secrets(data)
-        return data
+        return load_mlflow_connection(self.secret_name, self.secret_file)
 
     def _query_latest_run(self) -> str:
         import mlflow
-        import urllib3
 
-        warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
+        client = mlflow.tracking.MlflowClient()
 
-        previous_workspace = os.environ.get("MLFLOW_WORKSPACE")
-        try:
-            if self.workspace:
-                os.environ["MLFLOW_WORKSPACE"] = self.workspace
-
-            client = mlflow.tracking.MlflowClient()
-
-            experiment = client.get_experiment_by_name(self.experiment)
-            if experiment is None:
-                raise ValueError(
-                    f"MLflow experiment '{self.experiment}' not found. "
-                    "Create the experiment first or check the configuration."
-                )
-
-            runs = client.search_runs(
-                experiment_ids=[experiment.experiment_id],
-                order_by=["start_time DESC"],
-                max_results=1,
+        experiment = client.get_experiment_by_name(self.experiment)
+        if experiment is None:
+            raise ValueError(
+                f"MLflow experiment '{self.experiment}' not found. "
+                "Create the experiment first or check the configuration."
             )
 
-            if not runs:
-                raise ValueError(f"No runs found in MLflow experiment '{self.experiment}'.")
+        runs = client.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            order_by=["start_time DESC"],
+            max_results=1,
+        )
 
-            latest_run = runs[0]
-            run_name = latest_run.info.run_name or ""
-            logger.info("Latest MLflow run: %s", run_name)
+        if not runs:
+            raise ValueError(f"No runs found in MLflow experiment '{self.experiment}'.")
 
-            return self._extract_version(run_name)
-        finally:
-            if previous_workspace is None:
-                os.environ.pop("MLFLOW_WORKSPACE", None)
-            else:
-                os.environ["MLFLOW_WORKSPACE"] = previous_workspace
+        latest_run = runs[0]
+        run_name = latest_run.info.run_name or ""
+        logger.info("Latest MLflow run: %s", run_name)
+
+        return self._extract_version(run_name)
 
     def _extract_version(self, run_name: str) -> str:
         match = self._version_re.search(run_name)

@@ -290,6 +290,44 @@ def test_postprocess_status_yaml_structure():
         yaml_file.unlink()
 
 
+def test_write_visualization_var_directive(tmp_path):
+    """The /var directive file reproduces the plugin settings and parses as a PR directive."""
+    from projects.caliper.orchestration.postprocess import (
+        VISUALIZATION_PLUGIN_SETTINGS_KEY,
+        VISUALIZATION_VAR_FILENAME,
+        _write_visualization_var_directive,
+    )
+    from projects.core.ci_entrypoint.github.pr_args import handle_var_directive
+    from projects.core.library import env
+
+    plugin_settings = {"legend_keys": ["max_requests"], "group_keys": []}
+
+    with env.TempArtifactDir(tmp_path):
+        _write_visualization_var_directive(plugin_settings)
+
+    var_line = (tmp_path / VISUALIZATION_VAR_FILENAME).read_text().strip()
+    assert var_line == (
+        f"/var {VISUALIZATION_PLUGIN_SETTINGS_KEY}: {{group_keys: [], legend_keys: [max_requests]}}"
+    )
+    # the written line must parse as a valid /var PR directive
+    assert handle_var_directive(var_line) == {VISUALIZATION_PLUGIN_SETTINGS_KEY: plugin_settings}
+
+
+def test_write_visualization_var_directive_no_settings(tmp_path):
+    """No plugin settings means no directive file is written."""
+    from projects.caliper.orchestration.postprocess import (
+        VISUALIZATION_VAR_FILENAME,
+        _write_visualization_var_directive,
+    )
+    from projects.core.library import env
+
+    with env.TempArtifactDir(tmp_path):
+        _write_visualization_var_directive(None)
+        _write_visualization_var_directive({})
+
+    assert not (tmp_path / VISUALIZATION_VAR_FILENAME).exists()
+
+
 if __name__ == "__main__":
     # Run basic smoke tests
     test_postprocess_status_roundtrip()
@@ -298,4 +336,6 @@ if __name__ == "__main__":
     test_postprocess_status_enum_values()
     test_notification_pattern_matching()
     test_postprocess_status_yaml_structure()
+    test_write_visualization_var_directive(Path(tempfile.mkdtemp()))
+    test_write_visualization_var_directive_no_settings(Path(tempfile.mkdtemp()))
     print("✅ All postprocess status integration tests passed!")

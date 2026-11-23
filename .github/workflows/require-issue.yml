@@ -1,0 +1,51 @@
+name: Require tracking issue
+
+# pull_request_target: the check definition comes from the base branch, so a PR
+# cannot bypass it by editing this workflow. No PR code is checked out here.
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  require-issue:
+    name: PR references a tracking issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the PR body links an issue
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          # No -q: grep must read the whole input, otherwise it exits early,
+          # printf gets SIGPIPE, and pipefail turns a match into a failure.
+          if printf '%s' "$PR_BODY" | grep -iE '(fixes|closes|resolves|refs|part of)[[:space:]]+#[0-9]+' >/dev/null; then
+            echo "PR body references a tracking issue."
+            exit 0
+          fi
+
+          if printf '%s' "$PR_BODY" | grep -iE 'github\.com/[^/[:space:]]+/[^/[:space:]]+/issues/[0-9]+' >/dev/null; then
+            echo "PR body links a tracking issue."
+            exit 0
+          fi
+
+          # Jira keys are a string match only: the issues are usually private,
+          # so this workflow neither resolves nor verifies them. A browse URL is
+          # unambiguous, so any project key is accepted there; bare keys are
+          # restricted to the team's projects to avoid false positives such as
+          # CUDA-12 or H200-8.
+          if printf '%s' "$PR_BODY" | grep -iE '(issues\.redhat\.com|redhat\.atlassian\.net)/browse/[A-Za-z][A-Za-z0-9]+-[0-9]+' >/dev/null; then
+            echo "PR body links a Jira issue."
+            exit 0
+          fi
+
+          if printf '%s' "$PR_BODY" | grep -iE '\b(PSAP|RHAIRFE|INFERENG)-[0-9]+\b' >/dev/null; then
+            echo "PR body references a Jira issue."
+            exit 0
+          fi
+
+          echo "::error::This PR must reference a tracking issue. Add 'Fixes #NNN' (closes the issue) or 'Refs #NNN' (partial work), a full GitHub issue URL, a Jira browse URL, or a Jira key (PSAP-123, RHAIRFE-45, INFERENG-67), to the PR description. See AGENTS.md, 'Pull Requests: A Tracking Issue Is Required'."
+          exit 1

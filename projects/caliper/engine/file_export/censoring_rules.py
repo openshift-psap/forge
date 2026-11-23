@@ -36,14 +36,14 @@ KEYWORD_PATTERNS = [
     r"ghs_[a-zA-Z0-9]{36}",  # GitHub server-to-server tokens
     r"ghr_[a-zA-Z0-9]{36}",  # GitHub refresh tokens
     # AWS patterns
-    r"AKIA[0-9A-Z]{16}",  # AWS Access Key ID
+    r"(?<!X-Amz-Credential=)AKIA[0-9A-Z]{16}",  # AWS Access Key ID (exclude CDN presigned URLs)
     r"aws[_-]?secret[_-]?access[_-]?key\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
     # Database connection strings
     r"mongodb://[^/\s]+:[^@\s]+@",
     r"mysql://[^/\s]+:[^@\s]+@",
     r"postgresql://[^/\s]+:[^@\s]+@",
     # Generic credential patterns - improved
-    r"credential\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
+    r"(?<!X-Amz-)credential\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
     r"private[_-]?key\s*[:=]\s*(?!get_|os\.|env\.|<|>|\[)['\"]?[^'\"\s<>\[\]()]{3,}",
     # ML/AI service tokens
     r"(?:huggingface|anthropic|openai|claude)[_-]?(?:token|key|api[_-]?key)\s*[:=]\s*[^'\"\s<>\[\]()]{3,}",

@@ -24,7 +24,7 @@ from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_e
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
 from projects.core.library.export import caliper_export_entrypoint
-from projects.core.library.replot import caliper_replot_entrypoint
+from projects.core.orchestration.replot import caliper_replot_entrypoint
 
 logger = logging.getLogger(__name__)
 

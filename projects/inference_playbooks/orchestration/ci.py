@@ -13,8 +13,8 @@ import click
 import prepare_phase
 import test_phase
 
-from projects.core.agentic.config_review import trigger_config_review_for_ci
-from projects.core.agentic.on_failure import agent_review_on_failure
+from projects.core.agentic_review.config_review import trigger_config_review_for_ci
+from projects.core.agentic_review.failure_review import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
@@ -24,7 +24,7 @@ from projects.core.library.export import (
     caliper_export_list_optional_vaults,
     caliper_export_list_vaults,
 )
-from projects.core.library.replot import caliper_replot_entrypoint
+from projects.core.orchestration.replot import caliper_replot_entrypoint
 
 logger = logging.getLogger(__name__)
 

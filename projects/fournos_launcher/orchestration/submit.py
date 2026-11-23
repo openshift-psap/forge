@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import signal
 import sys
 import threading
@@ -19,9 +20,6 @@ from projects.core.library import config, env, run, vault
 from projects.core.library.run_parallel import Parallel
 from projects.core.notifications.send import send_notification
 from projects.fournos_launcher.orchestration import job_management, pr_args, tunnelling
-from projects.fournos_launcher.toolbox.cleanup_fjob.main import (
-    run as cleanup_fjob,
-)
 from projects.fournos_launcher.toolbox.submit_and_wait.main import (
     run as submit_and_wait,
 )
@@ -45,6 +43,24 @@ def _signal_handler_sigterm(sig, frame):
     sys.exit(143)
 
 
+def _cleanup_fjob(job_name):
+    """Clean up a FournosJob, creating a notification if the MLFlow link is missing."""
+    try:
+        ctx = _cleanup_fjob(
+            job_name=job_name,
+            namespace=config.project.get_config("fournos.namespace"),
+        )
+        if ctx.missing_mlflow_link:
+            ci_lib.add_notification_file(
+                "missing-mlflow-link",
+                f"FournosJob {job_name} preserved: no MLFlow link found in job status.",
+            )
+        else:
+            logger.info(f"Cleaned up job: {job_name}")
+    except Exception as cleanup_e:
+        logger.warning(f"Failed to cleanup job {job_name}: {cleanup_e}")
+
+
 def _setup_signal_handlers():
     """Set up signal handlers for FOURNOS job shutdown."""
     try:
@@ -62,13 +78,74 @@ def _setup_signal_handlers():
         logger.warning(f"Failed to set up FOURNOS signal handlers: {e}")
 
 
+def _format_operational_notifications(metadata_dir: pathlib.Path) -> str:
+    """Format the CI operational notifications (000__ci_metadata/notifications/*.txt)
+    as a markdown section for the completion notification.
+
+    Returns an empty string when there is no notification file.
+    """
+    notifications_dir = metadata_dir / "notifications"
+    if not notifications_dir.is_dir():
+        return ""
+
+    blocks = []
+    for notification_file in sorted(notifications_dir.glob("*.txt")):
+        try:
+            content = notification_file.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.warning(f"Failed to read notification file {notification_file}: {e}")
+            continue
+
+        if not content:
+            continue
+
+        # same title formatting as projects.core.library.export_notifications
+        title = notification_file.stem.replace("__", " ").replace("_", " ").title()
+        title = re.sub(r"^\d+\s+", "", title)
+
+        lines = [f"##### {title}"]
+        lines += [f"> {line}" for line in content.splitlines()]
+        blocks.append("\n".join(lines))
+
+    if not blocks:
+        return ""
+
+    return "\n**Operational notifications:**\n\n" + "\n\n".join(blocks) + "\n"
+
+
+def _register_notification_send_failure(job_type: str, reason: str) -> None:
+    """Register a CI notification file when the GitHub notification could not be sent,
+    so that the failure is visible in the CI artifacts instead of a single log line."""
+    ci_lib.add_notification_file(
+        name="github_notification_failed",
+        message=(
+            f"The GitHub completion notification for this {job_type} job could not be sent.\n\n"
+            f"Reason: {reason}\n\n"
+            "Check the 'github:' error lines in run.log for details."
+        ),
+    )
+
+
+def _notification_warning_exit_status():
+    """Exit status flagging, as a non-fatal warning, that the GitHub completion
+    notification could not be sent (the CI run itself stays successful)."""
+    return (
+        0,
+        ci_lib.ExitCategory.WARNING,
+        "the GitHub completion notification could not be sent",
+    )
+
+
 def send_github_notification(
     success: bool,
     job_type: str = "single",
     start_time: float | None = None,
     error: Exception | None = None,
-):
-    """Send a simplified GitHub notification with essential test information."""
+) -> bool:
+    """Send a simplified GitHub notification with essential test information.
+
+    Returns True if the notification was sent (or intentionally skipped),
+    False if it could not be sent."""
 
     def get_ocpci_link(path, is_raw_file=False, base=None, is_dir=False):
         if base is None:
@@ -173,6 +250,8 @@ def send_github_notification(
             else:
                 error_section = f"\n**Error:** `{type(error).__name__}: {str(error)}`\n"
 
+        operational_notifications_section = _format_operational_notifications(metadata_dir)
+
         notification_status = f"""<details>
 <summary>{status_flag} Submission of <code>{project_name} {presets}</code> {status_verb} <code>{duration_str.strip()}</code> {status_flag}</summary>
 
@@ -182,7 +261,7 @@ def send_github_notification(
 * {test_results_link.replace("[Test Results]", "[MLFlow Test Results]")}
 
 </details>
-{error_section}
+{operational_notifications_section}{error_section}
 ```
 {pr_config_content}
 ```"""
@@ -195,7 +274,7 @@ def send_github_notification(
             logger.info(f"Created notification content for {job_type} job")
         except Exception as file_error:
             logger.warning(f"Failed to write notification file: {file_error}")
-            return
+            return False
 
         # Send notification through notification system
         try:
@@ -207,15 +286,25 @@ def send_github_notification(
                 dry_run=False,
                 notification_vault=notification_vault,
             )
-            if ok:
-                logger.info(f"Sent GitHub notification for {job_type} job")
-            else:
-                logger.warning(f"GitHub notification for {job_type} job returned failure")
         except Exception as send_error:
             logger.warning(f"Failed to send notification: {send_error}")
+            _register_notification_send_failure(
+                job_type, f"{type(send_error).__name__}: {send_error}"
+            )
+            return False
+
+        if ok:
+            logger.info(f"Sent GitHub notification for {job_type} job")
+            return True
+
+        logger.warning(f"GitHub notification for {job_type} job returned failure")
+        _register_notification_send_failure(job_type, "send_notification returned failure")
+        return False
 
     except Exception as e:
         logger.warning(f"Failed to send GitHub notification: {e}")
+
+    return False
 
 
 # returns a tuple (base_link, link_suffix)
@@ -260,6 +349,29 @@ def get_ci_base_link(is_raw_file=False, is_dir=False):
     )
 
 
+def get_fournos_instance() -> str:
+    """Return the configured Fournos instance, validated against the known ones."""
+    instance = config.project.get_config("fournos.instance")
+    if instance not in ("psap-mgmt", "intlab"):
+        raise ValueError(
+            f"Unknown fournos.instance: {instance!r} (expected 'psap-mgmt' or 'intlab')"
+        )
+    return instance
+
+
+def vaults_to_init() -> list[str]:
+    """Vaults required by the launcher, for the configured Fournos instance only.
+
+    The vault of the other instance is not used, and may not be available in
+    the CI environment running the launcher.
+    """
+    instance = get_fournos_instance()
+    other_instance = "psap_mgmt" if instance == "intlab" else "intlab"
+    other_instance_vault = config.project.get_config(f"fournos.{other_instance}.vault.name")
+
+    return [v for v in config.project.get_config("vaults") if v != other_instance_vault]
+
+
 def init():
     env.init()
     run.init()
@@ -271,28 +383,24 @@ def init():
     config.init(pathlib.Path(__file__).parent, apply_config_overrides=False)
     config.project.apply_config_overrides(ignore_not_found=True)
     config.project.filter_out_used_overrides()
-    vault.init(config.project.get_config("vaults"))
+    vault.init(vaults_to_init())
 
     prepare_env()
 
 
 def prepare_env():
-    instance = config.project.get_config("fournos.instance")
+    instance = get_fournos_instance()
 
     if instance == "intlab":
         logger.info("Using intlab Fournos instance (via SSH tunnel)")
         tunnelling.open_tunnel()
-    elif instance == "psap-mgmt":
+    else:
         logger.info("Using psap-mgmt Fournos instance (direct)")
         kubeconfig_path = vault.get_vault_content_path(
             config.project.get_config("fournos.psap_mgmt.vault.name"),
             config.project.get_config("fournos.psap_mgmt.vault.key"),
         )
         os.environ["KUBECONFIG"] = str(kubeconfig_path)
-    else:
-        raise ValueError(
-            f"Unknown fournos.instance: {instance!r} (expected 'psap-mgmt' or 'intlab')"
-        )
 
 
 def submit_job():
@@ -461,17 +569,10 @@ def submit_job():
                     f"Cleaning up {len(submitted_job_names)} parallel jobs: {', '.join(submitted_job_names)}"
                 )
                 for job_name in submitted_job_names:
-                    try:
-                        cleanup_fjob(
-                            job_name=job_name,
-                            namespace=config.project.get_config("fournos.namespace"),
-                        )
-                        logger.info(f"Cleaned up job: {job_name}")
-                    except Exception as cleanup_e:
-                        logger.warning(f"Failed to cleanup job {job_name}: {cleanup_e}")
+                    _cleanup_fjob(job_name)
 
             # Send simplified GitHub notification instead of generating detailed files
-            send_github_notification(
+            notification_sent = send_github_notification(
                 success=not has_failures[0], job_type="parallel", start_time=start_time
             )
 
@@ -479,9 +580,13 @@ def submit_job():
             if has_failures[0]:
                 logger.error("One or more parallel jobs failed")
                 return 1
-            else:
-                logger.info("All parallel jobs completed successfully")
-                return 0
+
+            logger.info("All parallel jobs completed successfully")
+
+            if not notification_sent:
+                return _notification_warning_exit_status()
+
+            return 0
         else:
             # No parallel jobs configured, run single job as before
             logger.info("No parallel jobs configured, running single job")
@@ -508,22 +613,17 @@ def submit_job():
                 job_error = None
 
             # Send simplified GitHub notification
-            send_github_notification(
+            notification_sent = send_github_notification(
                 success=(return_code == 0),
                 job_type="single",
                 start_time=start_time,
                 error=job_error,
             )
 
-            # Cleanup the job
-            try:
-                cleanup_fjob(
-                    job_name=single_job_name,
-                    namespace=config.project.get_config("fournos.namespace"),
-                )
-                logger.info(f"Cleaned up job: {single_job_name}")
-            except Exception as cleanup_e:
-                logger.warning(f"Failed to cleanup job {single_job_name}: {cleanup_e}")
+            _cleanup_fjob(single_job_name)
+
+            if return_code == 0 and not notification_sent:
+                return _notification_warning_exit_status()
 
             return return_code
 

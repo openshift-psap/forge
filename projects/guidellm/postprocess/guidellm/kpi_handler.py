@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +18,28 @@ from projects.caliper.engine.kpi import (
 from projects.caliper.engine.model import UnifiedRunModel
 
 logger = logging.getLogger(__name__)
+
+_SUM_KPI_IDS = frozenset({"guidellm_throughput_curve"})
+
+
+def _aggregate_replica_curve(values: list[list], kpi_id: str) -> list[list]:
+    """Aggregate duplicate x-values from multi-replica curve KPIs.
+
+    Throughput KPIs (_SUM_KPI_IDS): sum y-values across replicas.
+    Latency KPIs: mean y-values across replicas.
+    X-axis is always summed to represent total concurrency.
+    """
+    groups: OrderedDict[float, list[float]] = OrderedDict()
+    for x, y in values:
+        groups.setdefault(x, []).append(y)
+
+    if all(len(ys) == 1 for ys in groups.values()):
+        return values
+
+    use_sum = kpi_id in _SUM_KPI_IDS
+    result = [[x * len(ys), sum(ys) if use_sum else sum(ys) / len(ys)] for x, ys in groups.items()]
+    result.sort(key=lambda p: p[0])
+    return result
 
 
 class GuideLLMKpiHandler:
@@ -98,23 +120,6 @@ class GuideLLMKpiHandler:
         if not valid_records:
             status = KpiComputationStatus.success_status(0, len(model.unified_result_records))
             return out, status
-
-        unknown_gpu_records = []
-        for r in valid_records:
-            test_condition_labels = GuideLLMKpiHandler.LABEL_EXTRACTOR.extract(r)
-            gpu_type = test_condition_labels.get("gpu_type")
-            if gpu_type and gpu_type.lower() == "unknown":
-                unknown_gpu_records.append(r.test_base_path)
-
-        if unknown_gpu_records:
-            error_msg = (
-                f"Found gpu_type='unknown' in {len(unknown_gpu_records)} test paths: "
-                f"{', '.join(unknown_gpu_records[:3])}{'...' if len(unknown_gpu_records) > 3 else ''}. "
-                "Unknown GPU types prevent reliable KPI analysis. "
-                "Please ensure GPU detection is working correctly or set gpu_type manually in test labels."
-            )
-            status = KpiComputationStatus.failure_status(error_msg)
-            return [], status
 
         invalid_label_records = []
         logger.info(f"🔍 Validating required labels for {len(valid_records)} records...")
@@ -208,6 +213,7 @@ class GuideLLMKpiHandler:
                 if raw_values:
                     coordinate_pairs = [[x, y] for x, y in raw_values]
                     values = sorted(coordinate_pairs, key=lambda point: point[0])
+                    values = _aggregate_replica_curve(values, kpi_id)
                 else:
                     values = []
 

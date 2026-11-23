@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from projects.caliper.postprocess.helpers.visualization_utils import (
-    create_report_filename,
     create_report_title_display,
     save_figure,
 )
@@ -33,13 +32,10 @@ def generate_group_report(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    report_title = f"Prometheus Metrics: {group_result.group_name}"
-    display_title = create_report_title_display(report_title, report_number)
+    display_title = create_report_title_display(f"Prometheus Metrics: {group_result.group_name}")
+    file_stem = group_result.group_name.removeprefix("capture_prometheus_metrics_")
 
-    report_dir_name = report_title.lower().replace(" ", "_").replace(":", "").replace("-", "_")
-    if report_number is not None:
-        report_dir_name = f"report_{report_number:02d}_{report_dir_name}"
-    report_dir = output_dir / report_dir_name
+    report_dir = output_dir / file_stem
     report_dir.mkdir(parents=True, exist_ok=True)
 
     plot_sections: list[str] = []
@@ -48,12 +44,11 @@ def generate_group_report(
         plot_sections.append(render_variables_section(group_result.variables))
 
     for idx, metric in enumerate(group_result.metrics):
-        section_html = _render_metric_section(metric, report_dir, report_dir_name, idx)
+        section_html = _render_metric_section(metric, report_dir, file_stem, idx)
         plot_sections.append(section_html)
 
     report_html = assemble_report(display_title, plot_sections)
-    report_filename = create_report_filename(report_dir_name, report_number, report_title, "html")
-    report_path = output_dir / report_filename
+    report_path = output_dir / f"{file_stem}.html"
     report_path.write_text(report_html, encoding="utf-8")
 
     return report_path
@@ -95,10 +90,27 @@ def _render_metric_section(
     unit_display = f" ({escaped_unit})" if escaped_unit else ""
     title = f"{escaped_desc}{unit_display}"
 
+    query_html = ""
+    if metric.query:
+        escaped_template = html_module.escape(str(metric.query).strip())
+        resolved = metric.resolved_query.strip() if metric.resolved_query else ""
+        escaped_resolved = html_module.escape(resolved) if resolved else ""
+
+        if escaped_resolved and escaped_resolved != escaped_template:
+            query_html = (
+                f'<p class="query">Query: <code>{escaped_resolved}</code></p>'
+                f"<details><summary>Template query</summary>"
+                f'<p class="query"><code>{escaped_template}</code></p>'
+                f"</details>"
+            )
+        else:
+            query_html = f'<p class="query">Query: <code>{escaped_template}</code></p>'
+
     if not metric.series:
         return (
             f'<div class="metric-section">'
             f"<h2>{title}</h2>"
+            f"{query_html}"
             f'<p class="no-data">No data available for this metric.</p>'
             f"</div>"
         )
@@ -118,11 +130,6 @@ def _render_metric_section(
         link_html = f'<p><a href="{html_rel}">Open interactive plot</a></p>'
 
     legend_html = _render_legend_html(legend)
-
-    query_html = ""
-    if metric.query:
-        escaped_query = html_module.escape(metric.query.strip())
-        query_html = f'<p class="query">Query: <code>{escaped_query}</code></p>'
 
     return f'<div class="metric-section"><h2>{title}</h2>{query_html}{link_html}{inline_plot}{legend_html}</div>'
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ class MetricTimeSeries:
     query: str
     legend_labels: list[str]
     series: list[LabeledSeries]
+    resolved_query: str = ""
 
 
 @dataclass(frozen=True)
@@ -49,7 +51,11 @@ def parse_capture_group(capture_dir: str | Path) -> CaptureGroupResult:
     results_index = metadata.get("results", {})
 
     group_name = capture_dir.name
-    source_map = _build_metric_source_map(profiles_dir)
+    source_map, param_defaults = _build_metric_source_map(profiles_dir)
+
+    # Merge profile param_defaults into variables (group config takes precedence)
+    for k, v in param_defaults.items():
+        variables.setdefault(k, v)
 
     metrics: list[MetricTimeSeries] = []
     for metric_name, meta in results_index.items():
@@ -60,6 +66,7 @@ def parse_capture_group(capture_dir: str | Path) -> CaptureGroupResult:
         source_file = source_info.source_file if source_info else ""
         query = source_info.query if source_info else ""
         legend_labels = source_info.legend_labels if source_info else []
+        resolved_query = _resolve_query_template(query, variables)
 
         if status != "ok":
             metrics.append(
@@ -69,6 +76,7 @@ def parse_capture_group(capture_dir: str | Path) -> CaptureGroupResult:
                     unit=unit,
                     source_file=source_file,
                     query=query,
+                    resolved_query=resolved_query,
                     legend_labels=legend_labels,
                     series=[],
                 )
@@ -89,6 +97,7 @@ def parse_capture_group(capture_dir: str | Path) -> CaptureGroupResult:
                 unit=unit,
                 source_file=source_file,
                 query=query,
+                resolved_query=resolved_query,
                 legend_labels=legend_labels,
                 series=series,
             )
@@ -121,10 +130,13 @@ class _MetricSourceInfo:
     legend_labels: list[str]
 
 
-def _build_metric_source_map(profiles_dir: Path) -> dict[str, _MetricSourceInfo]:
+def _build_metric_source_map(
+    profiles_dir: Path,
+) -> tuple[dict[str, _MetricSourceInfo], dict[str, str]]:
     mapping: dict[str, _MetricSourceInfo] = {}
+    param_defaults: dict[str, str] = {}
     if not profiles_dir.exists():
-        return mapping
+        return mapping, param_defaults
 
     for yaml_path in sorted(profiles_dir.glob("*.yaml")):
         source_name = yaml_path.stem
@@ -135,14 +147,19 @@ def _build_metric_source_map(profiles_dir: Path) -> dict[str, _MetricSourceInfo]
             continue
 
         for entry in entries:
-            if isinstance(entry, dict) and "metricName" in entry:
+            if not isinstance(entry, dict):
+                continue
+            if "param_defaults" in entry:
+                for k, v in entry["param_defaults"].items():
+                    param_defaults.setdefault(k, str(v))
+            if "metricName" in entry:
                 mapping[entry["metricName"]] = _MetricSourceInfo(
                     source_file=source_name,
                     query=entry.get("query", ""),
                     legend_labels=entry.get("legendLabels", []),
                 )
 
-    return mapping
+    return mapping, param_defaults
 
 
 def _parse_metric_json(json_path: Path, metric_name: str) -> list[LabeledSeries]:
@@ -193,6 +210,18 @@ def _parse_metric_json(json_path: Path, metric_name: str) -> list[LabeledSeries]
         )
 
     return series_list
+
+
+def _resolve_query_template(query: str, variables: dict[str, str]) -> str:
+    """Substitute Go template placeholders (``{{.VAR}}``) with resolved values."""
+    if not query or not variables:
+        return query
+
+    def _replace(match: re.Match) -> str:
+        var_name = match.group(1)
+        return str(variables.get(var_name, match.group(0)))
+
+    return re.sub(r"\{\{\s*\.(\w+)\s*\}\}", _replace, str(query))
 
 
 def _parse_timestamp(ts_str: str) -> datetime:

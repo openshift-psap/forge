@@ -21,6 +21,7 @@ from projects.caliper.orchestration.export import (
     ExportFailedException,
     run_from_orchestration_config,
 )
+from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
 from projects.caliper.orchestration.postprocess import POSTPROCESS_STATUS_FILENAME
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run
@@ -502,16 +503,9 @@ def _update_final_artifacts(artifact_dir, export_status: ExportStatus | None) ->
             warn=False,
         )
 
-        connection = None
-        if vault_name and vault_key:
-            from projects.caliper.engine.file_export.mlflow_secrets import (
-                load_mlflow_secrets_yaml,
-            )
-            from projects.core.library import vault as vault_lib
-
-            secrets_path = vault_lib.get_vault_content_path(vault_name, vault_key)
-            if secrets_path and secrets_path.exists():
-                connection = load_mlflow_secrets_yaml(secrets_path)
+        connection = (
+            load_mlflow_connection(vault_name, vault_key) if vault_name and vault_key else None
+        )
 
         # Upload session artifacts using MLflow backend
 
@@ -521,6 +515,7 @@ def _update_final_artifacts(artifact_dir, export_status: ExportStatus | None) ->
             artifact_path=artifact_path,
             tracking_uri=tracking_uri,
             connection=connection,
+            workspace=mlflow_meta.get("workspace"),
         )
         logger.info("Updated final artifacts in MLflow run %s", run_id)
     except Exception as e:
@@ -534,6 +529,7 @@ def _update_artifacts(
     artifact_path: str | None = None,
     tracking_uri: str | None = None,
     connection: dict[str, Any] | None = None,
+    workspace: str | None = None,
 ) -> None:
     """Re-upload artifacts to an existing MLflow run.
 
@@ -543,6 +539,7 @@ def _update_artifacts(
         artifact_path: Artifact path within the MLflow run (None for root)
         tracking_uri: MLflow tracking URI
         connection: MLflow connection configuration
+        workspace: Workspace containing the run
 
     Intended to be called after all post-export work (notifications, etc.) completes,
     so uploaded files contain the full session output.
@@ -574,6 +571,7 @@ def _update_artifacts(
         files=dict.fromkeys(files_to_upload, artifact_path),
         tracking_uri=tracking_uri,
         connection=connection,
+        workspace=workspace,
     )
 
 
@@ -701,25 +699,33 @@ def caliper_agentic_list_vaults() -> list[str]:
         from projects.core.library import config
 
         # Check if agentic features are enabled in the project configuration
-        agentic_config = config.project.get_config("agentic", {})
+        agentic_config = config.project.get_config("agentic_review", {})
 
         if agentic_config.get("enabled", False):
+            # An explicit null value is a config error, not "disabled"
+            for feature in ("failure_review", "config_review"):
+                if feature in agentic_config and agentic_config[feature] is None:
+                    raise ValueError(f"agentic_review.{feature} is configured as null")
+
             # Check if any agentic feature is enabled
-            any_agentic_enabled = agentic_config.get("on_failure", {}).get(
+            any_agentic_enabled = agentic_config.get("failure_review", {}).get(
                 "enabled", False
             ) or agentic_config.get("config_review", {}).get("enabled", False)
 
             if any_agentic_enabled:
                 # Add the models vault for agentic operations
-                models_vault = "psap-models-corp-rh"
+                models_vault = agentic_config.get("vault_name")
+                if not models_vault:
+                    raise ValueError("agentic_review.vault_name not configured")
                 agentic_vaults.append(models_vault)
                 logger.info(f"Added agentic models vault: {models_vault}")
 
         # Add other agentic-related vaults here in the future
 
+    except ValueError:
+        raise
     except Exception as e:
         logger.error(f"Failed to determine agentic vaults from config: {e}")
-        # Return empty list on error - agentic operations will handle missing vaults gracefully
 
     logger.info(f"Agentic vault list: {agentic_vaults}")
     return agentic_vaults

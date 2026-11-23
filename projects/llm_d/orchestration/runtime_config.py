@@ -263,6 +263,20 @@ def _load_scheduler_with_epp_config(
     router_template_data = _load_yaml(router_template_path)
     epp_config_data = _load_yaml(epp_config_path)
 
+    peak_prefill_throughput = config.project.get_config(
+        "runtime.router.peak_prefill_throughput", print=False
+    )
+    for plugin in epp_config_data.get("plugins", []):
+        parameters = plugin.get("parameters", {})
+        if "peakPrefillThroughput" in parameters:
+            if (
+                isinstance(parameters["peakPrefillThroughput"], str)
+                and peak_prefill_throughput is None
+            ):
+                raise ValueError("runtime.router.peak_prefill_throughput is required")
+            if peak_prefill_throughput is not None:
+                parameters["peakPrefillThroughput"] = peak_prefill_throughput
+
     # Replace placeholder in the parsed data structure (avoids YAML formatting issues)
     def replace_placeholder_in_structure(obj):
         if isinstance(obj, dict):
@@ -498,6 +512,16 @@ def get_deployment_profile() -> dict[str, Any]:
     else:
         # Fall back to template-based resolution
         profile = _resolve_template_profile(profile_name, deployment_config)
+
+    if profile.pop("topology_from_model", False):
+        topology = config.project.get_config("runtime.model_topology", print=False)
+        if topology is None:
+            raise ValueError(f"Deployment profile {profile_name} requires a model topology preset")
+        profile.update({key: topology[key] for key in ("replicas", "tensor_parallelism")})
+
+    model_vllm_args = config.project.get_config("runtime.model_vllm_args", print=False)
+    if model_vllm_args:
+        profile = deep_merge(profile, {"vllm_extra": {"args": model_vllm_args}})
 
     defaults = copy.deepcopy(deployment_config.get("defaults", {}))
 

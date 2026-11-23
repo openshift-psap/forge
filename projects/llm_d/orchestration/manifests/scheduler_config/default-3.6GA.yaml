@@ -1,9 +1,13 @@
+# Temporary recipe for RHOAI 3.6 EA2, which missed the intended default router recipe.
+# Retire this Forge copy after upgrading to RHOAI 3.6 GA, where the recipe is built in.
 apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
 plugins:
   - type: approx-prefix-cache-producer
   - type: inflight-load-producer
   - type: prefix-cache-affinity-filter
+    parameters:
+      peakPrefillThroughput: __SET_FROM_MODEL_PRESET__
   - type: token-load-scorer
 schedulingProfiles:
   - name: default

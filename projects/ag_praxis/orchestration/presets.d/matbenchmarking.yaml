@@ -1,0 +1,52 @@
+__multiple: true
+
+payload_size:
+  test.matrix_benchmarking.workload_level.enabled: true
+  test.matrix_benchmarking.workload_level.dimensions:
+    test.payload: [XS, default, L, XL]
+  test.matrix_benchmarking.workload_level.labels:
+    test.payload: payload
+  test.matrix_benchmarking.visualization:
+    legend_keys: [payload]
+    group_keys: []
+
+extproc_max_requests:
+  test.endpoints: [maas/praxis]
+  test.sweep: large
+  workloads.replica_count: 4
+  workloads.sweeps.large: [512, 1024, 2048, 3072, 4096]
+  prom.capture.enabled: false
+  test.matrix_benchmarking.deployment_level.enabled: true
+  test.matrix_benchmarking.deployment_level.dimensions:
+    platform.praxis.extproc_max_requests: [224, 256, 288, 320]
+
+  test.matrix_benchmarking.deployment_level.labels:
+    platform.praxis.extproc_max_requests: max_requests
+  test.matrix_benchmarking.visualization:
+    legend_keys: [max_requests]
+    group_keys: []
+
+# Study the ext_proc budget-holding effect: every in-flight streaming request
+# holds an ext_proc stream for its full response, and response duration is
+# ~ TTFT + ITL x output_tokens (default: 1s + 30ms x ~128 tokens ~ 5s). The
+# admission ceiling is roughly extproc_max_requests / duration, so with the
+# budget at its measured optimum (256), each ITL step predicts:
+#   5ms -> ~1.6s -> ~160 rps   15ms -> ~2.9s -> ~88 rps
+#   30ms -> ~4.8s -> ~53 rps   60ms -> ~8.7s -> ~29 rps
+# Compare against the measured 200-rate per step (guidellm request status).
+# Prometheus capture stays ON so each step also gets the auth_saturation view
+# (200-rate ceiling, instant-rejection regime) next to the success counts.
+sim_inter_token_latency:
+  test.endpoints: [maas/praxis]
+  test.sweep: large
+  workloads.replica_count: 4
+  workloads.sweeps.large: [512, 1024, 2048, 3072, 4096]
+  test.matrix_benchmarking.deployment_level.enabled: true
+  test.matrix_benchmarking.deployment_level.dimensions:
+    platform.sim.inter_token_latency: ["5ms", "15ms", "30ms", "60ms"]
+
+  test.matrix_benchmarking.deployment_level.labels:
+    platform.sim.inter_token_latency: itl
+  test.matrix_benchmarking.visualization:
+    legend_keys: [itl]
+    group_keys: []

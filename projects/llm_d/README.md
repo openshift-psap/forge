@@ -49,6 +49,10 @@ Model and deployment selection:
 - select one or more literal Hugging Face model names with `/var runtime.model_name: ...`
 - select one or more deployment profiles with `/var runtime.deployment_profile: ...`
 - select a benchmark workload with `/var runtime.benchmark_key: ...`
+- pin the serving/prefill pods to specific nodes with
+  `/var deployments.defaults.node_selector: {kubernetes.io/hostname: <node>}` — also selects a
+  GPU model on mixed clusters (e.g. `nvidia.com/gpu.product`); the scheduler/EPP pod placement
+  is controlled separately by `platform.inference_service.scheduler.node_selector`
 
 Example:
 

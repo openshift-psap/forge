@@ -16,25 +16,68 @@ capture:
     enabled: true
     include_dirs:
       - projects/cluster/metrics
+      - projects/kserve/metrics
     params:
       namespace: "@test.namespace"
+      llmisvc_name: "@platform.maas.llmisvc_name"
+      gateway_name: "@platform.maas.gateway.name"
     groups:
+      vllm:
+        enabled: true
+        files: [vllm_latency, vllm_throughput]
+        variables:
+          LLMISVC_NAMESPACE: "{namespace}"
+          LLMISVC_NAME: "{llmisvc_name}"
+      scheduler:
+        enabled: true
+        files: [scheduler]
+        variables:
+          LLMISVC_NAMESPACE: "{namespace}"
+          LLMISVC_NAME: "{llmisvc_name}"
       resource_load-generator:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "{namespace}"
-          POD_NAME: ".*"
+          POD_NAME: "guidellm.*"
+          CONTAINER: "guidellm-main"
+      resource_sim:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
+        variables:
+          NAMESPACE: "{namespace}"
+          POD_NAME: "{llmisvc_name}-.*"
+          CONTAINER: "main"
       resource_ingress:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: ".*"
           POD_NAME_EXCLUDE: "payload-.*"
       resource_payload:
         enabled: true
-        files: [resource_cpu, resource_memory, resource_network, resource_limits, workload]
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
         variables:
           NAMESPACE: "openshift-ingress"
           POD_NAME: "payload-.*"
+      resource_kuadrant:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, resource_limits, resource_open_fds, workload]
+        variables:
+          NAMESPACE: "kuadrant-system"
+          POD_NAME: ".*"
+      worker_node:
+        enabled: true
+        files: [worker_node]
+      istio_gateway:
+        enabled: true
+        files: [istio_gateway]
+        variables:
+          GATEWAY_NAME: "{gateway_name}"
+      auth_path:
+        enabled: true
+        files: [maas_auth_path]
+      control_plane:
+        enabled: true
+        files: [control_plane]

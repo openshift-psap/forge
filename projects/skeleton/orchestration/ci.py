@@ -17,8 +17,8 @@ import click
 import prepare_skeleton
 import test_skeleton
 
-from projects.core.agentic.config_review import trigger_config_review_for_ci
-from projects.core.agentic.on_failure import agent_review_on_failure
+from projects.core.agentic_review.config_review import trigger_config_review_for_ci
+from projects.core.agentic_review.failure_review import agent_review_on_failure
 from projects.core.ci_entrypoint.fournos_resolve import create_fournos_resolve_entrypoint
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env, run, vault
@@ -28,15 +28,20 @@ from projects.core.library.export import (
     caliper_export_list_optional_vaults,
     caliper_export_list_vaults,
 )
-from projects.core.library.replot import caliper_replot_entrypoint
+from projects.core.orchestration.replot import caliper_replot_entrypoint
 
 logger = logging.getLogger(__name__)
 
 
-def init():
+def init(presets=None):
     env.init()
     run.init()
     run.register_signal_callback(_signal_callback)
+
+    # Set presets configuration if provided
+    if presets:
+        config.write_variables_override(presets=presets)
+
     config.init(pathlib.Path(__file__).parent)
 
 
@@ -62,12 +67,19 @@ def _signal_callback(sig, frame, log_file):
 
 
 @click.group(cls=ci_lib.HelpfulGroup)
+@click.option("--presets", multiple=True, help="Set preset configuration before starting")
 @click.pass_context
 @ci_lib.safe_ci_function
-def main(ctx):
+def main(ctx, presets):
     """Skeleton example project CI operations for FORGE."""
     ctx.ensure_object(types.SimpleNamespace)
-    init()
+
+    presets_list = [p for preset in presets for p in preset.split(",")]
+
+    if presets_list:
+        logger.info(f"Setting preset configuration from CLI: {presets_list}")
+
+    init(presets_list)
 
     if ctx.invoked_subcommand == "resolve-fournos-config":
         logger.info("No need to initialize the vaults for the resolve step")
@@ -88,6 +100,7 @@ def prepare(ctx):
 @main.command()
 @click.pass_context
 @ci_lib.safe_ci_entrypoint
+@agent_review_on_failure
 def test(ctx):
     """Test phase - Execute the main testing logic."""
 

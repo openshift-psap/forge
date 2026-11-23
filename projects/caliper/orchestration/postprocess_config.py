@@ -4,7 +4,7 @@ Pydantic models for Caliper parse / visualize / KPI steps driven from ``caliper.
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -51,6 +51,13 @@ class CaliperOrchestrationVisualizeSection(BaseModel):
     )
     include_labels: list[str] = Field(default_factory=list)
     exclude_labels: list[str] = Field(default_factory=list)
+    plugin_settings: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Opaque key-value settings forwarded to the plugin's visualize() method. "
+            "Caliper does not interpret these; accepted keys are plugin-specific."
+        ),
+    )
 
     @field_validator("reports", mode="before")
     @classmethod
@@ -120,6 +127,13 @@ class CaliperOrchestrationAnalyzeSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    skip_kpi_analysis: bool = Field(
+        default=False,
+        description=(
+            "Skip the KPI analysis (analyse_kpis) step, recorded as 'skipped'. "
+            "The step is also skipped automatically when artifacts_to_kpis failed."
+        ),
+    )
     current_kpis: str | None = Field(
         default="kpis.json",
         description="Current KPI file path (relative to postprocess output dir unless absolute).",

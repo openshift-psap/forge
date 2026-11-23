@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -135,10 +136,12 @@ class TestLoadProfileMetadata:
             if "param_defaults" in entry:
                 continue
             query = entry["query"]
-            assert "{" not in query or "{{" in query, (
-                f"{yaml_file.name}: {entry['metricName']} uses old {{param}} syntax "
-                f"instead of Go template {{{{.PARAM}}}}"
-            )
+            bare_braces = re.findall(r"(?<!\{)\{(?!\{)([^}]*)\}", query)
+            for content in bare_braces:
+                assert re.search(r"[=~]", content), (
+                    f"{yaml_file.name}: {entry['metricName']} uses old {{param}} syntax "
+                    f"instead of Go template {{{{.PARAM}}}}"
+                )
 
 
 class TestResolveParams:

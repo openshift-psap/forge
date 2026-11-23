@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from yaml import safe_dump
 
 from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.orchestration.caliper_invocation import (
@@ -66,6 +67,31 @@ logger = logging.getLogger(__name__)
 
 # Postprocess status filename constant
 POSTPROCESS_STATUS_FILENAME = "postprocess_status.yaml"
+
+# Artifact file holding the /var PR directive that reproduces the visualization
+# plugin settings, and the config key it overrides.
+VISUALIZATION_VAR_FILENAME = "caliper_visualization_var.txt"
+VISUALIZATION_PLUGIN_SETTINGS_KEY = "caliper.postprocess.visualize.plugin_settings"
+
+
+def _write_visualization_var_directive(plugin_settings: dict[str, Any] | None) -> None:
+    """Write the ``/var`` PR directive that reproduces the visualization plugin settings.
+
+    The directive is saved to the current artifact directory right before the
+    caliper visualization runs, so a later re-run or replot can be reconfigured
+    by copy-pasting it into a PR comment. Single-line flow-style YAML is used
+    because the /var directive parser processes PR comments line by line.
+    """
+    if not plugin_settings:
+        return
+
+    var_value = safe_dump(dict(plugin_settings), default_flow_style=True).strip()
+    var_line = f"/var {VISUALIZATION_PLUGIN_SETTINGS_KEY}: {var_value}\n"
+
+    var_path = Path(env.ARTIFACT_DIR) / VISUALIZATION_VAR_FILENAME
+    var_path.parent.mkdir(parents=True, exist_ok=True)
+    var_path.write_text(var_line, encoding="utf-8")
+    logger.info("Saved caliper visualization /var directive to %s", var_path)
 
 
 def _make_path_relative_to_base(file_path: str | Path, base_dir: Path) -> str:
@@ -895,6 +921,8 @@ class CaliperPostprocessOrchestrator:
                 use_cache=not self.config.parse.no_cache,
             )
 
+            _write_visualization_var_directive(self.config.visualize.plugin_settings)
+
             # Execute command using generic function
             result, status_data, log_file = _execute_caliper_command(
                 command=command,
@@ -904,29 +932,25 @@ class CaliperPostprocessOrchestrator:
             )
 
             if result.returncode == 0 and status_data and status_data.get("success", False):
-                # Get output files and paths from status
                 output_files = status_data.get("output_files", [])
 
-                # Convert absolute paths to relative paths from output_dir if needed
-                relative_paths = []
-                for path in output_files:
+                # Convert absolute paths in ReportFile dicts to relative paths
+                relative_report_files = []
+                for rf in output_files:
+                    rf_copy = dict(rf)
                     try:
-                        path_obj = Path(path)
+                        path_obj = Path(rf_copy["path"])
                         if path_obj.is_absolute():
-                            relative_path = path_obj.relative_to(self.output_dir)
-                            relative_paths.append(str(relative_path))
-                        else:
-                            relative_paths.append(str(path))
-                    except ValueError:
-                        # If path is not under output_dir, keep as-is
-                        relative_paths.append(str(path))
+                            rf_copy["path"] = str(path_obj.relative_to(output_dir))
+                    except (ValueError, KeyError):
+                        pass
+                    relative_report_files.append(rf_copy)
 
                 # Calculate relative output_dir path from base_directory
                 try:
-                    relative_output_dir = str(self.output_dir.relative_to(env.ARTIFACT_DIR))
+                    relative_output_dir = output_dir.relative_to(env.ARTIFACT_DIR)
                 except ValueError:
-                    # If output_dir is not under ARTIFACT_DIR, use absolute path
-                    relative_output_dir = str(self.output_dir)
+                    relative_output_dir = output_dir
 
                 self.visualize_failed = False
                 self._add_step(
@@ -935,9 +959,11 @@ class CaliperPostprocessOrchestrator:
                         status=StepStatus.SUCCESS,
                         completed_at=time.time(),
                         plugin_module=status_data.get("plugin_module", "unknown"),
-                        output_files=relative_paths,
-                        output_dir=relative_output_dir,
-                        generated_files=status_data.get("generated_files", len(relative_paths)),
+                        output_files=relative_report_files,
+                        output_dir=str(relative_output_dir),
+                        generated_files=status_data.get(
+                            "generated_files", len(relative_report_files)
+                        ),
                     ),
                     log_file,
                 )
@@ -1269,6 +1295,31 @@ class CaliperPostprocessOrchestrator:
                     status=StepStatus.DISABLED,
                     completed_at=time.time(),
                     reason="analyze disabled",
+                    html_file=None,
+                ),
+            )
+            return
+
+        if self.config.analyze.skip_kpi_analysis:
+            self._add_step(
+                "analyse_kpis",
+                KpiAnalysisStepResult(
+                    status=StepStatus.SKIPPED,
+                    completed_at=time.time(),
+                    reason="analyze.skip_kpi_analysis",
+                    html_file=None,
+                ),
+            )
+            return
+
+        if self.artifacts_to_kpis_failed:
+            logger.info("Skipping 'analyse_kpis' step: artifacts_to_kpis failed")
+            self._add_step(
+                "analyse_kpis",
+                KpiAnalysisStepResult(
+                    status=StepStatus.SKIPPED,
+                    completed_at=time.time(),
+                    reason="skipped: artifacts_to_kpis failed",
                     html_file=None,
                 ),
             )

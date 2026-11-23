@@ -15,6 +15,7 @@ from projects.core.library import env
 from projects.llm_d.orchestration import ci as llmd_ci
 from projects.llm_d.orchestration import runtime_config, test_phase
 from projects.llm_d.orchestration.render_inference_service import (
+    _apply_workload_node_selector,
     render_inference_service_from_parts,
 )
 from projects.rhoai.library import deploy as rhoai_deploy
@@ -67,6 +68,80 @@ def test_release_deployment_profiles_have_expected_shape() -> None:
     assert distributed["scheduler"] == {}
 
 
+@pytest.mark.parametrize(
+    ("preset", "model_name", "replicas", "tensor_parallelism", "peak_prefill_throughput"),
+    [
+        ("cpt-release-testing-gpt-oss-120b", "openai/gpt-oss-120b", 4, 2, 55928),
+        (
+            "cpt-release-testing-gemma-4-26b-fp8",
+            "RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic",
+            8,
+            1,
+            61005,
+        ),
+    ],
+)
+def test_default_3_6ga_uses_model_topology(
+    preset: str,
+    model_name: str,
+    replicas: int,
+    tensor_parallelism: int,
+    peak_prefill_throughput: int,
+) -> None:
+    _init_project_config()
+    core_config.project.apply_preset(preset)
+    assert (
+        core_config.project.get_config("runtime.router.peak_prefill_throughput", print=False)
+        == peak_prefill_throughput
+    )
+    if preset == "cpt-release-testing-gemma-4-26b-fp8":
+        assert runtime_config.get_deployment_profile_name() == "default-3.6GA"
+    core_config.project.set_config("runtime.deployment_profile", "default-3.6GA")
+    core_config.project.set_config("model_cache.enabled", False)
+
+    profile = runtime_config.get_deployment_profile()
+    assert profile["replicas"] == replicas
+    assert profile["tensor_parallelism"] == tensor_parallelism
+
+    manifest = render_inference_service_from_parts(
+        config_dir=PROJECT_ORCHESTRATION_DIR,
+        namespace="forge-llm-d",
+        inference_service=runtime_config.get_platform_config()["inference_service"],
+        model_name=runtime_config.get_model_name(),
+        model_slug=runtime_config.get_model_slug(),
+        deployment_profile=profile,
+        model_cache=runtime_config.get_model_cache_config(),
+    )
+    assert manifest["spec"]["model"]["name"] == model_name
+    assert manifest["spec"]["replicas"] == replicas
+    assert manifest["spec"]["parallelism"]["tensor"] == tensor_parallelism
+    gpu_requests = manifest["spec"]["template"]["containers"][0]["resources"]["requests"]
+    assert gpu_requests["nvidia.com/gpu"] == str(tensor_parallelism)
+
+    vllm_args = next(
+        item["value"]
+        for item in manifest["spec"]["template"]["containers"][0]["env"]
+        if item["name"] == "VLLM_ADDITIONAL_ARGS"
+    )
+    gemma_args = (
+        "--kv-cache-dtype=fp8",
+        "--reasoning-parser=gemma4",
+        "--tool-call-parser=gemma4",
+        "--enable-auto-tool-choice",
+    )
+    for arg in gemma_args:
+        assert (arg in vllm_args) == (preset == "cpt-release-testing-gemma-4-26b-fp8")
+
+    scheduler_args = manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["args"]
+    scheduler_config = yaml.safe_load(scheduler_args[-1])
+    prefix_affinity = next(
+        plugin
+        for plugin in scheduler_config["plugins"]
+        if plugin["type"] == "prefix-cache-affinity-filter"
+    )
+    assert prefix_affinity["parameters"]["peakPrefillThroughput"] == peak_prefill_throughput
+
+
 def test_active_profile_inference_service_name_matches_rendered_name() -> None:
     _init_project_config()
     core_config.project.set_config("runtime.deployment_profile", "precise-prefix-cache")
@@ -105,9 +180,9 @@ def test_benchmark_workloads_are_available() -> None:
         assert benchmark["timeout_seconds"] == 3600
     assert multi_turn["timeout_seconds"] == 7200
 
-    assert concurrent["benchconf"] == "llm-d/concurrent-1k-1k"
-    assert heavy["benchconf"] == "llm-d/concurrent-heavy-heterogeneous"
-    assert multi_turn["benchconf"] == "llm-d/multi-turn"
+    assert concurrent["benchconf"] == "psap-inference/concurrent-1k-1k-equal"
+    assert heavy["benchconf"] == "psap-inference/concurrent-8k-800-norm"
+    assert multi_turn["benchconf"] == "psap-inference/concurrent-128-128-multiturn"
 
 
 def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overrides() -> None:
@@ -571,7 +646,7 @@ def test_prepare_rhoai_pull_secret_merges_dockerconfigjson_registry_auths(
 
     rc_pull_secret_path = tmp_path / "rhoai_rc.secret"
     rc_pull_secret_path.write_text(
-        "rhoai+rhoai_external_readonly_bot:token-c",
+        "test-user:test-token",
         encoding="utf-8",
     )
 
@@ -614,24 +689,6 @@ def test_prepare_rhoai_pull_secret_merges_dockerconfigjson_registry_auths(
             payload_path = Path(from_file.rsplit("=", 1)[1])
             merged_payload.update(json.loads(payload_path.read_text(encoding="utf-8")))
             return type("Result", (), {"stdout": "", "returncode": 0})()
-        if args[:2] == ("registry", "login"):
-            registry = next(
-                arg.split("=", 1)[1] for arg in args if str(arg).startswith("--registry=")
-            )
-            auth_basic = next(
-                arg.split("=", 1)[1] for arg in args if str(arg).startswith("--auth-basic=")
-            )
-            temp_path = Path(
-                next(
-                    arg
-                    for arg in args
-                    if not str(arg).startswith("--") and arg != "registry" and arg != "login"
-                )
-            )
-            current = json.loads(temp_path.read_text(encoding="utf-8"))
-            current.setdefault("auths", {})[registry] = {"auth": auth_basic}
-            temp_path.write_text(json.dumps(current, indent=2, sort_keys=True), encoding="utf-8")
-            return type("Result", (), {"stdout": "", "returncode": 0})()
         raise AssertionError(f"Unexpected oc call: {args}")
 
     monkeypatch.setattr(rhoai_deploy, "oc", _fake_oc)
@@ -657,10 +714,9 @@ def test_prepare_rhoai_pull_secret_merges_dockerconfigjson_registry_auths(
         )
     )
 
-    assert (
-        merged_payload["auths"]["quay.io/rhoai"]["auth"]
-        == "rhoai+rhoai_external_readonly_bot:token-c"
-    )
+    assert merged_payload["auths"]["quay.io/rhoai"]["auth"] == base64.b64encode(
+        b"test-user:test-token"
+    ).decode("utf-8")
     assert merged_payload["auths"]["registry.stage.redhat.io/rhaii"]["auth"] == "token-a"
     assert (
         merged_payload["auths"]["registry.stage.redhat.io/rhaii-early-access"]["auth"] == "token-b"
@@ -952,3 +1008,101 @@ def test_get_model_uri_detects_scheme() -> None:
     # HF URI → passed through
     core_config.project.set_config("runtime.model_name", "hf://Qwen/Qwen3-0.6B")
     assert runtime_config.get_model_uri() == "hf://Qwen/Qwen3-0.6B"
+
+
+def _render_with_profile(profile: str) -> dict:
+    core_config.project.set_config("runtime.deployment_profile", profile)
+    return render_inference_service_from_parts(
+        config_dir=str(PROJECT_ORCHESTRATION_DIR),
+        namespace="forge-llm-d",
+        inference_service=runtime_config.get_platform_config()["inference_service"],
+        model_name=runtime_config.get_model_name(),
+        model_slug=runtime_config.get_model_slug(),
+        deployment_profile=runtime_config.get_deployment_profile(),
+        model_cache=runtime_config.get_model_cache_config(),
+    )
+
+
+def test_render_applies_workload_node_selector() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config(
+        "deployments.defaults.node_selector", {"kubernetes.io/hostname": "gpu-node-1"}
+    )
+
+    manifest = _render_with_profile("simple-tp1-x1")
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+    # simple deployments have no router at all
+    assert "router" not in manifest["spec"]
+
+
+def test_render_omits_workload_node_selector_by_default() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "Qwen/Qwen3-0.6B")
+
+    manifest = _render_with_profile("simple-tp1-x1")
+
+    assert "nodeSelector" not in manifest["spec"]["template"]
+
+
+def test_render_applies_workload_node_selector_to_prefill_pods() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config(
+        "deployments.defaults.node_selector", {"kubernetes.io/hostname": "gpu-node-1"}
+    )
+
+    manifest = _render_with_profile("pd-d.x1-p.tp1-d.tp1-p.x1")
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+    assert manifest["spec"]["prefill"]["template"]["nodeSelector"] == {
+        "kubernetes.io/hostname": "gpu-node-1"
+    }
+
+
+def test_render_workload_node_selector_leaves_scheduler_untouched() -> None:
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config(
+        "deployments.defaults.node_selector", {"kubernetes.io/hostname": "gpu-node-1"}
+    )
+
+    manifest = _render_with_profile("intelligentrouting-tp1-x1")
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"kubernetes.io/hostname": "gpu-node-1"}
+    assert manifest["spec"]["router"]["scheduler"]["template"]["nodeSelector"] == {
+        "nvidia.com/gpu.present": "true"
+    }
+
+
+def test_workload_node_selector_merges_with_existing_template_selector() -> None:
+    manifest = {
+        "spec": {
+            "template": {"nodeSelector": {"zone": "a", "kubernetes.io/hostname": "old"}},
+            "prefill": {"template": {"nodeSelector": {"zone": "b"}}},
+        }
+    }
+
+    _apply_workload_node_selector(manifest, {"node_selector": {"kubernetes.io/hostname": "new"}})
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {
+        "zone": "a",
+        "kubernetes.io/hostname": "new",
+    }
+    assert manifest["spec"]["prefill"]["template"]["nodeSelector"] == {
+        "zone": "b",
+        "kubernetes.io/hostname": "new",
+    }
+
+
+def test_workload_node_selector_handles_null_template_selector() -> None:
+    manifest = {"spec": {"template": {"nodeSelector": None}}}
+
+    _apply_workload_node_selector(manifest, {"node_selector": {"zone": "a"}})
+
+    assert manifest["spec"]["template"]["nodeSelector"] == {"zone": "a"}

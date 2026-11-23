@@ -1,0 +1,7 @@
+# this is to configure the agentic _REVIEW_ module of Forge
+enabled: false
+model_key: default
+failure_review:
+  enabled: true
+config_review:
+  enabled: true

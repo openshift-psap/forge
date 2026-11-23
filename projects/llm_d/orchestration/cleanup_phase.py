@@ -7,6 +7,7 @@ from projects.cluster.toolbox.cleanup_operators import (
 )
 from projects.core.dsl.utils.k8s import oc, oc_resource_exists
 from projects.llm_d.toolbox.cleanup_test_resources import main as cleanup_test_resources_command
+from projects.rhoai.library.deploy import cleanup_rhoai_custom_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +60,34 @@ def cleanup_operators(*, dry_run: bool = False) -> None:
 
     if not operators_to_delete:
         logger.info("No operators to clean up")
-        return
+    else:
+        logger.info(f"Found {len(operators_to_delete)} operators to clean up")
 
-    logger.info(f"Found {len(operators_to_delete)} operators to clean up")
-
-    cleanup_operators_command.run(
-        operators=operators_to_delete,
-        dry_run=dry_run,
-    )
+        cleanup_operators_command.run(
+            operators=operators_to_delete,
+            dry_run=dry_run,
+        )
 
     _cleanup_stale_crds(platform, dry_run=dry_run)
+    _cleanup_rhoai_custom_catalog(platform, dry_run=dry_run)
+
+
+def _cleanup_rhoai_custom_catalog(platform: dict, *, dry_run: bool = False) -> None:
+    """Delete the forge-managed RHOAI custom CatalogSource.
+
+    Runs even when the custom catalog is disabled in this run, so that
+    leftovers from a previous run are removed.
+    """
+    rhoai = platform.get("rhoai")
+    if not rhoai:
+        logger.info("No RHOAI configuration, skipping custom catalog cleanup")
+        return
+
+    if dry_run:
+        logger.info("[DRY RUN] Would delete the forge-managed RHOAI custom CatalogSource")
+        return
+
+    cleanup_rhoai_custom_catalog(rhoai=rhoai)
 
 
 def _identify_operators_to_delete(platform: dict, cleanup_config: dict) -> list[dict]:

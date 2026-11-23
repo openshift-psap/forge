@@ -22,12 +22,15 @@ from projects.core.dsl import (  # noqa: F401
 )
 from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
+    is_valid_k8s_name,
     oc,
     oc_apply,
     oc_cp_from_pod,
+    oc_cp_to_pod,
     oc_get_json,
 )
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
+    SKIP_FROM_POSTPROCESSING_MARKER,
     expand_guidellm_runs,
     render_guidellm_copy_pod_from_parts,
     render_guidellm_job_from_parts,
@@ -38,50 +41,40 @@ from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
 logger = logging.getLogger(__name__)
 WAIT_POLL_INTERVAL_SECONDS = 10
 JOB_COMPLETION_GRACE_SECONDS = 60
+# Extra padding on top of the Job activeDeadlineSeconds, so that the Job
+# deadline fires strictly AFTER our own wait deadline. When a benchmark hangs,
+# the wait task raises TimeoutError while the pods still exist, letting the
+# @always capture_guidellm_state_task collect pod logs before
+# cleanup_guidellm_resources deletes the job. Without this margin, the job
+# controller would hit activeDeadlineSeconds first and delete the pods itself,
+# leaving nothing to capture.
+JOB_DEADLINE_MARGIN_SECONDS = 300
 DEFAULT_GUIDELLM_IMAGE = "ghcr.io/vllm-project/guidellm:v0.8.1"
 
-# Script template for trimming benchmark JSON on remote pod (removes 'requests' field)
-# Use REMOTE_TRIM_SCRIPT.format(file_path=...) to generate the script
-# Removes bulky text fields (request_args, output, reasoning_output) from request
-# entries while preserving per-request metrics like token counts, latencies, etc.
-REMOTE_TRIM_SCRIPT = """
-import json
-import os
 
-BULK_FIELDS = {{"request_args", "output", "reasoning_output"}}
+def job_active_deadline_seconds(timeout: int) -> int:
+    """Compute the Job activeDeadlineSeconds from the benchmark timeout.
 
-def trim_entry(obj):
-    if isinstance(obj, dict):
-        return {{k: trim_entry(v) for k, v in obj.items() if k not in BULK_FIELDS}}
-    if isinstance(obj, list):
-        return [trim_entry(i) for i in obj]
-    return obj
+    The Job deadline must be strictly later than ctx.wait_deadline
+    (= timeout + JOB_COMPLETION_GRACE_SECONDS), so that on a hung benchmark
+    the wait task fails first and the pod state can still be captured.
+    """
+    return timeout + JOB_COMPLETION_GRACE_SECONDS + JOB_DEADLINE_MARGIN_SECONDS
 
-def trim(obj):
-    if isinstance(obj, dict):
-        return {{k: trim_entry(v) if k == "requests" else trim(v) for k, v in obj.items()}}
-    if isinstance(obj, list):
-        return [trim(i) for i in obj]
-    return obj
 
-tmp_path = '{file_path}.trimtmp'
-with open('{file_path}') as f:
-    data = json.load(f)
-try:
-    with open(tmp_path, 'w') as f:
-        json.dump(trim(data), f, separators=(',', ':'))
-    os.replace(tmp_path, '{file_path}')
-except Exception:
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-    raise
-""".strip()
+# Script copied into the pods to trim bulky text fields from the benchmark
+# JSON files in place (removes request_args, output, reasoning_output from
+# request entries while preserving per-request metrics like token counts,
+# latencies, etc.).
+TRIM_SCRIPT_NAME = "trim_benchmark.py"
+TRIM_SCRIPT_SRC = Path(__file__).resolve().parent / "scripts" / TRIM_SCRIPT_NAME
+POD_TRIM_SCRIPT_PATH = f"/tmp/{TRIM_SCRIPT_NAME}"
 
 
 _REQUEST_BULK_FIELDS = {"request_args", "output", "reasoning_output"}
 
 
-def trim_benchmark_json(obj):
+def trim_benchmark_json(obj, drop_request_details: bool = False):
     """Trim bulky text from request entries while keeping per-turn metrics.
 
     Strips ``request_args`` (full message history), ``output``, and
@@ -89,7 +82,14 @@ def trim_benchmark_json(obj):
     ``info`` (conversation_id, turn_index, timings), token counts, and
     computed metrics (TTFT, ITL, latency, tokens/sec) are preserved so
     that per-turn analysis is possible from the trimmed file.
+
+    When ``drop_request_details`` is set, the per-request records are
+    removed entirely from each benchmark entry (saving space); aggregate
+    benchmark data and the non-per-request ``benchmarker`` data are kept.
     """
+    if drop_request_details:
+        obj = _drop_request_details(obj)
+
     if isinstance(obj, dict):
         return {
             k: _trim_request_entry(v) if k == "requests" else trim_benchmark_json(v)
@@ -99,6 +99,39 @@ def trim_benchmark_json(obj):
         return [trim_benchmark_json(item) for item in obj]
     else:
         return obj
+
+
+def _drop_request_details(obj):
+    """Remove the per-request records from each benchmark entry."""
+    if isinstance(obj, dict):
+        return {
+            k: [_strip_requests(item) for item in v]
+            if k == "benchmarks"
+            else _drop_request_details(v)
+            for k, v in obj.items()
+        }
+    elif isinstance(obj, list):
+        return [_drop_request_details(item) for item in obj]
+    else:
+        return obj
+
+
+def _strip_requests(benchmark):
+    """Remove the ``requests`` key from a single benchmark entry."""
+    if isinstance(benchmark, dict):
+        return {k: v for k, v in benchmark.items() if k != "requests"}
+    return benchmark
+
+
+def trim_command(
+    trim_script_path: str, remote_path: str, *, drop_request_details: bool
+) -> list[str]:
+    """Build the in-pod trim command for a benchmark result file."""
+    command = ["python3", trim_script_path]
+    if drop_request_details:
+        command.append("--drop-request-details")
+    command.append(remote_path)
+    return command
 
 
 def _trim_request_entry(obj):
@@ -126,10 +159,12 @@ def run(
     hf_token_secret: str = "",
     fs_group: int | None = None,
     keep_full_benchmark_file: bool = False,
+    drop_request_details: bool = False,
     use_pvc: bool = False,
     api_key_file_path: str | None = None,
     replica_count: int = 1,
     validate_backend: bool = True,
+    skip_from_postprocessing: bool = False,
 ) -> int:
     """
     Run the GuideLLM benchmark against a resolved endpoint.
@@ -139,7 +174,10 @@ def run(
         name: Name of the benchmark job
         namespace: Namespace to run the benchmark job in (empty string auto-detects current namespace)
         image: Full container image reference for the benchmark (None uses the toolbox default)
-        timeout: Active deadline for the Job and timeout in seconds to wait for completion
+        timeout: Timeout in seconds to wait for the benchmark to complete. The Job's
+            activeDeadlineSeconds is set to this value plus a margin, so that on a hung
+            benchmark the wait task fails first and pod logs can still be captured before
+            the job is cleaned up.
         pvc_size: Size of the PersistentVolumeClaim for storing results (only used in PVC mode)
         guidellm_args: List of additional guidellm arguments (e.g., ["--profile=kind=concurrent,streams=10"])
         config_path: Path to a GuideLLM config YAML file on the local filesystem.
@@ -148,6 +186,11 @@ def run(
         hf_token_secret: Name of the K8s secret containing HF_TOKEN. If empty, HF_TOKEN is not injected.
         fs_group: If set, adds securityContext.fsGroup to the GuideLLM job pod.
         keep_full_benchmark_file: Whether to keep the full untrimmed benchmark JSON files alongside trimmed ones (default: False)
+        drop_request_details: Remove the per-request records from the extracted benchmark
+            JSON files entirely, to save space. Aggregate metrics are preserved (performance
+            analysis plots keep working), but per-request plots (scatter, error breakdown)
+            and per-turn analysis lose their data. Mutually exclusive with
+            keep_full_benchmark_file. (default: False)
         use_pvc: Use PVC with copy pod instead of shared emptyDir volume with sidecar (default: False)
         api_key_file_path: Path to a local file containing the API key for the
             backend. When set, a K8s Secret is created, mounted into the pod, and
@@ -157,6 +200,9 @@ def run(
             own output file using ``JOB_COMPLETION_INDEX``.
         validate_backend: Whether GuideLLM should validate the backend before
             benchmarking. Set to False for endpoints that don't support /v1/models.
+        skip_from_postprocessing: Mark the results so that GuideLLM post-processing
+            ignores them (e.g. a burn-in run that only primes the server). The
+            results are still kept as artifacts.
     """
 
     if timeout <= 0:
@@ -174,6 +220,12 @@ def run(
 def validate_parameters(args, ctx):
     """Validate and normalize parameters"""
 
+    if args.keep_full_benchmark_file and args.drop_request_details:
+        raise ValueError(
+            "keep_full_benchmark_file and drop_request_details are mutually exclusive: "
+            "keeping the full benchmark file includes the request details"
+        )
+
     # Ensure guidellm_args is a list
     ctx.guidellm_args = args.guidellm_args or []
     ctx.guidellm_runs = expand_guidellm_runs(ctx.guidellm_args)
@@ -190,7 +242,19 @@ def validate_parameters(args, ctx):
 
     benchmark_name = args.name
     if args.artifact_dirname_suffix:
-        benchmark_name = f"{benchmark_name}-{args.artifact_dirname_suffix.replace('_', '-')}"
+        benchmark_name = (
+            f"{benchmark_name}-{args.artifact_dirname_suffix.replace('_', '-').lower()}"
+        )
+
+    # The name is used for the Job, Secret, PVC and copy pod objects, and as the
+    # job-name label/selector value: it must be a valid K8s object name.
+    if not is_valid_k8s_name(benchmark_name):
+        raise ValueError(
+            f"Benchmark name {benchmark_name!r} is not a valid Kubernetes object name: "
+            "lowercase alphanumerics and '-', starting and ending with an alphanumeric, "
+            "max 63 characters"
+        )
+
     ctx.benchmark_name = benchmark_name
     ctx.image = args.image
 
@@ -339,7 +403,7 @@ def create_guidellm_resources_task(args, ctx):
                 image=ctx.image,
                 endpoint_url=args.endpoint_url,
                 guidellm_args=ctx.guidellm_args,
-                timeout_seconds=args.timeout,
+                timeout_seconds=job_active_deadline_seconds(args.timeout),
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
@@ -390,7 +454,7 @@ def create_guidellm_resources_task(args, ctx):
                 image=ctx.image,
                 endpoint_url=args.endpoint_url,
                 guidellm_args=ctx.guidellm_args,
-                timeout_seconds=args.timeout,
+                timeout_seconds=job_active_deadline_seconds(args.timeout),
                 hf_token_secret=args.hf_token_secret,
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
@@ -756,10 +820,56 @@ def extract_results(args, ctx):
     results_dir = args.artifact_dir / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.skip_from_postprocessing:
+        write_text(
+            results_dir / SKIP_FROM_POSTPROCESSING_MARKER,
+            "These results are excluded from GuideLLM post-processing.\n",
+        )
+
     if args.use_pvc:
         return extract_results_from_copy_pod(args, ctx, results_dir)
     else:
         return extract_results_from_sidecar(args, ctx, results_dir)
+
+
+def _stage_trim_script(artifact_dir: Path) -> Path:
+    """Copy the trim script under artifact_dir/scripts, for traceability of what ran on the pods."""
+    scripts_dir = artifact_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    staged_path = scripts_dir / TRIM_SCRIPT_NAME
+    shutil.copyfile(TRIM_SCRIPT_SRC, staged_path)
+    return staged_path
+
+
+def _push_trim_script(args, ctx, pod: str, container: str | None = None) -> str | None:
+    """Stage the trim script in the artifact dir and copy it to a pod.
+
+    Returns the in-pod script path, or None when the copy is not needed or
+    failed — the caller then skips the remote trim and falls back to trimming
+    locally after the download.
+    """
+    if args.keep_full_benchmark_file:
+        return None
+
+    staged_path = _stage_trim_script(args.artifact_dir)
+    result = oc_cp_to_pod(
+        staged_path,
+        POD_TRIM_SCRIPT_PATH,
+        namespace=ctx.target_namespace,
+        pod=pod,
+        container=container,
+        check=False,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "Failed to copy %s to pod %s, will trim locally: %s",
+            TRIM_SCRIPT_NAME,
+            pod,
+            result.stderr,
+        )
+        return None
+
+    return POD_TRIM_SCRIPT_PATH
 
 
 def _extract_from_copy_pod_file(
@@ -768,6 +878,7 @@ def _extract_from_copy_pod_file(
     results_dir: Path,
     run,
     replica_suffix: str,
+    trim_script_path: str | None,
 ) -> dict[str, str | None]:
     """Extract a single benchmark result file from the copy pod."""
     copy_pod = f"{ctx.benchmark_name}-copy"
@@ -783,7 +894,7 @@ def _extract_from_copy_pod_file(
     temp_gz_path = local_path.with_suffix(".json.gz")
     remote_gz_path = f"{remote_path}.gz"
 
-    if not args.keep_full_benchmark_file:
+    if trim_script_path:
         logger.info("Trimming benchmark file on copy pod for %s%s...", run.label, replica_suffix)
         trim_result = oc(
             "exec",
@@ -791,9 +902,9 @@ def _extract_from_copy_pod_file(
             ctx.target_namespace,
             copy_pod,
             "--",
-            "python3",
-            "-c",
-            REMOTE_TRIM_SCRIPT.format(file_path=remote_path),
+            *trim_command(
+                trim_script_path, remote_path, drop_request_details=args.drop_request_details
+            ),
             check=False,
             timeout_seconds=1800,
         )
@@ -847,7 +958,7 @@ def _extract_from_copy_pod_file(
     logger.info("Trimming the benchmark.json file for %s%s...", run.label, replica_suffix)
     try:
         raw_data = json.loads(json_content)
-        cleaned_data = trim_benchmark_json(raw_data)
+        cleaned_data = trim_benchmark_json(raw_data, drop_request_details=args.drop_request_details)
         with open(local_path, "w") as f:
             json.dump(cleaned_data, f, separators=(",", ":"))
     except json.JSONDecodeError:
@@ -876,6 +987,8 @@ def extract_results_from_copy_pod(args, ctx, results_dir: Path):
     """Extract results from copy pod (PVC mode)"""
     extracted_files: list[dict[str, str | None]] = []
 
+    trim_script_path = _push_trim_script(args, ctx, f"{ctx.benchmark_name}-copy")
+
     if args.replica_count > 1:
         replica_suffixes = [f"-{i}" for i in range(args.replica_count)]
     else:
@@ -884,7 +997,9 @@ def extract_results_from_copy_pod(args, ctx, results_dir: Path):
     for run in ctx.guidellm_runs:
         for replica_suffix in replica_suffixes:
             extracted_files.append(
-                _extract_from_copy_pod_file(args, ctx, results_dir, run, replica_suffix)
+                _extract_from_copy_pod_file(
+                    args, ctx, results_dir, run, replica_suffix, trim_script_path
+                )
             )
 
     write_json(
@@ -924,6 +1039,8 @@ def _extract_from_sidecar_pod(
     """Extract benchmark results from a single pod's sidecar container."""
     extracted_files: list[dict[str, str | None]] = []
 
+    trim_script_path = _push_trim_script(args, ctx, pod_name, container="guidellm-sidecar")
+
     for run in ctx.guidellm_runs:
         remote_path = f"/results/benchmarks-{run.label}{replica_suffix}.json"
         local_path = results_dir / f"benchmarks-{run.label}{replica_suffix}.json"
@@ -938,7 +1055,7 @@ def _extract_from_sidecar_pod(
         temp_gz_path = local_path.with_suffix(".json.gz")
         remote_gz_path = f"{remote_path}.gz"
 
-        if not args.keep_full_benchmark_file:
+        if trim_script_path:
             logger.info("Trimming benchmark file on sidecar for %s%s...", run.label, replica_suffix)
             trim_result = oc(
                 "exec",
@@ -948,9 +1065,9 @@ def _extract_from_sidecar_pod(
                 "-c",
                 "guidellm-sidecar",
                 "--",
-                "python3",
-                "-c",
-                REMOTE_TRIM_SCRIPT.format(file_path=remote_path),
+                *trim_command(
+                    trim_script_path, remote_path, drop_request_details=args.drop_request_details
+                ),
                 check=False,
                 timeout_seconds=1800,
             )
@@ -1007,7 +1124,9 @@ def _extract_from_sidecar_pod(
         logger.info("Trimming the benchmark.json file for %s%s...", run.label, replica_suffix)
         try:
             raw_data = json.loads(json_content)
-            cleaned_data = trim_benchmark_json(raw_data)
+            cleaned_data = trim_benchmark_json(
+                raw_data, drop_request_details=args.drop_request_details
+            )
             with open(local_path, "w") as f:
                 json.dump(cleaned_data, f, separators=(",", ":"))
         except json.JSONDecodeError:
@@ -1084,94 +1203,6 @@ def extract_results_from_sidecar(args, ctx, results_dir: Path):
         )
 
     return f"Extracted results for {ctx.benchmark_name} from {len(pod_names)} sidecar pod(s)"
-
-
-def _copy_result_file(
-    namespace: str,
-    pod: str,
-    remote_path: str,
-    local_path: Path,
-    *,
-    trim_json: bool = True,
-    keep_full_file: bool = False,
-) -> Path | None:
-    """Copy a result file from a pod, with optional compression and trimming.
-
-    Args:
-        namespace: Kubernetes namespace
-        pod: Pod name
-        remote_path: Path to file inside the pod
-        local_path: Local destination path
-        trim_json: Whether to trim large fields from JSON files (default: True)
-        keep_full_file: Whether to keep the full untrimmed file alongside trimmed one (default: False)
-
-    Returns:
-        Path to the copied file, or None if copy failed
-    """
-    import gzip
-
-    # Use compression approach for better handling of large files
-    logger.info(f"Retrieving compressed file from {remote_path}...")
-
-    # Save compressed version to temp file first
-    temp_gz_path = local_path.with_suffix(".json.gz")
-
-    # Compress and stream directly from pod
-    result = oc(
-        "exec",
-        "-n",
-        namespace,
-        pod,
-        "--",
-        "gzip",
-        "-c",
-        remote_path,
-        check=False,
-        log_stdout=False,
-        stdout_dest=temp_gz_path,
-        text=False,
-    )
-    if result.returncode != 0:
-        logging.getLogger(__name__).warning("gzip extraction failed (rc=%d)", result.returncode)
-        return None
-
-    # Extract and parse JSON from local compressed file
-    try:
-        with gzip.open(temp_gz_path, "rt", encoding="utf-8") as f:
-            json_content = f.read()
-    except Exception as e:
-        logging.getLogger(__name__).warning("Failed to extract compressed results: %s", e)
-        temp_gz_path.unlink(missing_ok=True)
-        return None
-
-    # Create trimmed version if requested and file is JSON
-    if trim_json and local_path.suffix.lower() == ".json":
-        logger.info(f"Trimming JSON file {local_path.name}...")
-        try:
-            raw_data = json.loads(json_content)
-            cleaned_data = trim_benchmark_json(raw_data)
-            with open(local_path, "w") as f:
-                json.dump(cleaned_data, f, separators=(",", ":"))
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse JSON, writing raw data to {local_path}")
-            write_text(local_path, json_content)
-    else:
-        # Write raw content for non-JSON files or when trimming is disabled
-        write_text(local_path, json_content)
-
-    # Manage full file based on keep_full_file flag
-    if not keep_full_file:
-        # Remove the compressed full file
-        if temp_gz_path.exists():
-            temp_gz_path.unlink()
-            logger.info(f"Removed full file {temp_gz_path.name}")
-    else:
-        logger.info(f"Keeping full file {temp_gz_path.name}")
-
-    if local_path.exists() and local_path.stat().st_size > 0:
-        return local_path
-
-    return None
 
 
 @task

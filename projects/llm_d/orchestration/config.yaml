@@ -37,6 +37,9 @@ caliper:
   replot:
     url: null  # Set via /replot.url directive
     keep: false  # Set to true to keep download directory after replotting
+    prom:
+      metrics:
+        allow_refresh: false
 
   postprocess:
     enabled: true
@@ -54,7 +57,7 @@ caliper:
       output_dir: reports
       reports: []
       report_group: comprehensive
-      visualize_config: projects/guidellm/postprocess/guidellm/visualize-groups.yaml
+      visualize_config: projects/llm_d/postprocess/llm_d/visualize-groups.yaml
 
     kpi:
       enabled: true
@@ -97,10 +100,12 @@ caliper:
       output: regression_analyze/kpi_analyze.json
       fail_on_regression: false
 
-agentic:
+agentic_review:
   enabled: true
-  model_key: qwen-3-6-35b
-  on_failure:
+  model_key: default
+  vault_name: psap-models-corp-rh
+  vault_content: agent-models.yaml
+  failure_review:
     enabled: true
   config_review:
     enabled: true

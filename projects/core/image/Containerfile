@@ -41,6 +41,22 @@ RUN curl -LO "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/o
     mv oc /usr/local/bin/ && \
     rm -f openshift-client-linux.tar.gz kubectl
 
+# Install Prometheus and promtool (for TSDB replay during replot)
+ARG PROMETHEUS_VERSION=2.54.1
+RUN curl -LO "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" && \
+    tar -xzf "prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" && \
+    mv "prometheus-${PROMETHEUS_VERSION}.linux-amd64/prometheus" /usr/local/bin/ && \
+    mv "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" /usr/local/bin/ && \
+    rm -rf "prometheus-${PROMETHEUS_VERSION}.linux-amd64" "prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+
+# Install kube-burner (for local metric replay during replot)
+ARG KUBE_BURNER_VERSION=2.8.6
+RUN curl -LO "https://github.com/kube-burner/kube-burner/releases/download/v${KUBE_BURNER_VERSION}/kube-burner-V${KUBE_BURNER_VERSION}-linux-x86_64.tar.gz" && \
+    tar -xzf "kube-burner-V${KUBE_BURNER_VERSION}-linux-x86_64.tar.gz" && \
+    chmod +x kube-burner && \
+    mv kube-burner /usr/local/bin/ && \
+    rm -f "kube-burner-V${KUBE_BURNER_VERSION}-linux-x86_64.tar.gz"
+
 # Optimize uv for container environments
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_SYSTEM_PYTHON=1

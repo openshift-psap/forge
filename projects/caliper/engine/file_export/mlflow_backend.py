@@ -5,14 +5,18 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
-from projects.caliper.engine.file_export.mlflow_secrets import (
+from projects.caliper.engine.file_export.file_stats import describe_files
+from projects.caliper.engine.file_export.timefmt import format_duration, format_time
+from projects.caliper.engine.mlflow_connection import (
     assert_tracking_uri_has_no_userinfo,
-    mlflow_connection_env,
+    mlflow_tracking_context,
+    resolve_mlflow_tracking_uri,
 )
 from projects.core.library import env
 
@@ -38,7 +42,12 @@ def _mlflow_artifact_subdir(artifact_root: Path, file_path: Path) -> str | None:
 
 
 def _mlflow_ui_links(
-    tracking_uri: str, experiment_id: str, run_id: str, workspace: str | None = None
+    tracking_uri: str,
+    experiment_id: str,
+    run_id: str,
+    workspace: str | None = None,
+    *,
+    show_artifacts: bool = True,
 ) -> tuple[str | None, str | None]:
     """Hash-based MLflow UI URLs (http/https tracking servers only)."""
     base = tracking_uri.rstrip("/")
@@ -47,7 +56,8 @@ def _mlflow_ui_links(
     eid = str(experiment_id)
     rid = str(run_id)
     qs = f"?workspace={workspace}" if workspace else ""
-    run_url = f"{base}/#/experiments/{eid}/runs/{rid}/artifacts{qs}"
+    tab = "/artifacts" if show_artifacts else ""
+    run_url = f"{base}/#/experiments/{eid}/runs/{rid}{tab}{qs}"
     exp_url = f"{base}/#/experiments/{eid}{qs}"
     return run_url, exp_url
 
@@ -76,6 +86,8 @@ def _capture_mlflow_run_metadata(tracking_uri: str, workspace: str | None = None
         "experiment_name": experiment_name,
         "tracking_uri": tracking_uri,
     }
+    if workspace is not None:
+        out["workspace"] = workspace
     if run_url:
         out["run_url"] = run_url
     if exp_url:
@@ -391,13 +403,15 @@ def log_artifacts(
             mlflow.set_experiment(experiment)
         file_paths = [p for p in paths if p.is_file()]
         workers = _parallel_workers(upload_workers, len(file_paths))
+        upload_started = time.monotonic()
+        logger.info(
+            "MLflow upload starting at %s: %s, workers=%d, experiment=%s",
+            format_time(),
+            describe_files(file_paths),
+            workers,
+            experiment or "default",
+        )
         if verbose:
-            n = len(file_paths)
-            logger.info(
-                f"MLflow upload starting ({n} file(s), workers={workers}, "
-                f"experiment={experiment or 'default'})"
-            )
-
             # Save file list to artifact directory to avoid log spam
             try:
                 if env.ARTIFACT_DIR:
@@ -406,7 +420,7 @@ def log_artifacts(
                         f.write("MLflow Upload File List\n")
                         f.write("======================\n")
                         f.write(f"Experiment: {experiment or 'default'}\n")
-                        f.write(f"Total files: {n}\n")
+                        f.write(f"Total files: {len(file_paths)}\n")
                         f.write(f"Workers: {workers}\n")
                         f.write(f"Artifact root: {artifact_root}\n\n")
 
@@ -455,16 +469,22 @@ def log_artifacts(
             meta = _capture_mlflow_run_metadata(tu, workspace=workspace)
 
         if partial_failure:
-            logger.info(f"MLflow upload partially failed ({mlflow.get_tracking_uri()})")
-
-        elif verbose:
-            logger.info(f"MLflow upload finished ({mlflow.get_tracking_uri()})")
+            logger.info(
+                f"MLflow upload partially failed at {format_time()} "
+                f"in {format_duration(time.monotonic() - upload_started)} ({mlflow.get_tracking_uri()})"
+            )
+        else:
+            logger.info(
+                f"MLflow upload finished at {format_time()} "
+                f"in {format_duration(time.monotonic() - upload_started)} ({mlflow.get_tracking_uri()})"
+            )
 
         return f"mlflow:{mlflow.get_tracking_uri()}", meta, any(partial_failure)
 
     if connection is not None:
-        with mlflow_connection_env(connection):
-            return _run(tracking_uri or connection.get("tracking_uri"))
+        uri = resolve_mlflow_tracking_uri(connection, tracking_uri)
+        with mlflow_tracking_context({**connection, "tracking_uri": uri}, workspace=workspace):
+            return _run(uri)
 
     return _run(tracking_uri)
 
@@ -598,9 +618,8 @@ def log_multi_run_artifacts(
 ) -> tuple[str, dict[str, Any] | None]:
     """Create a parent MLflow run with all artifacts and nested child runs per test directory.
 
-    The parent run receives every artifact.  Each child run receives only the
-    files that live under its own ``run_dir`` subtree, so artifacts are never
-    duplicated across children.
+    The parent run receives the artifact tree. Each child run records its test
+    metrics, parameters, and run metadata, plus a README pointing to the parent.
     If ``child_run_names`` is provided, those names are used instead of ``run_dir.name``.
     """
     try:
@@ -635,13 +654,14 @@ def log_multi_run_artifacts(
         file_paths = [p for p in all_artifact_paths if p.is_file()]
         effective_meta = merge_run_metadata_with_git_source(artifact_root, run_metadata)
 
-        if verbose:
-            logger.info(
-                "Multi-run export: %d artifact file(s), %d test run(s), experiment=%s",
-                len(file_paths),
-                len(run_dirs),
-                experiment or "default",
-            )
+        upload_started = time.monotonic()
+        logger.info(
+            "MLflow multi-run upload starting at %s: %s, %d test run(s), experiment=%s",
+            format_time(),
+            describe_files(file_paths),
+            len(run_dirs),
+            experiment or "default",
+        )
 
         parent_meta: dict[str, Any] | None = None
         child_runs_meta: list[dict[str, Any]] = []
@@ -683,11 +703,6 @@ def log_multi_run_artifacts(
                     child_run_names.get(run_dir, run_dir.name) if child_run_names else run_dir.name
                 )
 
-                resolved_run_dir = run_dir.resolve()
-                child_files = [
-                    p for p in file_paths if p.resolve().is_relative_to(resolved_run_dir)
-                ]
-
                 with mlflow.start_run(run_name=child_name, nested=True):
                     child_rid = mlflow.active_run().info.run_id
 
@@ -713,23 +728,20 @@ def log_multi_run_artifacts(
 
                     _apply_run_metadata(effective_meta)
 
-                    _upload_mlflow_files_parallel(
-                        client=client,
-                        run_id=child_rid,
-                        file_paths=child_files,
-                        artifact_root=artifact_root,
-                        upload_workers=upload_workers,
-                        verbose=verbose,
+                    workload_path = run_dir.resolve().relative_to(artifact_root.resolve())
+                    readme = (
+                        "This child run records metrics, parameters, and tags for this workload.\n"
+                        "Workload artifacts are stored on the parent run.\n\n"
+                        f"Parent run ID: {parent_rid}\n"
+                        f"Workload directory: {workload_path.as_posix()}\n"
                     )
+                    if parent_url:
+                        readme += f"Parent artifacts: {parent_url}\n"
+                    client.log_text(child_rid, readme, "README.txt")
 
-                    if verbose:
-                        logger.info(
-                            "  Child run %s: %d artifact(s) (of %d total)",
-                            child_name,
-                            len(child_files),
-                            len(file_paths),
-                        )
-                    child_url, _ = _mlflow_ui_links(tu, eid, child_rid, workspace=workspace)
+                    child_url, _ = _mlflow_ui_links(
+                        tu, eid, child_rid, workspace=workspace, show_artifacts=False
+                    )
                     if child_url:
                         logger.info("  Child run %s: %s", child_name, child_url)
 
@@ -751,13 +763,18 @@ def log_multi_run_artifacts(
         for error in all_curve_errors:
             logger.warning("MLflow curve metric error: %s", error)
 
-        if verbose:
-            logger.info("MLflow multi-run upload finished (%s)", mlflow.get_tracking_uri())
+        logger.info(
+            "MLflow multi-run upload finished at %s in %s (%s)",
+            format_time(),
+            format_duration(time.monotonic() - upload_started),
+            mlflow.get_tracking_uri(),
+        )
         return f"mlflow:{mlflow.get_tracking_uri()}", parent_meta
 
     if connection is not None:
-        with mlflow_connection_env(connection):
-            return _run(tracking_uri or connection.get("tracking_uri"))
+        uri = resolve_mlflow_tracking_uri(connection, tracking_uri)
+        with mlflow_tracking_context({**connection, "tracking_uri": uri}, workspace=workspace):
+            return _run(uri)
     return _run(tracking_uri)
 
 
@@ -767,6 +784,7 @@ def update_artifacts(
     files: dict[Path, str | None] | list[Path],
     tracking_uri: str | None = None,
     connection: dict[str, Any] | None = None,
+    workspace: str | None = None,
 ) -> None:
     """Re-upload multiple files to an existing MLflow run, replacing previous copies.
 
@@ -776,6 +794,7 @@ def update_artifacts(
                or a list of file paths (all uploaded to root)
         tracking_uri: MLflow tracking URI
         connection: MLflow connection configuration
+        workspace: Workspace containing the run
 
     Intended to be called after all post-export work (notifications, etc.) completes,
     so uploaded files contain the full session output.
@@ -794,26 +813,20 @@ def update_artifacts(
         files_dict = files
 
     def _upload(uri: str | None) -> None:
-        import os
-
-        if uri:
-            assert_tracking_uri_has_no_userinfo(uri)
-            mlflow.set_tracking_uri(uri)
-
-        os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
-
         for handler in logging.getLogger().handlers:
             handler.flush()
 
-        client = mlflow.tracking.MlflowClient()
-
-        # Upload each file to its specified artifact path
+        client = mlflow.tracking.MlflowClient(tracking_uri=uri)
         for file_path, artifact_path in files_dict.items():
             if file_path.exists():
                 client.log_artifact(run_id, str(file_path), artifact_path=artifact_path)
 
-    if connection is not None:
-        with mlflow_connection_env(connection):
-            _upload(tracking_uri or connection.get("tracking_uri"))
+    uri = resolve_mlflow_tracking_uri(connection or {}, tracking_uri)
+    if connection is not None or workspace is not None:
+        resolved_connection = (
+            {**connection, "tracking_uri": uri} if connection is not None else None
+        )
+        with mlflow_tracking_context(resolved_connection, workspace=workspace):
+            _upload(uri)
     else:
-        _upload(tracking_uri)
+        _upload(uri)

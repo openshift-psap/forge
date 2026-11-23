@@ -27,6 +27,13 @@ RHOAI_CUSTOM_CATALOG_VAULTS = [
     "psap-forge-staging-image-pull",
 ]
 
+# Ownership marker stamped on the custom CatalogSource by deploy_custom_catalog.
+# Cleanup deletes CatalogSources carrying this label only, so a catalog forge
+# did not create can never be removed, and leftovers are caught even when the
+# catalog name changed between runs.
+FORGE_MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
+FORGE_MANAGED_BY_SELECTOR = f"{FORGE_MANAGED_BY_LABEL}=forge"
+
 
 @requires(custom_catalog_enabled="platform.rhoai.custom_catalog.enabled")
 def list_mandatory_vaults(_cfg) -> list[str]:
@@ -75,6 +82,7 @@ class RhoaiCustomCatalogConfig(BaseModel):
     image: str | None = None
     display_name: str | None = None
     publisher: str | None = None
+    force_pull_secret_update: bool = False
     pull_secret: _RhoaiCustomCatalogPullSecretConfig
     staging_pull_secret: _RhoaiCustomCatalogPullSecretConfig | None = None
 
@@ -133,6 +141,7 @@ def ensure_operator_subscription(operator_spec: dict[str, str]) -> dict[str, obj
         channel=operator_spec["channel"],
         source_namespace=operator_spec.get("source_namespace", "openshift-marketplace"),
         display_name=operator_spec.get("display_name", operator_spec["package"]),
+        starting_csv=operator_spec.get("starting_csv", ""),
         artifact_dirname_suffix=f"_{operator_spec['package']}",
     )
 
@@ -153,6 +162,52 @@ def deploy_rhoai_custom_catalog(*, custom_catalog: RhoaiCustomCatalogConfig) -> 
         publisher=custom_catalog.publisher or "",
         artifact_dirname_suffix="rhoai",
     )
+
+
+def cleanup_rhoai_custom_catalog(*, rhoai: dict[str, Any]) -> None:
+    """Delete the forge-managed custom CatalogSource, if any.
+
+    Runs regardless of `custom_catalog.enabled` so that leftovers from a
+    previous run are removed even when the current run used the default
+    catalog. Only CatalogSources labeled as forge-managed are deleted; the
+    catalog namespace (typically the shared `openshift-marketplace`) is kept.
+    """
+    rhoai_config = RhoaiOperatorConfig.model_validate(rhoai)
+    custom_catalog = rhoai_config.custom_catalog
+
+    result = oc(
+        "delete",
+        "catalogsource",
+        "-l",
+        FORGE_MANAGED_BY_SELECTOR,
+        "-n",
+        custom_catalog.namespace,
+        "--ignore-not-found=true",
+        check=False,
+        log_stdout=False,
+    )
+    if not result.success:
+        raise RuntimeError(
+            f"Failed to delete the forge-managed CatalogSource in namespace "
+            f"{custom_catalog.namespace}: {result.stderr.strip()}"
+        )
+
+    deleted = [
+        line
+        for line in result.stdout.strip().splitlines()
+        if line.strip() and not line.startswith("No resources found")
+    ]
+    if not deleted:
+        logger.info(
+            "No forge-managed CatalogSource in namespace %s, nothing to clean up",
+            custom_catalog.namespace,
+        )
+    else:
+        logger.info(
+            "Deleted forge-managed CatalogSource(s) in namespace %s: %s",
+            custom_catalog.namespace,
+            ", ".join(deleted),
+        )
 
 
 def rhoai_operator_spec(
@@ -212,16 +267,11 @@ def _apply_vault_pull_secret(
         temp_path.write_text(json.dumps(merged_secret, indent=2, sort_keys=True), encoding="utf-8")
         return merged_secret
 
-    for registry in registries:
-        oc(
-            "registry",
-            "login",
-            f"--registry={registry}",
-            f"--auth-basic={pull_secret_payload}",
-            "--to",
-            str(temp_path),
-        )
-    return json.loads(temp_path.read_text(encoding="utf-8"))
+    encoded_auth = base64.b64encode(pull_secret_payload.encode("utf-8")).decode("utf-8")
+    vault_auths = {registry: {"auth": encoded_auth} for registry in registries}
+    merged_secret = _merge_pull_secret_auths(current_secret, {"auths": vault_auths})
+    temp_path.write_text(json.dumps(merged_secret, indent=2, sort_keys=True), encoding="utf-8")
+    return merged_secret
 
 
 def _current_pull_secret_json() -> dict[str, Any]:
@@ -321,7 +371,10 @@ def prepare_rhoai_pull_secret(custom_catalog: RhoaiCustomCatalogConfig) -> None:
     current_secret = _current_pull_secret_json()
     required_registries = (*RHOAI_CATALOG_REGISTRIES, *RHOAI_REGISTRIES)
 
-    if _registries_present(current_secret, required_registries):
+    if (
+        _registries_present(current_secret, required_registries)
+        and not custom_catalog.force_pull_secret_update
+    ):
         logger.info(
             "RHOAI registries already present in cluster pull secret: %s",
             ", ".join(required_registries),

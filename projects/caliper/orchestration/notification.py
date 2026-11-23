@@ -108,6 +108,8 @@ def _format_step_details_with_formatters(
         return _format_s3_import_step(step_data, get_file_link)
     elif step_name == "analyse_kpis":
         return _format_analyse_kpis_step(step_data, get_file_link)
+    elif step_name == "visualize":
+        return _format_visualize_step(step_data, get_file_link)
     else:
         return _format_generic_file_step(step_data, get_file_link)
 
@@ -251,6 +253,51 @@ def _format_analyse_kpis_step(step_data: dict, get_file_link: callable | None) -
         baseline_files_count = step_data.get("baseline_files_count")
         if baseline_files_count is not None:
             lines.append(f"  - 📈 Baseline files analyzed: `{baseline_files_count}`")
+
+    return lines
+
+
+def _format_visualize_step(step_data: dict, get_file_link: callable | None) -> list[str]:
+    """Format visualize step with reports grouped by scope then source."""
+    output_files = step_data.get("output_files", [])
+    if not output_files:
+        return []
+
+    output_dir = step_data.get("output_dir")
+
+    # Group by scope, then by source
+    from collections import OrderedDict
+
+    scope_groups: dict[str, dict[str, list[dict]]] = OrderedDict()
+    for rf in output_files:
+        if not isinstance(rf, dict):
+            continue
+        scope = rf.get("scope", "global")
+        source = rf.get("source", "unknown")
+        scope_groups.setdefault(scope, OrderedDict()).setdefault(source, []).append(rf)
+
+    # Sort: "global" first, then test nodes alphabetically
+    sorted_scopes = sorted(scope_groups.keys(), key=lambda s: ("0" if s == "global" else "1", s))
+
+    lines = []
+    for scope in sorted_scopes:
+        source_groups = scope_groups[scope]
+        scope_display = "Global" if scope == "global" else f"Test `{scope}`"
+        lines.append("")
+        lines.append(f"  **{scope_display}**")
+
+        for source, reports in source_groups.items():
+            source_display = source.replace("_", " ").title()
+            lines.append(f"  - **{source_display}**:")
+            for rf in reports:
+                title = rf.get("title", "report")
+                file_path = rf.get("path", "")
+                if get_file_link and file_path:
+                    full_path = Path(output_dir) / file_path if output_dir else Path(file_path)
+                    link = get_file_link(full_path, text=title)
+                    lines.append(f"    - 📄 {link}")
+                else:
+                    lines.append(f"    - 📄 {title}")
 
     return lines
 

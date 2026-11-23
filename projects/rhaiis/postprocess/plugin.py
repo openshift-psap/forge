@@ -8,6 +8,7 @@ from projects.caliper.engine.model import (
     BaseTestNode,
     ParseResult,
     PostProcessingPlugin,
+    ReportFile,
     UnifiedRunModel,
 )
 
@@ -71,7 +72,7 @@ class RhaiisPlugin(PostProcessingPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
-    ) -> list[str]:
+    ) -> list[ReportFile]:
         return []
 
     def compute_kpis(self, model: UnifiedRunModel) -> tuple[list[KpiRecord], KpiComputationStatus]:
