@@ -99,6 +99,17 @@ praxis:
   # out-of-range values silently fall back to 8. The effective limits are verified
   # against the gateway's live Envoy config after activation.
   extproc_max_requests: 256
+  # Identity-metrics toggle for the maas-gateway-auth AuthPolicy (the `metrics`
+  # field of the identity response filter, hardcoded true by maas-controller's
+  # template). With it on, authorino re-compiles and re-evaluates the filter's
+  # CEL label expressions on every request (metricLabels: 72-88% of its CPU in
+  # pprof profiles); turning it off cut authorino CPU per successful auth by
+  # ~38%. The labels feed usage metering that is broken on streamed
+  # /v1/responses anyway (token metering fails open, Finding 2 of
+  # maas-praxis-500-ext-proc-overflow.md). Set true for metering-focused runs;
+  # null keeps the controller default. Can also be used as a matrix
+  # deployment_level dimension ([true, false]) for A/B measurements.
+  identity_metrics: false
   payload_processing:
     replicas: 1
     cpu_request: 100m
