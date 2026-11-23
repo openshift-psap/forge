@@ -1,0 +1,123 @@
+# Istio gateway request metrics (Envoy-generated, istio_requests_total family).
+#
+# params:
+#   GATEWAY_NAME: Gateway name regex (default: .* matches all gateways)
+#   REPORTER: Reporting side (default: source — the gateway/Envoy side;
+#             destination-side series only exist for in-mesh workloads)
+
+- param_defaults:
+    GATEWAY_NAME: ".*"
+    REPORTER: "source"
+
+# ── Request volume ────────────────────────────────────────────────────
+
+- query: >-
+    sum by (response_code)
+    (rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
+  metricName: istio_requests_by_code
+  description: Gateway request rate by HTTP response code
+  unit: req/s
+
+- query: >-
+    sum by (destination_workload, destination_service_name)
+    (rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
+  metricName: istio_requests_by_destination
+  description: Gateway request rate by destination workload and service
+  unit: req/s
+
+- query: >-
+    sum by (source_workload)
+    (rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
+  metricName: istio_requests_by_source
+  description: Gateway request rate by source workload (load generators)
+  unit: req/s
+
+# ── Errors ────────────────────────────────────────────────────────────
+
+- query: >-
+    sum by (response_code, response_flags)
+    (rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}", response_code=~"4..|5.."}[2m]))
+  metricName: istio_errors_by_code_flags
+  description: >-
+    Error request rate by response code and Envoy response flag
+    (UH no healthy upstream, UF upstream connection failure,
+    UT upstream timeout, NR no route, UPE/DPE protocol errors)
+  unit: req/s
+
+- query: >-
+    sum(rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}", response_code=~"5.."}[2m]))
+    /
+    sum(rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
+  metricName: istio_5xx_ratio
+  description: Fraction of gateway responses with a 5xx status code
+  unit: ratio
+
+# ── Latency ───────────────────────────────────────────────────────────
+
+- query: >-
+    histogram_quantile(0.50,
+      sum by (le)
+      (rate(istio_request_duration_milliseconds_bucket{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m])))
+  metricName: istio_request_duration_p50
+  description: Gateway end-to-end request duration (p50)
+  unit: ms
+
+- query: >-
+    histogram_quantile(0.95,
+      sum by (le)
+      (rate(istio_request_duration_milliseconds_bucket{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m])))
+  metricName: istio_request_duration_p95
+  description: Gateway end-to-end request duration (p95)
+  unit: ms
+
+- query: >-
+    histogram_quantile(0.99,
+      sum by (le)
+      (rate(istio_request_duration_milliseconds_bucket{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m])))
+  metricName: istio_request_duration_p99
+  description: Gateway end-to-end request duration (p99)
+  unit: ms
+
+- query: >-
+    histogram_quantile(0.99,
+      sum by (le, destination_workload)
+      (rate(istio_request_duration_milliseconds_bucket{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m])))
+  metricName: istio_request_duration_p99_by_destination
+  description: Gateway request duration (p99) by destination workload
+  unit: ms
+
+# Latency split by response code: separates deadline-killed 500s (auth stage
+# pinning at the fail-closed deadline, e.g. ~1.8 s) from slow-but-successful
+# requests (model time) — the two look identical in the aggregate quantiles.
+
+- query: >-
+    histogram_quantile(0.50,
+      sum by (le, response_code)
+      (rate(istio_request_duration_milliseconds_bucket{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m])))
+  metricName: istio_request_duration_p50_by_code
+  description: Gateway request duration (p50) by HTTP response code
+  unit: ms
+
+- query: >-
+    histogram_quantile(0.95,
+      sum by (le, response_code)
+      (rate(istio_request_duration_milliseconds_bucket{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m])))
+  metricName: istio_request_duration_p95_by_code
+  description: Gateway request duration (p95) by HTTP response code
+  unit: ms
+
+# ── Payload volume ────────────────────────────────────────────────────
+
+- query: >-
+    sum by (destination_workload)
+    (rate(istio_request_bytes_sum{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
+  metricName: istio_request_bytes_rate
+  description: Request body throughput by destination workload
+  unit: bytes/s
+
+- query: >-
+    sum by (destination_workload)
+    (rate(istio_response_bytes_sum{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
+  metricName: istio_response_bytes_rate
+  description: Response body throughput by destination workload
+  unit: bytes/s

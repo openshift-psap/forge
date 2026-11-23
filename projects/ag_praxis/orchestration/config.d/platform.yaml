@@ -8,9 +8,10 @@ cluster:
 
 operators:
   rhcl-operator:
+    enabled: false
     display_name: Red Hat Connectivity Link
     namespace: openshift-operators
-    channel: stable
+    channel: stable # cannot use stable-1.5 for the time being
     source: redhat-operators
     cleanup_crds:
       - ztunnels.sailoperator.io
@@ -25,6 +26,7 @@ operators:
 rhoai:
   custom_catalog:
     enabled: false
+    force_pull_secret_update: false
     name: rhoai-catalog-dev
     namespace: openshift-marketplace
     image: null
@@ -59,12 +61,19 @@ maas:
   # huge so perf runs are not rate-limited. CAVEAT: token metering fails OPEN for
   # streamed /v1/responses traffic on builds where the kuadrant wasm shim parses
   # the response body as a single JSON document -- the limit is not enforced there
-  # (see orchestration/poc/maas-praxis-500-ext-proc-overflow.md, Finding 2).
   token_rate_limit: 1000000000
   token_rate_limit_window: 1m
   gateway:
     name: maas-default-gateway
     namespace: openshift-ingress
+
+default_gateway:
+  namespace: openshift-ingress
+  name: openshift-ai-inference
+  gateway_class_name: data-science-gateway-class
+  status_address_name: gateway-internal
+  create_if_missing: true
+  llmisvc_name: sim-llm-gw
 
 sim:
   image: ghcr.io/llm-d/llm-d-inference-sim:v0.12.0
@@ -82,8 +91,6 @@ sim:
   max_num_seqs: 10240
 
 praxis:
-  version: "0.6"
-  replicas: 1
   # ExtProc concurrency budget (Envoy circuit breakers on the ext_proc clusters,
   # set via the maas.opendatahub.io/experimental-extproc-max-requests annotation on
   # the MaasTenantConfig). The operator default is 8 (ai-gateway-controller PR #217
@@ -91,12 +98,11 @@ praxis:
   # requests with an instant empty HTTP 500 before auth. Valid range 1-1024;
   # out-of-range values silently fall back to 8. The effective limits are verified
   # against the gateway's live Envoy config after activation.
-  # See orchestration/poc/maas-praxis-500-ext-proc-overflow.md (Finding 1).
-  extproc_max_requests: 1024
+  extproc_max_requests: 256
   payload_processing:
-    replicas: 4
+    replicas: 1
     cpu_request: 100m
-    cpu_limit: 4
+    cpu_limit: 8
     memory_request: null
     memory_limit: 2Gi
 

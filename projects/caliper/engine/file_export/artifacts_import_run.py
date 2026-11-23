@@ -8,12 +8,10 @@ import logging
 import os
 import shutil
 import tempfile
-import warnings
 from pathlib import Path
 from typing import Any
 
 import click
-import urllib3
 
 from projects.caliper.engine.mlflow_connection import (
     load_mlflow_connection_file,
@@ -123,16 +121,23 @@ def download_mlflow_artifacts(
 
     with (
         mlflow_tracking_context(connection, workspace=workspace),
-        warnings.catch_warnings(),
         tempfile.TemporaryDirectory(prefix="caliper_mlflow_import_") as temp_dir,
     ):
-        if connection.get("insecure_tls"):
-            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
         client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
         client.get_run(run_id)
-        downloaded_path = Path(
-            client.download_artifacts(run_id=run_id, path=artifact_path, dst_path=temp_dir)
-        )
+        # mlflow downloads artifacts with more workers than urllib3's default
+        # connection pool (10), so urllib3 logs "Connection pool is full, discarding
+        # connection" for each extra connection. Discarding is harmless (a new
+        # connection is opened on demand), so silence that logger for the download.
+        pool_logger = logging.getLogger("urllib3.connectionpool")
+        previous_pool_level = pool_logger.level
+        pool_logger.setLevel(logging.ERROR)
+        try:
+            downloaded_path = Path(
+                client.download_artifacts(run_id=run_id, path=artifact_path, dst_path=temp_dir)
+            )
+        finally:
+            pool_logger.setLevel(previous_pool_level)
         if not downloaded_path.exists():
             raise RuntimeError("MLflow download did not produce an artifact path")
 

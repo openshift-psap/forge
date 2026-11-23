@@ -87,18 +87,20 @@ def _decompress_openmetrics(gz_path: Path, output_path: Path) -> None:
 
 def _import_to_tsdb(openmetrics_path: Path, tsdb_dir: Path) -> None:
     """Import an OpenMetrics text file into a Prometheus TSDB."""
-    result = subprocess.run(
-        [
-            "promtool",
-            "tsdb",
-            "create-blocks-from",
-            "openmetrics",
-            str(openmetrics_path),
-            str(tsdb_dir),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    cmd = [
+        "promtool",
+        "tsdb",
+        "create-blocks-from",
+        "openmetrics",
+        str(openmetrics_path),
+        str(tsdb_dir),
+    ]
+    logger.info("Running: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.stdout:
+        logger.info("promtool stdout:\n%s", result.stdout.rstrip())
+    if result.stderr:
+        logger.info("promtool stderr:\n%s", result.stderr.rstrip())
     if result.returncode != 0:
         raise RuntimeError(f"promtool tsdb create-blocks-from failed: {result.stderr}")
     logger.info("Imported OpenMetrics data into TSDB at %s", tsdb_dir)

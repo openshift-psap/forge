@@ -13,6 +13,7 @@ from jinja2 import Environment, FileSystemLoader
 from projects.caliper.engine.model import UnifiedResultRecord
 from projects.caliper.engine.parameter_matrix import (
     create_legend_name,
+    create_legend_title,
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import (
@@ -236,6 +237,14 @@ def _safe_get_curve_value(curves: dict, metric_name: str, index: int, default: A
         return default
 
 
+def _numeric_legend_sort_key(name: str) -> tuple[int, float | str]:
+    """Sort key that orders numeric values numerically, non-numeric last."""
+    try:
+        return (0, float(name))
+    except (ValueError, TypeError):
+        return (1, name)
+
+
 def _custom_configuration_sort_key(config_name: str) -> tuple[int, str]:
     """
     Create a sort key that ensures heterogeneous configurations appear before multi-turn.
@@ -260,12 +269,18 @@ def _custom_configuration_sort_key(config_name: str) -> tuple[int, str]:
     return (priority, config_name)
 
 
-def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.DataFrame:
+def create_dataframe_from_records(
+    records: list[UnifiedResultRecord],
+    legend_keys: list[str] | None = None,
+) -> pd.DataFrame:
     """
     Convert Caliper UnifiedResultRecord objects to pandas DataFrame for analysis.
 
     Args:
         records: List of unified result records from GuideLLM
+        legend_keys: When provided, these label keys are ordered first in
+            legend names. All varying parameters are still shown; keys that
+            do not vary are dropped.
 
     Returns:
         DataFrame with all benchmark metrics and distinguishing labels
@@ -273,9 +288,8 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
     logger.info(f"📊 Converting {len(records)} records to analysis dataframe...")
     data = []
 
-    # Get parameters that vary across all records for legend names
     logger.info("🔍 Analyzing parameter variations for meaningful legend names...")
-    varying_params = get_varying_parameters(records)
+    varying_params = get_varying_parameters(records, priority_keys=legend_keys)
     if varying_params:
         logger.info(f"   Found varying parameters: {', '.join(sorted(varying_params))}")
     else:
@@ -283,11 +297,9 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
 
     logger.info("📝 Processing records and extracting metrics...")
     for record in records:
-        # Skip records without GuideLLM data or missing benchmarks
         if not record.run_identity.get("guidellm") or record.metrics.get("no_benchmarks_found"):
             continue
 
-        # Create legend name using only varying parameters
         legend_name = create_legend_name(record, varying_params)
 
         # Extract performance curves data
@@ -393,6 +405,7 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
 
     logger.info(f"✅ Successfully processed {len(data)} data points from {len(records)} records")
     df = pd.DataFrame(data)
+    df.attrs["legend_title"] = create_legend_title(varying_params)
 
     # Sort for consistent ordering
     logger.info("📋 Organizing data by configuration, concurrency, and request rate...")
@@ -468,7 +481,10 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
         title = f"Request Throughput vs Concurrency by Configuration{title_context}"
 
         # Get ordered configuration list to maintain consistent legend order
-        config_order = df["test_configuration"].drop_duplicates().tolist()
+        config_order = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
 
         fig = px.scatter(
             df,
@@ -495,7 +511,11 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
         )
 
         fig.update_traces(textposition="top center")
-        fig.update_layout(showlegend=True, **PLOT_CONFIG)
+        fig.update_layout(
+            showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
+            **PLOT_CONFIG,
+        )
         fig.update_yaxes(rangemode="tozero")
 
         logger.info("✅ Throughput scaling plot created successfully")
@@ -519,7 +539,10 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
         title = f"Latency vs Throughput Trade-off{title_context}"
 
         # Get ordered configuration list to maintain consistent legend order
-        config_order = df["test_configuration"].drop_duplicates().tolist()
+        config_order = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
 
         fig = px.scatter(
             df,
@@ -544,7 +567,11 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
             category_orders={"test_configuration": config_order},
         )
 
-        fig.update_layout(showlegend=True, **PLOT_CONFIG)
+        fig.update_layout(
+            showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
+            **PLOT_CONFIG,
+        )
 
         logger.info("✅ Latency vs throughput plot created successfully")
         return fig
@@ -573,7 +600,10 @@ def _build_line_with_replica_scatter(
     import plotly.express as px
     import plotly.graph_objects as go
 
-    config_order = df["test_configuration"].drop_duplicates().tolist()
+    config_order = sorted(
+        df["test_configuration"].drop_duplicates().tolist(),
+        key=_numeric_legend_sort_key,
+    )
     colors = px.colors.qualitative.Set1
     color_map = {cfg: colors[i % len(colors)] for i, cfg in enumerate(config_order)}
 
@@ -667,6 +697,7 @@ def _build_line_with_replica_scatter(
         xaxis_title=x_label,
         yaxis_title=y_label,
         showlegend=True,
+        legend_title_text=df.attrs.get("legend_title"),
         **PLOT_CONFIG,
     )
     fig.update_yaxes(rangemode="tozero")
@@ -755,7 +786,10 @@ def create_cumulated_throughput_vs_concurrency_plot(df: pd.DataFrame, title_cont
             logger.info("   ⏩ Skipping cumulated plot — no multi-replica data")
             return None
 
-        config_order = df["test_configuration"].drop_duplicates().tolist()
+        config_order = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
 
         cumulated = (
             df.groupby(["test_configuration", "intended_concurrency"], sort=False)
@@ -803,6 +837,7 @@ def create_cumulated_throughput_vs_concurrency_plot(df: pd.DataFrame, title_cont
             xaxis_title="Cumulated Concurrency Level",
             yaxis_title="Cumulated Tokens per Second",
             showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
             **PLOT_CONFIG,
         )
         fig.update_yaxes(rangemode="tozero")
@@ -940,7 +975,10 @@ def create_ttft_percentiles_plot(df: pd.DataFrame, title_context: str = ""):
 
         fig = go.Figure()
 
-        configurations = df["test_configuration"].drop_duplicates().tolist()
+        configurations = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
         available_colors = px.colors.qualitative.Set1
         color_map = {
             config: available_colors[i % len(available_colors)]
@@ -976,6 +1014,7 @@ def create_ttft_percentiles_plot(df: pd.DataFrame, title_context: str = ""):
             xaxis_title="Concurrency Level (Requested)",
             yaxis_title="TTFT (s)",
             showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
             **PLOT_CONFIG_LARGE,
         )
         fig.update_yaxes(rangemode="tozero")
@@ -1034,7 +1073,10 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
         fig = go.Figure()
 
         # Get unique configurations and colors - maintain custom sort order
-        configurations = df["test_configuration"].drop_duplicates().tolist()
+        configurations = sorted(
+            df["test_configuration"].drop_duplicates().tolist(),
+            key=_numeric_legend_sort_key,
+        )
         logger.debug(
             f"   Plotting {len(configurations)} configurations with percentile distributions..."
         )
@@ -1075,6 +1117,7 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
             xaxis_title="Concurrency Level (Requested)",
             yaxis_title="Output Tokens per Second",
             showlegend=True,
+            legend_title_text=df.attrs.get("legend_title"),
             **PLOT_CONFIG_LARGE,
         )
         fig.update_yaxes(rangemode="tozero")
@@ -1201,6 +1244,8 @@ def _generate_shared_performance_report(
     report_title: str = "GuideLLM Performance Analysis",
     report_type: str = "comprehensive",  # "comprehensive" or "comparison"
     grouping_config: dict[str, Any] | None = None,
+    legend_keys: list[str] | None = None,
+    group_keys: list[str] | None = None,
 ) -> str | None:
     """
     Shared function for generating performance reports with different grouping strategies.
@@ -1213,6 +1258,8 @@ def _generate_shared_performance_report(
         report_title: Title for the report
         report_type: Either "comprehensive" (loadshape grouping) or "comparison" (comparison grouping)
         grouping_config: Configuration for grouping strategy
+        legend_keys: Label keys to include in chart legends (whitelist of candidates)
+        group_keys: Label keys to group records into navigation sections
 
     Returns:
         Path to generated report file
@@ -1253,16 +1300,31 @@ def _generate_shared_performance_report(
 
         # Group records based on report type
         if report_type == "comprehensive":
-            # Group by loadshape
-            groups = {}
-            for record in records:
-                loadshape = record.distinguishing_labels.get("guidellm_loadshape", "default")
-                if loadshape not in groups:
-                    groups[loadshape] = []
-                groups[loadshape].append(record)
-            logger.info(
-                f"\n🔍 Found {len(groups)} loadshape(s): {', '.join(sorted(groups.keys()))}"
-            )
+            if group_keys:
+                raw_groups: dict[tuple, list] = {}
+                for record in records:
+                    key_values = tuple(
+                        str(record.distinguishing_labels.get(k, "")) for k in group_keys
+                    )
+                    raw_groups.setdefault(key_values, []).append(record)
+                groups = {}
+                for key_values, group_records in raw_groups.items():
+                    group_key = ", ".join(
+                        f"{k}={v}" if len(group_keys) > 1 else str(v)
+                        for k, v in zip(group_keys, key_values, strict=True)
+                    )
+                    groups[group_key] = group_records
+                logger.info(
+                    f"\n🔍 Grouped by {group_keys}: {len(groups)} group(s): {', '.join(sorted(groups.keys()))}"
+                )
+            else:
+                groups = {}
+                for record in records:
+                    loadshape = record.distinguishing_labels.get("guidellm_loadshape", "default")
+                    groups.setdefault(loadshape, []).append(record)
+                logger.info(
+                    f"\n🔍 Found {len(groups)} loadshape(s): {', '.join(sorted(groups.keys()))}"
+                )
         else:
             # Comparison grouping logic (simplified from original)
             comparison_keys = (
@@ -1321,8 +1383,7 @@ def _generate_shared_performance_report(
             logger.info(f"\n📊 Processing group: {group_desc}")
             logger.info(f"   Records: {len(group_records)}")
 
-            # Create DataFrame for this group
-            df = create_dataframe_from_records(group_records)
+            df = create_dataframe_from_records(group_records, legend_keys=legend_keys)
             if df.empty:
                 logger.info(f"   ⚠️  No data available for group: {group_desc}")
                 continue
@@ -1575,6 +1636,8 @@ def generate_comprehensive_performance_report(
     title_context: str = "",
     report_number: int | None = None,
     report_title: str = "GuideLLM Performance Analysis",
+    legend_keys: list[str] | None = None,
+    group_keys: list[str] | None = None,
 ) -> str | None:
     """
     Generate comprehensive performance analysis report with separate plots for each loadshape.
@@ -1585,6 +1648,8 @@ def generate_comprehensive_performance_report(
         title_context: Additional context for titles
         report_number: Optional report number for file naming (e.g., 0 for "Report 00:")
         report_title: Title for the report (used in filename and HTML title)
+        legend_keys: Label keys to include in chart legends (whitelist of candidates)
+        group_keys: Label keys to group records into navigation sections
     """
     return _generate_shared_performance_report(
         records=records,
@@ -1593,6 +1658,8 @@ def generate_comprehensive_performance_report(
         report_number=report_number,
         report_title=report_title,
         report_type="comprehensive",
+        legend_keys=legend_keys,
+        group_keys=group_keys,
     )
 
 

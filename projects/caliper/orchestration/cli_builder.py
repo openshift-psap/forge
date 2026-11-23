@@ -196,6 +196,11 @@ def build_visualize_command(
     for label in all_exclude_labels:
         cmd.extend(["--exclude-label", label])
 
+    if config.visualize.plugin_settings:
+        import json
+
+        cmd.extend(["--plugin-settings-json", json.dumps(config.visualize.plugin_settings)])
+
     if not use_cache:
         cmd.append("--no-cache")
 

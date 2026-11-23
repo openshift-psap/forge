@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import sys
 from datetime import UTC, datetime
@@ -23,6 +24,15 @@ def _sim_served_model_names():
 def test():
     """Main test function that wraps do_test_praxis() with outcome postprocessing."""
     return run_and_postprocess(do_test_praxis)
+
+
+def _configure_matrix_visualization(matrix_config: dict) -> None:
+    """Populate caliper plugin_settings from matrix visualization config."""
+    viz = matrix_config.get("visualization", {})
+    if not viz:
+        return
+
+    config.project.set_config("caliper.postprocess.visualize.plugin_settings", dict(viz))
 
 
 def _resolve_benchmark_config(benchmark_key: str) -> dict:
@@ -389,6 +399,7 @@ def _test_endpoint(
 ):
     from projects.ag_praxis.toolbox.capture_maas_praxis import main as capture_maas_praxis_command
     from projects.cluster.library.prom.collection import capture_prometheus
+    from projects.cluster.toolbox.capture_cluster_state import main as capture_cluster_state_command
     from projects.kserve.toolbox.capture_llmisvc_state import main as capture_llmisvc_state_command
 
     benchmark_start = datetime.now(UTC)
@@ -442,34 +453,43 @@ def _test_endpoint(
         )
 
         if run_benchmark:
-            _run_guidellm(test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name)
+            with env.NextArtifactDir("benchmarking"):
+                _run_guidellm(
+                    test_namespace, ep_url, api_key_file_path=api_key_path, ep_name=ep_name
+                )
     except Exception as e:
         primary_exc = sys.exc_info()
         update_test_labels_with_status(test_dir, False, f"Endpoint test failed: {e}")
     finally:
         benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
-        llmisvc_name = maas_cfg["llmisvc_name"]
-        _run_finalizer(
-            "capturing LLMInferenceService state",
-            capture_llmisvc_state_command.run,
-            llmisvc_name=llmisvc_name,
-            namespace=test_namespace,
-        )
+        if config.project.get_config("test.skip_finalizers"):
+            logger.info("Skipping endpoint finalizers (test.skip_finalizers is True)")
+        else:
 
-        def _capture_prom():
-            with env.NextArtifactDir("prometheus_metrics"):
-                capture_prometheus(benchmark_start, benchmark_end)
+            def _capture_prom():
+                with env.NextArtifactDir("prometheus_metrics"):
+                    capture_prometheus(benchmark_start, benchmark_end)
 
-        _run_finalizer("capturing Prometheus metrics", _capture_prom)
+            _run_finalizer("capturing Prometheus metrics", _capture_prom)
 
-        _run_finalizer(
-            "capturing MaaS praxis state",
-            capture_maas_praxis_command.run,
-            ingress_namespace=maas_cfg["gateway"]["namespace"],
-            tenant_namespace=maas_cfg["tenant_namespace"],
-            gateway_name=maas_cfg["gateway"]["name"],
-        )
+            llmisvc_name = maas_cfg["llmisvc_name"]
+            _run_finalizer(
+                "capturing LLMInferenceService state",
+                capture_llmisvc_state_command.run,
+                llmisvc_name=llmisvc_name,
+                namespace=test_namespace,
+            )
+
+            _run_finalizer(
+                "capturing MaaS praxis state",
+                capture_maas_praxis_command.run,
+                ingress_namespace=maas_cfg["gateway"]["namespace"],
+                tenant_namespace=maas_cfg["tenant_namespace"],
+                gateway_name=maas_cfg["gateway"]["name"],
+            )
+
+            _run_finalizer("capturing cluster state", capture_cluster_state_command.run)
 
     if primary_exc is not None:
         # primary test status already tracked in the 'except' block
@@ -488,30 +508,63 @@ def _test_endpoint(
     completed_endpoints.append(ep_name)
 
 
-def _deploy_maas_sim(test_namespace, maas_cfg):
-    """Deploy a sim for MaaS as an LLMInferenceService with TLS.
-
-    Returns the internal SVC endpoint URL.
-    """
+def _deploy_sim_llmisvc(
+    test_namespace,
+    *,
+    name,
+    gateway_name,
+    gateway_namespace,
+    maas_gateway_label,
+    artifact_dirname_suffix,
+    gateway_status_address_name=None,
+):
+    """Deploy an llm-d simulator LLMInferenceService. Returns the gateway endpoint URL."""
     from projects.kserve.toolbox.deploy_sim_llmisvc import main as deploy_sim_llmisvc_command
 
     sim_cfg = config.project.get_config("platform.sim")
-    maas_gw = maas_cfg["gateway"]
 
-    deploy_sim_llmisvc_command.run(
+    # gateway_status_address_name=None has a distinct meaning in deploy_llmisvc
+    # (different endpoint resolution mode): only forward it when explicitly set,
+    # so unset falls back to the toolbox default.
+    gateway_kwargs = (
+        {"gateway_status_address_name": gateway_status_address_name}
+        if gateway_status_address_name
+        else {}
+    )
+
+    return deploy_sim_llmisvc_command.run(
         namespace=test_namespace,
-        name=maas_cfg["llmisvc_name"],
+        name=name,
         model_name=sim_cfg["model_name"],
         image=sim_cfg["image"],
-        gateway_name=maas_gw["name"],
-        gateway_namespace=maas_gw["namespace"],
-        maas_gateway_label=maas_cfg["maas_gateway_label"],
+        gateway_name=gateway_name,
+        gateway_namespace=gateway_namespace,
+        maas_gateway_label=maas_gateway_label,
+        artifact_dirname_suffix=artifact_dirname_suffix,
         skip_router=False,
         max_num_seqs=sim_cfg["max_num_seqs"],
         time_to_first_token=sim_cfg["time_to_first_token"],
         inter_token_latency=sim_cfg["inter_token_latency"],
         mode=sim_cfg["mode"],
         replicas=sim_cfg.get("replicas", 1),
+        **gateway_kwargs,
+    )
+
+
+def _deploy_maas_sim(test_namespace, maas_cfg):
+    """Deploy a sim for MaaS as an LLMInferenceService with TLS.
+
+    Returns the internal SVC endpoint URL.
+    """
+    maas_gw = maas_cfg["gateway"]
+
+    _deploy_sim_llmisvc(
+        test_namespace,
+        name=maas_cfg["llmisvc_name"],
+        gateway_name=maas_gw["name"],
+        gateway_namespace=maas_gw["namespace"],
+        maas_gateway_label=maas_cfg["maas_gateway_label"],
+        artifact_dirname_suffix="maas",
     )
 
     llmisvc_name = maas_cfg["llmisvc_name"]
@@ -521,6 +574,27 @@ def _deploy_maas_sim(test_namespace, maas_cfg):
 
     logger.info("LLMInferenceService SVC endpoint: %s", svc_endpoint)
     return svc_endpoint
+
+
+def _deploy_gw_sim(test_namespace):
+    """Deploy a sim for default-gateway testing as an LLMInferenceService without MaaS.
+
+    Returns the gateway endpoint URL.
+    """
+    gw_cfg = config.project.get_config("platform.default_gateway")
+
+    endpoint_url = _deploy_sim_llmisvc(
+        test_namespace,
+        name=gw_cfg["llmisvc_name"],
+        gateway_name=gw_cfg["name"],
+        gateway_namespace=gw_cfg["namespace"],
+        maas_gateway_label="",
+        gateway_status_address_name=gw_cfg["status_address_name"],
+        artifact_dirname_suffix="gw",
+    )
+
+    logger.info("GW LLMInferenceService endpoint: %s", endpoint_url)
+    return endpoint_url
 
 
 def _register_maas_model(test_namespace, maas_cfg, model_name):
@@ -558,6 +632,14 @@ def _cleanup_maas_sim(test_namespace, maas_cfg):
     best_effort_oc("delete", "llminferenceservice", maas_sim_name, "-n", test_namespace)
 
 
+def _cleanup_gw_sim(test_namespace):
+    """Delete the default-gateway sim LLMInferenceService."""
+    from projects.core.dsl.utils.k8s import best_effort_oc
+
+    gw_cfg = config.project.get_config("platform.default_gateway")
+    best_effort_oc("delete", "llminferenceservice", gw_cfg["llmisvc_name"], "-n", test_namespace)
+
+
 def _validate_benchmark_rates():
     """Validate the rate -> replica scaling of every sweep level up front."""
     benchmark = _build_benchmark_config(
@@ -577,23 +659,40 @@ def _validate_benchmark_rates():
 
 
 def _prepare_test_endpoints(test_namespace, maas_cfg):
-    """Deploy sim, resolve gateway, and build endpoint list."""
-    svc_endpoint = _deploy_maas_sim(test_namespace, maas_cfg)
-
-    maas_gateway_url, _ = _resolve_maas_gateway_url()
-    llmisvc_name = maas_cfg["llmisvc_name"]
-    maas_endpoint = f"{maas_gateway_url}/{test_namespace}/{llmisvc_name}"
-    logger.info("MaaS external endpoint: %s", maas_endpoint)
-    logger.info("SVC endpoint: %s", svc_endpoint)
+    """Deploy sim(s), resolve gateway(s), and build endpoint list."""
+    selected = config.project.get_config("test.endpoints")
+    has_maas = any(ep.startswith("maas") for ep in selected)
 
     model_name = config.project.get_config("platform.sim.model_name")
+    endpoint_map = {}
+    maas_endpoint = None
 
-    endpoint_map = {
-        "svc": (svc_endpoint, None),
-        "maas/ipp": (maas_endpoint, None),
-        "maas/praxis": (maas_endpoint, None),
-    }
-    selected = config.project.get_config("test.endpoints")
+    if has_maas or "svc" in selected:
+        svc_endpoint = _deploy_maas_sim(test_namespace, maas_cfg)
+        endpoint_map["svc"] = (svc_endpoint, None)
+        logger.info("SVC endpoint: %s", svc_endpoint)
+
+    if has_maas:
+        maas_gateway_url, _ = _resolve_maas_gateway_url()
+        llmisvc_name = maas_cfg["llmisvc_name"]
+        maas_endpoint = f"{maas_gateway_url}/{test_namespace}/{llmisvc_name}"
+        logger.info("MaaS external endpoint: %s", maas_endpoint)
+        endpoint_map["maas/ipp"] = (maas_endpoint, None)
+        endpoint_map["maas/praxis"] = (maas_endpoint, None)
+
+    if "gw" in selected:
+        gw_endpoint = _deploy_gw_sim(test_namespace)
+        endpoint_map["gw"] = (gw_endpoint, None)
+
+        if "svc" in selected and "svc" not in endpoint_map:
+            gw_cfg = config.project.get_config("platform.default_gateway")
+            gw_name = gw_cfg["llmisvc_name"]
+            svc_endpoint = (
+                f"https://{gw_name}-kserve-workload-svc.{test_namespace}.svc.cluster.local:8000"
+            )
+            endpoint_map["svc"] = (svc_endpoint, None)
+            logger.info("SVC endpoint (from gw sim): %s", svc_endpoint)
+
     endpoints = [(name, *endpoint_map[name]) for name in selected if name in endpoint_map]
 
     return endpoints, model_name, maas_endpoint
@@ -625,13 +724,72 @@ def _run_endpoint_benchmarking(
             )
 
 
+def _run_test_matrix(
+    simulator_combos,
+    deployment_combos,
+    workload_combos,
+    test_namespace,
+    maas_cfg,
+    run_benchmark,
+    completed_endpoints,
+):
+    """Run the test matrix: simulator combos x deployment combos x workload combos x endpoints."""
+    from projects.core.library.matrix import activate_combination
+
+    for sim_combo in simulator_combos:
+        sim_dir = (
+            env.NextArtifactDir(sim_combo.artifact_dirname)
+            if sim_combo.artifact_dirname
+            else contextlib.nullcontext()
+        )
+        with activate_combination(sim_combo), sim_dir:
+            for dep_combo in deployment_combos:
+                dep_dir = (
+                    env.NextArtifactDir(dep_combo.artifact_dirname)
+                    if dep_combo.artifact_dirname
+                    else contextlib.nullcontext()
+                )
+                with activate_combination(dep_combo), dep_dir:
+                    endpoints, model_name, maas_endpoint = _prepare_test_endpoints(
+                        test_namespace, maas_cfg
+                    )
+                    for wl_combo in workload_combos:
+                        wl_dir = (
+                            env.NextArtifactDir(wl_combo.artifact_dirname)
+                            if wl_combo.artifact_dirname
+                            else contextlib.nullcontext()
+                        )
+                        with activate_combination(wl_combo), wl_dir:
+                            if run_benchmark:
+                                _validate_benchmark_rates()
+
+                            merged_labels = {
+                                **sim_combo.labels,
+                                **dep_combo.labels,
+                                **wl_combo.labels,
+                            }
+
+                            _run_endpoint_benchmarking(
+                                endpoints,
+                                test_namespace,
+                                maas_cfg,
+                                model_name,
+                                run_benchmark,
+                                completed_endpoints,
+                                matrix_labels=merged_labels,
+                            )
+
+    if not run_benchmark:
+        _write_benchmark_dry_run(maas_endpoint)
+
+
 def do_test_praxis():
     logger.info("=== AG Praxis Project Test Phase ===")
     from projects.cluster.library.prom.collection import (
         prepare_user_workload_monitoring,
         validate_user_workload_monitoring,
     )
-    from projects.core.library.matrix import activate_combination, compute_matrix
+    from projects.core.library.matrix import compute_matrix
     from projects.core.orchestration.utils.k8s import ensure_namespace
 
     validate_user_workload_monitoring()
@@ -640,41 +798,58 @@ def do_test_praxis():
     test_namespace = config.project.get_config("test.namespace")
     ensure_namespace(test_namespace)
 
+    selected = config.project.get_config("test.endpoints")
+    has_maas = any(ep.startswith("maas") for ep in selected)
+    has_gw = "gw" in selected
+
     maas_cfg = config.project.get_config("platform.maas")
-    maas_gw = maas_cfg["gateway"]
 
-    from projects.ag_praxis.orchestration.prepare_phase import _register_namespace_in_gateway
+    if has_maas:
+        maas_gw = maas_cfg["gateway"]
 
-    _register_namespace_in_gateway(test_namespace, maas_gw["name"], maas_gw["namespace"])
+        from projects.ag_praxis.orchestration.prepare_phase import _register_namespace_in_gateway
+
+        _register_namespace_in_gateway(test_namespace, maas_gw["name"], maas_gw["namespace"])
+
+    if has_gw:
+        from projects.ag_praxis.orchestration.prepare_phase import ensure_default_gateway
+
+        ensure_default_gateway()
 
     run_benchmark = config.project.get_config("test.run_benchmark")
-    matrix_config = config.project.get_config("test.matrices.guidellm", default_value={})
-    combinations = compute_matrix(matrix_config)
+
+    matrix_cfg = config.project.get_config("test.matrix_benchmarking", default_value={})
+
+    simulator_config = matrix_cfg.get("simulator_level", {})
+    workload_config = matrix_cfg.get("workload_level", {})
+    deployment_config = matrix_cfg.get("deployment_level", {})
+
+    simulator_combos = compute_matrix(simulator_config)
+    workload_combos = compute_matrix(workload_config)
+    deployment_combos = compute_matrix(deployment_config)
+
+    matrix_enabled = (
+        simulator_config.get("enabled")
+        or workload_config.get("enabled")
+        or deployment_config.get("enabled")
+    )
+    if matrix_enabled:
+        _configure_matrix_visualization(matrix_cfg)
 
     primary_exc = None
     completed_endpoints = []
 
     try:
-        endpoints, model_name, maas_endpoint = _prepare_test_endpoints(test_namespace, maas_cfg)
-
-        for combo in combinations:
-            with activate_combination(combo):
-                if run_benchmark:
-                    _validate_benchmark_rates()
-
-                with env.NextArtifactDir(combo.artifact_dirname or "benchmarking"):
-                    _run_endpoint_benchmarking(
-                        endpoints,
-                        test_namespace,
-                        maas_cfg,
-                        model_name,
-                        run_benchmark,
-                        completed_endpoints,
-                        matrix_labels=combo.labels,
-                    )
-
-        if not run_benchmark:
-            _write_benchmark_dry_run(maas_endpoint)
+        with env.NextArtifactDir("test"):
+            _run_test_matrix(
+                simulator_combos,
+                deployment_combos,
+                workload_combos,
+                test_namespace,
+                maas_cfg,
+                run_benchmark,
+                completed_endpoints,
+            )
 
     except Exception:
         primary_exc = sys.exc_info()
@@ -700,25 +875,62 @@ def _run_cleanup(test_namespace, maas_cfg, primary_exc):
         main as capture_llmisvc_state_command,
     )
 
+    selected = config.project.get_config("test.endpoints")
+    has_maas = any(ep.startswith("maas") for ep in selected)
+    has_gw = "gw" in selected
+
     finalizer_exc = None
 
-    llmisvc_name = maas_cfg["llmisvc_name"]
-    try:
-        capture_llmisvc_state_command.run(llmisvc_name=llmisvc_name, namespace=test_namespace)
-    except Exception:
-        logger.exception("Failed to capture LLMInferenceService state before cleanup")
-        if primary_exc is None:
-            finalizer_exc = sys.exc_info()
-
-    if not config.project.get_config("test.skip_cleanup"):
+    def _safe_finalizer(description, callback, **kwargs):
+        nonlocal finalizer_exc
         try:
-            _cleanup_maas_sim(test_namespace=test_namespace, maas_cfg=maas_cfg)
+            callback(**kwargs)
         except Exception:
             if primary_exc is None:
-                logger.exception("Finalizer failed: cleaning up MaaS sim")
+                logger.exception("Finalizer failed: %s", description)
                 finalizer_exc = finalizer_exc or sys.exc_info()
             else:
-                logger.exception("Ignoring cleanup failure after primary test failure")
+                logger.exception("Ignoring %s failure after primary test failure", description)
+
+    if config.project.get_config("test.skip_finalizers"):
+        logger.info("Skipping cleanup finalizers (test.skip_finalizers is True)")
+    else:
+        if has_maas or "svc" in selected:
+            llmisvc_name = maas_cfg["llmisvc_name"]
+            try:
+                capture_llmisvc_state_command.run(
+                    llmisvc_name=llmisvc_name, namespace=test_namespace
+                )
+            except Exception:
+                logger.exception("Failed to capture MaaS LLMInferenceService state before cleanup")
+                if primary_exc is None:
+                    finalizer_exc = sys.exc_info()
+
+        if has_gw:
+            gw_cfg = config.project.get_config("platform.default_gateway")
+            try:
+                capture_llmisvc_state_command.run(
+                    llmisvc_name=gw_cfg["llmisvc_name"], namespace=test_namespace
+                )
+            except Exception:
+                logger.exception("Failed to capture GW LLMInferenceService state before cleanup")
+                if primary_exc is None:
+                    finalizer_exc = finalizer_exc or sys.exc_info()
+
+    if not config.project.get_config("test.skip_cleanup"):
+        if has_maas or "svc" in selected:
+            _safe_finalizer(
+                "cleaning up MaaS sim",
+                _cleanup_maas_sim,
+                test_namespace=test_namespace,
+                maas_cfg=maas_cfg,
+            )
+        if has_gw:
+            _safe_finalizer(
+                "cleaning up GW sim",
+                _cleanup_gw_sim,
+                test_namespace=test_namespace,
+            )
 
     return finalizer_exc
 

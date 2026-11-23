@@ -16,7 +16,7 @@
 --       pr_args.py, tracing_adapter.py, config.d/*.yaml, presets.d/, manifests/
 --     - toolbox/ deploy_maas, cleanup_maas, enable_maas_praxis,
 --       register_maas_model, unregister_maas_model, create_maas_token,
---       capture_maas_praxis (reached from orchestration)
+--       capture_maas_praxis, capture_cluster_state (reached from orchestration)
 --     - toolbox/ deploy_praxis, teardown_praxis, add_gateway_route,
 --       setup_maas_external_models, teardown_maas_external_models,
 --       maas_sim_test (present but NOT reached from orchestration; modelled in
@@ -331,6 +331,7 @@ entity CaptureBundle {
     endpoint_test: EndpointTest
     llmisvc_state: Boolean
     prometheus_metrics: Boolean
+    cluster_state: Boolean
     hot_path_deployment_specs: Boolean
     hot_path_pod_logs_untruncated: Boolean
     tenant_config: Boolean
@@ -414,8 +415,8 @@ config {
     payload_processing_cpu_request: String = "100m"
     payload_processing_cpu_limit: String = "4"
     payload_processing_memory_limit: String = "2Gi"
-    -- platform.praxis.version / .replicas only feed deploy_praxis, which is
-    -- never invoked; they have no effect on the tested path.
+    -- Not sourced from config: only passed by the deploy_praxis command
+    -- invocation, which is never reached from orchestration.
     praxis_version: String = "0.6"
     -- platform.praxis.extproc_max_requests: ExtProc concurrency budget
     -- annotated on the MaasTenantConfig at praxis activation. Out-of-range
@@ -1046,6 +1047,7 @@ rule CaptureEndpointState {
         endpoint_test: endpoint_test,
         llmisvc_state: true,
         prometheus_metrics: true,
+        cluster_state: true,
         hot_path_deployment_specs: true,
         hot_path_pod_logs_untruncated: true,
         tenant_config: true,
@@ -1057,15 +1059,18 @@ rule CaptureEndpointState {
     ensures: TraceWindowRecorded(endpoint_test: endpoint_test)
 
     @guidance
-        -- test_phase.py:422-454. Each finalizer runs independently; a
-        -- finalizer failure fails the endpoint only if the primary test
-        -- passed (and only when run_benchmark is on). capture_maas_praxis
-        -- (main.py:398-600) saves wide listings of ingress + kuadrant
-        -- namespaces, YAML + describe of the five hot-path deployments and
-        -- their pods, full current + previous logs (--tail=-1; the gateway
-        -- Envoy access log names the failing filter), and the
-        -- MaasTenantConfig. Captured artifacts are never parsed for
-        -- assertions by the test phase.
+        -- test_phase.py finalizers run in this order: (1) Prometheus
+        -- metrics, (2) LLMInferenceService state, (3) cluster state
+        -- (OCP version, nodes, machines, CSVs, Forge git rev),
+        -- (4) MaaS praxis hot-path state. Each finalizer runs
+        -- independently; a finalizer failure fails the endpoint only
+        -- if the primary test passed (and only when run_benchmark is
+        -- on). capture_maas_praxis saves wide listings of ingress +
+        -- kuadrant namespaces, YAML + describe of the five hot-path
+        -- deployments and their pods, full current + previous logs
+        -- (--tail=-1; the gateway Envoy access log names the failing
+        -- filter), and the MaasTenantConfig. Captured artifacts are
+        -- never parsed for assertions by the test phase.
 }
 
 rule EndpointPasses {
@@ -1320,4 +1325,7 @@ open question "Should there be an oversized-body probe (>10Mi rejected; no unbou
 open question "Should there be a spoofed X-Gateway-Model-Name test? The unreached setup_maas_external_models and the unused httproute.yaml.j2 template route on a caller-supplied value of that header, which conflicts with the PR's stripping."
 open question "Should Prometheus capture include a praxis/ExtProc metrics group and a check that the controller's ServiceMonitor and metrics ClusterRoleBindings exist and are scraped?"
 open question "Are deploy_praxis, teardown_praxis, add_gateway_route, setup/teardown_maas_external_models and maas_sim_test (which runs an untracked-directory poc script) still meant to be part of the harness, or dead code to remove?"
-open question "platform.praxis.version and platform.praxis.replicas are only consumed by the unreached deploy_praxis: should the harness pin or record the operator-delivered praxis ExtProc image instead?"
+-- Resolved: platform.praxis.version and platform.praxis.replicas were removed from
+-- the project config; deploy_praxis takes praxis_version/replicas as command
+-- parameters instead. The operator-delivered praxis ExtProc image is not pinned
+-- or recorded by the harness.

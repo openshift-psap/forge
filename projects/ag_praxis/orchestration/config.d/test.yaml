@@ -12,15 +12,26 @@ skip_finalizers: false
 
 endpoints:
 - svc
+- gw
 - maas/ipp
 - maas/praxis
 
-matrices:
-  guidellm:
+matrix_benchmarking:
+  simulator_level:
     enabled: false
-    labels:
-      test.payload: payload
-      test.sweep: sweep
-    dimensions:
-      test.payload: [XS, default, L, XL]
-      test.sweep: [small]
+    labels: {}
+    dimensions: {}
+
+  deployment_level:
+    enabled: false
+    labels: {}
+    dimensions: {}
+
+  workload_level:
+    enabled: false
+    labels: {}
+    dimensions: {}
+
+  visualization:
+    legend_keys: {}
+    group_keys: null
