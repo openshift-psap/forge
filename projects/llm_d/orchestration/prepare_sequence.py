@@ -10,6 +10,15 @@ from projects.llm_d.orchestration import prepare_phase, runtime_config
 
 logger = logging.getLogger(__name__)
 
+PROFILER_INJECTOR_LABELS = {
+    "app.kubernetes.io/managed-by": "forge",
+    "forge.openshift.io/project": "llm_d",
+}
+
+
+def _profiler_injector_namespace() -> str:
+    return config.project.get_config("profiler.injector_namespace", default_value="vllm-profiler")
+
 
 def prepare_profiler_injector(namespace: str) -> None:
     """Deploy the vLLM profiler env-injector for the test namespace.
@@ -24,7 +33,28 @@ def prepare_profiler_injector(namespace: str) -> None:
 
     deploy_profiler_injector(
         namespace=namespace,
+        injector_namespace=_profiler_injector_namespace(),
         profiling_ranges=config.project.get_config("profiler.ranges", default_value="500-503"),
+        labels=PROFILER_INJECTOR_LABELS,
+    )
+
+
+def teardown_profiler_injector_if_configured(namespace: str) -> None:
+    """Remove the env-injector in post-cleanup when configured to do so.
+
+    Only touches resources carrying PROFILER_INJECTOR_LABELS, so an
+    injector deployed by someone else and reused by an idempotent prepare
+    is never removed.
+    """
+    if not config.project.get_config("profiler.teardown_after_run", default_value=False):
+        return
+
+    from projects.kserve.toolbox.teardown_profiler_injector.main import run as teardown
+
+    teardown(
+        namespace=namespace,
+        injector_namespace=_profiler_injector_namespace(),
+        labels=PROFILER_INJECTOR_LABELS,
     )
 
 

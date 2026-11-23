@@ -1,5 +1,11 @@
 # Chunk merged under the "profiler" key (from the filename).
 enabled: false
+# Namespace hosting the env-injector webhook deployment. The default
+# vllm-profiler is reserved for regression runs where the injector is
+# deployed and torn down per run; long-lived custom profiling setups
+# should deploy their own injector instance in their own namespace (which
+# also gets a namespace-suffixed webhook name, so both can coexist).
+injector_namespace: vllm-profiler
 # vLLM only: the env-injector wraps vllm Worker.execute_model.
 ranges: "500-503"
 s3_bucket: psap-dashboard-data
@@ -19,3 +25,8 @@ labels: []
 rates: [200]
 max_seconds: 200
 transfer_timeout_seconds: 300
+# Remove the env-injector (webhook, injector namespace, ConfigMap) in
+# post-cleanup. False by default: on dedicated profiling clusters the
+# injector is persistent infrastructure (the zeus/hera model). Shared
+# clusters can opt in via a cluster preset.
+teardown_after_run: false

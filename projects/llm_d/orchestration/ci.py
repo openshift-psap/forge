@@ -196,11 +196,12 @@ def pre_cleanup(ctx) -> int:
 @agent_review_on_failure
 def post_cleanup(ctx) -> int:
     """Cleanup phase - Clean up resources and finalize."""
-    from projects.llm_d.orchestration import runtime_config
+    from projects.llm_d.orchestration import prepare_sequence, runtime_config
 
     for run_spec in runtime_config.get_run_specs():
         with runtime_config.activate_run_spec(run_spec):
             cleanup_toolbox_run(namespace=run_spec.namespace)
+            prepare_sequence.teardown_profiler_injector_if_configured(run_spec.namespace)
     cleanup_operators()
     return 0
 

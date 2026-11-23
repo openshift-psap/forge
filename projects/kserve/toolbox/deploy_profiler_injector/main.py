@@ -42,13 +42,26 @@ from projects.core.dsl import (
 DEFAULT_IMAGE = "quay.io/mimehta/vllmprofiler"
 DEFAULT_INJECTOR_NAMESPACE = "vllm-profiler"
 DEFAULT_TARGET_LABELS = "vllm-profiler/enabled=true"
-WEBHOOK_NAME = "env-injector-webhook"
+DEFAULT_WEBHOOK_NAME = "env-injector-webhook"
 WEBHOOK_SERVICE_PATH = "/mutate"
 CERT_SECRET_NAME = "env-injector-certs"
 CONFIGMAP_NAME = "env-injector-files"
 MIN_CA_BUNDLE_LENGTH = 100
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+
+
+def webhook_name(injector_namespace: str) -> str:
+    """Return the MutatingWebhookConfiguration name for an injector namespace.
+
+    The webhook is cluster-scoped, so instances in custom namespaces get a
+    namespace-suffixed name to coexist with the default one. The default
+    namespace keeps the historical name for compatibility with injectors
+    deployed before this was configurable.
+    """
+    if injector_namespace == DEFAULT_INJECTOR_NAMESPACE:
+        return DEFAULT_WEBHOOK_NAME
+    return f"{DEFAULT_WEBHOOK_NAME}-{injector_namespace}"
 
 
 @entrypoint
@@ -61,6 +74,7 @@ def run(
     profiling_ranges: str = "500-503",
     inject_env_name: str = "PYTHONPATH",
     inject_env_value: str = "/home/vllm/profiler",
+    labels: dict[str, str] | None = None,
 ):
     """Deploy the vLLM profiler env-injector.
 
@@ -73,8 +87,18 @@ def run(
         profiling_ranges: Forward-pass ranges written into profiler_config.yaml.
         inject_env_name: Environment variable used to inject the profiler path.
         inject_env_value: Value of the injection environment variable.
+        labels: Ownership labels applied to the created resources. Resources
+            that already exist (deployed by someone else) are reused but not
+            labelled, so a matching teardown never removes them.
     """
     return execute_tasks(locals())
+
+
+def _render_labels(labels: dict[str, str] | None) -> str:
+    """Render ownership labels as an oc label argument (k=v,...)."""
+    if not labels:
+        return ""
+    return ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
 
 
 @task
@@ -82,6 +106,8 @@ def ensure_injector_namespace(args, context):
     result = shell.run(f"oc get namespace {args.injector_namespace}", check=False)
     if result.returncode != 0:
         shell.run(f"oc create namespace {args.injector_namespace}")
+        if args.labels:
+            shell.run(f"oc label namespace {args.injector_namespace} {_render_labels(args.labels)}")
         return f"Created namespace {args.injector_namespace}"
     return f"Namespace {args.injector_namespace} already exists"
 
@@ -93,14 +119,19 @@ def ensure_service_account(args, context):
     )
     if result.returncode != 0:
         shell.run(f"oc create serviceaccount env-injector -n {args.injector_namespace}")
+        if args.labels:
+            shell.run(
+                f"oc label serviceaccount env-injector -n {args.injector_namespace} "
+                f"{_render_labels(args.labels)}"
+            )
         return "Created serviceaccount env-injector"
     return "Serviceaccount env-injector already exists"
 
 
-def _webhook_ca_bundle() -> str | None:
+def _webhook_ca_bundle(webhook: str) -> str | None:
     """Return the existing webhook caBundle if it is present and plausible."""
     result = shell.run(
-        f"oc get mutatingwebhookconfiguration {WEBHOOK_NAME} "
+        f"oc get mutatingwebhookconfiguration {webhook} "
         "-o jsonpath='{.webhooks[0].clientConfig.caBundle}'",
         check=False,
     )
@@ -210,7 +241,7 @@ def ensure_tls_certificate(args, context):
         f"oc get secret {CERT_SECRET_NAME} -n {args.injector_namespace} -o name",
         check=False,
     )
-    existing_ca = _webhook_ca_bundle()
+    existing_ca = _webhook_ca_bundle(webhook_name(args.injector_namespace))
 
     if secret.returncode == 0 and existing_ca:
         return "TLS secret and webhook CA bundle already in place"
@@ -224,22 +255,28 @@ def ensure_tls_certificate(args, context):
         logger_note = "generated TLS certificate"
 
     context.ca_bundle = _generate_tls_certificate(args.injector_namespace)
+    if args.labels:
+        shell.run(
+            f"oc label secret {CERT_SECRET_NAME} -n {args.injector_namespace} "
+            f"{_render_labels(args.labels)}"
+        )
     return f"{logger_note}; webhook CA bundle prepared"
 
 
 @task
 def deploy_webhook_configuration(args, context):
-    ca_bundle = getattr(context, "ca_bundle", None) or _webhook_ca_bundle()
+    webhook = webhook_name(args.injector_namespace)
+    ca_bundle = getattr(context, "ca_bundle", None) or _webhook_ca_bundle(webhook)
     if not ca_bundle:
         raise RuntimeError(
             "No CA bundle available for the webhook configuration; "
             "the TLS certificate task must have failed"
         )
 
-    webhook = {
+    webhook_manifest = {
         "apiVersion": "admissionregistration.k8s.io/v1",
         "kind": "MutatingWebhookConfiguration",
-        "metadata": {"name": WEBHOOK_NAME},
+        "metadata": {"name": webhook, "labels": dict(args.labels or {})},
         "webhooks": [
             {
                 "name": "env-injector.vllmbench.local",
@@ -269,8 +306,8 @@ def deploy_webhook_configuration(args, context):
             }
         ],
     }
-    shell.run("oc apply -f -", input_text=yaml.safe_dump(webhook))
-    return f"Applied MutatingWebhookConfiguration {WEBHOOK_NAME}"
+    shell.run("oc apply -f -", input_text=yaml.safe_dump(webhook_manifest))
+    return f"Applied MutatingWebhookConfiguration {webhook}"
 
 
 @task
@@ -281,6 +318,7 @@ def deploy_injector_deployment(args, context):
         "metadata": {
             "name": "env-injector",
             "namespace": args.injector_namespace,
+            "labels": dict(args.labels or {}),
         },
         "spec": {
             "replicas": 1,
@@ -317,6 +355,7 @@ def deploy_injector_deployment(args, context):
         "metadata": {
             "name": "env-injector",
             "namespace": args.injector_namespace,
+            "labels": dict(args.labels or {}),
         },
         "spec": {
             "selector": {"app": "env-injector"},
@@ -330,7 +369,32 @@ def deploy_injector_deployment(args, context):
 
 @task
 def deploy_profiler_configmap(args, context):
-    """Create the env-injector-files ConfigMap in the target namespace."""
+    """Create the env-injector-files ConfigMap in the target namespace.
+
+    Reuses an existing ConfigMap only when it is absent or carries the
+    ownership labels; a foreign ConfigMap (e.g. from another injector
+    instance targeting the same namespace) is left untouched.
+    """
+    if args.labels:
+        result = shell.run(
+            f"oc get configmap {CONFIGMAP_NAME} -n {args.namespace} "
+            "-o jsonpath='{.metadata.labels}'",
+            check=False,
+        )
+        if result.returncode == 0:
+            import json as _json
+
+            try:
+                existing = _json.loads(result.stdout.strip().strip("'") or "{}")
+            except ValueError:
+                existing = {}
+            if not isinstance(existing, dict) or not all(
+                existing.get(key) == value for key, value in args.labels.items()
+            ):
+                return (
+                    f"ConfigMap {CONFIGMAP_NAME} in {args.namespace} not owned by "
+                    "this deployment, reusing as-is"
+                )
     sitecustomize = (_TEMPLATES_DIR / "sitecustomize.py").read_text()
     profiler_config = (_TEMPLATES_DIR / "profiler_config.yaml").read_text()
     profiler_config = profiler_config.replace(
@@ -340,7 +404,11 @@ def deploy_profiler_configmap(args, context):
     configmap = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
-        "metadata": {"name": CONFIGMAP_NAME, "namespace": args.namespace},
+        "metadata": {
+            "name": CONFIGMAP_NAME,
+            "namespace": args.namespace,
+            "labels": dict(args.labels or {}),
+        },
         "data": {
             "sitecustomize.py": sitecustomize,
             "profiler_config.yaml": profiler_config,
