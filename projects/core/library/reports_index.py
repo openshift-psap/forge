@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from projects.caliper.public import PostprocessOutcome, classify_postprocess_outcome
+
 logger = logging.getLogger(__name__)
 
 
@@ -184,7 +186,23 @@ def _generate_index_html_content(
     test_phase = status.get("test_phase", {})
     test_status = test_phase.get("phase", "UNKNOWN")
     final_status = status.get("final_status", "unknown")
-    status_class = "success" if "failed" not in str(final_status) else "error"
+
+    # The banner displays both the Test Status and the Final Status, so it stays
+    # red when the test failed — a green box reading "Test Status: FAILED" would
+    # be misleading.
+    classification = classify_postprocess_outcome(status)
+    if classification.test_failed or classification.outcome in (
+        PostprocessOutcome.POSTPROCESS_FAILURE,
+        PostprocessOutcome.PERFORMANCE_REGRESSION,
+    ):
+        status_class = "error"
+    elif classification.outcome in (
+        PostprocessOutcome.WARNING,
+        PostprocessOutcome.PERFORMANCE_INCREASE,
+    ):
+        status_class = "warning"
+    else:
+        status_class = "success"
 
     html_parts = [
         "<!DOCTYPE html>",

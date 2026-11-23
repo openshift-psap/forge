@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from projects.caliper.public import PostprocessOutcome, classify_postprocess_outcome
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,16 +61,26 @@ def convert_status_yaml_to_html(
         # Legacy dict format - convert to new list format
         steps_list = [{name: step_data} for name, step_data in steps_raw.items()]
 
-    # Determine overall status styling
-    if final_status in ["passed", "success"]:
-        status_card_class = "success"
-        status_badge_class = "status-passed"
-    elif final_status == "failed":
+    # Determine overall status styling from the post-processing health,
+    # independently of the test-phase outcome (the adjacent Test Phase card
+    # carries the test failure; the badge text still shows the final_status).
+    classification = classify_postprocess_outcome(status_data)
+    if classification.outcome in (
+        PostprocessOutcome.POSTPROCESS_FAILURE,
+        PostprocessOutcome.PERFORMANCE_REGRESSION,
+    ):
         status_card_class = "failed"
         status_badge_class = "status-failed"
-    else:
+    elif (
+        classification.outcome
+        in (PostprocessOutcome.WARNING, PostprocessOutcome.PERFORMANCE_INCREASE)
+        or classification.test_failed
+    ):
         status_card_class = "warning"
         status_badge_class = "status-warning"
+    else:
+        status_card_class = "success"
+        status_badge_class = "status-passed"
 
     # Count step statuses for summary
     step_counts = {"success": 0, "failed": 0, "skipped": 0, "warning": 0}

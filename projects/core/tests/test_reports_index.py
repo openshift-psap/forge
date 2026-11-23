@@ -218,8 +218,8 @@ def test_missing_metadata_falls_back_to_defaults(tmp_path):
     assert ">untitled</a>" in content
 
 
-def test_failed_final_status_shows_error(tmp_path):
-    output_dir, reports_dir = _make_output_dir(tmp_path)
+def _status_with_report(output_dir, reports_dir):
+    """Build a postprocess status dict with one report on disk."""
     status = _status(
         output_dir,
         [
@@ -231,11 +231,77 @@ def test_failed_final_status_shows_error(tmp_path):
             }
         ],
     )
-    status["final_status"] = "failed"
+    return status
+
+
+def test_test_failed_final_status_shows_error(tmp_path):
+    """A failed test keeps the banner red even when post-processing succeeded."""
+    output_dir, reports_dir = _make_output_dir(tmp_path)
+    status = _status_with_report(output_dir, reports_dir)
+    status["final_status"] = "test_failed"
+    status["success"] = False
+    status["test_phase"] = {"phase": "FAILED", "message": "exit code 1"}
 
     index_path = generate_caliper_reports_index(status, output_dir, "reports_index.html")
 
     assert index_path is not None
+    content = index_path.read_text()
+    assert "status error" in content
+    assert "Test Status:</strong> FAILED" in content
+
+
+def test_parse_failure_final_status_shows_error(tmp_path):
+    """A post-processing failure shows the error styling."""
+    output_dir, reports_dir = _make_output_dir(tmp_path)
+    status = _status_with_report(output_dir, reports_dir)
+    status["final_status"] = "parse_visualize_failed"
+    status["success"] = False
+    status["test_phase"] = {"phase": "SUCCESS"}
+
+    index_path = generate_caliper_reports_index(status, output_dir, "reports_index.html")
+
+    content = index_path.read_text()
+    assert "status error" in content
+
+
+def test_regression_final_status_shows_error(tmp_path):
+    """A performance regression shows the error styling (was green via substring match)."""
+    output_dir, reports_dir = _make_output_dir(tmp_path)
+    status = _status_with_report(output_dir, reports_dir)
+    status["final_status"] = "performance_regression"
+    status["success"] = False
+    status["test_phase"] = {"phase": "SUCCESS"}
+
+    index_path = generate_caliper_reports_index(status, output_dir, "reports_index.html")
+
+    content = index_path.read_text()
+    assert "status error" in content
+
+
+def test_warning_final_status_shows_warning(tmp_path):
+    """A warnings-only post-processing shows the warning styling."""
+    output_dir, reports_dir = _make_output_dir(tmp_path)
+    status = _status_with_report(output_dir, reports_dir)
+    status["final_status"] = "kpi_pipeline_failed"
+    status["success"] = "warning"
+    status["test_phase"] = {"phase": "SUCCESS"}
+
+    index_path = generate_caliper_reports_index(status, output_dir, "reports_index.html")
+
+    content = index_path.read_text()
+    assert "status warning" in content
+    assert "status error" not in content
+
+
+def test_unknown_final_status_without_success_shows_error(tmp_path):
+    """An unknown final_status with a falsy success field is conservatively an error."""
+    output_dir, reports_dir = _make_output_dir(tmp_path)
+    status = _status_with_report(output_dir, reports_dir)
+    status["final_status"] = "something_new"
+    status["success"] = False
+
+    index_path = generate_caliper_reports_index(status, output_dir, "reports_index.html")
+
     content = index_path.read_text()
     assert "status error" in content
 

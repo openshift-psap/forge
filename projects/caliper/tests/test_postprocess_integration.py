@@ -8,12 +8,16 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 from projects.caliper.public import (
     FinalPostprocessStatus,
+    PostprocessOutcome,
     PostprocessStatus,
     PostprocessTestPhase,
     PostprocessTestPhaseInfo,
     StepStatus,
+    classify_postprocess_outcome,
     load_postprocess_status_yaml,
     save_postprocess_status_yaml,
 )
@@ -326,6 +330,209 @@ def test_write_visualization_var_directive_no_settings(tmp_path):
         _write_visualization_var_directive({})
 
     assert not (tmp_path / VISUALIZATION_VAR_FILENAME).exists()
+
+
+def _step(name: str, status: str) -> dict:
+    """Build a single steps entry in the {step_name: step_data} format."""
+    return {name: {"status": status, "completed_at": time.time()}}
+
+
+@pytest.mark.parametrize(
+    "status_data,expected_outcome,expected_test_failed",
+    [
+        # success
+        (
+            {
+                "final_status": "success",
+                "success": True,
+                "test_phase": {"phase": "SUCCESS"},
+                "steps": [_step("parse", "success")],
+            },
+            PostprocessOutcome.SUCCESS,
+            False,
+        ),
+        # test failed, post-processing clean -> post-processing NOT failed
+        (
+            {
+                "final_status": "test_failed",
+                "success": False,
+                "test_phase": {"phase": "FAILED", "message": "exit code 1"},
+                "steps": [_step("parse", "success"), _step("visualize", "success")],
+            },
+            PostprocessOutcome.SUCCESS,
+            True,
+        ),
+        # test failed + warning steps -> warning
+        (
+            {
+                "final_status": "test_failed",
+                "success": False,
+                "test_phase": {"phase": "FAILED"},
+                "steps": [_step("parse", "warning")],
+            },
+            PostprocessOutcome.WARNING,
+            True,
+        ),
+        # test failed AND a step failed -> the label masks it, steps unmask it
+        (
+            {
+                "final_status": "test_failed",
+                "success": False,
+                "test_phase": {"phase": "FAILED"},
+                "steps": [_step("parse", "failed")],
+            },
+            PostprocessOutcome.POSTPROCESS_FAILURE,
+            True,
+        ),
+        # parse/visualize failure
+        (
+            {
+                "final_status": "parse_visualize_failed",
+                "success": False,
+                "test_phase": {"phase": "SUCCESS"},
+                "steps": [_step("parse", "failed")],
+            },
+            PostprocessOutcome.POSTPROCESS_FAILURE,
+            False,
+        ),
+        # kpi pipeline failure with a failed step
+        (
+            {
+                "final_status": "kpi_pipeline_failed",
+                "success": False,
+                "test_phase": {"phase": "SUCCESS"},
+                "steps": [_step("artifacts_to_kpis", "failed")],
+            },
+            PostprocessOutcome.POSTPROCESS_FAILURE,
+            False,
+        ),
+        # kpi pipeline, warnings only (writer sets success="warning")
+        (
+            {
+                "final_status": "kpi_pipeline_failed",
+                "success": "warning",
+                "test_phase": {"phase": "SUCCESS"},
+                "steps": [_step("artifacts_to_kpis", "warning")],
+            },
+            PostprocessOutcome.WARNING,
+            False,
+        ),
+        # kpi pipeline failure, steps missing -> final_status is authoritative
+        (
+            {
+                "final_status": "kpi_pipeline_failed",
+                "success": False,
+                "test_phase": {"phase": "SUCCESS"},
+                "steps": [],
+            },
+            PostprocessOutcome.POSTPROCESS_FAILURE,
+            False,
+        ),
+        # regression / improvement
+        (
+            {
+                "final_status": "performance_regression",
+                "success": False,
+                "test_phase": {"phase": "SUCCESS"},
+                "steps": [_step("analyse_kpis", "regression_detected")],
+            },
+            PostprocessOutcome.PERFORMANCE_REGRESSION,
+            False,
+        ),
+        (
+            {
+                "final_status": "performance_increase",
+                "success": False,
+                "test_phase": {"phase": "SUCCESS"},
+                "steps": [_step("analyse_kpis", "success")],
+            },
+            PostprocessOutcome.PERFORMANCE_INCREASE,
+            False,
+        ),
+        # missing final_status, success=True fallback
+        (
+            {"success": True, "steps": []},
+            PostprocessOutcome.SUCCESS,
+            False,
+        ),
+        # missing final_status, falsy success -> conservative failure
+        (
+            {"success": False, "steps": []},
+            PostprocessOutcome.POSTPROCESS_FAILURE,
+            False,
+        ),
+        # test failure derived from final_status when test_phase is missing
+        (
+            {"final_status": "test_failed", "success": False, "steps": []},
+            PostprocessOutcome.SUCCESS,
+            True,
+        ),
+    ],
+)
+def test_classify_postprocess_outcome(status_data, expected_outcome, expected_test_failed):
+    """Classify post-processing health independently of the test-phase outcome."""
+    classification = classify_postprocess_outcome(status_data)
+
+    assert classification.outcome == expected_outcome
+    assert classification.test_failed is expected_test_failed
+
+
+def test_classify_postprocess_outcome_tolerates_legacy_steps_format():
+    """The legacy dict steps format is still understood."""
+    classification = classify_postprocess_outcome(
+        {
+            "final_status": "test_failed",
+            "success": False,
+            "test_phase": {"phase": "FAILED"},
+            "steps": {"parse": {"status": "failed", "completed_at": time.time()}},
+        }
+    )
+
+    assert classification.outcome == PostprocessOutcome.POSTPROCESS_FAILURE
+    assert classification.test_failed is True
+
+
+def test_classify_postprocess_outcome_rejects_non_mapping():
+    """Non-mapping input raises ValueError instead of failing silently."""
+    with pytest.raises(ValueError):
+        classify_postprocess_outcome(["not", "a", "mapping"])
+
+
+def test_postprocess_status_classification_methods():
+    """Model methods agree with the raw-dict classifier."""
+    test_failed_clean = PostprocessStatus(
+        final_status=FinalPostprocessStatus.TEST_FAILED,
+        success=False,
+        base_directory="/test",
+        test_phase=PostprocessTestPhaseInfo(phase=PostprocessTestPhase.FAILED),
+        steps=[_step("parse", "success")],
+    )
+    assert test_failed_clean.is_test_failure()
+    assert not test_failed_clean.is_postprocess_failure()
+    assert not test_failed_clean.has_failed_steps()
+    assert test_failed_clean.classify().outcome == PostprocessOutcome.SUCCESS
+    assert test_failed_clean.classify().test_failed is True
+
+    masked_failure = PostprocessStatus(
+        final_status=FinalPostprocessStatus.TEST_FAILED,
+        success=False,
+        base_directory="/test",
+        test_phase=PostprocessTestPhaseInfo(phase=PostprocessTestPhase.FAILED),
+        steps=[_step("parse", "failed")],
+    )
+    assert masked_failure.is_test_failure()
+    assert masked_failure.has_failed_steps()
+    assert masked_failure.is_postprocess_failure()
+
+    clean_success = PostprocessStatus(
+        final_status=FinalPostprocessStatus.SUCCESS,
+        success=True,
+        base_directory="/test",
+        test_phase=PostprocessTestPhaseInfo(phase=PostprocessTestPhase.SUCCESS),
+        steps=[_step("parse", "success")],
+    )
+    assert not clean_success.is_test_failure()
+    assert not clean_success.is_postprocess_failure()
 
 
 if __name__ == "__main__":

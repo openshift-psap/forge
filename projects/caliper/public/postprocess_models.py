@@ -7,6 +7,7 @@ for notifications and status reporting.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -41,6 +42,114 @@ class StepStatus(StrEnum):
     DISABLED = "disabled"
     SKIPPED = "skipped"
     REGRESSION_DETECTED = "regression_detected"
+
+
+class PostprocessOutcome(StrEnum):
+    """Post-processing health, independent of the test-phase outcome."""
+
+    SUCCESS = "success"
+    WARNING = "warning"
+    POSTPROCESS_FAILURE = "postprocess_failure"
+    PERFORMANCE_REGRESSION = "performance_regression"
+    PERFORMANCE_INCREASE = "performance_increase"
+
+
+@dataclass(frozen=True)
+class PostprocessClassification:
+    """Post-processing health classification, separated from the test-phase outcome."""
+
+    outcome: PostprocessOutcome
+    test_failed: bool
+
+
+def _any_step_status(steps: Any, status: str) -> bool:
+    """Check whether any post-processing step has the given status.
+
+    Handles both the current ``steps`` format (list of ``{step_name: step_data}``)
+    and the legacy dict format.
+    """
+    if isinstance(steps, Mapping):
+        return any(
+            step_data.get("status") == status
+            for step_data in steps.values()
+            if isinstance(step_data, Mapping)
+        )
+    if isinstance(steps, list):
+        return any(
+            step_data.get("status") == status
+            for step in steps
+            if isinstance(step, Mapping)
+            for step_data in step.values()
+            if isinstance(step_data, Mapping)
+        )
+    return False
+
+
+def classify_postprocess_outcome(status_data: Mapping[str, Any]) -> PostprocessClassification:
+    """Classify post-processing health from a raw postprocess status dict.
+
+    Answers "did the post-processing itself fail?" independently of the test-phase
+    outcome. ``final_status`` gives ``test_failed`` top priority, so it masks real
+    post-processing step failures — the steps are therefore inspected first.
+
+    Tolerates missing keys so it can be used directly on ``yaml.safe_load`` results.
+
+    Args:
+        status_data: Raw postprocess status dict (or ``PostprocessStatus.to_dict()``).
+
+    Returns:
+        Classification with the post-processing outcome and whether the test phase failed.
+
+    Raises:
+        ValueError: If ``status_data`` is not a mapping.
+    """
+    if not isinstance(status_data, Mapping):
+        raise ValueError(
+            f"postprocess status data must be a mapping, got {type(status_data).__name__}"
+        )
+
+    final_status = status_data.get("final_status")
+    success = status_data.get("success")
+
+    test_phase = status_data.get("test_phase")
+    phase = test_phase.get("phase") if isinstance(test_phase, Mapping) else None
+    if phase:
+        test_failed = phase == PostprocessTestPhase.FAILED
+    else:
+        test_failed = final_status == FinalPostprocessStatus.TEST_FAILED
+
+    steps = status_data.get("steps", [])
+    has_failed_steps = _any_step_status(steps, "failed")
+    has_warning_steps = _any_step_status(steps, "warning")
+
+    # Step failures first: a "test_failed" label masks real post-processing failures.
+    if has_failed_steps:
+        return PostprocessClassification(PostprocessOutcome.POSTPROCESS_FAILURE, test_failed)
+
+    # Warnings-only: the writer sets success="warning" only when no step actually failed.
+    if success == "warning" or (test_failed and has_warning_steps):
+        return PostprocessClassification(PostprocessOutcome.WARNING, test_failed)
+
+    if final_status in (
+        FinalPostprocessStatus.PARSE_VISUALIZE_FAILED,
+        FinalPostprocessStatus.KPI_PIPELINE_FAILED,
+    ):
+        return PostprocessClassification(PostprocessOutcome.POSTPROCESS_FAILURE, test_failed)
+
+    if final_status == FinalPostprocessStatus.PERFORMANCE_REGRESSION:
+        return PostprocessClassification(PostprocessOutcome.PERFORMANCE_REGRESSION, test_failed)
+
+    if final_status == FinalPostprocessStatus.PERFORMANCE_INCREASE:
+        return PostprocessClassification(PostprocessOutcome.PERFORMANCE_INCREASE, test_failed)
+
+    if (
+        final_status in (FinalPostprocessStatus.SUCCESS, FinalPostprocessStatus.TEST_FAILED)
+        or success is True
+    ):
+        return PostprocessClassification(PostprocessOutcome.SUCCESS, test_failed)
+
+    # Unknown final_status with a falsy success field: conservatively a failure.
+    return PostprocessClassification(PostprocessOutcome.POSTPROCESS_FAILURE, test_failed)
 
 
 @dataclass
@@ -236,6 +345,25 @@ class PostprocessStatus:
     def is_failure(self) -> bool:
         """Check if the postprocess failed."""
         return not self.is_success() and self.success is not True
+
+    def has_failed_steps(self) -> bool:
+        """Check whether any post-processing step failed."""
+        return _any_step_status(self.steps, "failed")
+
+    def is_test_failure(self) -> bool:
+        """Check whether the test phase failed (as opposed to the post-processing)."""
+        return (
+            self.test_phase.phase == PostprocessTestPhase.FAILED
+            or self.final_status == FinalPostprocessStatus.TEST_FAILED
+        )
+
+    def is_postprocess_failure(self) -> bool:
+        """Check whether the post-processing itself failed, independently of the test phase."""
+        return self.classify().outcome == PostprocessOutcome.POSTPROCESS_FAILURE
+
+    def classify(self) -> PostprocessClassification:
+        """Classify post-processing health independently of the test-phase outcome."""
+        return classify_postprocess_outcome(self.to_dict())
 
     def get_failure_reason(self) -> str | None:
         """Get human-readable failure reason."""
