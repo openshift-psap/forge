@@ -17,8 +17,14 @@ extproc_max_requests:
   workloads.sweeps.large: [512, 1024, 2048, 3072, 4096]
   prom.capture.enabled: false
   test.matrix_benchmarking.deployment_level.enabled: true
+  # 224-320 mapped the shedding curve around the former optimum (256); the
+  # open question is now headroom, so the sweep moves to the upper half of the
+  # controller-enforced range (1-1024, values above are silently rejected and
+  # fall back to 8). Admission ceiling stays budget / response_duration, so
+  # 1024 with ~5s responses caps at ~200 rps -- beyond that, the answer is
+  # shorter responses or a product fix, not a bigger budget.
   test.matrix_benchmarking.deployment_level.dimensions:
-    platform.praxis.extproc_max_requests: [224, 256, 288, 320]
+    platform.praxis.extproc_max_requests: [256, 512, 1024]
 
   test.matrix_benchmarking.deployment_level.labels:
     platform.praxis.extproc_max_requests: max_requests
@@ -40,7 +46,7 @@ sim_inter_token_latency:
   test.endpoints: [maas/praxis]
   test.sweep: large
   workloads.replica_count: 4
-  workloads.sweeps.large: [512, 1024, 2048, 3072, 4096]
+  workloads.sweeps.large: [128, 256, 512, 1024]
   test.matrix_benchmarking.deployment_level.enabled: true
   test.matrix_benchmarking.deployment_level.dimensions:
     platform.sim.inter_token_latency: ["5ms", "15ms", "30ms", "60ms"]
