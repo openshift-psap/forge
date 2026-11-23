@@ -515,6 +515,7 @@ def _update_final_artifacts(artifact_dir, export_status: ExportStatus | None) ->
             artifact_path=artifact_path,
             tracking_uri=tracking_uri,
             connection=connection,
+            workspace=mlflow_meta.get("workspace"),
         )
         logger.info("Updated final artifacts in MLflow run %s", run_id)
     except Exception as e:
@@ -528,6 +529,7 @@ def _update_artifacts(
     artifact_path: str | None = None,
     tracking_uri: str | None = None,
     connection: dict[str, Any] | None = None,
+    workspace: str | None = None,
 ) -> None:
     """Re-upload artifacts to an existing MLflow run.
 
@@ -537,6 +539,7 @@ def _update_artifacts(
         artifact_path: Artifact path within the MLflow run (None for root)
         tracking_uri: MLflow tracking URI
         connection: MLflow connection configuration
+        workspace: Workspace containing the run
 
     Intended to be called after all post-export work (notifications, etc.) completes,
     so uploaded files contain the full session output.
@@ -568,6 +571,7 @@ def _update_artifacts(
         files=dict.fromkeys(files_to_upload, artifact_path),
         tracking_uri=tracking_uri,
         connection=connection,
+        workspace=workspace,
     )
 
 

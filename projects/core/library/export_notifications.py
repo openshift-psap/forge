@@ -74,6 +74,7 @@ class BackendResult:
     detail: str | None = None
     status: str | None = None
     child_runs: list[dict[str, str]] | None = None
+    workspace: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BackendResult":
@@ -93,6 +94,7 @@ class BackendResult:
             detail=data.get("detail"),
             status=data.get("status"),
             child_runs=data.get("child_runs"),
+            workspace=data.get("workspace"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -106,6 +108,8 @@ class BackendResult:
             result["run_url"] = self.run_url
         if self.tracking_uri is not None:
             result["tracking_uri"] = self.tracking_uri
+        if self.workspace is not None:
+            result["workspace"] = self.workspace
         if self.detail is not None:
             result["detail"] = self.detail
         if self.status is not None:
