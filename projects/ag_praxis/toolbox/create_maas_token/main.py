@@ -91,6 +91,12 @@ def request_maas_token(args, ctx):
         f' -H "Authorization: Bearer $(cat {TOKEN_PATH_IN_POD})"'
         f" -d {shlex.quote(payload)}"
     )
+    # Safe to log: the SA token is referenced via $(cat ...), only substituted
+    # inside the pod at runtime — it never appears in the command text.
+    # The response (which contains the API key) must never be logged.
+    logger.info(f"Requesting MaaS API key: {curl_cmd}")
+    logger.info(f"<safe command> {curl_cmd}")
+
     result = oc_exec(
         "sh",
         "-c",
