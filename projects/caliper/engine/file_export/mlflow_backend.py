@@ -608,8 +608,8 @@ def log_multi_run_artifacts(
 ) -> tuple[str, dict[str, Any] | None]:
     """Create a parent MLflow run with all artifacts and nested child runs per test directory.
 
-    The parent run receives every artifact. Each child run records its test
-    metrics, parameters, and run metadata.
+    The parent run receives the artifact tree. Each child run records its test
+    metrics, parameters, and run metadata, plus a README pointing to the parent.
     If ``child_run_names`` is provided, those names are used instead of ``run_dir.name``.
     """
     try:
@@ -715,6 +715,17 @@ def log_multi_run_artifacts(
                         mlflow.log_param(str(k), "" if v is None else str(v))
 
                     _apply_run_metadata(effective_meta)
+
+                    workload_path = run_dir.resolve().relative_to(artifact_root.resolve())
+                    readme = (
+                        "This child run records metrics, parameters, and tags for this workload.\n"
+                        "Workload artifacts are stored on the parent run.\n\n"
+                        f"Parent run ID: {parent_rid}\n"
+                        f"Workload directory: {workload_path.as_posix()}\n"
+                    )
+                    if parent_url:
+                        readme += f"Parent artifacts: {parent_url}\n"
+                    client.log_text(child_rid, readme, "README.txt")
 
                     child_url, _ = _mlflow_ui_links(
                         tu, eid, child_rid, workspace=workspace, show_artifacts=False

@@ -380,7 +380,7 @@ class TestMultiRunMlflowLogging:
 
         mock_mlflow.set_experiment.assert_called_once_with("my-experiment")
 
-    def test_only_parent_run_gets_artifacts(self, artifact_tree: Path, mock_mlflow):
+    def test_only_parent_run_gets_workload_artifacts(self, artifact_tree: Path, mock_mlflow):
         from projects.caliper.engine.file_export.mlflow_backend import (
             log_multi_run_artifacts,
         )
@@ -432,7 +432,7 @@ class TestMultiRunMlflowLogging:
         assert tag_dict.get("forge.child_count") == "2"
 
     def test_child_run_metadata_in_status(self, artifact_tree: Path, mock_mlflow):
-        """Status links to child run pages and the parent's artifact tab."""
+        """Status links to child run pages, and each child points to its parent artifacts."""
         from projects.caliper.engine.file_export.mlflow_backend import (
             log_multi_run_artifacts,
         )
@@ -489,6 +489,16 @@ class TestMultiRunMlflowLogging:
         assert meta["run_url"] == f"{run_base}/parent-run-id/artifacts?workspace=forge-sandbox"
         for child in child_runs:
             assert child["run_url"] == f"{run_base}/{child['run_id']}?workspace=forge-sandbox"
+
+        readmes = mock_client.log_text.call_args_list
+        assert len(readmes) == len(child_runs)
+        for child, run_dir, readme in zip(child_runs, sorted(run_dirs), readmes, strict=True):
+            run_id, contents, artifact_file = readme.args
+            workload_path = run_dir.relative_to(artifact_tree).as_posix()
+            assert run_id == child["run_id"]
+            assert artifact_file == "README.txt"
+            assert f"Parent artifacts: {meta['run_url']}\n" in contents
+            assert f"Workload directory: {workload_path}\n" in contents
 
 
 # ---------------------------------------------------------------------------
