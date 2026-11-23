@@ -26,6 +26,8 @@ from projects.caliper.engine.file_export.censoring import (
 )
 from projects.caliper.engine.file_export.censoring_rules import (
     COMPILED_KEYWORD_PATTERNS,
+    COMPILED_KEYWORD_PATTERNS_BYTES,
+    KEYWORD_PATTERN_REQUIRED_LITERALS,
     KEYWORD_PATTERNS,
     matches_sensitive_filename,
 )
@@ -300,6 +302,74 @@ class TestKeywordPatterns:
         for text in legitimate_exports:
             matches = self._matches_any_pattern(text)
             assert matches, f"Legitimate export not detected: '{text}'"
+
+
+# ---------------------------------------------------------------------------
+# Literal pre-filter invariants
+# ---------------------------------------------------------------------------
+
+
+class TestRequiredLiteralPrefilter:
+    """The literal pre-filter must never skip content a pattern would match."""
+
+    MATCHING_SAMPLES = [
+        "password=hunter2",
+        "password: my_password",
+        "api_key=abc123xyz",
+        "api-secret=supersecret",
+        "api_token=eyJhbGciOiJIUzI1NiJ9",
+        "Bearer eyJhbGciOiJIUzI1NiJ9",
+        "bearer eyJhbGciOiJIUzI1NiJ9",
+        "sk-abcdefghijklmnopqrstuvwxyz123456",
+        "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+        "AKIAIOSFODNN7EXAMPLE",
+        "mongodb://user:pass@host",
+        "postgresql://admin:secret@db.example.com",
+        "huggingface_token=hf_abcd1234567890",
+        "anthropic_api_key=ant-abc123",
+        "hf_abcdef1234567890123456",
+        "jwt_secret=mysecret123",
+        "slack_token=xoxb-123456789",
+        "xoxp-1234567890-abcdef",
+        "encryption_key=enc123456",
+        "signing_key=sign789",
+        "--password secret123",
+        "--api-key mykey456",
+        "--token bearer_token",
+        "export API_KEY=secret123",
+        "oc create secret generic test --from-literal=password=secret123",
+        "kubectl create secret generic test --from-literal=user=admin",
+        "  export WEBHOOK_SECRET=hook123",
+    ]
+
+    def test_literals_table_is_aligned(self):
+        assert len(KEYWORD_PATTERN_REQUIRED_LITERALS) == len(KEYWORD_PATTERNS)
+
+    def test_every_match_contains_a_required_literal(self):
+        """If a pattern matches, at least one of its required literals must be present.
+
+        Otherwise the pre-filter in ArtifactCensor would silently skip the redaction.
+        """
+        for text in self.MATCHING_SAMPLES:
+            lowered = text.encode("utf-8").lower()
+            for i, pattern in enumerate(COMPILED_KEYWORD_PATTERNS):
+                if not pattern.search(text):
+                    continue
+                literals = KEYWORD_PATTERN_REQUIRED_LITERALS[i]
+                assert any(literal in lowered for literal in literals), (
+                    f"Pattern {i} ({KEYWORD_PATTERNS[i]!r}) matches {text!r} "
+                    "but none of its required literals are present — "
+                    "the pre-filter would skip it"
+                )
+
+    def test_bytes_patterns_match_the_same_content(self):
+        """The bytes-compiled patterns must flag exactly what the str patterns flag."""
+        for text in self.MATCHING_SAMPLES:
+            str_matches = [i for i, p in enumerate(COMPILED_KEYWORD_PATTERNS) if p.search(text)]
+            bytes_matches = [
+                i for i, p in enumerate(COMPILED_KEYWORD_PATTERNS_BYTES) if p.search(text.encode())
+            ]
+            assert str_matches == bytes_matches, f"str/bytes pattern divergence on {text!r}"
 
 
 # ---------------------------------------------------------------------------
