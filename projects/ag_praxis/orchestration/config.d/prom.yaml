@@ -75,6 +75,9 @@ capture:
         files: [istio_gateway]
         variables:
           GATEWAY_NAME: "{gateway_name}"
+      auth_path:
+        enabled: true
+        files: [maas_auth_path]
       control_plane:
         enabled: true
         files: [control_plane]
