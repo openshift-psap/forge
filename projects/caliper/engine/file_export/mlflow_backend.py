@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.engine.file_export.file_stats import describe_files
+from projects.caliper.engine.file_export.timefmt import format_duration, format_time
 from projects.caliper.engine.mlflow_connection import (
     assert_tracking_uri_has_no_userinfo,
     mlflow_tracking_context,
@@ -401,8 +403,10 @@ def log_artifacts(
             mlflow.set_experiment(experiment)
         file_paths = [p for p in paths if p.is_file()]
         workers = _parallel_workers(upload_workers, len(file_paths))
+        upload_started = time.monotonic()
         logger.info(
-            "MLflow upload starting: %s, workers=%d, experiment=%s",
+            "MLflow upload starting at %s: %s, workers=%d, experiment=%s",
+            format_time(),
             describe_files(file_paths),
             workers,
             experiment or "default",
@@ -465,9 +469,15 @@ def log_artifacts(
             meta = _capture_mlflow_run_metadata(tu, workspace=workspace)
 
         if partial_failure:
-            logger.info(f"MLflow upload partially failed ({mlflow.get_tracking_uri()})")
+            logger.info(
+                f"MLflow upload partially failed at {format_time()} "
+                f"in {format_duration(time.monotonic() - upload_started)} ({mlflow.get_tracking_uri()})"
+            )
         else:
-            logger.info(f"MLflow upload finished ({mlflow.get_tracking_uri()})")
+            logger.info(
+                f"MLflow upload finished at {format_time()} "
+                f"in {format_duration(time.monotonic() - upload_started)} ({mlflow.get_tracking_uri()})"
+            )
 
         return f"mlflow:{mlflow.get_tracking_uri()}", meta, any(partial_failure)
 
@@ -644,8 +654,10 @@ def log_multi_run_artifacts(
         file_paths = [p for p in all_artifact_paths if p.is_file()]
         effective_meta = merge_run_metadata_with_git_source(artifact_root, run_metadata)
 
+        upload_started = time.monotonic()
         logger.info(
-            "MLflow multi-run upload starting: %s, %d test run(s), experiment=%s",
+            "MLflow multi-run upload starting at %s: %s, %d test run(s), experiment=%s",
+            format_time(),
             describe_files(file_paths),
             len(run_dirs),
             experiment or "default",
@@ -751,7 +763,12 @@ def log_multi_run_artifacts(
         for error in all_curve_errors:
             logger.warning("MLflow curve metric error: %s", error)
 
-        logger.info("MLflow multi-run upload finished (%s)", mlflow.get_tracking_uri())
+        logger.info(
+            "MLflow multi-run upload finished at %s in %s (%s)",
+            format_time(),
+            format_duration(time.monotonic() - upload_started),
+            mlflow.get_tracking_uri(),
+        )
         return f"mlflow:{mlflow.get_tracking_uri()}", parent_meta
 
     if connection is not None:
