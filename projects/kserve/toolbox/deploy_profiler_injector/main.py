@@ -34,6 +34,7 @@ import yaml
 from projects.core.dsl import (
     entrypoint,
     execute_tasks,
+    retry,
     shell,
     task,
 )
@@ -349,6 +350,7 @@ def deploy_profiler_configmap(args, context):
     return f"Applied ConfigMap {CONFIGMAP_NAME} in {args.namespace}"
 
 
+@retry(attempts=30, delay=10, backoff=1.0, retry_on_exceptions=True)
 @task
 def wait_for_injector_pod(args, context):
     result = shell.run(

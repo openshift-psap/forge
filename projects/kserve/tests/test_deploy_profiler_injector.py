@@ -154,3 +154,10 @@ def test_no_uninterpolated_placeholders() -> None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             assert "{args." not in node.value, f"line {node.lineno}: {node.value!r}"
             assert "{context." not in node.value, f"line {node.lineno}: {node.value!r}"
+
+
+def test_wait_for_injector_pod_retries() -> None:
+    # The pod needs time to pull and schedule; the wait must poll, not
+    # fail on the first Pending observation (AGENTS.md: no single-shot waits).
+    assert deploy.wait_for_injector_pod._retry_config["attempts"] >= 30
+    assert deploy.wait_for_injector_pod._retry_config["delay"] >= 10
