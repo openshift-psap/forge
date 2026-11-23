@@ -40,7 +40,12 @@ def _mlflow_artifact_subdir(artifact_root: Path, file_path: Path) -> str | None:
 
 
 def _mlflow_ui_links(
-    tracking_uri: str, experiment_id: str, run_id: str, workspace: str | None = None
+    tracking_uri: str,
+    experiment_id: str,
+    run_id: str,
+    workspace: str | None = None,
+    *,
+    show_artifacts: bool = True,
 ) -> tuple[str | None, str | None]:
     """Hash-based MLflow UI URLs (http/https tracking servers only)."""
     base = tracking_uri.rstrip("/")
@@ -49,7 +54,8 @@ def _mlflow_ui_links(
     eid = str(experiment_id)
     rid = str(run_id)
     qs = f"?workspace={workspace}" if workspace else ""
-    run_url = f"{base}/#/experiments/{eid}/runs/{rid}/artifacts{qs}"
+    tab = "/artifacts" if show_artifacts else ""
+    run_url = f"{base}/#/experiments/{eid}/runs/{rid}{tab}{qs}"
     exp_url = f"{base}/#/experiments/{eid}{qs}"
     return run_url, exp_url
 
@@ -602,9 +608,8 @@ def log_multi_run_artifacts(
 ) -> tuple[str, dict[str, Any] | None]:
     """Create a parent MLflow run with all artifacts and nested child runs per test directory.
 
-    The parent run receives every artifact.  Each child run receives only the
-    files that live under its own ``run_dir`` subtree, so artifacts are never
-    duplicated across children.
+    The parent run receives the artifact tree. Each child run records its test
+    metrics, parameters, and run metadata, plus a README pointing to the parent.
     If ``child_run_names`` is provided, those names are used instead of ``run_dir.name``.
     """
     try:
@@ -686,11 +691,6 @@ def log_multi_run_artifacts(
                     child_run_names.get(run_dir, run_dir.name) if child_run_names else run_dir.name
                 )
 
-                resolved_run_dir = run_dir.resolve()
-                child_files = [
-                    p for p in file_paths if p.resolve().is_relative_to(resolved_run_dir)
-                ]
-
                 with mlflow.start_run(run_name=child_name, nested=True):
                     child_rid = mlflow.active_run().info.run_id
 
@@ -716,23 +716,20 @@ def log_multi_run_artifacts(
 
                     _apply_run_metadata(effective_meta)
 
-                    _upload_mlflow_files_parallel(
-                        client=client,
-                        run_id=child_rid,
-                        file_paths=child_files,
-                        artifact_root=artifact_root,
-                        upload_workers=upload_workers,
-                        verbose=verbose,
+                    workload_path = run_dir.resolve().relative_to(artifact_root.resolve())
+                    readme = (
+                        "This child run records metrics, parameters, and tags for this workload.\n"
+                        "Workload artifacts are stored on the parent run.\n\n"
+                        f"Parent run ID: {parent_rid}\n"
+                        f"Workload directory: {workload_path.as_posix()}\n"
                     )
+                    if parent_url:
+                        readme += f"Parent artifacts: {parent_url}\n"
+                    client.log_text(child_rid, readme, "README.txt")
 
-                    if verbose:
-                        logger.info(
-                            "  Child run %s: %d artifact(s) (of %d total)",
-                            child_name,
-                            len(child_files),
-                            len(file_paths),
-                        )
-                    child_url, _ = _mlflow_ui_links(tu, eid, child_rid, workspace=workspace)
+                    child_url, _ = _mlflow_ui_links(
+                        tu, eid, child_rid, workspace=workspace, show_artifacts=False
+                    )
                     if child_url:
                         logger.info("  Child run %s: %s", child_name, child_url)
 
