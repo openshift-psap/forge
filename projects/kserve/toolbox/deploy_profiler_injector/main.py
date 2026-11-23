@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Deploy the vLLM profiler env-injector on the target cluster.
 
-Vendors the injector deployment quay.io/mimehta/vllmprofiler: a mutating 
-admission webhook that injects the profiler ``sitecustomize.py`` into 
-pods matching the target labels in the target namespace, plus the 
+Vendors the injector deployment quay.io/mimehta/vllmprofiler: a mutating
+admission webhook that injects the profiler ``sitecustomize.py`` into
+pods matching the target labels in the target namespace, plus the
 per-namespace ConfigMap holding the profiler configuration.
 
 Deploys into a dedicated injector namespace (default ``vllm-profiler``):
@@ -112,50 +112,94 @@ def _webhook_ca_bundle() -> str | None:
 def _generate_tls_certificate(injector_namespace: str) -> str:
     """Generate a CA and serving certificate; create the TLS secret.
 
-    The private key is created in a temporary directory outside the
-    artifact directory and never logged. Returns the CA certificate
-    PEM, base64-encoded for the webhook caBundle.
+    Mirrors gen-certs.sh from openshift-psap/vllm-profiler: a self-signed
+    CA (10 years) signs a serving certificate (1 year) carrying the service
+    DNS names, serverAuth usage, and key encipherment. Generated with the
+    cryptography library because the forge image ships no openssl CLI.
+
+    The private key is written only to a temporary directory outside the
+    artifact directory and never logged. Returns the CA certificate PEM,
+    base64-encoded for the webhook caBundle.
     """
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    now = datetime.datetime.now(datetime.UTC)
+
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "env-injector-ca")])
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(ca_subject)
+        .issuer_name(ca_subject)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    dns_names = [
+        f"env-injector.{injector_namespace}.svc",
+        f"env-injector.{injector_namespace}.svc.cluster.local",
+    ]
+    tls_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    tls_cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, dns_names[0])]))
+        .issuer_name(ca_subject)
+        .public_key(tls_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=365))
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=True,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=False,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(name) for name in dns_names]),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
     with tempfile.TemporaryDirectory(prefix="profiler-injector-certs-") as cert_dir:
         cert_dir = Path(cert_dir)
-        ca_key = cert_dir / "ca.key"
-        ca_crt = cert_dir / "ca.crt"
-        tls_key = cert_dir / "tls.key"
-        tls_csr = cert_dir / "tls.csr"
         tls_crt = cert_dir / "tls.crt"
-        ext_file = cert_dir / "ext.cnf"
-
-        shell.run(
-            f"openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes "
-            f"-keyout {ca_key} -out {ca_crt} -subj '/CN=env-injector-ca'"
+        tls_key_path = cert_dir / "tls.key"
+        tls_crt.write_bytes(tls_cert.public_bytes(serialization.Encoding.PEM))
+        tls_key_path.write_bytes(
+            tls_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
         )
-        ext_file.write_text(
-            "[ req ]\n"
-            "distinguished_name = dn\n"
-            "req_extensions = v3_req\n"
-            "[ dn ]\n"
-            f"CN = env-injector.{injector_namespace}.svc\n"
-            "[ v3_req ]\n"
-            "keyUsage = keyEncipherment, dataEncipherment\n"
-            "extendedKeyUsage = serverAuth\n"
-            "subjectAltName = @alt_names\n"
-            "[ alt_names ]\n"
-            f"DNS.1 = env-injector.{injector_namespace}.svc\n"
-            f"DNS.2 = env-injector.{injector_namespace}.svc.cluster.local\n"
-        )
-        shell.run(f"openssl genrsa -out {tls_key} 2048")
-        shell.run(f"openssl req -new -key {tls_key} -out {tls_csr} -config {ext_file}")
-        shell.run(
-            f"openssl x509 -req -in {tls_csr} -CA {ca_crt} -CAkey {ca_key} "
-            f"-CAcreateserial -out {tls_crt} -days 365 -sha256 "
-            f"-extensions v3_req -extfile {ext_file}"
-        )
-
         shell.run(
             f"oc create secret tls {CERT_SECRET_NAME} "
-            f"-n {injector_namespace} --cert={tls_crt} --key={tls_key}"
+            f"-n {injector_namespace} --cert={tls_crt} --key={tls_key_path}"
         )
-        return base64.b64encode(ca_crt.read_bytes()).decode()
+
+    return base64.b64encode(ca_cert.public_bytes(serialization.Encoding.PEM)).decode()
 
 
 @task

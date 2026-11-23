@@ -38,6 +38,7 @@ dependencies = [
     "jsonpath_ng",
     "pydantic>=2.0",
     "yq",
+    "cryptography>=41",
 ]
 
 [project.optional-dependencies]

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import base64
-import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -33,20 +32,6 @@ class FakeShell:
 
     def __call__(self, command, check=True, input_text=None, **_kwargs):
         self.calls.append(SimpleNamespace(command=command, input_text=input_text, check=check))
-
-        if command.startswith("openssl"):
-            # Simulate certificate generation: create the output files, and
-            # fail if the command reads an input file that was never created
-            # (catches missing generation steps).
-            for match in re.finditer(r"(?:-in|-key|-CA|-CAkey) (\S+)", command):
-                assert Path(match.group(1)).exists(), f"openssl input missing: {match.group(1)}"
-            for match in re.finditer(r"(?:-out|-keyout) (\S+)", command):
-                Path(match.group(1)).write_bytes(
-                    b"-----BEGIN CERTIFICATE-----\n"
-                    + b"dummy" * 40
-                    + b"\n-----END CERTIFICATE-----\n"
-                )
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         if command.startswith("oc get namespace "):
             return SimpleNamespace(returncode=1, stdout="", stderr="")
@@ -134,7 +119,6 @@ def test_full_deploy_on_clean_cluster() -> None:
 def test_tls_certificate_generation_and_reuse() -> None:
     fake = FakeShell()
     _run_all_tasks(fake)
-    assert any(cmd.startswith("openssl") for cmd in fake.commands())
     assert any("oc create secret tls" in cmd for cmd in fake.commands())
 
     # Second run: secret and valid webhook CA bundle already exist.
@@ -150,7 +134,6 @@ def test_tls_certificate_generation_and_reuse() -> None:
 
     fake2 = ReusingShell()
     _run_all_tasks(fake2)
-    assert not any(cmd.startswith("openssl") for cmd in fake2.commands())
     assert not any("oc create secret tls" in cmd for cmd in fake2.commands())
 
 
