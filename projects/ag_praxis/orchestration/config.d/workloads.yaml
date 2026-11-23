@@ -4,7 +4,7 @@ use_pvc: false
 pvc_size: 1Gi
 pvc_storage_class: null
 fs_group: null
-replica_count: 1
+replica_count: 4
 timeout_seconds: 3600
 validate_backend: false
 keep_full_benchmark_file: false
