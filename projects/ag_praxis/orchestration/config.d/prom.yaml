@@ -20,6 +20,7 @@ capture:
     params:
       namespace: "@test.namespace"
       llmisvc_name: "@platform.maas.llmisvc_name"
+      gateway_name: "@platform.maas.gateway.name"
     groups:
       vllm:
         enabled: true
@@ -69,6 +70,11 @@ capture:
       worker_node:
         enabled: true
         files: [worker_node]
+      istio_gateway:
+        enabled: true
+        files: [istio_gateway]
+        variables:
+          GATEWAY_NAME: "{gateway_name}"
       control_plane:
         enabled: true
         files: [control_plane]
