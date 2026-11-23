@@ -7,6 +7,7 @@ Replaces llmd_capture_llmisvc_state Ansible role
 
 import json
 import logging
+from datetime import datetime
 
 import yaml
 
@@ -24,6 +25,7 @@ def run(
     gateway_name: str = "",
     gateway_namespace: str = "",
     since_time: str = "",
+    startup_restart_cutoff: str = "",
 ):
     """
     Capture LLMInferenceService state using task-based DSL
@@ -34,6 +36,7 @@ def run(
         gateway_name: Gateway to capture when provided
         gateway_namespace: Namespace of the Gateway
         since_time: Only capture Gateway logs since this ISO 8601 time, when provided
+        startup_restart_cutoff: ISO 8601 benchmark start; allow one restart per pod recovered before it
     """
 
     if not llmisvc_name:
@@ -744,7 +747,23 @@ def record_routing_capture_warnings(args, context):
     return f"{len(warnings)} routing capture warnings"
 
 
-def _container_crash(pod_name: str, status: dict) -> str | None:
+def _recovered_before_cutoff(status: dict, cutoff: datetime) -> bool:
+    state = status.get("state", {})
+    recovered_at = state.get("running", {}).get("startedAt")
+    completed = state.get("terminated", {})
+    if completed.get("exitCode") == 0:
+        recovered_at = completed.get("finishedAt")
+    if not status.get("ready") or not recovered_at:
+        return False
+    try:
+        return datetime.fromisoformat(recovered_at) < cutoff
+    except (TypeError, ValueError):
+        return False
+
+
+def _container_crash(
+    pod_name: str, status: dict, startup_restart_cutoff: datetime | None = None
+) -> str | None:
     """Describe how a container crashed, or None if it did not."""
     container_name = status.get("name", "<unknown>")
 
@@ -757,31 +776,43 @@ def _container_crash(pod_name: str, status: dict) -> str | None:
         exit_code = terminated.get("exitCode")
         if terminated and exit_code not in (None, 0):
             reason = terminated.get("reason", "Unknown")
-            return f"{pod_name}/{container_name}: {state_key} terminated ({reason}, exit code {exit_code})"
+            crash = f"{pod_name}/{container_name}: {state_key} terminated ({reason}, exit code {exit_code})"
+            if (
+                state_key == "lastState"
+                and startup_restart_cutoff is not None
+                and _recovered_before_cutoff(status, startup_restart_cutoff)
+            ):
+                logger.warning("Recovered startup restart: %s", crash)
+                return None
+            return crash
 
     return None
 
 
-def _find_crashed_containers(pods: list) -> list[str]:
+def _find_crashed_containers(
+    pods: list, startup_restart_cutoff: datetime | None = None
+) -> list[str]:
     """Return a crash description per crashed container across the given pods (empty if none)."""
     crashes = []
     for pod in pods:
         pod_name = pod.get("metadata", {}).get("name", "<unknown>")
-        for status_key in (
-            "initContainerStatuses",
-            "containerStatuses",
-            "ephemeralContainerStatuses",
-        ):
-            for status in pod.get("status", {}).get(status_key, []):
-                crash = _container_crash(pod_name, status)
-                if crash:
-                    crashes.append(crash)
+        container_statuses = [
+            status
+            for key in ("initContainerStatuses", "containerStatuses", "ephemeralContainerStatuses")
+            for status in pod.get("status", {}).get(key, [])
+        ]
+        restart_count = sum(status.get("restartCount", 0) for status in container_statuses)
+        cutoff = startup_restart_cutoff if restart_count == 1 else None
+        for status in container_statuses:
+            crash = _container_crash(pod_name, status, cutoff)
+            if crash:
+                crashes.append(crash)
     return crashes
 
 
 @task
 def check_pods_crashed(args, context):
-    """Fail the capture if any LLMInferenceService pod container crashed.
+    """Fail the capture for crashes outside the allowed startup recovery window.
 
     Runs after all capture tasks so the artifacts are still written on failure.
     """
@@ -790,9 +821,14 @@ def check_pods_crashed(args, context):
         namespace=context.target_namespace,
         selector=f"app.kubernetes.io/name={args.llmisvc_name}",
     )
-    crashed = _find_crashed_containers((pods or {}).get("items", []))
+    cutoff = (
+        datetime.fromisoformat(args.startup_restart_cutoff) if args.startup_restart_cutoff else None
+    )
+    crashed = _find_crashed_containers((pods or {}).get("items", []), cutoff)
     if crashed:
         raise RuntimeError("Crashed LLMInferenceService containers detected: " + "; ".join(crashed))
+    if cutoff is not None:
+        return "No fatal container crashes detected in LLMInferenceService pods"
     return "No crashed containers detected in LLMInferenceService pods"
 
 
