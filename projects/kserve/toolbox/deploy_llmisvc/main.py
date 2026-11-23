@@ -43,7 +43,6 @@ def run(
     dry_run: bool = False,
     wait_long_scheduling: bool = False,
     deploy_monitor: bool = True,
-    allow_startup_restart: bool = False,
 ) -> str:
     """
     Deploy an LLMInferenceService and wait for its endpoint.
@@ -55,7 +54,6 @@ def run(
         dry_run: If True, only prepare the manifest without deploying
         wait_long_scheduling: If True, wait for all pods to be scheduled before checking service readiness with extended retry
         deploy_monitor: If True, deploy ServiceMonitor for monitoring the ISVC
-        allow_startup_restart: Allow one container restart per pod while waiting for readiness
     """
 
     ctx = execute_tasks(locals())
@@ -439,53 +437,34 @@ def wait_service_ready(args, ctx):
         args.namespace,
     )
 
-    pods = oc_get_json(
+    # Check for pod restarts and abort if any pods have restarted
+    restart_result = oc(
+        "get",
         "pods",
-        selector=ctx.selector,
-        namespace=args.namespace,
+        "-l",
+        ctx.selector,
+        "-n",
+        args.namespace,
+        "-o",
+        "jsonpath={range .items[*]}{.metadata.name}:{.status.containerStatuses[*].restartCount}{'\\n'}{end}",
+        log_stdout=False,
     )
-    if args.allow_startup_restart and not hasattr(ctx, "reported_startup_restarts"):
-        ctx.reported_startup_restarts = set()
-    recovering_pods = []
-    for pod in (pods or {}).get("items", []):
-        pod_name = pod["metadata"]["name"]
-        status = pod.get("status", {})
-        containers = status.get("containerStatuses", [])
-        if not args.allow_startup_restart:
-            for container in containers:
-                count = container.get("restartCount", 0)
-                if count > 0:
-                    raise RuntimeError(
-                        f"Pod {pod_name} has restarted (restart count: {count}). Aborting wait due to pod restart."
-                    )
-            continue
 
-        restart_count = sum(
-            container.get("restartCount", 0)
-            for container in containers + status.get("initContainerStatuses", [])
-        )
-        if restart_count > 1:
-            raise RuntimeError(
-                f"Pod {pod_name} has restarted {restart_count} time(s), exceeding the startup "
-                "allowance of 1 per pod."
-            )
-        if not restart_count:
-            continue
-        if pod_name not in ctx.reported_startup_restarts:
-            logger.warning(
-                "Pod %s restarted during startup. Continuing to wait for readiness.", pod_name
-            )
-            ctx.reported_startup_restarts.add(pod_name)
-        if not any(
-            condition.get("type") == "Ready" and condition.get("status") == "True"
-            for condition in status.get("conditions", [])
-        ):
-            recovering_pods.append(pod_name)
-
-    if recovering_pods:
-        return False, "Waiting for pods to recover from a startup restart: " + ", ".join(
-            recovering_pods
-        )
+    if restart_result.stdout.strip():
+        for line in restart_result.stdout.strip().split("\n"):
+            if ":" in line:
+                pod_name, restart_counts = line.split(":", 1)
+                # Check if any container has restarted
+                counts = restart_counts.split()
+                for count_str in counts:
+                    try:
+                        if int(count_str) > 0:
+                            raise RuntimeError(
+                                f"Pod {pod_name} has restarted (restart count: {count_str}). Aborting wait due to pod restart."
+                            )
+                    except ValueError:
+                        # Skip non-numeric restart counts
+                        pass
 
     if result.stdout.strip():
         try:

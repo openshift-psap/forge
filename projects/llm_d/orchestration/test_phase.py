@@ -323,15 +323,11 @@ def run_finalizers(
 
     # Only capture service state if we have the llmisvc_name
     if llmisvc_name:
-        startup_restart_cutoff = ""
-        if benchmark_times and config.project.get_config("runtime.kserve.allow_startup_restart"):
-            startup_restart_cutoff = benchmark_times[0].isoformat()
         finalizer_exc = _run_finalizer(
             "capturing inference-service state",
             capture_inference_service_state,
             llmisvc_name=llmisvc_name,
             since_time=test_start_time.isoformat() if test_start_time else "",
-            startup_restart_cutoff=startup_restart_cutoff,
         )
     else:
         logging.warning("No llmisvc name received, cannot capture the llmisvc state")
@@ -677,7 +673,6 @@ def deploy_inference_service_from_manifest(manifest_path: Path, actual_llmisvc_n
         dry_run=dry_run,
         wait_long_scheduling=wait_long_scheduling,
         deploy_monitor=deploy_monitor,
-        allow_startup_restart=config.project.get_config("runtime.kserve.allow_startup_restart"),
     )
 
     if dry_run:
@@ -904,9 +899,7 @@ def run_guidellm_benchmark(test_dir, *, endpoint_url: str) -> tuple[datetime, da
     return start_time, end_time
 
 
-def capture_inference_service_state(
-    llmisvc_name: str, since_time: str = "", startup_restart_cutoff: str = ""
-) -> None:
+def capture_inference_service_state(llmisvc_name: str, since_time: str = "") -> None:
     """Capture inference service state for the given llmisvc name."""
     namespace = runtime_config.get_namespace()
     gateway = runtime_config.get_platform_config()["gateway"]
@@ -917,7 +910,6 @@ def capture_inference_service_state(
         gateway_name=gateway["name"],
         gateway_namespace=gateway["namespace"],
         since_time=since_time,
-        startup_restart_cutoff=startup_restart_cutoff,
     )
 
 
