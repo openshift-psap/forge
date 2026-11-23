@@ -20,6 +20,45 @@ EXTPROC_MAX_REQUESTS_ANNOTATION_KEY = "maas.opendatahub.io/experimental-extproc-
 MAX_EXTPROC_MAX_REQUESTS = 1024
 
 
+def _find_gateway_authpolicy(gateway_name, ingress_namespace):
+    """Name of the AuthPolicy owned by the given Gateway (e.g. maas-gateway-auth).
+
+    The policy name is derived from the gateway by maas-controller, not by a
+    stable rule, so it is discovered through the ownerReference instead.
+    """
+    result = oc("get", "authpolicy", "-n", ingress_namespace, "-o", "json")
+    for item in json.loads(result.stdout).get("items", []):
+        for owner in item.get("metadata", {}).get("ownerReferences", []):
+            if owner.get("kind") == "Gateway" and owner.get("name") == gateway_name:
+                return item["metadata"]["name"]
+    return None
+
+
+def _identity_metrics_entries(spec):
+    """(json_patch_path, current_value) for identity response filters with a metrics field.
+
+    Walks the whole spec so any AuthPolicy layout works (rules under spec or
+    under defaults/overrides).
+    """
+    entries = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            if path and path[-1] == "identity" and "json" in node and "metrics" in node:
+                entries.append(
+                    ("/spec/" + "/".join(str(p) for p in path) + "/metrics", node["metrics"])
+                )
+                return
+            for k, v in node.items():
+                walk(v, path + [k])
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, path + [i])
+
+    walk(spec or {}, [])
+    return entries
+
+
 @entrypoint
 def run(
     *,
@@ -31,6 +70,7 @@ def run(
     gateway_name: str = "maas-default-gateway",
     payload_processing_config: dict | None = None,
     extproc_max_requests: int | None = None,
+    identity_metrics: bool | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
 
@@ -59,6 +99,13 @@ def run(
             ext_proc calls the gateway sheds requests with an empty HTTP 500 before auth.
             Valid range 1-1024. The effective limits are verified against the gateway's
             live Envoy config (see verify_extproc_limits).
+        identity_metrics: Value for the `metrics` field of the identity response filter
+            on the gateway AuthPolicy (maas-controller hardcodes true). False removes
+            authorino's per-request metric-label evaluation (~38% of its CPU per auth;
+            the labels feed usage metering that is broken on streamed /v1/responses
+            anyway). True restores it for metering-focused runs. None keeps the
+            controller default. Verified against the AuthPolicy and the generated
+            AuthConfigs (see verify_identity_metrics).
     """
     if (
         extproc_max_requests is not None
@@ -201,6 +248,62 @@ def set_extproc_max_requests(args, ctx):
     return (
         f"Set {EXTPROC_MAX_REQUESTS_ANNOTATION_KEY}={args.extproc_max_requests} "
         f"on {args.tenant_name}"
+    )
+
+
+@task
+def set_identity_metrics(args, ctx):
+    """Set the identity-metrics flag on the gateway AuthPolicy.
+
+    maas-controller hardcodes `metrics: true` on the identity response filter.
+    With it on, authorino re-compiles and re-evaluates the filter's CEL label
+    expressions on every request (metricLabels, 72-88% of its CPU in pprof
+    profiles); turning it off cut authorino CPU per successful auth by ~38%.
+    The labels feed usage metering that is broken on streamed /v1/responses
+    anyway (token metering fails open -- Finding 2 of
+    maas-praxis-500-ext-proc-overflow.md).
+
+    The patch targets the AuthPolicy owned by the gateway; kuadrant propagates
+    it to the generated AuthConfigs (verified by verify_identity_metrics).
+    """
+    if not args.activate:
+        return "Skipped: praxis is being deactivated (policy left as-is)"
+    if args.identity_metrics is None:
+        return "Skipped: no identity_metrics configured, keeping controller default"
+
+    policy_name = _find_gateway_authpolicy(args.gateway_name, args.ingress_namespace)
+    if policy_name is None:
+        raise RuntimeError(
+            f"No AuthPolicy owned by Gateway/{args.gateway_name} found in "
+            f"{args.ingress_namespace} -- cannot set identity metrics"
+        )
+
+    policy = oc_get_json("authpolicy", name=policy_name, namespace=args.ingress_namespace)
+    entries = _identity_metrics_entries(policy.get("spec"))
+    if not entries:
+        raise RuntimeError(
+            f"AuthPolicy {policy_name} has no identity filter with a metrics field "
+            "-- policy layout changed?"
+        )
+
+    already = all(value is args.identity_metrics for _, value in entries)
+    if already:
+        return f"identity metrics already {args.identity_metrics} on {policy_name}"
+
+    ops = [{"op": "replace", "path": path, "value": args.identity_metrics} for path, _ in entries]
+    oc(
+        "patch",
+        "authpolicy",
+        policy_name,
+        "-n",
+        args.ingress_namespace,
+        "--type",
+        "json",
+        "-p",
+        json.dumps(ops),
+    )
+    return (
+        f"Set identity metrics={args.identity_metrics} on {policy_name} ({len(entries)} filter(s))"
     )
 
 
@@ -419,6 +522,57 @@ def verify_extproc_limits(args, ctx):
         return False, "No extproc cluster carries circuit_breakers thresholds yet"
 
     return f"ExtProc budget {expected} in effect on: {', '.join(sorted(seen))}"
+
+
+@retry(attempts=30, delay=10, backoff=1.0)
+@task
+def verify_identity_metrics(args, ctx):
+    """Verify the identity-metrics flag on the AuthPolicy and its generated AuthConfigs.
+
+    Ground truth is both layers: the AuthPolicy itself (maas-controller
+    regenerates it from its template on reconciles, e.g. model registration,
+    which reverts a manual patch) and the AuthConfigs kuadrant derives from it
+    (what authorino actually evaluates). Fails the run if the flag never takes
+    effect, instead of silently benchmarking with the expensive per-request
+    metric-label evaluation on.
+    """
+    if not args.activate or args.identity_metrics is None:
+        return "Skipped: no identity metrics to verify"
+
+    policy_name = _find_gateway_authpolicy(args.gateway_name, args.ingress_namespace)
+    if policy_name is None:
+        return False, f"No AuthPolicy owned by Gateway/{args.gateway_name} yet"
+
+    policy = oc_get_json("authpolicy", name=policy_name, namespace=args.ingress_namespace)
+    entries = _identity_metrics_entries(policy.get("spec"))
+    if not entries:
+        return False, f"AuthPolicy {policy_name} has no identity filter with a metrics field yet"
+
+    mismatched = [path for path, value in entries if value is not args.identity_metrics]
+    if mismatched:
+        return (
+            False,
+            f"AuthPolicy {policy_name} reverted (metrics != {args.identity_metrics}): {mismatched}",
+        )
+
+    result = oc("get", "authconfig", "-n", args.kuadrant_namespace, "-o", "json")
+    total = matching = 0
+    for authconfig in json.loads(result.stdout).get("items", []):
+        for _, value in _identity_metrics_entries(authconfig.get("spec")):
+            total += 1
+            matching += value is args.identity_metrics
+
+    if total == 0:
+        return False, "No AuthConfigs with an identity filter yet (kuadrant lag)"
+    if matching < total:
+        return (
+            False,
+            f"AuthConfigs not propagated yet: {matching}/{total} match {args.identity_metrics}",
+        )
+
+    return (
+        f"identity metrics={args.identity_metrics} on {policy_name} and {total}/{total} AuthConfigs"
+    )
 
 
 @task
