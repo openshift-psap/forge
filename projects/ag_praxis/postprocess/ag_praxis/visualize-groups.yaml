@@ -6,6 +6,7 @@ groups:
     - report_overhead_analysis
     - report_prometheus_metrics
     - report_payload_resources
+    - report_auth_saturation
 
   release_regression:
     - report_deployment_profile
@@ -24,3 +25,4 @@ groups:
     - report_overhead_analysis
     - report_prometheus_metrics
     - report_payload_resources
+    - report_auth_saturation

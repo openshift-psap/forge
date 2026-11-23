@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 PROMETHEUS_REPORT_ID = "report_prometheus_metrics"
 RESOURCE_REPORT_ID = "report_payload_resources"
 OVERHEAD_REPORT_ID = "report_overhead_analysis"
+AUTH_SATURATION_REPORT_ID = "report_auth_saturation"
 
 
 class AgPraxisPlugin(GuideLLMPlugin):
@@ -34,6 +35,11 @@ class AgPraxisPlugin(GuideLLMPlugin):
             "type": "report",
             "description": "Endpoint overhead analysis comparing svc, maas/ipp, and maas/praxis",
         }
+        PLOT_REGISTRY[AUTH_SATURATION_REPORT_ID] = {
+            "function": None,
+            "type": "report",
+            "description": "Authorino auth-path saturation: gateway 200/500 rates, authorino CPU plateau, 500 deadline pinning, and Kubernetes review rates on one timeline",
+        }
 
     def visualize(
         self,
@@ -45,10 +51,16 @@ class AgPraxisPlugin(GuideLLMPlugin):
         plugin_settings: dict[str, Any] | None = None,
     ) -> list[ReportFile]:
         wanted = list(dict.fromkeys(report_ids or ()))
-        our_ids = {PROMETHEUS_REPORT_ID, RESOURCE_REPORT_ID, OVERHEAD_REPORT_ID}
+        our_ids = {
+            PROMETHEUS_REPORT_ID,
+            RESOURCE_REPORT_ID,
+            OVERHEAD_REPORT_ID,
+            AUTH_SATURATION_REPORT_ID,
+        }
         prom_requested = PROMETHEUS_REPORT_ID in wanted
         resource_requested = RESOURCE_REPORT_ID in wanted
         overhead_requested = OVERHEAD_REPORT_ID in wanted
+        saturation_requested = AUTH_SATURATION_REPORT_ID in wanted
         parent_ids = [r for r in wanted if r not in our_ids] or None
 
         reports = super().visualize(
@@ -72,6 +84,12 @@ class AgPraxisPlugin(GuideLLMPlugin):
             if not resource_reports:
                 logger.info("No resource usage/limits capture data found in test artifacts")
 
+        if saturation_requested:
+            saturation_reports = _generate_auth_saturation_reports(model, output_dir)
+            reports.extend(saturation_reports)
+            if not saturation_reports:
+                logger.info("No auth saturation capture data found in test artifacts")
+
         if overhead_requested:
             overhead_reports = _generate_overhead_reports(model, output_dir)
             reports.extend(overhead_reports)
@@ -79,6 +97,54 @@ class AgPraxisPlugin(GuideLLMPlugin):
                 logger.info("No overhead analysis data found in test artifacts")
 
         return reports
+
+
+def _generate_auth_saturation_reports(model: UnifiedRunModel, output_dir: Path) -> list[ReportFile]:
+    from projects.ag_praxis.postprocess.ag_praxis.auth_saturation_report import (
+        generate_auth_saturation_report,
+    )
+
+    reports: list[ReportFile] = []
+
+    for node in model.test_nodes:
+        capture_dirs = find_prometheus_capture_dirs(node)
+        if not capture_dirs:
+            continue
+
+        node_scope = str(node.test_path)
+        source_dir = output_dir / node.test_path / "auth_saturation"
+
+        group_results = []
+        for capture_dir in capture_dirs:
+            try:
+                group_results.append(parse_capture_group(capture_dir))
+            except Exception:
+                logger.warning("Failed to parse Prometheus capture %s", capture_dir, exc_info=True)
+
+        if not group_results:
+            continue
+
+        try:
+            report_path = generate_auth_saturation_report(group_results, source_dir)
+        except Exception:
+            logger.warning(
+                "Failed to generate auth saturation report for %s", node_scope, exc_info=True
+            )
+            continue
+
+        if report_path:
+            logger.info("Generated auth saturation report: %s", report_path)
+            rel_path = str(Path(report_path).relative_to(output_dir))
+            reports.append(
+                ReportFile(
+                    source="auth_saturation",
+                    scope=node_scope,
+                    title="Auth Path Saturation",
+                    path=rel_path,
+                )
+            )
+
+    return reports
 
 
 def _generate_overhead_reports(model: UnifiedRunModel, output_dir: Path) -> list[ReportFile]:
