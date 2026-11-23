@@ -357,6 +357,45 @@ def capture_maas_tenant_config(args, ctx):
 
 
 @task
+def capture_auth_policies(args, ctx):
+    """Capture the gateway AuthPolicies, including the identity-metrics value.
+
+    The AuthPolicy yaml records whether the identity response filter had its
+    metric-label evaluation on or off during the run (platform.praxis.
+    identity_metrics / enable_maas_praxis) -- without it, runs are not
+    comparable. The summary file extracts just that flag; the yaml is the
+    robust record (no credentials in AuthPolicies, safe for artifacts).
+    """
+    artifacts = args.artifact_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    results = [
+        _capture(
+            "AuthPolicies yaml (includes the identity-metrics flag)",
+            artifacts / "authpolicies.yaml",
+            "get",
+            "authpolicy",
+            "-n",
+            args.ingress_namespace,
+            "-o",
+            "yaml",
+        ),
+        _capture(
+            "AuthPolicy identity-metrics summary",
+            artifacts / "authpolicy_identity_metrics.txt",
+            "get",
+            "authpolicy",
+            "-n",
+            args.ingress_namespace,
+            "-o",
+            "jsonpath={range .items[*]}{.metadata.name}: "
+            'identity.metrics={.spec.defaults.rules.response.success.filters.identity.metrics}{"\\n"}{end}',
+        ),
+    ]
+    return "; ".join(results)
+
+
+@task
 def capture_kuadrant_crs(args, ctx):
     """Capture the Authorino and Limitador CRs from the kuadrant namespace."""
     artifacts = args.artifact_dir / "artifacts" / "kuadrant"
