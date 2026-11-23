@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -20,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 PROMETHEUS_URL = "http://localhost:9090"
 KUBE_BURNER_FIELDS = {"query", "metricName", "instant", "captureStart"}
+
+_EXTENDED_LABEL_CANDIDATE = re.compile(
+    rb'(?P<separator>[{,])(?P<name>(?![A-Za-z_][A-Za-z0-9_]*=)[^"\\\s{},=]+)(?==)'
+)
+# Consume quoted strings so a candidate inside a label value is left as-is.
+_QUOTED_STRING_OR_EXTENDED_LABEL = re.compile(
+    rb'"(?:[^"\\\r\n]|\\[^\r\n])*"|' + _EXTENDED_LABEL_CANDIDATE.pattern
+)
 
 
 def find_prom_dbs(test_dir: Path) -> list[Path]:
@@ -61,10 +70,19 @@ def _read_saved_variables(capture_dir: Path) -> dict[str, str]:
     return dict(data) if isinstance(data, dict) else {}
 
 
+def _quote_extended_label(match: re.Match[bytes]) -> bytes:
+    if name := match["name"]:
+        return match["separator"] + b'"' + name + b'"'
+    return match[0]
+
+
 def _decompress_openmetrics(gz_path: Path, output_path: Path) -> None:
-    """Decompress an open_metrics.gz file."""
+    """Decompress a dump, quoting label names emitted verbatim by older promtool."""
     with gzip.open(gz_path, "rb") as f_in, output_path.open("wb") as f_out:
-        shutil.copyfileobj(f_in, f_out)
+        for line in f_in:
+            if not line.startswith(b"#") and _EXTENDED_LABEL_CANDIDATE.search(line):
+                line = _QUOTED_STRING_OR_EXTENDED_LABEL.sub(_quote_extended_label, line)
+            f_out.write(line)
 
 
 def _import_to_tsdb(openmetrics_path: Path, tsdb_dir: Path) -> None:
