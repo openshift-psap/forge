@@ -576,6 +576,64 @@ class TestWorkspacePropagation:
         )
         assert "MLFLOW_WORKSPACE" not in os.environ
 
+    @pytest.mark.parametrize("use_vault", [True, False])
+    def test_final_upload_uses_exported_workspace(
+        self, artifact_tree: Path, _mock_mlflow, monkeypatch, use_vault: bool
+    ):
+        from projects.caliper.engine.file_export.artifacts_export_run import (
+            write_artifacts_status_yaml,
+        )
+        from projects.caliper.engine.file_export.mlflow_backend import log_multi_run_artifacts
+        from projects.caliper.engine.model import FileExportBackendResult
+        from projects.core.library import export
+        from projects.core.library.export_notifications import ExportStatus
+
+        connection = {"tracking_uri": "http://test:5000", "token": "vault-token"}
+        client = _mock_mlflow.tracking.MlflowClient.return_value
+        client.get_run.return_value.info.run_name = "parent-run"
+        client.get_experiment.return_value.name = "test"
+        monkeypatch.setenv("MLFLOW_WORKSPACE", "default")
+        monkeypatch.setenv("MLFLOW_TRACKING_TOKEN", "ambient-token")
+        _, metadata = log_multi_run_artifacts(
+            all_artifact_paths=[],
+            artifact_root=artifact_tree,
+            run_dirs=discover_run_dirs(artifact_tree),
+            metrics_file=METRICS_FILE,
+            parameters_file=PARAMETERS_FILE,
+            experiment="test",
+            tracking_uri=None,
+            connection=connection,
+            workspace="forge-sandbox",
+        )
+        assert os.environ["MLFLOW_WORKSPACE"] == "default"
+
+        export_dir = artifact_tree / "003__export-artifacts"
+        status_path = export_dir / "status.yaml"
+        write_artifacts_status_yaml(
+            status_path, [FileExportBackendResult("mlflow", "success", metadata=metadata)]
+        )
+        status = ExportStatus.from_dict(yaml.safe_load(status_path.read_text()))
+        monkeypatch.setattr(export.env, "ARTIFACT_DIR", export_dir)
+        monkeypatch.setattr(export.config, "project", MagicMock())
+        export.config.project.get_config.return_value = "vault-ref" if use_vault else None
+        monkeypatch.setattr(export, "load_mlflow_connection", lambda *args: connection)
+
+        def check_upload_workspace(*args, **kwargs):
+            assert os.environ["MLFLOW_WORKSPACE"] == "forge-sandbox"
+            assert os.environ["MLFLOW_TRACKING_TOKEN"] == (
+                "vault-token" if use_vault else "ambient-token"
+            )
+
+        client.log_artifact.side_effect = check_upload_workspace
+        export._update_final_artifacts(artifact_tree, status)
+
+        client.log_artifact.assert_any_call(
+            "test-id", str(export_dir / "run.log"), artifact_path=export_dir.name
+        )
+        assert client.log_artifact.call_count == 2
+        assert os.environ["MLFLOW_WORKSPACE"] == "default"
+        assert os.environ["MLFLOW_TRACKING_TOKEN"] == "ambient-token"
+
 
 # ---------------------------------------------------------------------------
 # Test: helpers/summary.py

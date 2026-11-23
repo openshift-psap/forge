@@ -78,6 +78,8 @@ def _capture_mlflow_run_metadata(tracking_uri: str, workspace: str | None = None
         "experiment_name": experiment_name,
         "tracking_uri": tracking_uri,
     }
+    if workspace is not None:
+        out["workspace"] = workspace
     if run_url:
         out["run_url"] = run_url
     if exp_url:
@@ -768,6 +770,7 @@ def update_artifacts(
     files: dict[Path, str | None] | list[Path],
     tracking_uri: str | None = None,
     connection: dict[str, Any] | None = None,
+    workspace: str | None = None,
 ) -> None:
     """Re-upload multiple files to an existing MLflow run, replacing previous copies.
 
@@ -777,6 +780,7 @@ def update_artifacts(
                or a list of file paths (all uploaded to root)
         tracking_uri: MLflow tracking URI
         connection: MLflow connection configuration
+        workspace: Workspace containing the run
 
     Intended to be called after all post-export work (notifications, etc.) completes,
     so uploaded files contain the full session output.
@@ -804,8 +808,11 @@ def update_artifacts(
                 client.log_artifact(run_id, str(file_path), artifact_path=artifact_path)
 
     uri = resolve_mlflow_tracking_uri(connection or {}, tracking_uri)
-    if connection is not None:
-        with mlflow_tracking_context({**connection, "tracking_uri": uri}):
+    if connection is not None or workspace is not None:
+        resolved_connection = (
+            {**connection, "tracking_uri": uri} if connection is not None else None
+        )
+        with mlflow_tracking_context(resolved_connection, workspace=workspace):
             _upload(uri)
     else:
         _upload(uri)

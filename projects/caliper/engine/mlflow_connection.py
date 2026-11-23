@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -183,16 +183,16 @@ def mlflow_connection_env(conn: dict[str, Any]) -> Iterator[None]:
 
 @contextmanager
 def mlflow_tracking_context(
-    connection: dict[str, Any], *, workspace: str | None = None
+    connection: dict[str, Any] | None, *, workspace: str | None = None
 ) -> Iterator[None]:
     """Apply a connection for an MLflow operation and restore the caller's state."""
     import mlflow
 
     previous_uri = mlflow.get_tracking_uri()
     previous_workspace = os.environ.get("MLFLOW_WORKSPACE")
-    with mlflow_connection_env(connection):
+    with mlflow_connection_env(connection) if connection is not None else nullcontext():
         try:
-            if uri := connection.get("tracking_uri"):
+            if uri := (connection or {}).get("tracking_uri"):
                 mlflow.set_tracking_uri(uri)
             if workspace is not None:
                 os.environ["MLFLOW_WORKSPACE"] = workspace
