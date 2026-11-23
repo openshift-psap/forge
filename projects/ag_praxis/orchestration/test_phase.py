@@ -463,29 +463,33 @@ def _test_endpoint(
     finally:
         benchmark_end = update_test_labels_with_timing(test_dir, "benchmark", "end")
 
-        def _capture_prom():
-            with env.NextArtifactDir("prometheus_metrics"):
-                capture_prometheus(benchmark_start, benchmark_end)
+        if config.project.get_config("test.skip_finalizers"):
+            logger.info("Skipping endpoint finalizers (test.skip_finalizers is True)")
+        else:
 
-        _run_finalizer("capturing Prometheus metrics", _capture_prom)
+            def _capture_prom():
+                with env.NextArtifactDir("prometheus_metrics"):
+                    capture_prometheus(benchmark_start, benchmark_end)
 
-        llmisvc_name = maas_cfg["llmisvc_name"]
-        _run_finalizer(
-            "capturing LLMInferenceService state",
-            capture_llmisvc_state_command.run,
-            llmisvc_name=llmisvc_name,
-            namespace=test_namespace,
-        )
+            _run_finalizer("capturing Prometheus metrics", _capture_prom)
 
-        _run_finalizer(
-            "capturing MaaS praxis state",
-            capture_maas_praxis_command.run,
-            ingress_namespace=maas_cfg["gateway"]["namespace"],
-            tenant_namespace=maas_cfg["tenant_namespace"],
-            gateway_name=maas_cfg["gateway"]["name"],
-        )
+            llmisvc_name = maas_cfg["llmisvc_name"]
+            _run_finalizer(
+                "capturing LLMInferenceService state",
+                capture_llmisvc_state_command.run,
+                llmisvc_name=llmisvc_name,
+                namespace=test_namespace,
+            )
 
-        _run_finalizer("capturing cluster state", capture_cluster_state_command.run)
+            _run_finalizer(
+                "capturing MaaS praxis state",
+                capture_maas_praxis_command.run,
+                ingress_namespace=maas_cfg["gateway"]["namespace"],
+                tenant_namespace=maas_cfg["tenant_namespace"],
+                gateway_name=maas_cfg["gateway"]["name"],
+            )
+
+            _run_finalizer("capturing cluster state", capture_cluster_state_command.run)
 
     if primary_exc is not None:
         # primary test status already tracked in the 'except' block
@@ -888,25 +892,30 @@ def _run_cleanup(test_namespace, maas_cfg, primary_exc):
             else:
                 logger.exception("Ignoring %s failure after primary test failure", description)
 
-    if has_maas or "svc" in selected:
-        llmisvc_name = maas_cfg["llmisvc_name"]
-        try:
-            capture_llmisvc_state_command.run(llmisvc_name=llmisvc_name, namespace=test_namespace)
-        except Exception:
-            logger.exception("Failed to capture MaaS LLMInferenceService state before cleanup")
-            if primary_exc is None:
-                finalizer_exc = sys.exc_info()
+    if config.project.get_config("test.skip_finalizers"):
+        logger.info("Skipping cleanup finalizers (test.skip_finalizers is True)")
+    else:
+        if has_maas or "svc" in selected:
+            llmisvc_name = maas_cfg["llmisvc_name"]
+            try:
+                capture_llmisvc_state_command.run(
+                    llmisvc_name=llmisvc_name, namespace=test_namespace
+                )
+            except Exception:
+                logger.exception("Failed to capture MaaS LLMInferenceService state before cleanup")
+                if primary_exc is None:
+                    finalizer_exc = sys.exc_info()
 
-    if has_gw:
-        gw_cfg = config.project.get_config("platform.default_gateway")
-        try:
-            capture_llmisvc_state_command.run(
-                llmisvc_name=gw_cfg["llmisvc_name"], namespace=test_namespace
-            )
-        except Exception:
-            logger.exception("Failed to capture GW LLMInferenceService state before cleanup")
-            if primary_exc is None:
-                finalizer_exc = finalizer_exc or sys.exc_info()
+        if has_gw:
+            gw_cfg = config.project.get_config("platform.default_gateway")
+            try:
+                capture_llmisvc_state_command.run(
+                    llmisvc_name=gw_cfg["llmisvc_name"], namespace=test_namespace
+                )
+            except Exception:
+                logger.exception("Failed to capture GW LLMInferenceService state before cleanup")
+                if primary_exc is None:
+                    finalizer_exc = finalizer_exc or sys.exc_info()
 
     if not config.project.get_config("test.skip_cleanup"):
         if has_maas or "svc" in selected:
