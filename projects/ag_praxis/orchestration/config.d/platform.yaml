@@ -61,7 +61,6 @@ maas:
   # huge so perf runs are not rate-limited. CAVEAT: token metering fails OPEN for
   # streamed /v1/responses traffic on builds where the kuadrant wasm shim parses
   # the response body as a single JSON document -- the limit is not enforced there
-  # (see orchestration/poc/maas-praxis-500-ext-proc-overflow.md, Finding 2).
   token_rate_limit: 1000000000
   token_rate_limit_window: 1m
   gateway:
@@ -99,8 +98,7 @@ praxis:
   # requests with an instant empty HTTP 500 before auth. Valid range 1-1024;
   # out-of-range values silently fall back to 8. The effective limits are verified
   # against the gateway's live Envoy config after activation.
-  # See orchestration/poc/maas-praxis-500-ext-proc-overflow.md (Finding 1).
-  extproc_max_requests: 1024
+  extproc_max_requests: 256
   payload_processing:
     replicas: 4
     cpu_request: 100m
