@@ -1,0 +1,7 @@
+__multiple: true
+
+praxis:
+  test.endpoints: [maas/praxis]
+
+large:
+  test.sweep: large
