@@ -203,7 +203,13 @@ class WrapperTests(unittest.TestCase):
 
         self.state = self.directory / "internal" / "ibmcloud"
         self.run_action("create")
-        project = config.Config(Path(__file__).parents[1] / "orchestration/config.yaml")
+        source_config = Path(__file__).parents[1] / "orchestration/config.yaml"
+        source_contents = source_config.read_bytes()
+        # Config.set_config() persists updates to its input path. Exercise that
+        # behavior on a temporary copy, never on the repository defaults.
+        test_config = self.directory / "export-config.yaml"
+        test_config.write_bytes(source_contents)
+        project = config.Config(test_config)
         project.config["caliper"] = {"export": {"from": None}}
 
         def collect(artifact_dir, **kwargs):
@@ -227,6 +233,11 @@ class WrapperTests(unittest.TestCase):
             )
         self.assertEqual(result.exit_code, 0, result.output)
         collector.assert_called_once()
+        self.assertEqual(source_config.read_bytes(), source_contents)
+        self.assertEqual(
+            yaml.safe_load(test_config.read_text())["caliper"]["export"]["from"],
+            str(self.public),
+        )
 
     @unittest.skipUnless(
         importlib.util.find_spec("jsonpath_ng"), "Requires Forge config dependencies"

@@ -1,18 +1,14 @@
 vaults:
-    all:
-    - ibmcloud-ipi
+  all: [ibmcloud-ipi]
+
 ibmcloud:
-    region: au-syd
-    zones:
-    - au-syd-1
-    masters: 3
-    master_type: bxf-8x32
-    workers: 3
-    worker_type: bxf-16x64
-    base_domain: ''
-    resource_group: ''
-    release_image: ''
-    release_commit: a77def4dd18734b8d6fa453ad5cdbf4744f7e98c
-caliper:
-    export:
-        from: /private/var/folders/4m/mzyphv0x3mn3xl9dkg_yfbwr0000gn/T/tmp4texeu0f/public
+  region: au-syd
+  zones: [au-syd-1]
+  masters: 3
+  master_type: bxf-8x32
+  workers: 3
+  worker_type: bxf-16x64
+  base_domain: ""
+  resource_group: ""
+  release_image: ""
+  release_commit: a77def4dd18734b8d6fa453ad5cdbf4744f7e98c
