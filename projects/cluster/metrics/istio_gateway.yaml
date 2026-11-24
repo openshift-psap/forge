@@ -26,6 +26,17 @@
   unit: req/s
 
 - query: >-
+    sum by (response_code, destination_workload)
+    (rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
+  metricName: istio_requests_by_code_destination
+  description: >-
+    Gateway request rate by response code and destination workload.
+    destination_workload="unknown" marks Envoy-local replies (no upstream host
+    was selected): the ext_proc overflow and auth-deadline 500s, as opposed to
+    errors returned by the model workload
+  unit: req/s
+
+- query: >-
     sum by (source_workload)
     (rate(istio_requests_total{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}"}[2m]))
   metricName: istio_requests_by_source
@@ -105,6 +116,18 @@
   metricName: istio_request_duration_p95_by_code
   description: Gateway request duration (p95) by HTTP response code
   unit: ms
+
+# 500 duration bucket rates: the 500s are bimodal — instant (< 1 ms, Envoy
+# ext_proc overflow) vs pinned at the auth fail-closed deadline (~ 2 s). The
+# bucket cumulative counts let reports compute the instant fraction precisely;
+# the aggregate p50/p95 by code only separate the regimes qualitatively.
+
+- query: >-
+    sum by (le)
+    (rate(istio_request_duration_milliseconds_bucket{reporter="{{.REPORTER}}", gateway_name=~"{{.GATEWAY_NAME}}", response_code="500"}[2m]))
+  metricName: istio_500_duration_bucket_rate
+  description: Gateway 500 response duration histogram bucket rates (cumulative by le)
+  unit: req/s
 
 # ── Payload volume ────────────────────────────────────────────────────
 

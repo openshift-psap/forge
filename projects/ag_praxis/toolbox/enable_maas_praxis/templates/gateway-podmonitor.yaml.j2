@@ -1,0 +1,22 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: praxis-gateway-envoy
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: forge
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ gateway_name }}
+  podMetricsEndpoints:
+    # istio-proxy container port 15020 ("metrics"): pilot-agent merged stats —
+    # Envoy stats (what Istio's stats_matcher lets through), istio_agent_* and
+    # the kuadrant wasm-shim counters (kuadrant_allowed/denied/errors).
+    # The platform's maas-default-gateway-metrics PodMonitor scrapes the same
+    # port but only the istio_* request families survive in Prometheus; this
+    # monitor carries the rest.
+    - port: metrics
+      path: /stats/prometheus
+      scheme: http
+      interval: 15s

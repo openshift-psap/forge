@@ -13,11 +13,16 @@ PRAXIS_ANNOTATION_VALUE = "praxis"
 IPP_ANNOTATION_VALUE = "ipp"
 DEPLOYMENTS_TO_CHECK = ["payload-processing", "payload-pre-processing"]
 
-EXTPROC_MAX_REQUESTS_ANNOTATION_KEY = "maas.opendatahub.io/experimental-extproc-max-requests"
 # Controller ceiling (MaxExtProcMaxRequests). Values above it are REJECTED by the
 # controller with a silent fallback to the default 8 -- not clamped -- so the range
 # is enforced here, before annotating.
 MAX_EXTPROC_MAX_REQUESTS = 1024
+
+# PodMonitors making otherwise-unscraped metrics visible to the system
+# Prometheus (openshift-ingress is a platform namespace: the system Prometheus
+# takes every PodMonitor there, UWM excludes it — see apply_podmonitors).
+PODMONITOR_NAME = "praxis-extproc-payload"
+GATEWAY_PODMONITOR_NAME = "praxis-gateway-envoy"
 
 
 def _find_gateway_authpolicy(gateway_name, ingress_namespace):
@@ -26,37 +31,20 @@ def _find_gateway_authpolicy(gateway_name, ingress_namespace):
     The policy name is derived from the gateway by maas-controller, not by a
     stable rule, so it is discovered through the ownerReference instead.
     """
-    result = oc("get", "authpolicy", "-n", ingress_namespace, "-o", "json")
+    result = oc(
+        "get",
+        "authpolicy",
+        "-n",
+        ingress_namespace,
+        "-o",
+        "json",
+        log_stdout=False,  # parsed for ownerReferences only: don't log the JSON blob
+    )
     for item in json.loads(result.stdout).get("items", []):
         for owner in item.get("metadata", {}).get("ownerReferences", []):
             if owner.get("kind") == "Gateway" and owner.get("name") == gateway_name:
                 return item["metadata"]["name"]
     return None
-
-
-def _identity_metrics_entries(spec):
-    """(json_patch_path, current_value) for identity response filters with a metrics field.
-
-    Walks the whole spec so any AuthPolicy layout works (rules under spec or
-    under defaults/overrides).
-    """
-    entries = []
-
-    def walk(node, path):
-        if isinstance(node, dict):
-            if path and path[-1] == "identity" and "json" in node and "metrics" in node:
-                entries.append(
-                    ("/spec/" + "/".join(str(p) for p in path) + "/metrics", node["metrics"])
-                )
-                return
-            for k, v in node.items():
-                walk(v, path + [k])
-        elif isinstance(node, list):
-            for i, v in enumerate(node):
-                walk(v, path + [i])
-
-    walk(spec or {}, [])
-    return entries
 
 
 @entrypoint
@@ -81,6 +69,12 @@ def run(
     On every toggle (activate and deactivate), the pods of the gateway-side hot-path
     deployments (payload extprocs, gateway, authorino, limitador) are bumped so each
     benchmark endpoint starts from fresh pods.
+
+    On activation, two PodMonitors are created in the ingress namespace so the
+    system Prometheus scrapes the payload pods' praxis_extproc_* metrics
+    (container port 9090) and the gateway pods' Envoy/kuadrant stats
+    (istio-proxy port 15020) — both visible through thanos-querier; they are
+    verified (verify_podmonitors) and removed on deactivation.
 
     Args:
         activate: True to enable praxis, False to disable.
@@ -236,6 +230,10 @@ def set_extproc_max_requests(args, ctx):
     if args.extproc_max_requests is None:
         return "Skipped: no extproc_max_requests configured, keeping operator default"
 
+    from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
+        EXTPROC_MAX_REQUESTS_ANNOTATION_KEY,
+    )
+
     oc(
         "annotate",
         "maastenantconfig",
@@ -249,6 +247,78 @@ def set_extproc_max_requests(args, ctx):
         f"Set {EXTPROC_MAX_REQUESTS_ANNOTATION_KEY}={args.extproc_max_requests} "
         f"on {args.tenant_name}"
     )
+
+
+@task
+def apply_podmonitors(args, ctx):
+    """Create the PodMonitors that expose the payload and gateway metrics.
+
+    Two monitors, both in the ingress namespace:
+
+    - praxis-extproc-payload: the payload-pre-processing/payload-processing
+      pods (odh-praxis-extproc) serve the praxis_extproc_* metrics on
+      container port 9090 ("metrics"), and nothing scrapes them.
+    - praxis-gateway-envoy: the gateway pods' istio-proxy serves its merged
+      stats on container port 15020 ("metrics", /stats/prometheus) — Envoy
+      stats (what Istio's stats_matcher lets through), istio_agent_* and the
+      kuadrant wasm-shim counters (kuadrant_allowed/denied/errors — the
+      auth-stage outcomes). The platform's own
+      maas-default-gateway-metrics PodMonitor scrapes the same port but only
+      the istio_* request families survive in Prometheus.
+
+    Both are picked up by the system Prometheus (prometheus-k8s):
+    openshift-ingress is a platform namespace, so UWM cannot scrape it (it
+    excludes openshift.io/cluster-monitoring-labeled namespaces) but the
+    system Prometheus takes every PodMonitor there. The series then reach
+    thanos-querier, which is what the kube-burner capture groups
+    (config.d/prom.yaml: praxis_extproc, gateway_envoy) query.
+
+    Without them those captures silently return nothing --
+    verify_podmonitors fails the run instead if the series never appear.
+    Removed on deactivation by delete_podmonitors.
+    """
+    if not args.activate:
+        return "Skipped: praxis is being deactivated"
+
+    import yaml
+
+    from projects.core.dsl.template import render_template
+    from projects.core.dsl.utils.k8s import oc_apply
+
+    src_dir = args.artifact_dir / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    applied = []
+    for template_name, context in (
+        ("payload-podmonitor.yaml.j2", {"namespace": args.ingress_namespace}),
+        (
+            "gateway-podmonitor.yaml.j2",
+            {"namespace": args.ingress_namespace, "gateway_name": args.gateway_name},
+        ),
+    ):
+        manifest = yaml.safe_load(render_template(template_name, context=context))
+        oc_apply(src_dir / template_name.removesuffix(".j2"), manifest)
+        applied.append(manifest["metadata"]["name"])
+
+    return f"Applied PodMonitors {', '.join(applied)} in {args.ingress_namespace}"
+
+
+@task
+def delete_podmonitors(args, ctx):
+    """Remove the payload and gateway PodMonitors when deactivating praxis."""
+    if args.activate:
+        return "Skipped: praxis is being activated (PodMonitors stay)"
+
+    for name in (PODMONITOR_NAME, GATEWAY_PODMONITOR_NAME):
+        oc(
+            "delete",
+            "podmonitor",
+            name,
+            "-n",
+            args.ingress_namespace,
+            "--ignore-not-found",
+        )
+    return f"Deleted PodMonitors {PODMONITOR_NAME}, {GATEWAY_PODMONITOR_NAME} from {args.ingress_namespace}"
 
 
 @task
@@ -278,8 +348,10 @@ def set_identity_metrics(args, ctx):
             f"{args.ingress_namespace} -- cannot set identity metrics"
         )
 
+    from projects.ag_praxis.toolbox.capture_maas_praxis.main import identity_metrics_entries
+
     policy = oc_get_json("authpolicy", name=policy_name, namespace=args.ingress_namespace)
-    entries = _identity_metrics_entries(policy.get("spec"))
+    entries = identity_metrics_entries(policy.get("spec"))
     if not entries:
         raise RuntimeError(
             f"AuthPolicy {policy_name} has no identity filter with a metrics field "
@@ -458,61 +530,42 @@ def verify_extproc_limits(args, ctx):
         return "Skipped: no extproc budget to verify"
 
     from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
-        _resolve_gateway_deployment_name,
+        EXTPROC_VERIFIED_FIELDS,
+        extract_extproc_cluster_limits,
+        fetch_gateway_config_dump,
     )
 
-    deployment = _resolve_gateway_deployment_name(args.gateway_name, args.ingress_namespace)
+    try:
+        config_dump = fetch_gateway_config_dump(args.ingress_namespace, args.gateway_name)
+    except RuntimeError as exc:
+        return False, str(exc)
 
-    result = oc(
-        "exec",
-        "-n",
-        args.ingress_namespace,
-        f"deploy/{deployment}",
-        "--",
-        "pilot-agent",
-        "request",
-        "GET",
-        "config_dump?resource=dynamic_active_clusters",
-        check=False,
-        log_stdout=False,
-    )
-    if result.returncode != 0:
-        return False, f"config_dump fetch failed on deploy/{deployment}: rc={result.returncode}"
-
-    clusters = [
-        config_entry["cluster"]
-        for config_entry in json.loads(result.stdout).get("configs", [])
-        if "extproc" in config_entry.get("cluster", {}).get("name", "")
-    ]
-    if not clusters:
+    limits = extract_extproc_cluster_limits(config_dump)
+    if not limits:
         return False, "No extproc clusters in the gateway Envoy config yet"
 
     expected = args.extproc_max_requests
     problems = []
     seen = []
-    for cluster in clusters:
-        name = cluster["name"]
-        # A threshold list longer than one entry means a botched MERGE appended
-        # to the repeated field -- the original limits may still be in force.
-        thresholds = cluster.get("circuit_breakers", {}).get("thresholds") or []
-        if not thresholds:
+    for name, data in sorted(limits.items()):
+        entries = data["limits"]
+        # A threshold_entries count greater than one means a botched MERGE
+        # appended to the repeated field -- the original limits may still be
+        # in force.
+        if not entries:
             if "payload" in name:
                 problems.append(f"{name}: no circuit_breakers thresholds")
             continue
 
         seen.append(name)
-        for entry in thresholds:
-            limits = {
-                field: entry.get(field)
-                for field in ("max_requests", "max_pending_requests", "max_connections")
-            }
+        for entry in entries:
             mismatched = {
-                field: value
-                for field, value in limits.items()
-                if value is not None and value != expected
+                field: entry.get(field)
+                for field in EXTPROC_VERIFIED_FIELDS
+                if entry.get(field) is not None and entry[field] != expected
             }
-            if "payload" in name and (mismatched or len(thresholds) > 1):
-                problems.append(f"{name}: thresholds={thresholds}")
+            if "payload" in name and (mismatched or data["threshold_entries"] > 1):
+                problems.append(f"{name}: limits={entries}")
 
     if problems:
         return False, (
@@ -539,12 +592,14 @@ def verify_identity_metrics(args, ctx):
     if not args.activate or args.identity_metrics is None:
         return "Skipped: no identity metrics to verify"
 
+    from projects.ag_praxis.toolbox.capture_maas_praxis.main import identity_metrics_entries
+
     policy_name = _find_gateway_authpolicy(args.gateway_name, args.ingress_namespace)
     if policy_name is None:
         return False, f"No AuthPolicy owned by Gateway/{args.gateway_name} yet"
 
     policy = oc_get_json("authpolicy", name=policy_name, namespace=args.ingress_namespace)
-    entries = _identity_metrics_entries(policy.get("spec"))
+    entries = identity_metrics_entries(policy.get("spec"))
     if not entries:
         return False, f"AuthPolicy {policy_name} has no identity filter with a metrics field yet"
 
@@ -555,10 +610,18 @@ def verify_identity_metrics(args, ctx):
             f"AuthPolicy {policy_name} reverted (metrics != {args.identity_metrics}): {mismatched}",
         )
 
-    result = oc("get", "authconfig", "-n", args.kuadrant_namespace, "-o", "json")
+    result = oc(
+        "get",
+        "authconfig",
+        "-n",
+        args.kuadrant_namespace,
+        "-o",
+        "json",
+        log_stdout=False,  # parsed for identity filters only: don't log the JSON blob
+    )
     total = matching = 0
     for authconfig in json.loads(result.stdout).get("items", []):
-        for _, value in _identity_metrics_entries(authconfig.get("spec")):
+        for _, value in identity_metrics_entries(authconfig.get("spec")):
             total += 1
             matching += value is args.identity_metrics
 
@@ -573,6 +636,160 @@ def verify_identity_metrics(args, ctx):
     return (
         f"identity metrics={args.identity_metrics} on {policy_name} and {total}/{total} AuthConfigs"
     )
+
+
+def _query_thanos(promql: str) -> list[dict]:
+    """Instant-query thanos-querier with a short-lived prometheus-k8s SA token.
+
+    Resolves the querier's route, mints a 10-minute token for the
+    prometheus-k8s service account, and curls the query API -- no kube-burner
+    capture, no extra pod: the whole probe is two oc calls and one curl.
+
+    A Bearer token is required even though the runner authenticates to the
+    API server with client certificates: the thanos query API accepts only
+    Bearer auth, and the API server's service proxy does not forward
+    credentials (verified live on kpouget-llmd, 2026-11-24: /-/ready answers
+    OK through the proxy but /api/v1/query returns 401 with the client-cert
+    kubeconfig). The minted token reaches curl on stdin (-H @- reads header
+    lines from stdin), so it never appears in command text or logs.
+
+    Raises RuntimeError on any failure so callers decide the policy (the
+    verification task retries, missing series are reported separately).
+    """
+    from projects.core.dsl import shell
+
+    route = oc(
+        "get",
+        "route",
+        "thanos-querier",
+        "-n",
+        "openshift-monitoring",
+        "-o",
+        "jsonpath={.spec.host}",
+    )
+    host = route.stdout.strip()
+    if not host:
+        raise RuntimeError("Failed to resolve the thanos-querier route")
+
+    token = oc(
+        "create",
+        "token",
+        "prometheus-k8s",
+        "-n",
+        "openshift-monitoring",
+        "--duration=10m",
+        log_stdout=False,  # the token is a credential: never log it
+    ).stdout.strip()
+    if not token:
+        raise RuntimeError("Failed to mint a prometheus-k8s service-account token")
+
+    result = shell.run(
+        [
+            "curl",
+            "-sk",
+            "--max-time",
+            "30",
+            "-H",
+            "@-",
+            f"https://{host}/api/v1/query",
+            "--data-urlencode",
+            f"query={promql}",
+        ],
+        shell=False,
+        input_text=f"Authorization: Bearer {token}\n",
+        timeout_seconds=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"thanos-querier query failed (rc={result.returncode})")
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Unexpected response from thanos-querier: {exc}") from exc
+
+    if payload.get("status") != "success":
+        raise RuntimeError(f"thanos-querier query error: {payload.get('error', payload)}")
+    return payload.get("data", {}).get("result", [])
+
+
+@retry(attempts=8, delay=20, backoff=1.0)
+@task
+def verify_podmonitors(args, ctx):
+    """Verify the PodMonitors' series are being scraped (direct thanos query).
+
+    One instant query per PodMonitor against thanos-querier -- through its
+    route, authenticated with a short-lived prometheus-k8s service-account
+    token (see _query_thanos) -- requiring one live series per check: the
+    raw counters praxis_extproc_requests_total and envoy_server_live.
+
+    Split severity: the gateway-envoy check is strict (it catches wiring
+    bugs -- PodMonitor not picked up, target port unreachable -- and an empty
+    capture group at the end of the test would look like "no traffic"
+    instead of "not scraped"). The praxis_extproc check is advisory: the
+    extproc metrics endpoint cannot be scraped by the system Prometheus on
+    OCP 4.21 (Finding 6 of maas-praxis-500-ext-proc-overflow.md --
+    metrics_auth on the pre-processing pod, blank Content-Type rejected by
+    Prometheus 3 on both), so failing the run on it would block every
+    campaign until the upstream fixes land. It reports a KNOWN-BROKEN
+    warning instead, and the praxis_extproc capture groups stay empty.
+
+    The series are scraped by the system Prometheus (prometheus-k8s), not
+    UWM: openshift-ingress is a platform namespace
+    (openshift.io/cluster-monitoring label), which the system Prometheus
+    requires and UWM excludes; the payload-processing NetworkPolicy
+    explicitly allows the openshift-monitoring namespace to port 9090. The
+    retry window covers the prometheus-operator picking up the PodMonitors,
+    the config reload and the first scrapes.
+    """
+    if not args.activate:
+        return "Skipped: praxis is being deactivated"
+
+    # (promql, description, strict)
+    checks = [
+        (
+            f'count(praxis_extproc_requests_total{{namespace="{args.ingress_namespace}"}})',
+            f"praxis_extproc metrics (PodMonitor {PODMONITOR_NAME})",
+            False,
+        ),
+        (
+            f'count(envoy_server_live{{namespace="{args.ingress_namespace}", container="istio-proxy"}})',
+            f"gateway envoy stats (PodMonitor {GATEWAY_PODMONITOR_NAME})",
+            True,
+        ),
+    ]
+
+    missing_strict = []
+    missing_advisory = []
+    for promql, description, strict in checks:
+        try:
+            results = _query_thanos(promql)
+        except RuntimeError as exc:
+            return False, f"Cannot query thanos-querier: {exc}"
+        if not results:
+            (missing_strict if strict else missing_advisory).append(description)
+
+    if missing_strict:
+        return False, (
+            "Series not visible in thanos-querier: "
+            + "; ".join(missing_strict)
+            + " (PodMonitor not picked up by the system Prometheus, or the "
+            "target port unreachable)"
+        )
+
+    if missing_advisory:
+        return (
+            "PodMonitors scraped and visible (gateway envoy). "
+            "KNOWN-BROKEN (advisory): "
+            + "; ".join(missing_advisory)
+            + " -- the extproc metrics endpoint cannot be scraped by the "
+            "system Prometheus on this cluster (Finding 6 of "
+            "maas-praxis-500-ext-proc-overflow.md: metrics_auth on the "
+            "pre-processing pod, blank Content-Type rejected by Prometheus 3 "
+            "on both); the praxis_extproc capture groups will be empty until "
+            "the upstream fix."
+        )
+
+    return "PodMonitors scraped and visible: " + ", ".join(d for _, d, _ in checks)
 
 
 @task

@@ -78,6 +78,17 @@ capture:
       auth_path:
         enabled: true
         files: [maas_auth_path]
+      praxis_extproc:
+        enabled: true
+        files: [praxis_extproc]
+        variables:
+          NAMESPACE: "openshift-ingress"
+          POD_NAME: "payload-.*"
+      gateway_envoy:
+        enabled: true
+        files: [gateway_envoy]
+        variables:
+          NAMESPACE: "openshift-ingress"
       control_plane:
         enabled: true
         files: [control_plane]

@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: praxis-extproc-payload
+  namespace: {{ namespace }}
+  labels:
+    app.kubernetes.io/managed-by: forge
+spec:
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - payload-pre-processing
+          - payload-processing
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: 15s
