@@ -132,6 +132,7 @@ addopts = "-ra -q --strict-markers --strict-config"
 testpaths = [
     "projects/core/tests",
     "projects/llm_d/tests",
+    "projects/mlflow/tests",
     "projects/caliper/tests",
     "projects/guidellm/tests",
     "projects/fournos_launcher/tests",

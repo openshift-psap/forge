@@ -1,0 +1,19 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-create-bucket
+  namespace: {{ namespace }}
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: mc
+          image: quay.io/minio/aistor/mc:RELEASE.2025-12-19T20-11-44Z
+          command: ["mc", "mb", "--ignore-existing", "local/mlflow-artifacts"]
+          env:
+            - name: MC_HOST_local
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: MC_HOST_local

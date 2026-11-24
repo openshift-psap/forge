@@ -1,0 +1,4 @@
+mlflow_tracking_uri: "https://mlflow.redhat-ods-applications.svc.cluster.local:8443/mlflow"
+
+k6:
+  image: grafana/k6:master

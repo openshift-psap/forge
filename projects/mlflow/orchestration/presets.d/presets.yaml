@@ -1,0 +1,227 @@
+__multiple: true
+
+################# K6 WRITE runs cold ###################
+########################################################
+write-k6-cold-concurrency-payload-matrix:
+  experiment.workload: write
+  experiment.write_k6.mode: span_cold_start
+  experiment.write_k6.duration_seconds: 120
+  experiment.write_k6.span_size_bytes: [10240, 102400, 1048576, 2097152, 5242880]
+  experiment.write_k6.spans_per_trace: 5
+  experiment.concurrency: [1, 2, 4, 64, 128, 512]
+  experiment.pg_size_gb: 0
+
+write-k6-cold-concurrency-experiment-payload-matrix:
+  experiment.workload: write
+  experiment.write_k6.mode: span_cold_start
+  experiment.write_k6.duration_seconds: 120
+  experiment.write_k6.span_size_bytes: [10240, 102400, 1048576, 2097152, 5242880]
+  experiment.write_k6.spans_per_trace: 5
+  experiment.write_k6.experiments_per_test: [64, 32, 16, 8, 4]
+  experiment.concurrency: [128, 512]
+  experiment.pg_size_gb: 0
+
+########################################################
+########################################################
+
+
+################# K6 WRITE runs warm ###################
+########################################################
+write-k6-warm-concurrency-payload-matrix:
+  experiment.workload: write
+  experiment.write_k6.mode: span_warm_start
+  experiment.write_k6.duration_seconds: 120
+  experiment.write_k6.span_size_bytes: [10240, 102400, 1048576, 2097152, 5242880]
+  experiment.write_k6.spans_per_trace: 5
+  experiment.concurrency: [1, 2, 4, 64, 128, 512]
+  experiment.pg_size_gb: 0
+
+write-k6-warm-concurrency-experiment-payload-matrix:
+  experiment.workload: write
+  experiment.write_k6.mode: span_warm_start
+  experiment.write_k6.duration_seconds: 120
+  experiment.write_k6.span_size_bytes: [10240, 102400, 1048576, 2097152, 5242880]
+  experiment.write_k6.spans_per_trace: 5
+  experiment.write_k6.experiments_per_test: [64, 32, 16, 8, 4]
+  experiment.concurrency: [128, 512]
+  experiment.pg_size_gb: 0
+
+# Multi-tenant trace write smoke matrix. Like mlflow-scale, this forms the
+# tenant-count × concurrency matrix. For write workloads, concurrency is the
+# number of k6 VUs per tenant, so total VUs are tenant_count * concurrency.
+write-k6-warm-multi-tenant-smoke:
+  experiment.workload: write
+  experiment.write_k6.mode: span_warm_start
+  experiment.write_k6.duration_seconds: 60
+  experiment.write_k6.spans_per_trace: 5
+  experiment.write_k6.span_size_bytes: 102400
+  experiment.write_k6.tenant_count: [1, 5]
+  experiment.concurrency: [2, 4]
+  experiment.pg_size_gb: 0
+
+# Tenant scale sweep for trace writes. Concurrency is VUs per tenant, so
+# total VUs per cell are tenant_count * concurrency.
+write-k6-warm-multi-tenant-scale:
+  experiment.workload: write
+  experiment.write_k6.mode: span_warm_start
+  experiment.write_k6.duration_seconds: 60
+  experiment.write_k6.spans_per_trace: 5
+  experiment.write_k6.span_size_bytes: 102400
+  experiment.write_k6.tenant_count: [1, 4, 64]
+  experiment.concurrency: [1, 2, 4, 8, 16]
+  experiment.pg_size_gb: 0
+
+
+############ K6 READ runs - search_traces ##############
+########################################################
+
+read-search-20-pg10:
+  experiment.workload: read
+  experiment.read.operation: search_traces
+  experiment.concurrency: 20
+  experiment.pg_size_gb: 10
+  experiment.duration_seconds: 120
+
+
+read-search-pg-sweep:
+  experiment.workload: read
+  experiment.read.operation: search_traces
+  experiment.concurrency: [1, 5, 10, 20, 50]
+  experiment.pg_size_gb: [10, 100, 500]
+  experiment.duration_seconds: 120
+
+########################################################
+########################################################
+
+
+################# K6 READ runs - get trace #############
+########################################################
+read-get-trace-sweep:
+  experiment.workload: read
+  experiment.read.operation: get_trace
+  experiment.concurrency: [1,2,4,8,16,32,64,128]
+  experiment.pg_size_gb: [10, 50, 100]
+  experiment.warmup_duration_seconds: 30
+  experiment.duration_seconds: 180
+
+read-get-trace-20-pg10:
+  experiment.workload: read
+  experiment.read.operation: get_trace
+  experiment.concurrency: 20
+  experiment.pg_size_gb: 10
+  experiment.duration_seconds: 120
+
+# Read one trace per request while distributing VUs and seeded trace pools
+# across 1, 4, and 64 tenant workspaces. Concurrency is VUs per tenant.
+read-get-trace-multi-tenant-scale:
+  experiment.workload: read
+  experiment.read.operation: get_trace
+  experiment.read.tenant_count: [1, 4, 64]
+  experiment.concurrency: [1, 2, 4, 8, 16]
+  experiment.pg_size_gb: 10
+  experiment.warmup_duration_seconds: 30
+  experiment.duration_seconds: 120
+
+# Search traces independently within each tenant workspace at the same scale.
+# Concurrency is VUs per tenant, so total VUs are tenant_count * concurrency.
+read-search-multi-tenant-scale:
+  experiment.workload: read
+  experiment.read.operation: search_traces
+  experiment.read.tenant_count: [1, 4, 64]
+  experiment.concurrency: [1, 2, 4, 8, 16]
+  experiment.pg_size_gb: 10
+  experiment.duration_seconds: 120
+
+# Hold database size, tenants, and load constant while varying the number of
+# traces grouped under each seeded experiment.
+read-get-trace-seed-density-sweep:
+  experiment.workload: read
+  experiment.read.operation: get_trace
+  experiment.seed.traces_per_experiment: [1, 5, 10, 100]
+  experiment.read.tenant_count: 1
+  experiment.concurrency: 1
+  experiment.pg_size_gb: 10
+  experiment.warmup_duration_seconds: 30
+  experiment.duration_seconds: 120
+
+read-search-seed-density-sweep:
+  experiment.workload: read
+  experiment.read.operation: search_traces
+  experiment.seed.traces_per_experiment: [1, 5, 10, 100]
+  experiment.read.tenant_count: 1
+  experiment.concurrency: 1
+  experiment.pg_size_gb: 10
+  experiment.duration_seconds: 120
+
+# Short trace-open smoke test over a 5 GiB seeded PostgreSQL database.
+# Concurrency is VUs per tenant, so this runs 100 VUs total.
+read-get-trace-smoke-5g-10tenants-10traces:
+  experiment.workload: read
+  experiment.read.operation: get_trace
+  experiment.read.tenant_count: 10
+  experiment.concurrency: 10
+  experiment.pg_size_gb: 5
+  experiment.seed.traces_per_experiment: 10
+  experiment.warmup_duration_seconds: 0
+  experiment.duration_seconds: 120
+
+# Run read and write k6 Jobs concurrently with a shared warmup and measurement
+# duration. Mixed concurrency values are total VUs per workload across tenants.
+mixed-read-write-get-trace:
+  experiment.workload: mixed
+  experiment.mixed_workload.read_concurrency: 8
+  experiment.mixed_workload.write_concurrency: 4
+  experiment.mixed_workload.tenant_count: 1
+  experiment.read.operation: get_trace
+  experiment.write_k6.mode: span_warm_start
+  experiment.write_k6.span_size_bytes: 102400
+  experiment.write_k6.spans_per_trace: 5
+  experiment.write_k6.traces_per_experiment: 1
+  experiment.write_k6.experiments_per_test: null
+  experiment.seed.traces_per_experiment: 10
+  experiment.pg_size_gb: 10
+  experiment.warmup_duration_seconds: 30
+  experiment.duration_seconds: 180
+
+# Five-minute 10 GiB write smoke test using the matching RHOAI MLflow and
+# operator images. Apply this preset to both prepare and test so the operator
+# and migration/server images stay on the same MLflow release.
+rhoai-write-pg10-5m:
+  platform.rhoai.mlflow_operator_image: registry.redhat.io/rhoai/odh-mlflow-operator-rhel9@sha256:1472c1549261b79d093c5f9ec5e3240ea75172fe8277e0ee58ba20e1c65313f5
+  experiment.workload: write
+  experiment.concurrency: [4]
+  experiment.pg_size_gb: [10]
+  experiment.seed.traces_per_experiment: 1
+  experiment.write_k6.mode: span_warm_start
+  experiment.write_k6.duration_seconds: 300
+  experiment.write_k6.span_size_bytes: 102400
+  experiment.write_k6.spans_per_trace: 5
+  experiment.write_k6.tenant_count: 1
+  experiment.write_k6.traces_per_experiment: 1
+  experiment.write_k6.experiments_per_test: null
+  experiment.write_k6.otlp_path: /v1/traces
+  experiment.mlflow.replicas: [1]
+  experiment.mlflow.workers: [8]
+  experiment.mlflow.image: registry.redhat.io/rhoai/odh-mlflow-rhel9@sha256:b076c093f1342d5a2d2910b0ab499493cba2a028f21ca8af0bd99ba1238d3e01
+  experiment.mlflow.image_pull_policy: Always
+
+# Matching five-minute 10 GiB write smoke test on the captured MLflow 3.17
+# Quay images. MLflow 3.17 mounts OTLP under the configured /mlflow prefix.
+mlflow-317-write-pg10-5m:
+  platform.rhoai.mlflow_operator_image: quay.io/opendatahub/mlflow-operator@sha256:3dbf2ed639e7ec1fefe0a263791b6b3bf3df15574fd6a45ca93826efddc90756
+  experiment.workload: write
+  experiment.concurrency: [4]
+  experiment.pg_size_gb: [10]
+  experiment.seed.traces_per_experiment: 1
+  experiment.write_k6.mode: span_warm_start
+  experiment.write_k6.duration_seconds: 300
+  experiment.write_k6.span_size_bytes: 102400
+  experiment.write_k6.spans_per_trace: 5
+  experiment.write_k6.tenant_count: 1
+  experiment.write_k6.traces_per_experiment: 1
+  experiment.write_k6.experiments_per_test: null
+  experiment.write_k6.otlp_path: /mlflow/v1/traces
+  experiment.mlflow.replicas: [1]
+  experiment.mlflow.workers: [8]
+  experiment.mlflow.image: quay.io/opendatahub/mlflow@sha256:a456d1a8a401d1eebb07050e21a865a5c8cad08375d4443fd3e926feb091db43
+  experiment.mlflow.image_pull_policy: Always

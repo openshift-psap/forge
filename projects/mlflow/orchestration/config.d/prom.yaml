@@ -1,0 +1,50 @@
+prepare:
+  user_workload:
+    during_prepare: true
+    during_test: true
+
+capture:
+  enabled: true
+  db:
+    enabled: true
+    system_metrics:
+      enabled: true
+    user_workload:
+      enabled: true
+      fail_if_not_enabled: false
+  metrics:
+    enabled: true
+    include_dirs:
+      - projects/cluster/metrics
+      - projects/mlflow/orchestration/metrics
+    params:
+      test_namespace: SET_AT_RUNTIME
+      query_duration: SET_AT_RUNTIME
+      client_rps: SET_AT_RUNTIME
+    groups:
+      test_namespace_resources:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network, workload]
+        variables:
+          NAMESPACE: "{test_namespace}"
+          POD_NAME: ".*"
+      mlflow_resources:
+        enabled: true
+        files: [resource_cpu, resource_memory, resource_network]
+        variables:
+          NAMESPACE: redhat-ods-applications
+          POD_NAME: "mlflow-.*"
+      mlflow_prometheus_summary:
+        enabled: true
+        files: [mlflow_summary]
+        variables:
+          NAMESPACE: "{test_namespace}"
+          MLFLOW_NAMESPACE: redhat-ods-applications
+          DURATION: "{query_duration}"
+          CLIENT_RPS: "{client_rps}"
+      mlflow_prometheus_timeseries:
+        enabled: true
+        files: [mlflow_timeseries]
+        variables:
+          NAMESPACE: "{test_namespace}"
+          MLFLOW_NAMESPACE: redhat-ods-applications

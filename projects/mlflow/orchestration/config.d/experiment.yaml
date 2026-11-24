@@ -1,0 +1,44 @@
+workload: write
+concurrency: [20]
+pg_size_gb: [0]
+seed:
+  traces_per_experiment: 1
+# Read/mixed duration; write-only duration is set under write_k6.
+duration_seconds: 120
+warmup_duration_seconds: 0
+
+mlflow:
+  replicas: [1]
+  workers: [8]
+  image: quay.io/opendatahub/mlflow:odh-stable
+  image_pull_policy: Always
+  pod_annotations: {}
+
+# Mixed concurrency is total VUs across tenants.
+mixed_workload:
+  read_concurrency: 8
+  write_concurrency: 4
+  tenant_count: 1
+
+write_k6:
+  mode: span_warm_start
+  duration_seconds: 60
+  ramp_up_warmup: false
+  span_size_bytes: 102400
+  spans_per_trace: 5
+  tenant_count: 1
+  traces_per_experiment: 1
+  experiments_per_test: null
+  matrix_cells: null
+  experiment_prefix: k6-write
+  # Null selects the legacy /v1/traces path; presets can override it.
+  otlp_path: null
+
+# Read API options.
+read:
+  operation: get_trace
+  tenant_count: 1
+  target_experiment_prefix: trace-perf-seed
+  max_results: 100
+  filter: "trace.status = 'OK'"
+  order_by: "timestamp_ms DESC"

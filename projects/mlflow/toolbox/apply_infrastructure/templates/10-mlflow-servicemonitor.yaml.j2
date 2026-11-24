@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: mlflow-metrics
+  namespace: {{ operator_namespace }}
+  labels:
+    app: mlflow
+spec:
+  selector:
+    matchLabels:
+      app: mlflow
+  podMetricsEndpoints:
+    - port: https
+      interval: 15s
+      path: /metrics
+      scheme: https
+      tlsConfig:
+        insecureSkipVerify: true

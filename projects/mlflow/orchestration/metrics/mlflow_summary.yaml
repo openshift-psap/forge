@@ -1,0 +1,289 @@
+- query: sum(rate(apiserver_request_total{resource="selfsubjectaccessreviews",verb="POST"}[{{.DURATION}}]))
+  metricName: auth.ssar_rate_per_sec
+  description: Auth ssar rate per sec
+  unit: per second
+  instant: true
+- query: sum(increase(apiserver_request_total{resource="selfsubjectaccessreviews",verb="POST"}[{{.DURATION}}]))
+  metricName: auth.ssar_total
+  description: Auth ssar total
+  unit: count
+  instant: true
+- query: histogram_quantile(0.5,sum(rate(apiserver_request_duration_seconds_bucket{resource="selfsubjectaccessreviews",verb="POST"}[{{.DURATION}}]))
+    by (le))
+  metricName: auth.ssar_latency_p50_s
+  description: Auth ssar latency p50 s
+  unit: seconds
+  instant: true
+- query: histogram_quantile(0.95,sum(rate(apiserver_request_duration_seconds_bucket{resource="selfsubjectaccessreviews",verb="POST"}[{{.DURATION}}]))
+    by (le))
+  metricName: auth.ssar_latency_p95_s
+  description: Auth ssar latency p95 s
+  unit: seconds
+  instant: true
+- query: histogram_quantile(0.99,sum(rate(apiserver_request_duration_seconds_bucket{resource="selfsubjectaccessreviews",verb="POST"}[{{.DURATION}}]))
+    by (le))
+  metricName: auth.ssar_latency_p99_s
+  description: Auth ssar latency p99 s
+  unit: seconds
+  instant: true
+- query: sum(rate(apiserver_request_total{resource="tokenreviews",verb="POST"}[{{.DURATION}}]))
+  metricName: auth.tokenreview_rate_per_sec
+  description: Auth tokenreview rate per sec
+  unit: per second
+  instant: true
+- query: sum(increase(apiserver_request_total{resource="tokenreviews",verb="POST"}[{{.DURATION}}]))
+  metricName: auth.tokenreview_total
+  description: Auth tokenreview total
+  unit: count
+  instant: true
+- query: histogram_quantile(0.5,sum(rate(apiserver_request_duration_seconds_bucket{resource="tokenreviews",verb="POST"}[{{.DURATION}}]))
+    by (le))
+  metricName: auth.tokenreview_latency_p50_s
+  description: Auth tokenreview latency p50 s
+  unit: seconds
+  instant: true
+- query: histogram_quantile(0.95,sum(rate(apiserver_request_duration_seconds_bucket{resource="tokenreviews",verb="POST"}[{{.DURATION}}]))
+    by (le))
+  metricName: auth.tokenreview_latency_p95_s
+  description: Auth tokenreview latency p95 s
+  unit: seconds
+  instant: true
+- query: histogram_quantile(0.99,sum(rate(apiserver_request_duration_seconds_bucket{resource="tokenreviews",verb="POST"}[{{.DURATION}}]))
+    by (le))
+  metricName: auth.tokenreview_latency_p99_s
+  description: Auth tokenreview latency p99 s
+  unit: seconds
+  instant: true
+- query: avg(rate(container_cpu_usage_seconds_total{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+  metricName: resources.mlflow_cpu_avg_cores
+  description: Resources mlflow cpu avg cores
+  unit: cores
+  instant: true
+- query: max(rate(container_cpu_usage_seconds_total{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+  metricName: resources.mlflow_cpu_max_cores
+  description: Resources mlflow cpu max cores
+  unit: cores
+  instant: true
+- query: avg(avg_over_time(container_memory_working_set_bytes{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+  metricName: resources.mlflow_memory_avg_bytes
+  description: Resources mlflow memory avg bytes
+  unit: bytes
+  instant: true
+- query: max(max_over_time(container_memory_working_set_bytes{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+  metricName: resources.mlflow_memory_max_bytes
+  description: Resources mlflow memory max bytes
+  unit: bytes
+  instant: true
+- query: 100 * sum(rate(container_cpu_cfs_throttled_periods_total{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+    / sum(rate(container_cpu_cfs_periods_total{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+  metricName: resources.mlflow_throttle_pct
+  description: Resources mlflow throttle pct
+  unit: percent
+  instant: true
+- query: avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}",pod=~"postgresql-.*",container="postgresql"}[{{.DURATION}}]))
+  metricName: resources.postgresql_cpu_avg_cores
+  description: Resources postgresql cpu avg cores
+  unit: cores
+  instant: true
+- query: max(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}",pod=~"postgresql-.*",container="postgresql"}[{{.DURATION}}]))
+  metricName: resources.postgresql_cpu_max_cores
+  description: Resources postgresql cpu max cores
+  unit: cores
+  instant: true
+- query: avg(avg_over_time(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}",pod=~"postgresql-.*",container="postgresql"}[{{.DURATION}}]))
+  metricName: resources.postgresql_memory_avg_bytes
+  description: Resources postgresql memory avg bytes
+  unit: bytes
+  instant: true
+- query: max(max_over_time(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}",pod=~"postgresql-.*",container="postgresql"}[{{.DURATION}}]))
+  metricName: resources.postgresql_memory_max_bytes
+  description: Resources postgresql memory max bytes
+  unit: bytes
+  instant: true
+- query: avg(rate(container_cpu_usage_seconds_total{namespace="openshift-ingress",pod=~"kube-auth-proxy-.*",container="kube-auth-proxy"}[{{.DURATION}}]))
+  metricName: resources.kube_auth_proxy_cpu_avg_cores
+  description: Resources kube auth proxy cpu avg cores
+  unit: cores
+  instant: true
+- query: max(rate(container_cpu_usage_seconds_total{namespace="openshift-ingress",pod=~"kube-auth-proxy-.*",container="kube-auth-proxy"}[{{.DURATION}}]))
+  metricName: resources.kube_auth_proxy_cpu_max_cores
+  description: Resources kube auth proxy cpu max cores
+  unit: cores
+  instant: true
+- query: avg(avg_over_time(container_memory_working_set_bytes{namespace="openshift-ingress",pod=~"kube-auth-proxy-.*",container="kube-auth-proxy"}[{{.DURATION}}]))
+  metricName: resources.kube_auth_proxy_memory_avg_bytes
+  description: Resources kube auth proxy memory avg bytes
+  unit: bytes
+  instant: true
+- query: max(max_over_time(container_memory_working_set_bytes{namespace="openshift-ingress",pod=~"kube-auth-proxy-.*",container="kube-auth-proxy"}[{{.DURATION}}]))
+  metricName: resources.kube_auth_proxy_memory_max_bytes
+  description: Resources kube auth proxy memory max bytes
+  unit: bytes
+  instant: true
+- query: avg(rate(container_cpu_usage_seconds_total{namespace="openshift-kube-apiserver",pod=~"kube-apiserver-.*",container="kube-apiserver"}[{{.DURATION}}]))
+  metricName: resources.kube_apiserver_cpu_avg_cores
+  description: Resources kube apiserver cpu avg cores
+  unit: cores
+  instant: true
+- query: max(rate(container_cpu_usage_seconds_total{namespace="openshift-kube-apiserver",pod=~"kube-apiserver-.*",container="kube-apiserver"}[{{.DURATION}}]))
+  metricName: resources.kube_apiserver_cpu_max_cores
+  description: Resources kube apiserver cpu max cores
+  unit: cores
+  instant: true
+- query: avg(avg_over_time(container_memory_working_set_bytes{namespace="openshift-kube-apiserver",pod=~"kube-apiserver-.*",container="kube-apiserver"}[{{.DURATION}}]))
+  metricName: resources.kube_apiserver_memory_avg_bytes
+  description: Resources kube apiserver memory avg bytes
+  unit: bytes
+  instant: true
+- query: max(max_over_time(container_memory_working_set_bytes{namespace="openshift-kube-apiserver",pod=~"kube-apiserver-.*",container="kube-apiserver"}[{{.DURATION}}]))
+  metricName: resources.kube_apiserver_memory_max_bytes
+  description: Resources kube apiserver memory max bytes
+  unit: bytes
+  instant: true
+- query: avg(rate(container_cpu_usage_seconds_total{namespace="openshift-ingress",pod=~"data-science-gateway-.*"}[{{.DURATION}}]))
+  metricName: resources.ds_gateway_cpu_avg_cores
+  description: Resources ds gateway cpu avg cores
+  unit: cores
+  instant: true
+- query: max(rate(container_cpu_usage_seconds_total{namespace="openshift-ingress",pod=~"data-science-gateway-.*"}[{{.DURATION}}]))
+  metricName: resources.ds_gateway_cpu_max_cores
+  description: Resources ds gateway cpu max cores
+  unit: cores
+  instant: true
+- query: avg(avg_over_time(container_memory_working_set_bytes{namespace="openshift-ingress",pod=~"data-science-gateway-.*"}[{{.DURATION}}]))
+  metricName: resources.ds_gateway_memory_avg_bytes
+  description: Resources ds gateway memory avg bytes
+  unit: bytes
+  instant: true
+- query: max(max_over_time(container_memory_working_set_bytes{namespace="openshift-ingress",pod=~"data-science-gateway-.*"}[{{.DURATION}}]))
+  metricName: resources.ds_gateway_memory_max_bytes
+  description: Resources ds gateway memory max bytes
+  unit: bytes
+  instant: true
+- query: avg(rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}",pod=~"minio-.*",container="minio"}[{{.DURATION}}]))
+  metricName: resources.minio_cpu_avg_cores
+  description: Resources minio cpu avg cores
+  unit: cores
+  instant: true
+- query: avg(avg_over_time(container_memory_working_set_bytes{namespace="{{.NAMESPACE}}",pod=~"minio-.*",container="minio"}[{{.DURATION}}]))
+  metricName: resources.minio_memory_avg_bytes
+  description: Resources minio memory avg bytes
+  unit: bytes
+  instant: true
+- query: rate(pg_stat_database_xact_commit{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.commits_per_sec
+  description: Postgresql commits per sec
+  unit: per second
+  instant: true
+- query: rate(pg_stat_database_xact_rollback{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.rollbacks_per_sec
+  description: Postgresql rollbacks per sec
+  unit: per second
+  instant: true
+- query: rate(pg_stat_database_tup_inserted{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.rows_inserted_per_sec
+  description: Postgresql rows inserted per sec
+  unit: rows/s
+  instant: true
+- query: rate(pg_stat_database_tup_updated{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.rows_updated_per_sec
+  description: Postgresql rows updated per sec
+  unit: rows/s
+  instant: true
+- query: rate(pg_stat_database_tup_deleted{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.rows_deleted_per_sec
+  description: Postgresql rows deleted per sec
+  unit: rows/s
+  instant: true
+- query: avg_over_time(pg_stat_activity_count{datname="mlflow",state="active",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.active_connections
+  description: Postgresql active connections
+  unit: count
+  instant: true
+- query: avg_over_time(pg_stat_activity_count{datname="mlflow",state="idle",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.idle_connections
+  description: Postgresql idle connections
+  unit: count
+  instant: true
+- query: avg_over_time(pg_stat_activity_count{datname="mlflow",state="idle in transaction",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.idle_in_transaction_connections
+  description: Postgresql idle in transaction connections
+  unit: count
+  instant: true
+- query: avg(rate(pg_stat_database_blks_hit{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}]) / (rate(pg_stat_database_blks_hit{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+    + rate(pg_stat_database_blks_read{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])))
+  metricName: postgresql.cache_hit_ratio
+  description: Postgresql cache hit ratio
+  unit: ratio
+  instant: true
+- query: rate(pg_stat_database_blk_read_time{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.blk_read_time_per_sec
+  description: Postgresql blk read time per sec
+  unit: milliseconds/s
+  instant: true
+- query: rate(pg_stat_database_blk_write_time{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.blk_write_time_per_sec
+  description: Postgresql blk write time per sec
+  unit: milliseconds/s
+  instant: true
+- query: increase(pg_stat_database_deadlocks{datname="mlflow",namespace="{{.NAMESPACE}}"}[{{.DURATION}}])
+  metricName: postgresql.deadlocks_total
+  description: Postgresql deadlocks total
+  unit: count
+  instant: true
+- query: max(max_over_time(pg_lock_waits_count{namespace="{{.NAMESPACE}}"}[{{.DURATION}}]))
+  metricName: postgresql.max_lock_waiters
+  description: Postgresql max lock waiters
+  unit: count
+  instant: true
+- query: sum(rate(mlflow_http_request_total{namespace="{{.MLFLOW_NAMESPACE}}"}[{{.DURATION}}]))
+  metricName: mlflow_http_requests_per_second
+  description: Mlflow http requests per second
+  unit: requests/s
+  instant: true
+- query: sum(rate(mlflow_http_request_exceptions_total{namespace="{{.MLFLOW_NAMESPACE}}"}[{{.DURATION}}]))
+  metricName: mlflow_http_errors_per_second
+  description: Mlflow http errors per second
+  unit: errors/s
+  instant: true
+- query: histogram_quantile(0.5, sum(rate(mlflow_http_request_duration_seconds_bucket{namespace="{{.MLFLOW_NAMESPACE}}"}[{{.DURATION}}]))
+    by (le))
+  metricName: mlflow_http_latency_p50_seconds
+  description: Mlflow http latency p50 seconds
+  unit: seconds
+  instant: true
+- query: histogram_quantile(0.95, sum(rate(mlflow_http_request_duration_seconds_bucket{namespace="{{.MLFLOW_NAMESPACE}}"}[{{.DURATION}}]))
+    by (le))
+  metricName: mlflow_http_latency_p95_seconds
+  description: Mlflow http latency p95 seconds
+  unit: seconds
+  instant: true
+- query: histogram_quantile(0.99, sum(rate(mlflow_http_request_duration_seconds_bucket{namespace="{{.MLFLOW_NAMESPACE}}"}[{{.DURATION}}]))
+    by (le))
+  metricName: mlflow_http_latency_p99_seconds
+  description: Mlflow http latency p99 seconds
+  unit: seconds
+  instant: true
+- query: vector({{.CLIENT_RPS}})
+  metricName: derived.client_rps
+  description: Derived client rps
+  unit: per second
+  instant: true
+- query: (avg(rate(container_cpu_usage_seconds_total{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+    * 1000) / scalar(clamp_min(vector({{.CLIENT_RPS}}), 1e-9)) * ({{.CLIENT_RPS}} > bool 0)
+  metricName: derived.mlflow_cpu_millicores_per_request
+  description: Derived mlflow cpu millicores per request
+  unit: millicores/request
+  instant: true
+- query: avg(avg_over_time(container_memory_working_set_bytes{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[{{.DURATION}}]))
+    / (1024 * 1024) / scalar(clamp_min(vector({{.CLIENT_RPS}}), 1e-9)) * ({{.CLIENT_RPS}} > bool 0)
+  metricName: derived.mlflow_memory_mb_per_request
+  description: Derived mlflow memory mb per request
+  unit: MB/request
+  instant: true
+- query: sum(rate(apiserver_request_total{resource="selfsubjectaccessreviews",verb="POST"}[{{.DURATION}}]))
+    / scalar(clamp_min(vector({{.CLIENT_RPS}}), 1e-9)) * ({{.CLIENT_RPS}} > bool 0)
+  metricName: derived.auth_cache_effect_ratio
+  description: Derived auth cache effect ratio
+  unit: ratio
+  instant: true

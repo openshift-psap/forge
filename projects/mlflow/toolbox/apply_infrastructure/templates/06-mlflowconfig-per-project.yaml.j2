@@ -1,0 +1,8 @@
+apiVersion: mlflow.kubeflow.org/v1
+kind: MLflowConfig
+metadata:
+  name: mlflow
+  namespace: {{ namespace }}
+spec:
+  artifactRootSecret: mlflow-artifact-connection
+  artifactRootPath: artifacts
