@@ -7,18 +7,18 @@
     CONTAINER: ".*"
 
 - query: >-
-    rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", container=~"{{.CONTAINER}}"}[5m])
+    sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", container=~"{{.CONTAINER}}", container!="", container!="POD"}[5m]))
   metricName: cpu_usage_cores_by_pod
   description: CPU usage by pod
-  unit: count
-  legendLabels: [container, pod]
+  unit: cores
+  legendLabels: [pod]
 
 - query: >-
-    container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", container=~"{{.CONTAINER}}"}
+    sum by (pod) (container_memory_working_set_bytes{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", container=~"{{.CONTAINER}}", container!="", container!="POD"})
   metricName: memory_usage_bytes_by_pod
   description: Memory usage by pod
   unit: bytes
-  legendLabels: [container, pod]
+  legendLabels: [pod]
 
 - query: >-
     kube_pod_container_resource_limits{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}", container=~"{{.CONTAINER}}", resource="cpu"}

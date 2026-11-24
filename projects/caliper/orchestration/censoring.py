@@ -43,14 +43,14 @@ def retrieve_vault_secrets(
 
     try:
         vault_manager = vault_lib.get_vault_manager()
-        vault_names = vault_manager.list_vaults()
+        vault_names = vault_manager.list_all_available_vaults()
 
         if verbose:
-            logger.info(f"Retrieving vault secrets from {len(vault_names)} vaults")
+            logger.info(f"Retrieving vault secrets from {len(vault_names)} available vaults")
 
         secrets_discovered = 0
         for vault_name in vault_names:
-            vault = vault_manager.get_vault(vault_name)
+            vault = vault_manager.get_vault_unchecked(vault_name)
             if not vault:
                 continue
 
@@ -220,13 +220,8 @@ def orchestration_apply_censoring(
     )
 
     # Separate results by type
-    clean_files = [r for r in censoring_results if not r.censored]
     sanitized_files = [r for r in censoring_results if r.sanitized]
     excluded_files = [r for r in censoring_results if r.censored and not r.sanitized]
-
-    logger.info(
-        f"Censoring complete: {len(clean_files)} clean, {len(sanitized_files)} sanitized, {len(excluded_files)} excluded"
-    )
 
     _generate_censoring_report(censoring_results, from_path)
 

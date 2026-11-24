@@ -350,15 +350,16 @@ Fixes #412
 PSAP-123
 ```
 
-## Comment Interaction Rules
+## GitHub Interaction Rules
 
-When processing, posting, or replying to user comments (GitHub PR reviews, issue comments, etc.):
+When creating or posting any content to GitHub (issues, PR descriptions, comments, replies, etc.):
 
 ### Rules
 
 1. **Always identify as an agent.**
-   Every comment or reply posted by an agent must clearly state that it was written by an agent,
-   not a human. Include an explicit marker such as `[Agent response]` at the start of the comment.
+   Every piece of content posted to GitHub by an agent must clearly state that it was written by
+   an agent, not a human. This includes issue bodies, PR descriptions, comments, and replies.
+   Include an explicit marker such as `[Agent generated]` at the start of the content.
 
 2. **Never use first person.**
    Do not use "I", "me", "my", or "mine" when writing comment text. Use impersonal phrasing instead
@@ -422,6 +423,16 @@ def get_title(context):
 
     return f"PR #{context.pr_number}: {title}"
 ```
+
+## Linter: Unused Import Removal
+
+The project's linter (run as a post-save hook) **automatically removes unused imports**.
+When extracting code into a new function or moving code between functions, verify that
+every `import` the moved code depends on is actually used in its original location.
+If the import is only needed by the extracted function, add it inside that function
+(or at the top of the file if it is used in multiple places). Do not assume an import
+will survive just because it exists in the file — the linter will erase it if the
+remaining code in its scope no longer references it.
 
 ## Legacy support
 

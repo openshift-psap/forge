@@ -6,6 +6,7 @@ from pathlib import Path
 
 from projects.caliper.engine.parameter_matrix import (
     create_legend_name,
+    create_legend_title,
     get_varying_parameters,
 )
 from projects.caliper.postprocess.helpers.visualization_utils import write_full_page_html
@@ -64,7 +65,14 @@ def generate_latency_breakdown(records: list, output_dir: Path) -> str | None:
 
         colors = ["blue", "red", "green", "purple", "orange", "brown", "pink", "gray"]
 
-        for i, (legend_name, data) in enumerate(sorted(data_groups.items())):
+        def _numeric_sort_key(item):
+            name = item[0]
+            try:
+                return (0, float(name))
+            except (ValueError, TypeError):
+                return (1, name)
+
+        for i, (legend_name, data) in enumerate(sorted(data_groups.items(), key=_numeric_sort_key)):
             color = colors[i % len(colors)]
 
             # TTFT plot
@@ -136,7 +144,13 @@ def generate_latency_breakdown(records: list, output_dir: Path) -> str | None:
             )
 
         # Update layout
-        fig.update_layout(title="GuideLLM Latency Analysis", height=800, showlegend=True)
+        legend_title = create_legend_title(varying_params)
+        fig.update_layout(
+            title="GuideLLM Latency Analysis",
+            height=800,
+            showlegend=True,
+            legend_title_text=legend_title,
+        )
 
         # Update axes labels
         fig.update_xaxes(title_text="Concurrency", row=2, col=1)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -187,10 +188,22 @@ def mlflow_tracking_context(
 ) -> Iterator[None]:
     """Apply a connection for an MLflow operation and restore the caller's state."""
     import mlflow
+    import urllib3
 
     previous_uri = mlflow.get_tracking_uri()
     previous_workspace = os.environ.get("MLFLOW_WORKSPACE")
-    with mlflow_connection_env(connection) if connection is not None else nullcontext():
+    with (
+        mlflow_connection_env(connection) if connection is not None else nullcontext(),
+        warnings.catch_warnings(),
+    ):
+        # Check the env var (not the connection dict) because it is exactly what
+        # MLflow reads to decide verify=False, so it also covers connections that
+        # only carry the flag through the environment.
+        if os.environ.get("MLFLOW_TRACKING_INSECURE_TLS", "").lower() == "true":
+            # MLflow then sends unverified HTTPS requests, and urllib3 emits
+            # InsecureRequestWarning on every single one. The operator already
+            # opted into insecure TLS, so silence the repetition.
+            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
         try:
             if uri := (connection or {}).get("tracking_uri"):
                 mlflow.set_tracking_uri(uri)

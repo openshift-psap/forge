@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import stat
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from .censoring_rules import (
     COMPILED_KEYWORD_PATTERNS,
     matches_sensitive_filename,
 )
+from .timefmt import format_duration, format_time
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +94,12 @@ class ArtifactCensor:
         self.censor_text_mapping = censor_text_mapping or {}
         self.verbose = verbose
         self.dry_run = dry_run
+        self.last_duration: float | None = None
 
         if self.verbose:
-            logger.info(f"Initialized censoring with {len(self.vault_secrets)} vault secrets")
+            logger.info(
+                f"Initialized censoring at {format_time()} with {len(self.vault_secrets)} vault secrets"
+            )
 
     def _is_text_file(self, file_path: Path) -> bool:
         """Check if file is likely a text file based on extension and content sample."""
@@ -278,6 +283,7 @@ class ArtifactCensor:
         """
         processed_files = []
         results = []
+        start_time = time.monotonic()
 
         for file_path in file_paths:
             if not file_path.is_file():
@@ -300,6 +306,8 @@ class ArtifactCensor:
                 # File excluded entirely (e.g., sensitive filename)
                 if self.verbose:
                     logger.info(f"Excluded: {result}")
+
+        self.last_duration = time.monotonic() - start_time
 
         return processed_files, results
 
@@ -355,9 +363,9 @@ def apply_censoring_to_artifacts(
     excluded_count = len([r for r in results if r.censored and not r.sanitized])
     clean_count = len([r for r in results if not r.censored])
 
-    if verbose or sanitized_count > 0 or excluded_count > 0:
-        logger.info(
-            f"Censoring complete: {clean_count} clean, {sanitized_count} sanitized, {excluded_count} excluded"
-        )
+    logger.info(
+        f"Censoring complete at {format_time()} in {format_duration(censor.last_duration or 0.0)}: "
+        f"{clean_count} clean, {sanitized_count} sanitized, {excluded_count} excluded"
+    )
 
     return processed_paths, results

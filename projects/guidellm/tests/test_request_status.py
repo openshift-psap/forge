@@ -11,10 +11,12 @@ from projects.caliper.engine.model import BaseTestNode, UnifiedResultRecord
 from projects.guidellm.postprocess.guidellm.dashboard import _extract_dashboard_metrics
 from projects.guidellm.postprocess.guidellm.plotting.request_status import (
     _build_error_table_html,
+    _error_ratio_points,
     _extract_status_data,
     _normalize_error,  # noqa: F401
     _shorten_error,
     create_error_breakdown_plot,  # noqa: F401
+    create_error_ratio_plot,
     create_successful_requests_plot,  # noqa: F401
     create_total_errors_plot,  # noqa: F401
 )
@@ -259,6 +261,138 @@ def test_create_total_errors_plot_no_errors() -> None:
     )
     fig = create_total_errors_plot([record])
     assert fig is None
+
+
+@needs_plotly
+def test_create_error_ratio_plot() -> None:
+    record = UnifiedResultRecord(
+        test_base_path="/test",
+        distinguishing_labels={"facet": "default"},
+        metrics={
+            "performance_curves": {
+                "intended_concurrency": [4, 8],
+                "successful_requests": [10, 20],
+                "errored_requests": [2, 8],
+            },
+            "error_breakdown": [{}, {}],
+        },
+        run_identity={"guidellm": True},
+        parse_notes=[],
+    )
+    fig = create_error_ratio_plot([record])
+    assert fig is not None
+    assert len(fig.data) == 1
+    assert list(fig.data[0].x) == [4, 8]
+    assert list(fig.data[0].y) == [pytest.approx(2 / 12), pytest.approx(8 / 28)]
+    # hover data: (errors, successful) per point
+    assert list(fig.data[0].customdata[0]) == [2, 10]
+    assert list(fig.data[0].customdata[1]) == [8, 20]
+
+
+@needs_plotly
+def test_create_error_ratio_plot_no_errors() -> None:
+    record = UnifiedResultRecord(
+        test_base_path="/test",
+        distinguishing_labels={"facet": "default"},
+        metrics={
+            "performance_curves": {
+                "intended_concurrency": [4, 8],
+                "successful_requests": [10, 20],
+                "errored_requests": [0, 0],
+            },
+            "error_breakdown": [{}, {}],
+        },
+        run_identity={"guidellm": True},
+        parse_notes=[],
+    )
+    fig = create_error_ratio_plot([record])
+    assert fig is None
+
+
+@needs_plotly
+def test_create_error_ratio_plot_empty() -> None:
+    fig = create_error_ratio_plot([])
+    assert fig is None
+
+
+@needs_plotly
+def test_create_error_ratio_plot_multiple_configs() -> None:
+    def _record(facet, successful, errored):
+        return UnifiedResultRecord(
+            test_base_path="/test",
+            distinguishing_labels={"facet": facet},
+            metrics={
+                "performance_curves": {
+                    "intended_concurrency": [4, 8],
+                    "successful_requests": successful,
+                    "errored_requests": errored,
+                },
+                "error_breakdown": [{}, {}],
+            },
+            run_identity={"guidellm": True},
+            parse_notes=[],
+        )
+
+    records = [
+        _record("default", [10, 20], [2, 8]),
+        _record("other", [10, 20], [0, 0]),
+    ]
+    fig = create_error_ratio_plot(records)
+    assert fig is not None
+    # both configs get a line, including the error-free one (flat 0%)
+    assert len(fig.data) == 2
+    assert list(fig.data[1].y) == [0.0, 0.0]
+
+
+def test_extract_status_data_errored_from_curve() -> None:
+    record = UnifiedResultRecord(
+        test_base_path="/test",
+        distinguishing_labels={"facet": "default"},
+        metrics={
+            "performance_curves": {
+                "intended_concurrency": [4, 8],
+                "successful_requests": [10, 20],
+                "errored_requests": [2, 8],
+            },
+            "error_breakdown": [{}, {}],
+        },
+        run_identity={"guidellm": True},
+        parse_notes=[],
+    )
+    data = _extract_status_data([record])
+    assert data[0]["errored"] == [2, 8]
+
+
+def test_extract_status_data_errored_fallback_to_breakdown() -> None:
+    record = UnifiedResultRecord(
+        test_base_path="/test",
+        distinguishing_labels={"facet": "default"},
+        metrics={
+            "performance_curves": {
+                "intended_concurrency": [4, 8],
+                "successful_requests": [10, 20],
+            },
+            "error_breakdown": [
+                {"HTTPStatusError('500')": 2, "ConnectError": 1},
+                {},
+            ],
+        },
+        run_identity={"guidellm": True},
+        parse_notes=[],
+    )
+    data = _extract_status_data([record])
+    assert data[0]["errored"] == [3, 0]
+
+
+def test_error_ratio_points_skips_empty_points() -> None:
+    group = {
+        "concurrency": [4, 8, 16],
+        "errored": [0, None, 5],
+        "successful": [0, None, 15],
+    }
+    points = _error_ratio_points(group)
+    # points with no requests at all are skipped; None counts as 0
+    assert points == [(16, 5, 15, 0.25)]
 
 
 def test_build_error_table_html_with_errors() -> None:

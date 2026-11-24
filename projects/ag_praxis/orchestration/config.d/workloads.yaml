@@ -4,7 +4,7 @@ use_pvc: false
 pvc_size: 1Gi
 pvc_storage_class: null
 fs_group: null
-replica_count: 1
+replica_count: 4
 timeout_seconds: 3600
 validate_backend: false
 keep_full_benchmark_file: false
@@ -52,10 +52,11 @@ payloads:
     requests_per_stream: 3
 
 sweeps:
-  smoke: [2, 4]
-  small: [8, 16, 32, 64]
+  smoke: [4, 8, 16]
+  small: [1, 4, 8, 16]
   medium: [4, 16, 32, 64, 96, 128]
-  large: [32, 64, 128, 196, 256, 360, 512]
+  large: [256, 512, 1024]
+  limit: [1000, 2000]
   full: [64, 128, 256, 512, 1024]
 
 benchmarks:
@@ -73,4 +74,4 @@ benchmarks:
 
   smoke:
     timeout_seconds: 300
-    benchconf: llm-d/smoke
+    benchconf: psap-inference/smoke

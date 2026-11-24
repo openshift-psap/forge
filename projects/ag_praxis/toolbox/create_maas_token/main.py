@@ -6,7 +6,7 @@ import os
 import shlex
 import tempfile
 
-from projects.core.dsl import entrypoint, execute_tasks, task
+from projects.core.dsl import entrypoint, execute_tasks, task, user_notification
 from projects.core.dsl.utils.k8s import oc, oc_exec
 
 logger = logging.getLogger("DSL")
@@ -28,7 +28,8 @@ def run(
     """Create an ephemeral MaaS API key via the deployer pod.
 
     The API key is written to a local temp file. The file path is
-    returned via ctx.api_key_file_path.
+    returned via ctx.api_key_file_path, and its length in bytes via
+    ctx.api_key_length (never the key itself).
 
     Args:
         namespace: Namespace of the ServiceAccount used for authentication.
@@ -45,6 +46,8 @@ def run(
 @task
 def create_sa_token(args, ctx):
     """Create a ServiceAccount token and write it into the deployer pod."""
+    ctx.api_key_length = 0  # set by request_maas_token; default for callers
+
     token_result = oc(
         "create",
         "token",
@@ -91,6 +94,12 @@ def request_maas_token(args, ctx):
         f' -H "Authorization: Bearer $(cat {TOKEN_PATH_IN_POD})"'
         f" -d {shlex.quote(payload)}"
     )
+    # Safe to log: the SA token is referenced via $(cat ...), only substituted
+    # inside the pod at runtime — it never appears in the command text.
+    # The response (which contains the API key) must never be logged.
+    logger.info(f"Requesting MaaS API key: {curl_cmd}")
+    logger.info(f"<safe command> {curl_cmd}")
+
     result = oc_exec(
         "sh",
         "-c",
@@ -117,7 +126,39 @@ def request_maas_token(args, ctx):
     os.close(fd[0])
     ctx.api_key_file_path = fd[1]
 
-    return f"API key written to {fd[1]}"
+    api_key_length = len(api_key.encode())
+    ctx.api_key_length = api_key_length
+    logger.info(f"API key length: {api_key_length} bytes")
+
+    # CONNLINK-2020: authorino's evaluator cache (freecache) silently refuses
+    # entries larger than 1/1024 of its size — 1 kB at the default 1 MB. The
+    # apiKeyValidation/auth-valid cache keys of maas-gateway-auth embed the raw
+    # API key, so a key longer than ~1 kB disables those caches with no trace
+    # in authorino's logs or metrics. Only the length is logged, never the key.
+    if api_key_length > 1000:
+        message = (
+            f"The MaaS API key is {api_key_length} bytes long.\n"
+            "\n"
+            "Authorino's evaluator cache (freecache) silently refuses entries\n"
+            "larger than 1/1024 of its size — 1 kB at the default 1 MB\n"
+            "evaluatorCacheSize. The apiKeyValidation and auth-valid cache keys of\n"
+            "the MaaS AuthPolicy embed the raw API key, so with a key this long\n"
+            "those caches store nothing and every request pays the full\n"
+            "authentication pipeline, with no trace in authorino's logs or metrics\n"
+            "(CONNLINK-2020).\n"
+            "\n"
+            "Raise spec.evaluatorCacheSize on the Authorino CR to make the caches\n"
+            "effective.\n"
+        )
+        user_notification.warning("maas-api-key-too-long", message)
+        logger.warning(
+            f"API key is {api_key_length} bytes: authorino cache entries are capped "
+            f"at 1/1024 of evaluatorCacheSize (1 kB at the default 1 MB), so the "
+            f"apiKeyValidation/auth-valid caches will silently not store anything "
+            f"(CONNLINK-2020). Raise spec.evaluatorCacheSize on the Authorino CR."
+        )
+
+    return f"API key written to {fd[1]} (length: {api_key_length} bytes)"
 
 
 if __name__ == "__main__":

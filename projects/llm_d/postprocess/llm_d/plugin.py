@@ -121,12 +121,20 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
+        plugin_settings: dict[str, Any] | None = None,
     ) -> list[ReportFile]:
         wanted = list(dict.fromkeys(report_ids or ()))
         prom_requested = PROMETHEUS_REPORT_ID in wanted
         parent_ids = [r for r in wanted if r != PROMETHEUS_REPORT_ID] or None
 
-        reports = super().visualize(model, output_dir, parent_ids, group_id, visualize_config)
+        reports = super().visualize(
+            model,
+            output_dir,
+            parent_ids,
+            group_id,
+            visualize_config,
+            plugin_settings=plugin_settings,
+        )
 
         if prom_requested:
             prom_reports = _generate_prometheus_reports(model, output_dir)

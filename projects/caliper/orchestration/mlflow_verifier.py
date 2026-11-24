@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import re
 import time
-import warnings
 
 from projects.caliper.orchestration.mlflow_credentials import load_mlflow_connection
 from projects.caliper.public.mlflow import mlflow_tracking_context
@@ -82,33 +81,30 @@ class CaliperMLflowVerifier(NightlyVerifier):
 
     def _query_latest_run(self) -> str:
         import mlflow
-        import urllib3
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-            client = mlflow.tracking.MlflowClient()
+        client = mlflow.tracking.MlflowClient()
 
-            experiment = client.get_experiment_by_name(self.experiment)
-            if experiment is None:
-                raise ValueError(
-                    f"MLflow experiment '{self.experiment}' not found. "
-                    "Create the experiment first or check the configuration."
-                )
-
-            runs = client.search_runs(
-                experiment_ids=[experiment.experiment_id],
-                order_by=["start_time DESC"],
-                max_results=1,
+        experiment = client.get_experiment_by_name(self.experiment)
+        if experiment is None:
+            raise ValueError(
+                f"MLflow experiment '{self.experiment}' not found. "
+                "Create the experiment first or check the configuration."
             )
 
-            if not runs:
-                raise ValueError(f"No runs found in MLflow experiment '{self.experiment}'.")
+        runs = client.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            order_by=["start_time DESC"],
+            max_results=1,
+        )
 
-            latest_run = runs[0]
-            run_name = latest_run.info.run_name or ""
-            logger.info("Latest MLflow run: %s", run_name)
+        if not runs:
+            raise ValueError(f"No runs found in MLflow experiment '{self.experiment}'.")
 
-            return self._extract_version(run_name)
+        latest_run = runs[0]
+        run_name = latest_run.info.run_name or ""
+        logger.info("Latest MLflow run: %s", run_name)
+
+        return self._extract_version(run_name)
 
     def _extract_version(self, run_name: str) -> str:
         match = self._version_re.search(run_name)
