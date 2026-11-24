@@ -31,7 +31,7 @@ def test_nested_credentials_never_reach_archive(tmp_path, shape):
 
         wrapped = {shape: base64.b64encode(b"SYNTHETIC_CREDENTIAL_12345").decode()}
     span = record["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
-    span["attributes"] = [{"key": "vllm.queue.duration", "value": wrapped}]
+    span["attributes"] = [{"key": "llm.request.type", "value": wrapped}]
     ctx = _run_publish(tmp_path, [_window("a", 90, 150, str(tmp_path / "out/a"))], [record])
     try:
         data = gzip.decompress((tmp_path / "out/a/traces/otlp.jsonl.gz").read_bytes())

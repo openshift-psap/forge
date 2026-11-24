@@ -117,6 +117,8 @@ def test_identical_duplicate_spans_are_deduplicated():
     index = build_trace_index(spans)
     assert index.duplicates == 1
     assert len(index.traces["t1"]) == 1
+    # The count must reach the published summary.
+    assert analyze_quality(index).to_dict()["duplicate_spans"] == 1
 
 
 def test_conflicting_duplicate_spans_are_a_validation_failure():

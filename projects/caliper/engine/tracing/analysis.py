@@ -189,7 +189,7 @@ def build_trace_index(spans: Iterable[SpanRecord]) -> TraceIndex:
 def analyze_quality(index: TraceIndex) -> CollectionQuality:
     """Compute structural quality indicators from an index."""
     quality = CollectionQuality()
-    quality.duplicates = index.duplicates
+    quality.duplicate_spans = index.duplicates
     quality.conflicting_duplicates = index.conflicting_duplicates
     for spans in index.traces.values():
         span_ids = {s.span_id for s in spans}

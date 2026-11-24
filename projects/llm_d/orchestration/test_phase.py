@@ -393,6 +393,16 @@ def _start_trace_capture(deployment_id: str, *, manifest_path: Path):
 
     from projects.cluster.library.tracing import lifecycle
     from projects.cluster.library.tracing.instrumentation import build_capture_id
+    from projects.cluster.library.tracing.models import TracingConfigError
+
+    if config.project.get_config("runtime.kserve.reuse_existing"):
+        # A reused service keeps its original, untraced manifest, so it would
+        # send nothing to the new collector.
+        raise TracingConfigError(
+            "tracing requires a fresh deployment, but runtime.kserve.reuse_existing "
+            "reuses an existing inference service without the tracing instrumentation; "
+            "disable one of them"
+        )
 
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
 
@@ -478,6 +488,20 @@ def _capture_traces_finalizer(
             "bundles were retained in the artifacts.",
         )
         raise RuntimeError(f"requested trace collection {reason}")
+
+
+def _remove_trace_collector_without_capture(capture_session: Any) -> None:
+    """Remove the collector when the test finalizers, and so trace capture, are skipped.
+
+    Nothing else removes a collector (the namespace cleanups only delete
+    inference services), so skipping this would leak it and its PVC. A cleanup
+    failure is notified rather than raised, so an interrupt stays the reported
+    error.
+    """
+    from projects.cluster.library.tracing import lifecycle
+
+    logger.warning("Test finalizers skipped; removing the trace collector without capturing")
+    lifecycle.cleanup_after_failure(capture_session)
 
 
 def _current_test_id() -> str:
@@ -595,6 +619,8 @@ def do_test() -> int:
                 benchmark_times=benchmark_times,
                 capture_session=capture_session,
             )
+        elif capture_session is not None:
+            _remove_trace_collector_without_capture(capture_session)
 
     if primary_exc is not None:
         raise primary_exc[1].with_traceback(primary_exc[2])

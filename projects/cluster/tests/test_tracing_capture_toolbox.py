@@ -562,6 +562,36 @@ def test_transfer_rejects_spool_checksum_mismatch(tmp_path: Path, monkeypatch):
         capture_main.transfer_spool.__wrapped__(ctx, ctx)
 
 
+def test_transfer_checksum_ignores_spans_appended_after_the_copy(tmp_path: Path, monkeypatch):
+    """The remote hash covers the copied bytes only; later spans are not a mismatch."""
+    import hashlib
+
+    remote = {"content": b"payload"}
+    ctx = _settle_ctx(tmp_path, spool_bytes=len(remote["content"]))
+
+    def fake_copy(_source, destination, **_kwargs):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(remote["content"])
+        # A late span lands in the spool right after the copy.
+        remote["content"] += b"late-span"
+
+    def fake_exec(*command, **_kwargs):
+        script = command[-1]
+        content = remote["content"]
+        if "head -c " in script:
+            content = content[: int(script.split("head -c ", 1)[1].split()[0])]
+        digest = hashlib.sha256(content).hexdigest()
+        return type("R", (), {"stdout": digest + "\n"})()
+
+    monkeypatch.setattr(capture_main, "oc_cp_from_pod", fake_copy)
+    monkeypatch.setattr(capture_main, "oc_exec", fake_exec)
+
+    capture_main.transfer_spool.__wrapped__(ctx, ctx)
+
+    assert ctx.local_spool.read_bytes() == b"payload"
+    capture_main.cleanup_raw_spool.__wrapped__(ctx, ctx)
+
+
 def test_transfer_accepts_matching_checksum(tmp_path: Path, monkeypatch):
     output_dir = tmp_path / "artifacts"
     output_dir.mkdir()
@@ -622,6 +652,43 @@ def test_spool_bytes_returns_zero_for_missing_file(monkeypatch):
     monkeypatch.setattr(capture_main, "oc_exec", lambda *_a, **_k: _Result())
 
     assert capture_main._spool_bytes("ns", "collector-0") == 0
+
+
+@pytest.mark.parametrize(
+    ("stat_output", "stat_exit", "expected"),
+    [
+        ("42", 0, "42"),
+        # The collector has not created the file yet: an empty capture.
+        ("stat: can't stat 'spool': No such file or directory", 1, "0"),
+        # Any other failure must not look like an empty capture.
+        ("stat: can't stat 'spool': Permission denied", 1, None),
+    ],
+)
+def test_spool_size_script_only_maps_a_missing_file_to_zero(
+    tmp_path: Path, stat_output, stat_exit, expected
+):
+    import os
+    import subprocess
+
+    fake_stat = tmp_path / "stat"
+    stream = ">&2" if stat_exit else ""
+    fake_stat.write_text(f'#!/bin/sh\necho "{stat_output}" {stream}\nexit {stat_exit}\n')
+    fake_stat.chmod(0o755)
+
+    result = subprocess.run(
+        ["sh", "-c", capture_main.SPOOL_SIZE_SCRIPT],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        check=False,
+    )
+
+    if expected is None:
+        assert result.returncode != 0
+        assert result.stdout == ""
+    else:
+        assert result.returncode == 0
+        assert result.stdout.strip() == expected
 
 
 def test_window_with_no_assigned_spans_is_recorded_empty(tmp_path: Path):

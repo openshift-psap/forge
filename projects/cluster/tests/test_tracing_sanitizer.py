@@ -239,3 +239,46 @@ def test_span_link_attributes_are_sanitized():
     assert "gen_ai.prompt" not in keys
     assert "http.request.method" in keys
     assert SENTINELS["prompt"] not in json.dumps(sanitized)
+
+
+def test_pattern_matched_keys_keep_only_numbers_and_booleans():
+    """A key allowed only by a family pattern must not carry free-form text."""
+    attributes = [
+        {"key": "vllm.queue.headers", "value": {"stringValue": "x-api-key: SENTINEL_KEY"}},
+        {"key": "llm_d.score.reason", "value": {"stringValue": "SENTINEL_TEXT"}},
+        {"key": "vllm.queue.duration", "value": {"doubleValue": 0.25}},
+        {"key": "llm_d.score", "value": {"intValue": "3"}},
+        {"key": "forge.quality.complete", "value": {"boolValue": True}},
+        # Exact allowlist keys keep their (redacted) text values.
+        {"key": "gen_ai.request.model", "value": {"stringValue": "Qwen/Qwen3-0.6B"}},
+    ]
+    record = {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": []},
+                "scopeSpans": [
+                    {
+                        "scope": {"name": "vllm"},
+                        "spans": [
+                            {
+                                "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+                                "spanId": "00f067aa0ba902b7",
+                                "name": "ok",
+                                "attributes": attributes,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    span = sanitize_export_request(record)["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+
+    assert [a["key"] for a in span["attributes"]] == [
+        "vllm.queue.duration",
+        "llm_d.score",
+        "forge.quality.complete",
+        "gen_ai.request.model",
+    ]
+    assert "SENTINEL" not in json.dumps(span)

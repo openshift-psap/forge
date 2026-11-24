@@ -205,12 +205,21 @@ def test_default_scheduler_args_are_never_replaced_by_tracing_only(scheduler):
     assert manifest == before
 
 
+def _fake_project_config(values: dict):
+    return type("P", (), {"get_config": staticmethod(lambda key, *_a, **_k: values[key])})
+
+
 def test_capture_records_the_roles_of_the_rendered_manifest(monkeypatch, tmp_path):
     import yaml
 
     from projects.cluster.library.tracing import lifecycle
     from projects.llm_d.orchestration import test_phase, tracing_adapter
 
+    monkeypatch.setattr(
+        test_phase.config,
+        "project",
+        _fake_project_config({"runtime.kserve.reuse_existing": False}),
+    )
     monkeypatch.setattr(tracing_adapter, "resolve_tracing", _settings)
     monkeypatch.setattr(test_phase, "_tracing_job_id", lambda: "job-1")
     monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
@@ -221,6 +230,25 @@ def test_capture_records_the_roles_of_the_rendered_manifest(monkeypatch, tmp_pat
         path.write_text(yaml.safe_dump(manifest))
         test_phase._start_trace_capture("llmd-abc", manifest_path=path)
         assert calls[-1]["roles"] == roles
+
+
+def test_tracing_rejects_reusing_an_untraced_service(monkeypatch, tmp_path):
+    """A reused service keeps its untraced manifest, so the capture would be empty."""
+    from projects.cluster.library.tracing import lifecycle
+    from projects.llm_d.orchestration import test_phase, tracing_adapter
+
+    monkeypatch.setattr(
+        test_phase.config,
+        "project",
+        _fake_project_config({"runtime.kserve.reuse_existing": True}),
+    )
+    monkeypatch.setattr(tracing_adapter, "resolve_tracing", _settings)
+    monkeypatch.setattr(
+        lifecycle, "start_capture", lambda **_kw: pytest.fail("no collector may be deployed")
+    )
+
+    with pytest.raises(TracingConfigError, match="reuse_existing"):
+        test_phase._start_trace_capture("llmd-abc", manifest_path=tmp_path / "manifest.yaml")
 
 
 def test_instrumentation_is_idempotent():
@@ -358,3 +386,79 @@ def test_finalizers_reconcile_traces_when_the_test_failed_before_the_benchmark(m
     )
 
     assert calls == [("traces", None), "cleanup"]
+
+
+@pytest.mark.parametrize(
+    ("failure", "run_test_finalizers", "expected"),
+    [
+        # The finalizers capture traces and remove the collector.
+        ("error", True, ["finalizers"]),
+        # Skipped finalizers must not leak the collector and its PVC.
+        ("error", False, ["remove-collector"]),
+        ("interrupt", True, ["remove-collector"]),
+    ],
+)
+def test_collector_is_removed_when_finalizers_are_skipped(
+    monkeypatch, tmp_path, failure, run_test_finalizers, expected
+):
+    import signal
+
+    from projects.core.library.run import SignalInterrupt
+    from projects.llm_d.orchestration import test_phase
+
+    calls = []
+    settings = {
+        "runtime.kserve.dry_run": False,
+        "runtime.run_test_finalizers": run_test_finalizers,
+        "platform.cluster.namespace.labels": {},
+    }
+    monkeypatch.setattr(test_phase.config, "project", _fake_project_config(settings))
+    monkeypatch.setattr(test_phase.env, "ARTIFACT_DIR", tmp_path)
+    monkeypatch.setattr(test_phase.runtime_config, "get_namespace", lambda: "ns")
+    monkeypatch.setattr(
+        test_phase.runtime_config,
+        "get_platform_config",
+        lambda: {"inference_service": {"name": "llmisvc"}},
+    )
+    monkeypatch.setattr(test_phase.runtime_config, "get_deployment_profile_name", lambda: "p")
+    for name in (
+        "ensure_namespace",
+        "ensure_kueue_local_queue",
+        "cleanup_existing_resources",
+        "validate_user_workload_monitoring",
+        "prepare_user_workload_monitoring",
+        "create_test_labels",
+        "update_test_labels_with_timing",
+        "update_test_labels_with_status",
+    ):
+        monkeypatch.setattr(test_phase, name, lambda *_a, **_k: None)
+    monkeypatch.setattr(test_phase.validate_gpu_operator_dcgm, "run", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        test_phase,
+        "build_inference_service_manifest",
+        lambda name: (tmp_path / "manifest.yaml", name),
+    )
+    monkeypatch.setattr(test_phase, "_start_trace_capture", lambda *_a, **_k: "session")
+
+    def failing_deploy(*_a, **_k):
+        if failure == "interrupt":
+            raise SignalInterrupt(signal.SIGTERM, None)
+        raise RuntimeError("deploy failed")
+
+    monkeypatch.setattr(test_phase, "deploy_inference_service_from_manifest", failing_deploy)
+
+    def fake_finalizers(_url, _name, primary_exc, finalizer_exc, **_kw):
+        calls.append("finalizers")
+        return primary_exc, finalizer_exc
+
+    monkeypatch.setattr(test_phase, "run_finalizers", fake_finalizers)
+    monkeypatch.setattr(
+        test_phase,
+        "_remove_trace_collector_without_capture",
+        lambda session: calls.append("remove-collector"),
+    )
+
+    with pytest.raises((RuntimeError, SignalInterrupt)):
+        test_phase.do_test()
+
+    assert calls == expected

@@ -79,7 +79,11 @@ def delete_resources(args, ctx):
 @always
 @task
 def confirm_removed(args, ctx):
-    """Confirm no resources remain for this capture."""
+    """Confirm no resources remain for this capture.
+
+    A failed query or a leftover resource raises: callers report cleanup
+    failures, and a silent success would hide a leaked collector and PVC.
+    """
     selector = cleanup_selector(ctx.identity)
     result = oc(
         "-n",
@@ -90,12 +94,12 @@ def confirm_removed(args, ctx):
         selector,
         "-o",
         "name",
-        check=False,
     )
     remaining = [line for line in result.stdout.splitlines() if line.strip()]
     if remaining:
-        logger.warning("Resources still present for %s: %s", selector, ", ".join(remaining))
-        return f"{len(remaining)} resource(s) still present"
+        raise RuntimeError(
+            f"trace collector resources still present for {selector}: {', '.join(remaining)}"
+        )
     return "All capture resources removed"
 
 

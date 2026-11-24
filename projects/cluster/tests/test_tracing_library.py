@@ -516,3 +516,35 @@ def test_failed_cleanup_keeps_the_deploy_error(monkeypatch, tmp_path):
         )
 
     assert notifications == ["tracing-cleanup-failed"]
+
+
+@pytest.mark.parametrize(
+    ("oc_result", "error"),
+    [
+        ("", None),
+        ("persistentvolumeclaim/forge-trace-spool-cap\n", "still present"),
+        # A failed query must not read as "nothing left".
+        (RuntimeError("oc get failed"), "oc get failed"),
+    ],
+)
+def test_cleanup_confirmation_fails_when_it_cannot_confirm(monkeypatch, oc_result, error):
+    from projects.cluster.library.tracing.models import CaptureIdentity
+    from projects.cluster.toolbox.cleanup_trace_collector import main as cleanup_main
+
+    def fake_oc(*_args, **kwargs):
+        assert kwargs.get("check", True), "query errors must raise"
+        if isinstance(oc_result, Exception):
+            raise oc_result
+        return type("R", (), {"stdout": oc_result})()
+
+    monkeypatch.setattr(cleanup_main, "oc", fake_oc)
+    identity = CaptureIdentity(
+        job_id="job", capture_id="cap", project="llm_d", namespace="ns", deployment_id="dep"
+    )
+    ctx = type("Ctx", (), {"identity": identity})()
+
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            cleanup_main.confirm_removed.__wrapped__(ctx, ctx)
+    else:
+        assert cleanup_main.confirm_removed.__wrapped__(ctx, ctx) == "All capture resources removed"

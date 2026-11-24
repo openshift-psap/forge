@@ -144,17 +144,25 @@ def _collector_pod(namespace: str, capture_id: str) -> str:
     return pod
 
 
+# Prints the spool size, or 0 only when the file does not exist yet. Any other
+# stat failure (permissions, I/O) exits non-zero so it cannot look like an
+# empty capture.
+SPOOL_SIZE_SCRIPT = (
+    f'if out=$(stat -c %s "{SPOOL_MOUNT_PATH}/{SPOOL_FILENAME}" 2>&1); then echo "$out"; '
+    'else case "$out" in *"No such file"*) echo 0 ;; *) echo "$out" >&2; exit 1 ;; esac; fi'
+)
+
+
 def _spool_bytes(namespace: str, pod: str) -> int:
     """Return the spool size in bytes, or 0 when the file does not exist yet.
 
-    The shell falls back to ``echo 0`` for a missing file, so unparsable output
-    means the stat itself failed (unreadable or rotated spool). That must raise
-    rather than look identical to an empty capture.
+    A failed stat raises (non-zero exit), and so does unparsable output: an
+    unreadable or rotated spool must not look identical to an empty capture.
     """
     result = oc_exec(
         "sh",
         "-c",
-        f"stat -c %s {SPOOL_MOUNT_PATH}/{SPOOL_FILENAME} 2>/dev/null || echo 0",
+        SPOOL_SIZE_SCRIPT,
         namespace=namespace,
         pod=pod,
         container="spool-reader",
@@ -169,17 +177,20 @@ def _spool_bytes(namespace: str, pod: str) -> int:
         ) from exc
 
 
-def _spool_checksum(namespace: str, pod: str) -> str:
-    """Return the remote spool's sha256, or an empty string when unavailable.
+def _spool_checksum(namespace: str, pod: str, byte_count: int) -> str:
+    """Return the sha256 of the remote spool's first ``byte_count`` bytes.
 
-    Uses the spool-reader image so the collector image needs no shell or hashing
-    tool. A missing checksum is not fatal on its own; the transfer still
-    verifies byte counts.
+    The spool is append-only, so hashing exactly the copied length matches the
+    local copy even if spans arrived after it. Returns an empty string when
+    hashing is unavailable. Uses the spool-reader image so the collector image
+    needs no shell or hashing tool. A missing checksum is not fatal on its own;
+    the transfer still verifies byte counts.
     """
     result = oc_exec(
         "sh",
         "-c",
-        f"sha256sum {SPOOL_MOUNT_PATH}/{SPOOL_FILENAME} 2>/dev/null | cut -d' ' -f1",
+        f"head -c {int(byte_count)} {SPOOL_MOUNT_PATH}/{SPOOL_FILENAME} 2>/dev/null "
+        "| sha256sum | cut -d' ' -f1",
         namespace=namespace,
         pod=pod,
         container="spool-reader",
@@ -304,7 +315,7 @@ def transfer_spool(args, ctx):
     if copied < ctx.spool_bytes:
         raise RuntimeError(f"spool transfer truncated: copied {copied} of {ctx.spool_bytes} bytes")
 
-    remote_sha = _spool_checksum(ctx.namespace, ctx.collector_pod)
+    remote_sha = _spool_checksum(ctx.namespace, ctx.collector_pod, copied)
     if remote_sha:
         local_sha = _sha256_file(local_spool)
         if local_sha != remote_sha:

@@ -80,6 +80,8 @@ SPAN_ATTRIBUTE_ALLOWLIST = frozenset(
 )
 
 # Reviewed regular-expression allowlist for families of numeric/diagnostic keys.
+# Keys matched only by a pattern keep number or boolean values; any other value
+# is dropped, since a free-form string under such a key could carry anything.
 SPAN_ATTRIBUTE_PATTERNS = (
     re.compile(r"^vllm\.[a-z0-9_.]*?(num_|count|tokens|duration|latency|size|queue|batch)"),
     re.compile(r"^llm_d\.[a-z0-9_.]*?(score|weight|queue|latency|duration|count)"),
@@ -201,6 +203,15 @@ def redact_anyvalue(any_value: Any) -> Any:
     return any_value
 
 
+def _is_number_or_bool(any_value: Any) -> bool:
+    """Return whether an OTLP ``AnyValue`` holds a single number or boolean."""
+    return (
+        isinstance(any_value, dict)
+        and len(any_value) == 1
+        and next(iter(any_value)) in ("intValue", "doubleValue", "boolValue")
+    )
+
+
 def _sanitize_attributes(
     attributes: list[dict[str, Any]],
     allowlist: frozenset[str],
@@ -212,7 +223,10 @@ def _sanitize_attributes(
         key = attr.get(_ATTR_KEY)
         if not is_allowed_attribute_key(key, allowlist):
             continue
-        sanitized.append({_ATTR_KEY: key, _ATTR_VALUE: redact_anyvalue(attr.get(_ATTR_VALUE))})
+        value = attr.get(_ATTR_VALUE)
+        if key not in allowlist and not _is_number_or_bool(value):
+            continue
+        sanitized.append({_ATTR_KEY: key, _ATTR_VALUE: redact_anyvalue(value)})
     return sanitized
 
 
