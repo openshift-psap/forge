@@ -236,6 +236,49 @@ def test_collector_writable_probe_runs_before_collector():
     assert "fsGroup" not in pod_spec.get("securityContext", {})
 
 
+def test_sanitizer_sidecar_runs_on_the_standard_library_only(tmp_path):
+    """The sidecar image has no third-party packages; its mounted code must load anyway."""
+    import subprocess
+    import sys
+
+    from projects.cluster.library.tracing.collection import build_collector_resources
+    from projects.cluster.library.tracing.models import (
+        CaptureIdentity,
+        TracingMode,
+        TracingSettings,
+    )
+
+    resources = build_collector_resources(
+        identity=CaptureIdentity(
+            job_id="job", capture_id="cap", project="llm_d", namespace="ns", deployment_id="dep"
+        ),
+        settings=TracingSettings(mode=TracingMode.STANDARD),
+        collector_config_text="receivers: {}",
+    )
+    config_map = next(r for r in resources if r["kind"] == "ConfigMap")
+    deployment = next(r for r in resources if r["kind"] == "Deployment")
+    volume = next(
+        v for v in deployment["spec"]["template"]["spec"]["volumes"] if v["name"] == "sanitizer"
+    )
+    for item in volume["configMap"]["items"]:
+        target = tmp_path / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(config_map["data"][item["key"]])
+
+    load_without_site_packages = (
+        "import runpy, sys\n"
+        "sys.path[:] = [sys.argv[1]] + [p for p in sys.path if 'site-packages' not in p]\n"
+        "runpy.run_path(sys.argv[1] + '/sanitize_otlp.py', run_name='sidecar')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", load_without_site_packages, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_collector_config_uses_valid_file_exporter_schema():
     """The pinned file exporter must accept the rendered config at startup."""
     import yaml
@@ -414,3 +457,29 @@ def test_project_tracing_config_uses_the_component_defaults(project):
     section = core_config._apply_chunk_defaults(chunk, yaml.safe_load(chunk.read_text()))
 
     assert section == yaml.safe_load(DEFAULTS_FILE.read_text())
+
+
+def test_failed_collector_deploy_removes_the_collector(monkeypatch, tmp_path):
+    """A deploy that fails after applying resources must not leave the collector behind."""
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.models import TracingSettings
+
+    def failing_deploy(*_args, **_kwargs):
+        raise RuntimeError("collector did not become ready within 300s")
+
+    cleaned = []
+    monkeypatch.setattr(lifecycle, "_deploy_collector", failing_deploy)
+    monkeypatch.setattr(lifecycle, "cleanup", lambda session: cleaned.append(session.identity))
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        lifecycle.start_capture(
+            job_id="job",
+            capture_id="cap",
+            project="llm_d",
+            namespace="ns",
+            deployment_id="dep",
+            output_root=tmp_path,
+            settings=TracingSettings(mode=TracingMode.STANDARD),
+        )
+
+    assert [identity.capture_id for identity in cleaned] == ["cap"]

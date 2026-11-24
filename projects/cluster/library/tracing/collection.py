@@ -35,12 +35,15 @@ SANITIZER_IMAGE = "python:3.12.8-slim-bookworm"
 
 
 def sanitizer_sources() -> dict[str, str]:
-    """Ship the shared policy unchanged; no duplicate policy in the sidecar."""
+    """Ship the shared policy unchanged; no duplicate policy in the sidecar.
+
+    The sidecar image has only the standard library, so ``sanitizer.py`` must
+    not import other FORGE modules.
+    """
     library = Path(__file__).parent
     command = library.parents[1] / "toolbox" / "deploy_trace_collector" / "templates"
     return {
         "sanitizer.py": (library / "sanitizer.py").read_text(),
-        "models.py": (library / "models.py").read_text(),
         "sanitize_otlp.py": (command / "sanitize_otlp.py").read_text(),
     }
 
@@ -232,10 +235,6 @@ def build_collector_resources(
                                     {
                                         "key": "sanitizer.py",
                                         "path": "projects/cluster/library/tracing/sanitizer.py",
-                                    },
-                                    {
-                                        "key": "models.py",
-                                        "path": "projects/cluster/library/tracing/models.py",
                                     },
                                 ],
                             },

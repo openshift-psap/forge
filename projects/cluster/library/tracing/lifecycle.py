@@ -111,14 +111,20 @@ def start_capture(
     )
     output_root = output_root or env.ARTIFACT_DIR
 
-    _deploy_collector(identity, settings)
-
     session = CaptureSession(
         identity=identity,
         settings=settings,
         output_root=Path(output_root),
         roles=list(roles or []),
     )
+    try:
+        _deploy_collector(identity, settings)
+    except Exception:
+        # The deploy can fail after applying its resources (e.g. the readiness
+        # wait times out). The caller gets no session to clean up, so remove
+        # them here; the deploy error is still raised.
+        cleanup(session)
+        raise
     return session
 
 

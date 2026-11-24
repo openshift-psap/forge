@@ -10,6 +10,8 @@ everything else is dropped. Span names, status descriptions, and event names
 are reviewed by prefix rules as well — an attribute-only filter is not enough.
 
 This module is pure: it never reads configuration, vaults, or the network.
+It also runs in the collector's sanitizer sidecar, so it must import only the
+standard library.
 """
 
 from __future__ import annotations
@@ -17,9 +19,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from projects.cluster.library.tracing.models import SANITIZATION_POLICY_VERSION
-
 SANITIZATION_POLICY = "forge-trace-allowlist"
+# Bump when the reviewed sanitization allowlist or redaction rules change.
+SANITIZATION_POLICY_VERSION = 2
 
 # Resource attributes that may be retained verbatim.
 RESOURCE_ATTRIBUTE_ALLOWLIST = frozenset(

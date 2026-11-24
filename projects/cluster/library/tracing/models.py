@@ -19,11 +19,10 @@ from typing import Any
 
 import yaml
 
+from projects.cluster.library.tracing.sanitizer import SANITIZATION_POLICY_VERSION
+
 # Bump when the trace-summary schema changes in an incompatible way.
 SUMMARY_SCHEMA_VERSION = 1
-
-# Bump when the reviewed sanitization allowlist or redaction rules change.
-SANITIZATION_POLICY_VERSION = 2
 
 
 class TracingConfigError(ValueError):
