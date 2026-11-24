@@ -14,7 +14,9 @@ from pathlib import Path
 import yaml
 
 from projects.cluster.library.prom import metrics as prom_metrics
-from projects.cluster.library.prom.openmetrics import copy_openmetrics_with_quoted_labels
+from projects.cluster.toolbox.capture_prometheus_db.public import (
+    copy_openmetrics_with_quoted_labels,
+)
 from projects.core.library import config
 
 logger = logging.getLogger(__name__)

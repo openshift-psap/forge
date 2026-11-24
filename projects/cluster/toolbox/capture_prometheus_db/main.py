@@ -22,7 +22,9 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from projects.cluster.library.prom.openmetrics import copy_openmetrics_with_quoted_labels
+from projects.cluster.toolbox.capture_prometheus_db.public import (
+    copy_openmetrics_with_quoted_labels,
+)
 from projects.core.dsl import always, entrypoint, execute_tasks, task
 from projects.core.dsl.utils.k8s import oc, oc_exec
 

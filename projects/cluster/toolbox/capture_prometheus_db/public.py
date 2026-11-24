@@ -1,4 +1,4 @@
-"""Streaming text corrections for OpenMetrics dumps from promtool."""
+"""Public helpers for OpenMetrics dumps from promtool."""
 
 import re
 from typing import BinaryIO
