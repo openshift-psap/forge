@@ -238,9 +238,12 @@ def wait_for_settle(args, ctx):
     """Poll the spool until its size is stable for several samples.
 
     Uses observed spool bytes rather than a fixed sleep, and accounts for
-    producer batching. The wait is bounded by ``settle_timeout_seconds``; when
-    the deadline expires the capture is recorded as interrupted instead of
-    claiming a graceful drain.
+    producer batching: an empty spool must also stay empty for several samples,
+    since spans can still be in flight when the benchmark ends. The largest
+    size seen is kept, so data that arrived before a deadline is still
+    transferred. The wait is bounded by ``settle_timeout_seconds``; when the
+    deadline expires the capture is recorded as interrupted instead of claiming
+    a graceful drain.
     """
     deadline = getattr(ctx, "settle_deadline", None)
     if deadline is not None and time.monotonic() >= deadline:
@@ -251,12 +254,9 @@ def wait_for_settle(args, ctx):
         )
 
     current = _spool_bytes(ctx.namespace, ctx.collector_pod)
+    ctx.spool_bytes = max(ctx.spool_bytes, current)
     ctx.last_size = getattr(ctx, "last_size", None)
     ctx.stable_samples = getattr(ctx, "stable_samples", 0)
-
-    if ctx.spool_bytes == 0 and current == 0:
-        # Nothing to wait for; an empty capture is a valid recorded outcome.
-        return "Spool empty; nothing to settle"
 
     if current == ctx.last_size:
         ctx.stable_samples += 1
@@ -265,7 +265,9 @@ def wait_for_settle(args, ctx):
     ctx.last_size = current
 
     if ctx.stable_samples >= SETTLE_STABLE_SAMPLES:
-        ctx.spool_bytes = current
+        if current == 0:
+            # An empty capture is a valid recorded outcome once it stays empty.
+            return "Spool stayed empty; nothing to settle"
         return f"Spool settled at {current} bytes"
     return (False, f"spool size {current} not yet stable")
 
@@ -277,6 +279,10 @@ def transfer_spool(args, ctx):
     Uses the spool-reader container, which has read-only access and does not
     rely on the collector image containing tar, a shell, or Python.
     """
+    if ctx.spool_bytes <= 0:
+        # Spans can land after the last settle poll; check once more before
+        # recording an empty capture.
+        ctx.spool_bytes = _spool_bytes(ctx.namespace, ctx.collector_pod)
     if ctx.spool_bytes <= 0:
         ctx.local_spool = None
         return "No spool data to transfer"

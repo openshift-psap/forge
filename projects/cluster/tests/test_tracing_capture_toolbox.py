@@ -11,6 +11,8 @@ import gzip
 import json
 from pathlib import Path
 
+import pytest
+
 from projects.cluster.toolbox.capture_traces import main as capture_main
 
 SENTINEL = "SENTINEL_PROMPT_do_not_persist"
@@ -380,6 +382,85 @@ def test_settle_within_deadline_does_not_mark_interrupted(tmp_path: Path, monkey
     assert result[0] is False
     assert "not yet stable" in result[1]
     assert ctx.interrupted is False
+
+
+def _settle_ctx(tmp_path: Path, **overrides):
+    import time
+
+    values = {
+        "output_dir": tmp_path / "out",
+        "windows": [],
+        "namespace": "ns",
+        "capture_id": "cap-1",
+        "collector_pod": "collector-0",
+        "interrupted": False,
+        "settle_timeout_seconds": 300,
+        "settle_deadline": time.monotonic() + 300,
+        "spool_bytes": 0,
+    }
+    values.update(overrides)
+    return _Ctx(**values)
+
+
+def _settle_until_done(ctx, sizes, monkeypatch):
+    """Poll ``wait_for_settle`` once per size until it reports done."""
+    polls = iter(sizes)
+    monkeypatch.setattr(capture_main, "_spool_bytes", lambda *_a, **_k: next(polls))
+    while True:
+        result = capture_main.wait_for_settle.__wrapped__(ctx, ctx)
+        if not (isinstance(result, tuple) and result[0] is False):
+            return result
+
+
+@pytest.mark.parametrize(
+    ("sizes", "settled_bytes"),
+    [
+        # Spans still in flight when the benchmark ends land after the first poll.
+        ([0, 0, 120, 120, 120, 120], 120),
+        # A spool that stays empty is an empty capture, after a few samples.
+        ([0, 0, 0, 0], 0),
+    ],
+)
+def test_settle_waits_for_an_empty_spool_to_stay_empty(
+    tmp_path: Path, monkeypatch, sizes, settled_bytes
+):
+    ctx = _settle_ctx(tmp_path)
+
+    _settle_until_done(ctx, sizes, monkeypatch)
+
+    assert ctx.spool_bytes == settled_bytes
+    assert ctx.interrupted is False
+
+
+def test_settle_deadline_keeps_the_spool_size_already_seen(tmp_path: Path, monkeypatch):
+    """Data seen before the deadline must still be transferred."""
+    ctx = _settle_ctx(tmp_path)
+    monkeypatch.setattr(capture_main, "_spool_bytes", lambda *_a, **_k: 120)
+    capture_main.wait_for_settle.__wrapped__(ctx, ctx)
+
+    ctx.settle_deadline = 0.0
+    capture_main.wait_for_settle.__wrapped__(ctx, ctx)
+
+    assert ctx.interrupted is True
+    assert ctx.spool_bytes == 120
+
+
+def test_transfer_rechecks_a_spool_recorded_as_empty(tmp_path: Path, monkeypatch):
+    """Spans that land after the last settle poll are still copied."""
+    ctx = _settle_ctx(tmp_path)
+    monkeypatch.setattr(capture_main, "_spool_bytes", lambda *_a, **_k: 7)
+    monkeypatch.setattr(capture_main, "_spool_checksum", lambda *_a, **_k: "")
+
+    def fake_copy(_source, destination, **_kwargs):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("payload", encoding="utf-8")
+
+    monkeypatch.setattr(capture_main, "oc_cp_from_pod", fake_copy)
+
+    capture_main.transfer_spool.__wrapped__(ctx, ctx)
+
+    assert ctx.local_spool.read_text(encoding="utf-8") == "payload"
+    capture_main.cleanup_raw_spool.__wrapped__(ctx, ctx)
 
 
 def test_truncated_final_record_is_dropped_and_counted(tmp_path: Path):

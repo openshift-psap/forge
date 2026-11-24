@@ -122,10 +122,28 @@ def start_capture(
     except Exception:
         # The deploy can fail after applying its resources (e.g. the readiness
         # wait times out). The caller gets no session to clean up, so remove
-        # them here; the deploy error is still raised.
-        cleanup(session)
+        # them here; the deploy error is still the one raised.
+        cleanup_after_failure(session)
         raise
     return session
+
+
+def cleanup_after_failure(session: CaptureSession) -> None:
+    """Remove the collector while another error is being raised.
+
+    A cleanup failure here is notified instead of raised, so it does not
+    replace the error that explains why tracing failed.
+    """
+    try:
+        cleanup(session)
+    except Exception:
+        from projects.core.library.ci import add_notification_file
+
+        logger.exception("Trace collector cleanup after a tracing failure also failed")
+        add_notification_file(
+            "tracing-cleanup-failed",
+            "Trace collector cleanup failed; its resources may remain in the namespace.",
+        )
 
 
 def _deploy_collector(identity: CaptureIdentity, settings: TracingSettings) -> None:

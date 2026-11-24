@@ -438,14 +438,14 @@ def _capture_traces_finalizer(
     settings = capture_session.settings
     session = capture_session
     start_time, end_time = benchmark_times
-    lifecycle.record_window(
-        session,
-        test_id=_current_test_id(),
-        start=start_time,
-        end=end_time,
-        artifact_dir=env.ARTIFACT_DIR,
-    )
     try:
+        lifecycle.record_window(
+            session,
+            test_id=_current_test_id(),
+            start=start_time,
+            end=end_time,
+            artifact_dir=env.ARTIFACT_DIR,
+        )
         status = lifecycle.capture(session)
     except Exception as exc:
         from projects.core.library.ci import add_notification_file
@@ -455,7 +455,7 @@ def _capture_traces_finalizer(
             "Requested trace collection failed for this test; see the test logs. "
             "The trace collector was removed.",
         )
-        lifecycle.cleanup(session)
+        lifecycle.cleanup_after_failure(session)
         raise RuntimeError("requested trace collection failed") from exc
 
     # Nothing recovers a preserved collector, so it is removed whatever the

@@ -288,6 +288,35 @@ def test_ingest_skips_when_no_run_resolved(mlflow_server: str, tmp_path: Path) -
     assert not report.failed
 
 
+def test_one_bad_bundle_does_not_block_the_others(mlflow_server: str, tmp_path: Path) -> None:
+    """A missing or corrupt archive fails only its own bundle; the rest still export."""
+    client, experiment_id, run_id = _create_experiment_and_run(mlflow_server, "traces-partial")
+
+    # Sorted before the good bundle, so ingestion must continue past both failures.
+    missing = _write_bundle(tmp_path / "a_missing", test_id="t-missing", record=_otlp_record())
+    (missing / ARCHIVE_FILENAME).unlink()
+    corrupt = _write_bundle(tmp_path / "b_corrupt", test_id="t-corrupt", record=_otlp_record())
+    with gzip.open(corrupt / ARCHIVE_FILENAME, "wt", encoding="utf-8") as handle:
+        handle.write("not json\n")
+    _write_bundle(tmp_path / "c_good", test_id="t-good", record=_otlp_record())
+
+    report = ingest_trace_bundles(
+        artifact_root=tmp_path,
+        tracking_uri=mlflow_server,
+        experiment_id=experiment_id,
+        workspace="",
+        connection=None,
+        resolve_run_id=lambda _d: run_id,
+    )
+
+    assert report.discovered == 3
+    assert [o.test_id for o in report.outcomes] == ["t-good"]
+    assert report.outcomes[0].ingested == 1
+    assert len(report.failures) == 2
+    assert report.failures[0].startswith("a_missing/traces: trace archive not found")
+    assert report.failures[1] == "t-corrupt: unreadable trace archive (TraceValidationError)"
+
+
 def test_no_bundles_is_a_clear_skip(mlflow_server: str, tmp_path: Path) -> None:
     """Enabling native export without any bundle produces a skipped result."""
     import mlflow

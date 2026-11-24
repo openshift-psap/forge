@@ -125,17 +125,25 @@ def validate_bundle(summary_path: Path, *, artifact_root: Path) -> TraceBundle:
     )
 
 
+def find_bundle_summaries(artifact_root: Path) -> list[Path]:
+    """Return every bundle summary path beneath ``artifact_root``, unvalidated.
+
+    Callers that must keep going past one bad bundle validate each path with
+    :func:`validate_bundle` inside their own per-bundle error handling.
+    """
+    return sorted(Path(artifact_root).rglob(SUMMARY_FILENAME))
+
+
 def discover_bundles(artifact_root: Path) -> list[TraceBundle]:
     """Discover all validated bundles beneath ``artifact_root``.
 
-    Duplicate discovery (the same archive reached twice) is impossible here as
-    summaries are unique files; a bundle whose summary is invalid raises rather
-    than being skipped silently.
+    A bundle whose summary is invalid raises rather than being skipped
+    silently. Bundles reaching the same archive are returned once.
     """
     root = Path(artifact_root)
     bundles: list[TraceBundle] = []
     seen_archives: set[Path] = set()
-    for summary_path in sorted(root.rglob(SUMMARY_FILENAME)):
+    for summary_path in find_bundle_summaries(root):
         bundle = validate_bundle(summary_path, artifact_root=root)
         resolved_archive = bundle.archive_path.resolve()
         if resolved_archive in seen_archives:
@@ -165,6 +173,7 @@ __all__ = [
     "BundleValidationError",
     "TraceBundle",
     "discover_bundles",
+    "find_bundle_summaries",
     "sha256_of_file",
     "validate_bundle",
 ]

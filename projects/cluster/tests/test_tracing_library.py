@@ -483,3 +483,36 @@ def test_failed_collector_deploy_removes_the_collector(monkeypatch, tmp_path):
         )
 
     assert [identity.capture_id for identity in cleaned] == ["cap"]
+
+
+def test_failed_cleanup_keeps_the_deploy_error(monkeypatch, tmp_path):
+    """A cleanup failure is notified; the caller still sees why the collector did not start."""
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.models import TracingSettings
+    from projects.core.library import ci
+
+    def failing_deploy(*_args, **_kwargs):
+        raise RuntimeError("collector did not become ready within 300s")
+
+    def failing_cleanup(_session):
+        raise RuntimeError("delete failed")
+
+    notifications = []
+    monkeypatch.setattr(lifecycle, "_deploy_collector", failing_deploy)
+    monkeypatch.setattr(lifecycle, "cleanup", failing_cleanup)
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, _message: notifications.append(name)
+    )
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        lifecycle.start_capture(
+            job_id="job",
+            capture_id="cap",
+            project="llm_d",
+            namespace="ns",
+            deployment_id="dep",
+            output_root=tmp_path,
+            settings=TracingSettings(mode=TracingMode.STANDARD),
+        )
+
+    assert notifications == ["tracing-cleanup-failed"]

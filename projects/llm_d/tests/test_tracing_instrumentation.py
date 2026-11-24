@@ -281,6 +281,8 @@ def _utc(offset_seconds: int):
         ("empty", 1.0, "empty-at-full-sampling", "tracing-collection-empty-at-full-sampling"),
         ("incomplete", 1.0, "incomplete", "tracing-collection-incomplete"),
         ("capture-raises", 1.0, "requested trace collection failed", "tracing-capture-failed"),
+        # Writing the benchmark window fails before the capture starts.
+        ("window-raises", 1.0, "requested trace collection failed", "tracing-capture-failed"),
         # The test failed before the benchmark: nothing to capture.
         ("no-window", 1.0, None, None),
     ],
@@ -298,16 +300,20 @@ def test_capture_finalizer_always_removes_the_collector(
         ci, "add_notification_file", lambda name, _message: notifications.append(name) or True
     )
     monkeypatch.setattr(test_phase, "_current_test_id", lambda: "test-1")
-    monkeypatch.setattr(lifecycle, "record_window", lambda *_a, **_k: None)
     monkeypatch.setattr(lifecycle, "cleanup", lambda *_a, **_k: cleanups.append(True))
 
+    def record_window(*_a, **_k):
+        if outcome == "window-raises":
+            raise OSError("cannot write trace-windows.json")
+
     def capture(*_a, **_k):
-        if outcome == "no-window":
+        if outcome in ("no-window", "window-raises"):
             pytest.fail("nothing to capture")
         if outcome == "capture-raises":
             raise RuntimeError("spool transfer failed")
         return CollectionStatus(outcome)
 
+    monkeypatch.setattr(lifecycle, "record_window", record_window)
     monkeypatch.setattr(lifecycle, "capture", capture)
     settings = TracingSettings(mode=TracingMode.STANDARD, sample_ratio=sample_ratio)
     session = type("S", (), {"settings": settings})()

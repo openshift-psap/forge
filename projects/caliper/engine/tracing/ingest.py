@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from projects.caliper.engine.tracing import bundle as bundle_mod
+from projects.caliper.engine.tracing.analysis import TraceValidationError
 from projects.caliper.engine.tracing.exporter import (
     IngestionOutcome,
     TraceExportError,
@@ -67,6 +68,14 @@ class IngestionReport:
         }
 
 
+def _bundle_label(summary_path: Path, artifact_root: Path) -> str:
+    """Name a bundle before its summary is known to be valid."""
+    try:
+        return summary_path.parent.relative_to(artifact_root).as_posix()
+    except ValueError:
+        return summary_path.parent.name
+
+
 def ingest_trace_bundles(
     *,
     artifact_root: Path,
@@ -85,10 +94,10 @@ def ingest_trace_bundles(
     bundle; other bundles still attempt, and failures are aggregated.
     """
     report = IngestionReport()
-    bundles = bundle_mod.discover_bundles(artifact_root)
-    report.discovered = len(bundles)
+    summary_paths = bundle_mod.find_bundle_summaries(artifact_root)
+    report.discovered = len(summary_paths)
 
-    if not bundles:
+    if not summary_paths:
         # Enabling native export without a bundle is a clear skipped result,
         # not an empty request.
         report.skipped.append("no trace bundles found")
@@ -96,17 +105,29 @@ def ingest_trace_bundles(
             reporter("trace export: no bundles found; skipping native ingestion")
         return report
 
-    for bundle in bundles:
-        run_id = resolve_run_id(bundle.test_dir)
-        if not run_id:
-            reason = f"no MLflow run resolved for test '{bundle.test_id}'"
-            report.skipped.append(reason)
-            logger.warning("Trace export skipped: %s", reason)
-            if reporter:
-                reporter(f"trace export: skipped {bundle.test_id} ({reason})")
-            continue
-
+    seen_archives: set[Path] = set()
+    for summary_path in summary_paths:
+        # Each bundle is validated and read inside its own error boundary, so
+        # one missing archive, malformed summary or corrupt archive fails only
+        # that bundle; the other workloads still export.
+        label = _bundle_label(summary_path, artifact_root)
         try:
+            bundle = bundle_mod.validate_bundle(summary_path, artifact_root=Path(artifact_root))
+            label = bundle.test_id
+            resolved_archive = bundle.archive_path.resolve()
+            if resolved_archive in seen_archives:
+                continue
+            seen_archives.add(resolved_archive)
+
+            run_id = resolve_run_id(bundle.test_dir)
+            if not run_id:
+                reason = f"no MLflow run resolved for test '{bundle.test_id}'"
+                report.skipped.append(reason)
+                logger.warning("Trace export skipped: %s", reason)
+                if reporter:
+                    reporter(f"trace export: skipped {bundle.test_id} ({reason})")
+                continue
+
             archive_sha = bundle_mod.sha256_of_file(bundle.archive_path)
             existing = read_receipt(bundle.bundle_dir / bundle_mod.EXPORT_RECEIPT_FILENAME)
             outcome = ingest_bundle(
@@ -127,10 +148,15 @@ def ingest_trace_bundles(
                 )
         except TraceExportError as exc:
             # The message is a sanitized category; never the raw payload.
-            report.failures.append(f"{bundle.test_id}: {exc}")
-            logger.error("Trace export failed for %s", bundle.test_id)
+            report.failures.append(f"{label}: {exc}")
+            logger.error("Trace export failed for %s", label)
         except bundle_mod.BundleValidationError as exc:
-            report.failures.append(f"{bundle.test_id}: {exc}")
-            logger.error("Trace bundle validation failed for %s", bundle.summary_path)
+            report.failures.append(f"{label}: {exc}")
+            logger.error("Trace bundle validation failed for %s", summary_path)
+        except (TraceValidationError, OSError, EOFError, UnicodeDecodeError) as exc:
+            # A corrupt or unreadable archive. Only the error type is reported:
+            # decoder messages can quote archive content.
+            report.failures.append(f"{label}: unreadable trace archive ({type(exc).__name__})")
+            logger.error("Trace archive unreadable for %s (%s)", label, type(exc).__name__)
 
     return report
