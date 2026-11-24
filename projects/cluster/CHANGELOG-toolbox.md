@@ -1,5 +1,19 @@
 # Cluster Toolbox Changelog
 
+## ibmcloud
+
+- Add a two-task IBM Cloud create/destroy pipeline, with destroy in finally.
+- Wrap five pinned release steps, adapting their CI inputs and working paths.
+- Use separate create and destroy DSL entrypoints with named tasks, retaining
+  raw upstream output internally and safe task metadata in public artifacts.
+- Default to au-syd-1, three bxf-8x32 control planes and three bxf-16x64 workers.
+- Resolve credentials through the existing Forge/Fournos vault mechanism.
+- Reuse Fournos's existing PVC with task workspace subpaths for public artifacts
+  and internal state.
+- Add offline coverage for the DSL lifecycle, configuration overrides, release
+  scripts, private output handling, pipeline workspace mappings, and artifact
+  collection while private state remains present after success or failures.
+
 ## 2026-06-26 - Operator Management Enhancements
 
 ### bootstrap_lws_operator
