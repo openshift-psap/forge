@@ -6,6 +6,10 @@
 - Wrap five pinned release steps, adapting their CI inputs and working paths.
 - Use separate create and destroy DSL entrypoints with named tasks, retaining
   raw upstream output internally and safe task metadata in public artifacts.
+- Make the CI entrypoint executable, notify on teardown failures, and resume
+  interrupted private-file cleanup after confirmed cloud deletion.
+- Preserve multiline pull-secret JSON through a private configuration copy and
+  retain string resource-group names during YAML generation.
 - Default to au-syd-1, three bxf-8x32 control planes and three bxf-16x64 workers.
 - Resolve credentials through the existing Forge/Fournos vault mechanism.
 - Reuse Fournos's existing PVC with task workspace subpaths for public artifacts

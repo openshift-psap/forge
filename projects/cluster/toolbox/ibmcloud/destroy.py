@@ -23,14 +23,14 @@ def run(*, state_dir: str, profile_dir: str = "") -> dict:
 
 @task
 def check_installation(args, ctx):
-    """Skip teardown if installation never started or already finished teardown."""
+    """Check whether cloud teardown or only remaining local cleanup is needed."""
     ctx.root = state_directory(args.state_dir)
+    ctx.cloud_destroyed = (ctx.root / "destroy.succeeded").exists()
+    if ctx.cloud_destroyed:
+        return "Cloud resources already destroyed; resume private output cleanup"
     if not (ctx.root / "install.started").exists():
         ctx.result = {"status": "not_started"}
         return EarlyReturn("Installation never started; no cloud teardown needed")
-    if (ctx.root / "destroy.succeeded").exists():
-        ctx.result = {"status": "destroyed"}
-        return EarlyReturn("Cluster already destroyed")
     ctx.profile = profile_directory(args.profile_dir)
     return "Installation requires teardown"
 
@@ -38,6 +38,8 @@ def check_installation(args, ctx):
 @task
 def load_installer_state(args, ctx):
     """Load original inputs and verify the installer assets belong to this run."""
+    if ctx.cloud_destroyed:
+        return "Cloud teardown already completed; installer assets are no longer needed"
     ctx.values = json.loads((ctx.root / "inputs.json").read_text())
     assets = ctx.root / "install" / "installer"
     if not (assets / "metadata.json").is_file():
@@ -55,6 +57,8 @@ def load_installer_state(args, ctx):
 @task
 def destroy_cluster(args, ctx):
     """Run the saved upstream teardown script, preserving files on failure."""
+    if ctx.cloud_destroyed:
+        return "Cloud teardown already completed; no cloud operations needed"
     execute("destroy", ctx.root, ctx.runtime, ctx.values)
     return "Cloud teardown completed"
 

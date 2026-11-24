@@ -61,9 +61,32 @@ def prepare_release_scripts(args, ctx):
 
 
 @task
+def prepare_config_profile(args, ctx):
+    """Normalize pull-secret JSON privately for the release YAML configuration step."""
+    try:
+        pull_secret = json.loads((ctx.profile / "pull-secret").read_text())
+    except json.JSONDecodeError:
+        raise ValueError("Vault pull-secret must contain valid JSON") from None
+    if not isinstance(pull_secret, dict):
+        raise ValueError("Vault pull-secret must contain a JSON object")
+    ctx.config_profile = ctx.root / "config-profile"
+    ctx.config_profile.mkdir(mode=0o700)
+    normalized = ctx.config_profile / "pull-secret"
+    normalized.write_text(json.dumps(pull_secret, separators=(",", ":")))
+    normalized.chmod(0o600)
+    shutil.copyfile(ctx.profile / "ssh-publickey", ctx.config_profile / "ssh-publickey")
+    return "Private configuration profile prepared; vault files remain unchanged"
+
+
+@task
 def configure_cluster(args, ctx):
     """Run release configuration steps and apply the requested IBM zones."""
-    execute("conf", ctx.root, ctx.runtime, ctx.values)
+    execute(
+        "conf",
+        ctx.root,
+        ctx.runtime,
+        {**ctx.values, "CLUSTER_PROFILE_DIR": str(ctx.config_profile)},
+    )
     execute("ibmcloud", ctx.root, ctx.runtime, ctx.values)
     path = ctx.root / "shared" / "install-config.yaml"
     try:
@@ -72,6 +95,8 @@ def configure_cluster(args, ctx):
         raise ValueError("Invalid install-config; inspect the internal workspace") from None
     install_config["controlPlane"]["platform"]["ibmcloud"]["zones"] = args.settings["zones"]
     install_config["compute"][0]["platform"]["ibmcloud"]["zones"] = args.settings["zones"]
+    # The upstream script emits this unquoted; YAML can coerce names such as "on".
+    install_config["platform"]["ibmcloud"]["resourceGroupName"] = args.settings["resource_group"]
     path.write_text(yaml.safe_dump(install_config, sort_keys=False))
     return "Cluster installation configured"
 

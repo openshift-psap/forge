@@ -17,6 +17,10 @@ and operator credentials, and running installation. `destroy.py` provides a
 separate DSL entrypoint for checking installation state, loading saved inputs,
 running teardown, and removing private outputs. Both use `@entrypoint`, `@task`,
 and `execute_tasks()` for normal Forge task logging and failure reporting.
+The configuration step uses a private, compact JSON copy of the pull secret so
+pretty-printed vault JSON remains valid when interpolated by the release script.
+The vault mount is never modified. Resource-group names are restored as strings
+before saving YAML, preserving names such as `on` that YAML otherwise treats as Booleans.
 
 `upstream.py` downloads the scripts and their default environment definitions
 from a pinned release commit. It adapts hardcoded installer paths to persistent
@@ -126,6 +130,11 @@ it does nothing. If installation started but metadata is missing, it fails
 visibly instead of reporting successful cleanup. Failed teardown retains all
 internal files for recovery; successful teardown removes generated credentials
 and runtime files, retaining the scripts, inputs, and completion markers.
+After cloud deletion is recorded, retries finish any interrupted local cleanup
+without repeating cloud operations or requiring installer metadata or credentials.
+Teardown failures create a safe Forge notification file instructing retention
+of the job, PipelineRun, and private PVC state; notification delivery requires
+the normal Forge notification/export handling.
 
 Use graceful Fournos `Stop` to run finally. `Terminate`, deleting the job, or
 loss of the hub cluster can bypass teardown. Keep a failed job, its PipelineRun,

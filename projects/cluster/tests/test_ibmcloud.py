@@ -47,6 +47,10 @@ class WrapperTests(unittest.TestCase):
         self.profile.mkdir()
         for name in ("ibmcloud-api-key", "ssh-privatekey"):
             (self.profile / name).write_text("test-credential")
+        (self.profile / "pull-secret").write_text(
+            json.dumps({"auths": {"example.com": {"auth": "test-credential"}}})
+        )
+        (self.profile / "ssh-publickey").write_text("ssh-ed25519 AAAADUMMY test\n")
         self.settings = yaml.safe_load(
             (Path(__file__).parents[1] / "orchestration/config.yaml").read_text()
         )["ibmcloud"]
@@ -72,6 +76,7 @@ class WrapperTests(unittest.TestCase):
             (root / "shared/install-config.yaml").write_text(
                 yaml.safe_dump(
                     {
+                        "platform": {"ibmcloud": {}},
                         "controlPlane": {"platform": {"ibmcloud": {}}},
                         "compute": [{"platform": {"ibmcloud": {}}}],
                     }
@@ -284,6 +289,77 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(
             json.loads((self.public / "ibmcloud-status.json").read_text()), {"status": "destroyed"}
         )
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("jsonpath_ng"), "Requires Forge config dependencies"
+    )
+    def test_ci_teardown_failure_registers_safe_notification_and_reraises(self):
+        from projects.cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        self.run_action("create")
+        failure = RuntimeError("dummy-private-release-output")
+        with (
+            patch.dict(os.environ, {"FORGE_INTERNAL_DIR": str(self.directory)}),
+            patch.object(env, "BASE_ARTIFACT_DIR", self.public),
+            patch.object(ci.vault, "init"),
+            patch.object(
+                ci.vault, "get_vault_content_path", return_value=self.profile / "ibmcloud-api-key"
+            ),
+            patch.object(ci, "destroy_ibmcloud", side_effect=failure),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                ci.lifecycle("destroy")
+        self.assertIs(raised.exception, failure)
+        notifications = list(
+            (self.public / "000__ci_metadata/notifications").glob("*__ibmcloud-cleanup-failed.txt")
+        )
+        self.assertEqual(len(notifications), 1)
+        message = notifications[0].read_text()
+        self.assertIn("cleanup failed", message)
+        self.assertIn("Retain the job, PipelineRun, and private PVC state", message)
+        self.assertNotIn("dummy-private-release-output", message)
+        self.assertNotIn("test-credential", message)
+        self.assertTrue((self.state / "install/installer/private-state").is_file())
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("jsonpath_ng"), "Requires Forge config dependencies"
+    )
+    def test_ci_resumes_partial_local_cleanup_without_metadata_or_credentials(self):
+        from projects.cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        self.run_action("create")
+        remaining = self.state / "install/installer/private-state"
+        remove_directory = destroy.shutil.rmtree
+
+        def interrupted_cleanup(path):
+            if path == self.state / "install":
+                (path / "installer/metadata.json").unlink()
+                raise OSError("Test interruption after installer metadata was removed")
+            remove_directory(path)
+
+        with patch.object(destroy.shutil, "rmtree", interrupted_cleanup):
+            with self.assertRaises(TaskExecutionError):
+                self.run_action("destroy")
+        self.assertTrue((self.state / "destroy.succeeded").exists())
+        self.assertFalse((self.state / "install/installer/metadata.json").exists())
+        self.assertTrue(remaining.exists())
+
+        with (
+            patch.dict(os.environ, {"FORGE_INTERNAL_DIR": str(self.directory)}),
+            patch.object(
+                ci.vault, "init", side_effect=AssertionError("Credentials must not be read")
+            ),
+            patch.object(
+                destroy, "execute", side_effect=AssertionError("Cloud teardown must not repeat")
+            ),
+        ):
+            self.assertEqual(ci.lifecycle("destroy"), 0)
+        self.assertEqual([name for name, _ in self.calls].count("destroy"), 1)
+        self.assertFalse(remaining.exists())
+        self.assertEqual({p.name for p in self.state.iterdir() if p.is_dir()}, {"release"})
+        self.assertTrue((self.state / "destroy.succeeded").exists())
 
 
 if __name__ == "__main__":

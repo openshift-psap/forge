@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
@@ -95,6 +96,41 @@ class ReleaseTests(unittest.TestCase):
         for manifest in manifests:
             self.assertEqual(yaml.safe_load(manifest.read_text())["kind"], "Secret")
 
+    def configure_cluster(self):
+        args = SimpleNamespace(settings=self.settings)
+        context = SimpleNamespace(
+            root=self.root,
+            profile=self.profile,
+            runtime=self.root / "install",
+            values=main.environment(self.settings, self.root, self.profile),
+        )
+        main.prepare_config_profile.original_func(args, context)
+        main.configure_cluster.original_func(args, context)
+        return yaml.safe_load((self.root / "shared/install-config.yaml").read_text())
+
+    def test_multiline_pull_secret_is_normalized_without_modifying_vault(self):
+        secret = {"auths": {"example.com": {"auth": "dummy-test-credential"}}}
+        original = json.dumps(secret, indent=2)
+        source = self.profile / "pull-secret"
+        source.write_text(original)
+        source.chmod(0o444)
+        config = self.configure_cluster()
+        self.assertEqual(json.loads(config["pullSecret"]), secret)
+        self.assertEqual(source.read_text(), original)
+        self.assertEqual(source.stat().st_mode & 0o777, 0o444)
+        normalized = self.root / "config-profile/pull-secret"
+        self.assertEqual(json.loads(normalized.read_text()), secret)
+        self.assertNotIn("\n", normalized.read_text())
+        self.assertEqual(normalized.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(config["platform"]["ibmcloud"]["resourceGroupName"], "test")
+
+    def test_boolean_like_resource_group_remains_a_string(self):
+        self.settings["resource_group"] = "on"
+        config = self.configure_cluster()
+        resource_group = config["platform"]["ibmcloud"]["resourceGroupName"]
+        self.assertIsInstance(resource_group, str)
+        self.assertEqual(resource_group, "on")
+
     def test_real_teardown_script_with_fake_oc_and_installer(self):
         assets = self.root / "assets"
         assets.mkdir()
@@ -155,6 +191,12 @@ chmod +x "$FORGE_RUNTIME_DIR/openshift-install"
 
 
 class PipelineTests(unittest.TestCase):
+    def test_forge_launcher_finds_executable_cluster_ci_script(self):
+        from projects.core.ci_entrypoint.run_common import find_script
+
+        project = env.FORGE_HOME / "projects/cluster"
+        self.assertEqual(find_script(project, "ci"), project / "orchestration/ci.py")
+
     def test_two_tasks_bind_internal_storage_and_destroy_runs_in_finally(self):
         workflows = env.FORGE_HOME / "fournos/gitops/base/workflows"
         pipeline = yaml.safe_load(

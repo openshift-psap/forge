@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Ephemeral IBM Cloud cluster lifecycle, without a workload test phase."""
 
 import json
@@ -27,8 +28,10 @@ def lifecycle(action: str) -> int:
         raise ValueError("The internal pipeline workspace is required")
     state = Path(internal) / "ibmcloud"
     profile = ""
-    # No credentials are needed when create never reached the installation step.
-    if action == "create" or (state / "install.started").exists():
+    # Local cleanup after confirmed cloud deletion requires no credentials.
+    if action == "create" or (
+        (state / "install.started").exists() and not (state / "destroy.succeeded").exists()
+    ):
         vault.init(mandatory_vaults=["ibmcloud-ipi"])
         profile = str(vault.get_vault_content_path("ibmcloud-ipi", "ibmcloud-api-key").parent)
     if action == "create":
@@ -38,7 +41,15 @@ def lifecycle(action: str) -> int:
             settings=config.project.get_config("ibmcloud"),
         )
     else:
-        result = destroy_ibmcloud(state_dir=str(state), profile_dir=profile)
+        try:
+            result = destroy_ibmcloud(state_dir=str(state), profile_dir=profile)
+        except Exception:
+            ci_lib.add_notification_file(
+                "ibmcloud-cleanup-failed",
+                "IBM Cloud cleanup failed. Retain the job, PipelineRun, and private PVC "
+                "state until cleanup is completed.",
+            )
+            raise
     (env.ARTIFACT_DIR / "ibmcloud-status.json").write_text(json.dumps(result, indent=2) + "\n")
     return 0
 
