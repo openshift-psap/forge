@@ -380,8 +380,7 @@ class TestMultiRunMlflowLogging:
 
         mock_mlflow.set_experiment.assert_called_once_with("my-experiment")
 
-    def test_child_runs_only_get_own_artifacts(self, artifact_tree: Path, mock_mlflow):
-        """Each child run should only receive artifacts from its own directory subtree."""
+    def test_only_parent_run_gets_workload_artifacts(self, artifact_tree: Path, mock_mlflow):
         from projects.caliper.engine.file_export.mlflow_backend import (
             log_multi_run_artifacts,
         )
@@ -389,15 +388,6 @@ class TestMultiRunMlflowLogging:
         run_dirs = discover_run_dirs(artifact_tree)
         all_files = [p for p in artifact_tree.rglob("*") if p.is_file()]
 
-        child_run_ids = iter(["child-run-a", "child-run-b"])
-        original_active = mock_mlflow.active_run
-
-        def _active_run_side_effect():
-            mock = MagicMock()
-            mock.info.run_id = next(child_run_ids, "fallback-id")
-            return mock
-
-        mock_mlflow.active_run.side_effect = _active_run_side_effect
         mock_client = mock_mlflow.tracking.MlflowClient.return_value
 
         log_multi_run_artifacts(
@@ -411,37 +401,13 @@ class TestMultiRunMlflowLogging:
             parent_run_name="test-parent",
         )
 
-        log_artifact_calls = mock_client.log_artifact.call_args_list
-
-        parent_artifacts = [c for c in log_artifact_calls if c.args[0] == "parent-run-id"]
-        child_a_artifacts = [c for c in log_artifact_calls if c.args[0] == "child-run-a"]
-        child_b_artifacts = [c for c in log_artifact_calls if c.args[0] == "child-run-b"]
-
-        assert len(parent_artifacts) == len(all_files), "Parent run should receive all artifacts"
-
-        run_a = sorted(run_dirs)[0]
-        run_b = sorted(run_dirs)[1]
-        run_a_file_count = sum(1 for p in all_files if p.resolve().is_relative_to(run_a.resolve()))
-        run_b_file_count = sum(1 for p in all_files if p.resolve().is_relative_to(run_b.resolve()))
-
-        assert len(child_a_artifacts) == run_a_file_count, (
-            f"Child A should only get {run_a_file_count} files from {run_a.name}, "
-            f"got {len(child_a_artifacts)}"
-        )
-        assert len(child_b_artifacts) == run_b_file_count, (
-            f"Child B should only get {run_b_file_count} files from {run_b.name}, "
-            f"got {len(child_b_artifacts)}"
-        )
-
-        assert len(child_a_artifacts) < len(parent_artifacts), (
-            "Child runs should have fewer artifacts than parent"
-        )
-        assert len(child_b_artifacts) < len(parent_artifacts), (
-            "Child runs should have fewer artifacts than parent"
-        )
-
-        mock_mlflow.active_run.side_effect = None
-        mock_mlflow.active_run.return_value = original_active.return_value
+        assert mock_client.log_artifact.call_count == len(all_files)
+        for path in all_files:
+            mock_client.log_artifact.assert_any_call(
+                "parent-run-id",
+                str(path),
+                artifact_path=path.relative_to(artifact_tree).parent.as_posix(),
+            )
 
     def test_sets_forge_tags_on_parent(self, artifact_tree: Path, mock_mlflow):
         from projects.caliper.engine.file_export.mlflow_backend import (
@@ -466,7 +432,7 @@ class TestMultiRunMlflowLogging:
         assert tag_dict.get("forge.child_count") == "2"
 
     def test_child_run_metadata_in_status(self, artifact_tree: Path, mock_mlflow):
-        """Returned metadata should include child_runs with run_id and run_name."""
+        """Status links to child run pages, and each child points to its parent artifacts."""
         from projects.caliper.engine.file_export.mlflow_backend import (
             log_multi_run_artifacts,
         )
@@ -477,10 +443,12 @@ class TestMultiRunMlflowLogging:
 
         def _active_run_side_effect():
             mock = MagicMock()
-            mock.info.run_id = next(child_run_ids, "fallback-id")
+            mock.info.run_id = next(child_run_ids, "parent-run-id")
+            mock.info.experiment_id = "123"
             return mock
 
         mock_mlflow.active_run.side_effect = _active_run_side_effect
+        mock_mlflow.start_run.return_value.__enter__.return_value.info.experiment_id = "123"
 
         mock_client = mock_mlflow.tracking.MlflowClient.return_value
         mock_get_run = MagicMock()
@@ -501,6 +469,8 @@ class TestMultiRunMlflowLogging:
             tracking_uri="http://test-mlflow:5000",
             experiment="test-experiment",
             parent_run_name="test-parent",
+            connection={"tracking_uri": "http://test-mlflow:5000"},
+            workspace="forge-sandbox",
         )
 
         assert meta is not None
@@ -515,9 +485,20 @@ class TestMultiRunMlflowLogging:
         child_ids = {c["run_id"] for c in child_runs}
         assert child_ids == {"child-id-1", "child-id-2"}
 
+        run_base = "http://test-mlflow:5000/#/experiments/123/runs"
+        assert meta["run_url"] == f"{run_base}/parent-run-id/artifacts?workspace=forge-sandbox"
         for child in child_runs:
-            assert "run_id" in child
-            assert "run_name" in child
+            assert child["run_url"] == f"{run_base}/{child['run_id']}?workspace=forge-sandbox"
+
+        readmes = mock_client.log_text.call_args_list
+        assert len(readmes) == len(child_runs)
+        for child, run_dir, readme in zip(child_runs, sorted(run_dirs), readmes, strict=True):
+            run_id, contents, artifact_file = readme.args
+            workload_path = run_dir.relative_to(artifact_tree).as_posix()
+            assert run_id == child["run_id"]
+            assert artifact_file == "README.txt"
+            assert f"Parent artifacts: {meta['run_url']}\n" in contents
+            assert f"Workload directory: {workload_path}\n" in contents
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +556,64 @@ class TestWorkspacePropagation:
             workspace=None,
         )
         assert "MLFLOW_WORKSPACE" not in os.environ
+
+    @pytest.mark.parametrize("use_vault", [True, False])
+    def test_final_upload_uses_exported_workspace(
+        self, artifact_tree: Path, _mock_mlflow, monkeypatch, use_vault: bool
+    ):
+        from projects.caliper.engine.file_export.artifacts_export_run import (
+            write_artifacts_status_yaml,
+        )
+        from projects.caliper.engine.file_export.mlflow_backend import log_multi_run_artifacts
+        from projects.caliper.engine.model import FileExportBackendResult
+        from projects.core.library import export
+        from projects.core.library.export_notifications import ExportStatus
+
+        connection = {"tracking_uri": "http://test:5000", "token": "vault-token"}
+        client = _mock_mlflow.tracking.MlflowClient.return_value
+        client.get_run.return_value.info.run_name = "parent-run"
+        client.get_experiment.return_value.name = "test"
+        monkeypatch.setenv("MLFLOW_WORKSPACE", "default")
+        monkeypatch.setenv("MLFLOW_TRACKING_TOKEN", "ambient-token")
+        _, metadata = log_multi_run_artifacts(
+            all_artifact_paths=[],
+            artifact_root=artifact_tree,
+            run_dirs=discover_run_dirs(artifact_tree),
+            metrics_file=METRICS_FILE,
+            parameters_file=PARAMETERS_FILE,
+            experiment="test",
+            tracking_uri=None,
+            connection=connection,
+            workspace="forge-sandbox",
+        )
+        assert os.environ["MLFLOW_WORKSPACE"] == "default"
+
+        export_dir = artifact_tree / "003__export-artifacts"
+        status_path = export_dir / "status.yaml"
+        write_artifacts_status_yaml(
+            status_path, [FileExportBackendResult("mlflow", "success", metadata=metadata)]
+        )
+        status = ExportStatus.from_dict(yaml.safe_load(status_path.read_text()))
+        monkeypatch.setattr(export.env, "ARTIFACT_DIR", export_dir)
+        monkeypatch.setattr(export.config, "project", MagicMock())
+        export.config.project.get_config.return_value = "vault-ref" if use_vault else None
+        monkeypatch.setattr(export, "load_mlflow_connection", lambda *args: connection)
+
+        def check_upload_workspace(*args, **kwargs):
+            assert os.environ["MLFLOW_WORKSPACE"] == "forge-sandbox"
+            assert os.environ["MLFLOW_TRACKING_TOKEN"] == (
+                "vault-token" if use_vault else "ambient-token"
+            )
+
+        client.log_artifact.side_effect = check_upload_workspace
+        export._update_final_artifacts(artifact_tree, status)
+
+        client.log_artifact.assert_any_call(
+            "test-id", str(export_dir / "run.log"), artifact_path=export_dir.name
+        )
+        assert client.log_artifact.call_count == 2
+        assert os.environ["MLFLOW_WORKSPACE"] == "default"
+        assert os.environ["MLFLOW_TRACKING_TOKEN"] == "ambient-token"
 
 
 # ---------------------------------------------------------------------------

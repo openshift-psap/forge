@@ -20,9 +20,6 @@ from projects.core.library import config, env, run, vault
 from projects.core.library.run_parallel import Parallel
 from projects.core.notifications.send import send_notification
 from projects.fournos_launcher.orchestration import job_management, pr_args, tunnelling
-from projects.fournos_launcher.toolbox.cleanup_fjob.main import (
-    run as cleanup_fjob,
-)
 from projects.fournos_launcher.toolbox.submit_and_wait.main import (
     run as submit_and_wait,
 )
@@ -44,6 +41,24 @@ def _signal_handler_sigterm(sig, frame):
     env.reset_artifact_dir()
     job_management.shutdown_fjobs_on_interrupt()
     sys.exit(143)
+
+
+def _cleanup_fjob(job_name):
+    """Clean up a FournosJob, creating a notification if the MLFlow link is missing."""
+    try:
+        ctx = _cleanup_fjob(
+            job_name=job_name,
+            namespace=config.project.get_config("fournos.namespace"),
+        )
+        if ctx.missing_mlflow_link:
+            ci_lib.add_notification_file(
+                "missing-mlflow-link",
+                f"FournosJob {job_name} preserved: no MLFlow link found in job status.",
+            )
+        else:
+            logger.info(f"Cleaned up job: {job_name}")
+    except Exception as cleanup_e:
+        logger.warning(f"Failed to cleanup job {job_name}: {cleanup_e}")
 
 
 def _setup_signal_handlers():
@@ -554,14 +569,7 @@ def submit_job():
                     f"Cleaning up {len(submitted_job_names)} parallel jobs: {', '.join(submitted_job_names)}"
                 )
                 for job_name in submitted_job_names:
-                    try:
-                        cleanup_fjob(
-                            job_name=job_name,
-                            namespace=config.project.get_config("fournos.namespace"),
-                        )
-                        logger.info(f"Cleaned up job: {job_name}")
-                    except Exception as cleanup_e:
-                        logger.warning(f"Failed to cleanup job {job_name}: {cleanup_e}")
+                    _cleanup_fjob(job_name)
 
             # Send simplified GitHub notification instead of generating detailed files
             notification_sent = send_github_notification(
@@ -612,15 +620,7 @@ def submit_job():
                 error=job_error,
             )
 
-            # Cleanup the job
-            try:
-                cleanup_fjob(
-                    job_name=single_job_name,
-                    namespace=config.project.get_config("fournos.namespace"),
-                )
-                logger.info(f"Cleaned up job: {single_job_name}")
-            except Exception as cleanup_e:
-                logger.warning(f"Failed to cleanup job {single_job_name}: {cleanup_e}")
+            _cleanup_fjob(single_job_name)
 
             if return_code == 0 and not notification_sent:
                 return _notification_warning_exit_status()

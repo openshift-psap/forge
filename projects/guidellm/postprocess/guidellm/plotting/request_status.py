@@ -24,9 +24,10 @@ logger = logging.getLogger(__name__)
 
 def _extract_status_data(
     records: list[UnifiedResultRecord],
+    legend_keys: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract per-configuration request status data from records."""
-    varying_params = get_varying_parameters(records)
+    varying_params = get_varying_parameters(records, priority_keys=legend_keys)
     result = []
 
     for record in records:
@@ -36,11 +37,17 @@ def _extract_status_data(
         curves = record.metrics.get("performance_curves", {})
         concurrency_list = curves.get("intended_concurrency", [])
         successful_list = curves.get("successful_requests", [])
+        errored_list = curves.get("errored_requests", [])
         raw_breakdown = record.metrics.get("error_breakdown", [])
         error_breakdown_list = [_normalize_breakdown(pt) for pt in raw_breakdown]
 
         if not concurrency_list:
             continue
+
+        if not errored_list and error_breakdown_list:
+            # No errored_requests curve (older records): reconstruct the error
+            # counts from the per-request error breakdown.
+            errored_list = [sum(pt.values()) for pt in error_breakdown_list]
 
         legend_name = create_legend_name(record, varying_params)
 
@@ -50,6 +57,7 @@ def _extract_status_data(
                 "legend_name": legend_name,
                 "concurrency": [concurrency_list[i] for i in order],
                 "successful": [successful_list[i] for i in order] if successful_list else [],
+                "errored": [errored_list[i] for i in order] if errored_list else [],
                 "error_breakdown": (
                     [error_breakdown_list[i] for i in order] if error_breakdown_list else []
                 ),
@@ -59,12 +67,16 @@ def _extract_status_data(
     return result
 
 
-def create_successful_requests_plot(records: list[UnifiedResultRecord], title_context: str = ""):
+def create_successful_requests_plot(
+    records: list[UnifiedResultRecord],
+    title_context: str = "",
+    legend_keys: list[str] | None = None,
+):
     """Create a bar chart of successful requests per concurrency level, one color per config."""
     try:
         import plotly.graph_objects as go
 
-        groups = _extract_status_data(records)
+        groups = _extract_status_data(records, legend_keys)
         if not groups:
             return None
 
@@ -104,12 +116,16 @@ def create_successful_requests_plot(records: list[UnifiedResultRecord], title_co
         return None
 
 
-def create_total_errors_plot(records: list[UnifiedResultRecord], title_context: str = ""):
+def create_total_errors_plot(
+    records: list[UnifiedResultRecord],
+    title_context: str = "",
+    legend_keys: list[str] | None = None,
+):
     """Create a bar chart of total error count per concurrency level, one color per config."""
     try:
         import plotly.graph_objects as go
 
-        groups = _extract_status_data(records)
+        groups = _extract_status_data(records, legend_keys)
         if not groups:
             return None
 
@@ -153,6 +169,86 @@ def create_total_errors_plot(records: list[UnifiedResultRecord], title_context: 
 
     except Exception as e:
         logger.warning("Failed to create total errors plot: %s", e)
+        return None
+
+
+def _error_ratio_points(group: dict[str, Any]) -> list[tuple[Any, int, int, float]]:
+    """Compute (concurrency, errored, successful, ratio) points for one config group.
+
+    Points with no requests at all (errored + successful == 0) are skipped.
+    """
+    points = []
+    for conc, errored, successful in zip(
+        group["concurrency"], group["errored"], group["successful"], strict=False
+    ):
+        errored = errored or 0
+        successful = successful or 0
+        total = errored + successful
+        if total <= 0:
+            continue
+        points.append((conc, errored, successful, errored / total))
+
+    return points
+
+
+def create_error_ratio_plot(
+    records: list[UnifiedResultRecord],
+    title_context: str = "",
+    legend_keys: list[str] | None = None,
+):
+    """Create a line chart of the error ratio per concurrency level, one line per config."""
+    try:
+        import plotly.graph_objects as go
+
+        groups = _extract_status_data(records, legend_keys)
+        if not groups:
+            return None
+
+        has_any_errors = False
+        fig = go.Figure()
+
+        for group in groups:
+            points = _error_ratio_points(group)
+            if not points:
+                continue
+            if any(errored for _, errored, _, _ in points):
+                has_any_errors = True
+
+            legend_name = group["legend_name"]
+            fig.add_trace(
+                go.Scatter(
+                    x=[conc for conc, _, _, _ in points],
+                    y=[ratio for _, _, _, ratio in points],
+                    customdata=[[errored, successful] for _, errored, successful, _ in points],
+                    mode="lines+markers",
+                    name=legend_name,
+                    hovertemplate=(
+                        f"<b>{legend_name}</b><br>"
+                        "Concurrency: %{x}<br>"
+                        "Error ratio: %{y:.2%}<br>"
+                        "Errors: %{customdata[0]}<br>"
+                        "Successful: %{customdata[1]}<extra></extra>"
+                    ),
+                )
+            )
+
+        if not has_any_errors:
+            return None
+
+        fig.update_layout(
+            title=f"Error Ratio by Concurrency{title_context}",
+            xaxis_title="Concurrency Level",
+            yaxis_title="Error Ratio",
+            showlegend=True,
+            width=1200,
+            height=650,
+            font={"size": 12},
+        )
+        fig.update_yaxes(tickformat=".1%", rangemode="tozero")
+        return fig
+
+    except Exception as e:
+        logger.warning("Failed to create error ratio plot: %s", e)
         return None
 
 
@@ -283,6 +379,7 @@ def generate_request_status_report(
     title_context: str = "",
     report_number: int | None = None,
     report_title: str = "GuideLLM Request Status",
+    legend_keys: list[str] | None = None,
 ) -> str | None:
     """Generate a request status report: successful requests plot, then per-config error plots."""
     try:
@@ -314,7 +411,7 @@ def generate_request_status_report(
         sections: list[str] = []
 
         # --- Requested vs Effective Concurrency ---
-        df = create_dataframe_from_records(guidellm_records)
+        df = create_dataframe_from_records(guidellm_records, legend_keys=legend_keys)
         concurrency_fig = create_requested_vs_effective_concurrency_plot(df, title_context)
         if concurrency_fig is not None:
             conc_dir = report_dir / "concurrency"
@@ -335,8 +432,27 @@ def generate_request_status_report(
                 )
                 sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
 
+        # --- Error ratio plot (all configs together) ---
+        ratio_fig = create_error_ratio_plot(
+            guidellm_records, title_context, legend_keys=legend_keys
+        )
+        if ratio_fig is not None:
+            ratio_dir = report_dir / "error_ratio"
+            ratio_dir.mkdir(exist_ok=True)
+            png_path = save_figure(ratio_fig, ratio_dir, "error_ratio", as_image=True)
+            html_path = save_figure(ratio_fig, ratio_dir, "error_ratio", as_image=False)
+            if html_path:
+                png_rel = (
+                    f"{report_dir_name}/error_ratio/{Path(png_path).name}" if png_path else None
+                )
+                html_rel = f"{report_dir_name}/error_ratio/{Path(html_path).name}"
+                plot_content = embed_plot_for_report(png_rel, html_rel, "Error Ratio", output_dir)
+                sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
+
         # --- Successful requests plot (all configs together) ---
-        success_fig = create_successful_requests_plot(guidellm_records, title_context)
+        success_fig = create_successful_requests_plot(
+            guidellm_records, title_context, legend_keys=legend_keys
+        )
         if success_fig is not None:
             success_dir = report_dir / "successful"
             success_dir.mkdir(exist_ok=True)
@@ -353,7 +469,9 @@ def generate_request_status_report(
                 sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
 
         # --- Total errors plot (all configs together) ---
-        errors_fig = create_total_errors_plot(guidellm_records, title_context)
+        errors_fig = create_total_errors_plot(
+            guidellm_records, title_context, legend_keys=legend_keys
+        )
         if errors_fig is not None:
             errors_dir = report_dir / "total_errors"
             errors_dir.mkdir(exist_ok=True)
@@ -368,7 +486,7 @@ def generate_request_status_report(
                 sections.append(f'<div class="plot-section">\n{plot_content}\n</div>')
 
         # --- Per-config error plots + tables ---
-        status_data = _extract_status_data(guidellm_records)
+        status_data = _extract_status_data(guidellm_records, legend_keys)
         for entry_idx, entry in enumerate(status_data):
             legend_name = entry["legend_name"]
             error_fig = create_error_breakdown_plot(entry, title_context)
@@ -477,7 +595,7 @@ def generate_request_status_report(
 <body>
     <div class="header">
         <h1>{display_title}</h1>
-        <div>Successful and errored request counts by concurrency level</div>
+        <div>Successful and errored request counts and error ratios by concurrency level</div>
     </div>
     {"".join(sections)}
 </body>

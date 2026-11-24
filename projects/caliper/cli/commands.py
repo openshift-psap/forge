@@ -339,6 +339,11 @@ def parse_cmd(
     default=False,
     help="Enable verbose parsing logs.",
 )
+@click.option(
+    "--plugin-settings-json",
+    default=None,
+    help="JSON-encoded dict of plugin-specific settings (opaque to caliper).",
+)
 @click.pass_context
 def visualize_cmd(
     ctx: click.Context,
@@ -350,6 +355,7 @@ def visualize_cmd(
     output_dir: Path,
     status_file: Path | None,
     verbose_parsing: bool,
+    plugin_settings_json: str | None,
     artifacts_dir: Path | None,
     postprocess_config: Path | None,
     plugin_module_override: str | None,
@@ -367,6 +373,10 @@ def visualize_cmd(
         mod, plugin = _plugin_tuple(ctx)
         artifact_root: Path = _root_obj(ctx)["base_dir"]
 
+        import json as _json
+
+        settings = _json.loads(plugin_settings_json) if plugin_settings_json else {}
+
         paths = run_visualize(
             base_dir=artifact_root,
             plugin_module=mod,
@@ -380,6 +390,7 @@ def visualize_cmd(
             use_cache=True,
             cache_path=None,
             verbose_parsing=verbose_parsing,
+            plugin_settings=settings or None,
         )
 
         if not paths:
@@ -1602,6 +1613,7 @@ def artifacts_censor(
     type=click.Path(path_type=Path, exists=True),
     default=None,
 )
+@click.option("--mlflow-instance", help="Named profile in the MLflow secrets file.")
 @click.pass_context
 def artifacts_import(
     ctx: click.Context,
@@ -1615,6 +1627,7 @@ def artifacts_import(
     mlflow_experiment: str | None,
     mlflow_workspace: str | None,
     mlflow_secrets_path: Path | None,
+    mlflow_instance: str | None,
 ) -> None:
     """Download artifacts from MLflow."""
 
@@ -1630,6 +1643,7 @@ def artifacts_import(
             mlflow_experiment=mlflow_experiment,
             mlflow_workspace=mlflow_workspace,
             mlflow_secrets_path=mlflow_secrets_path,
+            mlflow_instance=mlflow_instance,
         )
     except Exception as e:  # noqa: BLE001
         click.echo(f"❌ artifacts import failed: {e}", err=True)

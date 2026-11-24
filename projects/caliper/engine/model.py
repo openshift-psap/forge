@@ -113,6 +113,7 @@ class PostProcessingPlugin(ABC):
         report_ids: list[str] | None,
         group_id: str | None,
         visualize_config: dict[str, Any] | None,
+        plugin_settings: dict[str, Any] | None = None,
     ) -> list[ReportFile]:
         """Write plots/HTML; return list of ReportFile metadata."""
         return []

@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 
 COMPLETION_NOTIFICATION_FILENAME = "COMPLETION-NOTIFICATION.md"
 
+# DSL user_notification convention (projects/core/dsl/user_notification.py):
+# files named NNN__<level>__<name>.txt under <step>/_user_notification/
+USER_NOTIFICATION_DIRNAME = "_user_notification"
+USER_NOTIFICATION_LEVEL_EMOJI = {"info": "ℹ️", "warning": "⚠️", "error": "❌"}
+
 
 def _calculate_duration(start_time: str, end_time: str) -> str:
     """Calculate duration between two ISO timestamps and return formatted string."""
@@ -74,6 +79,7 @@ class BackendResult:
     detail: str | None = None
     status: str | None = None
     child_runs: list[dict[str, str]] | None = None
+    workspace: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BackendResult":
@@ -93,6 +99,7 @@ class BackendResult:
             detail=data.get("detail"),
             status=data.get("status"),
             child_runs=data.get("child_runs"),
+            workspace=data.get("workspace"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -106,6 +113,8 @@ class BackendResult:
             result["run_url"] = self.run_url
         if self.tracking_uri is not None:
             result["tracking_uri"] = self.tracking_uri
+        if self.workspace is not None:
+            result["workspace"] = self.workspace
         if self.detail is not None:
             result["detail"] = self.detail
         if self.status is not None:
@@ -905,6 +914,7 @@ def _get_step_status_section(artifact_dir: Path | None, mlflow_run_url: str | No
         step_status.append(step_title)
 
         step_status.extend(_process_notification_files(step_dir))
+        step_status.extend(_process_user_notification_files(step_dir))
 
         step_details = _process_step_details(step_dir, mlflow_run_url)
         if step_details:
@@ -1253,6 +1263,45 @@ def _process_notification_files(step_dir: Path) -> list[str]:
     return notifications_from_files
 
 
+def _parse_user_notification_level(filename: str) -> str | None:
+    """Extract the level from a user notification filename (NNN__<level>__<name>.txt)."""
+    parts = Path(filename).stem.split("__")
+    if len(parts) < 3:
+        return None
+
+    level = parts[1]
+    return level if level in USER_NOTIFICATION_LEVEL_EMOJI else None
+
+
+def _process_user_notification_files(step_dir: Path) -> list[str]:
+    """Process user notification files (DSL user_notification) from step directory."""
+    notifications_dir = step_dir / USER_NOTIFICATION_DIRNAME
+    if not (notifications_dir.exists() and notifications_dir.is_dir()):
+        return []
+
+    notifications_from_files = []
+    for notification_file in sorted(notifications_dir.glob("*.txt")):
+        with open(notification_file, encoding="utf-8") as f:
+            content = f.read().strip()
+
+        if not content:
+            continue
+
+        level = _parse_user_notification_level(notification_file.name)
+        level_emoji = USER_NOTIFICATION_LEVEL_EMOJI.get(level, "❓")
+
+        # Strip the index and level from the title: NNN__<level>__<name> -> <name>
+        title = notification_file.stem.split("__", 2)[-1]
+        title = title.replace("_", " ").title()
+
+        notifications_from_files.append(f"##### {level_emoji} {title}")
+
+        for line in content.splitlines():
+            notifications_from_files.append(f"> {line}")
+
+    return notifications_from_files
+
+
 def _extract_postprocess_status_info(artifact_dir: Path, get_file_link=None) -> list[str]:
     """Extract post-processing status information from POSTPROCESS_STATUS_FILENAME files.
 
@@ -1439,6 +1488,21 @@ def _check_postprocess_warnings(step_dir: Path) -> StepStatus:
     return status
 
 
+def _check_user_notification_warnings(step_dir: Path) -> StepStatus:
+    """Check for warning-level user notification files (DSL user_notification)."""
+    notifications_dir = step_dir / USER_NOTIFICATION_DIRNAME
+    if not notifications_dir.is_dir():
+        return StepStatus.SUCCESS
+
+    if any(notifications_dir.glob("*__warning__*.txt")):
+        logging.warning(
+            f"User notification warning detected in {notifications_dir}, setting the WARNING flag"
+        )
+        return StepStatus.WARNING
+
+    return StepStatus.SUCCESS
+
+
 def _get_overall_status_from_steps(artifact_dir: Path) -> str:
     """Check all step exit statuses and return overall status emoji."""
 
@@ -1465,6 +1529,10 @@ def _get_overall_status_from_steps(artifact_dir: Path) -> str:
             # Check for postprocess warnings in this step (always check, regardless of exit status)
             postprocess_status = _check_postprocess_warnings(step_dir)
             step_statuses.append(postprocess_status)
+
+            # Check for user notification warnings in this step (always check, regardless of exit status)
+            user_notification_status = _check_user_notification_warnings(step_dir)
+            step_statuses.append(user_notification_status)
 
         # Priority: failure > ongoing > warning > unknown > success
         if StepStatus.FAILURE in step_statuses:
@@ -1508,6 +1576,10 @@ def _get_overall_step_status(artifact_dir: Path) -> StepStatus:
             # Check for postprocess warnings in this step (always check, regardless of exit status)
             postprocess_status = _check_postprocess_warnings(step_dir)
             step_statuses.append(postprocess_status)
+
+            # Check for user notification warnings in this step (always check, regardless of exit status)
+            user_notification_status = _check_user_notification_warnings(step_dir)
+            step_statuses.append(user_notification_status)
 
         # Priority: failure > ongoing > warning > unknown > success
         if StepStatus.FAILURE in step_statuses:

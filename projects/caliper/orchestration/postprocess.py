@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from yaml import safe_dump
 
 from projects.caliper.engine.constants import LEGACY_METADATA_FILE, METADATA_FILE
 from projects.caliper.orchestration.caliper_invocation import (
@@ -66,6 +67,31 @@ logger = logging.getLogger(__name__)
 
 # Postprocess status filename constant
 POSTPROCESS_STATUS_FILENAME = "postprocess_status.yaml"
+
+# Artifact file holding the /var PR directive that reproduces the visualization
+# plugin settings, and the config key it overrides.
+VISUALIZATION_VAR_FILENAME = "caliper_visualization_var.txt"
+VISUALIZATION_PLUGIN_SETTINGS_KEY = "caliper.postprocess.visualize.plugin_settings"
+
+
+def _write_visualization_var_directive(plugin_settings: dict[str, Any] | None) -> None:
+    """Write the ``/var`` PR directive that reproduces the visualization plugin settings.
+
+    The directive is saved to the current artifact directory right before the
+    caliper visualization runs, so a later re-run or replot can be reconfigured
+    by copy-pasting it into a PR comment. Single-line flow-style YAML is used
+    because the /var directive parser processes PR comments line by line.
+    """
+    if not plugin_settings:
+        return
+
+    var_value = safe_dump(dict(plugin_settings), default_flow_style=True).strip()
+    var_line = f"/var {VISUALIZATION_PLUGIN_SETTINGS_KEY}: {var_value}\n"
+
+    var_path = Path(env.ARTIFACT_DIR) / VISUALIZATION_VAR_FILENAME
+    var_path.parent.mkdir(parents=True, exist_ok=True)
+    var_path.write_text(var_line, encoding="utf-8")
+    logger.info("Saved caliper visualization /var directive to %s", var_path)
 
 
 def _make_path_relative_to_base(file_path: str | Path, base_dir: Path) -> str:
@@ -894,6 +920,8 @@ class CaliperPostprocessOrchestrator:
                 output_dir=output_dir,
                 use_cache=not self.config.parse.no_cache,
             )
+
+            _write_visualization_var_directive(self.config.visualize.plugin_settings)
 
             # Execute command using generic function
             result, status_data, log_file = _execute_caliper_command(

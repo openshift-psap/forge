@@ -120,6 +120,64 @@
   description: API server PATCH request latency (p99)
   unit: seconds
 
+# ── kube-apiserver Pressure (API Priority & Fairness) ─────────────────
+
+- query: >-
+    sum by (requestKind)
+    (apiserver_current_inflight_requests)
+  metricName: apiserver_inflight_requests
+  description: Requests currently executing in the API server (mutating vs read-only)
+  unit: requests
+
+- query: >-
+    sum by (priority_level, reason)
+    (increase(apiserver_flowcontrol_rejected_requests_total[2m]))
+  metricName: apiserver_flowcontrol_rejected_requests
+  description: Requests rejected by API Priority & Fairness (queue-full, concurrency-limit)
+  unit: count
+
+- query: >-
+    sum by (priority_level)
+    (apiserver_flowcontrol_current_inqueue_requests)
+  metricName: apiserver_flowcontrol_inqueue_requests
+  description: Requests currently queued in API Priority & Fairness queues
+  unit: requests
+
+- query: >-
+    sum by (priority_level)
+    (apiserver_flowcontrol_current_executing_requests)
+  metricName: apiserver_flowcontrol_executing_requests
+  description: Requests currently executing per APF priority level
+  unit: requests
+
+- query: >-
+    sum by (priority_level)
+    (apiserver_flowcontrol_nominal_concurrency_limit)
+  metricName: apiserver_flowcontrol_concurrency_limit
+  description: Nominal concurrency limit per APF priority level
+  unit: requests
+
+- query: >-
+    histogram_quantile(0.99,
+      sum by (priority_level, le)
+      (rate(apiserver_flowcontrol_request_wait_duration_seconds_bucket[2m])))
+  metricName: apiserver_flowcontrol_wait_p99
+  description: Time requests spent waiting in APF queues (p99), per priority level
+  unit: seconds
+
+- query: >-
+    sum by (reason)
+    (increase(apiserver_dropped_requests_total[2m]))
+  metricName: apiserver_dropped_requests
+  description: Requests dropped by the API server (e.g. timeout waiting in queue)
+  unit: count
+
+- query: >-
+    topk(20, max by (resource) (apiserver_storage_objects))
+  metricName: apiserver_storage_objects
+  description: Stored object count per resource — top 20 (etcd pressure)
+  unit: objects
+
 # ── etcd ──────────────────────────────────────────────────────────────
 
 - query: >-

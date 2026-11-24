@@ -1,5 +1,9 @@
 vaults: []
 
+fournos:
+  job:
+    owner: null
+
 foreign_testing:
   openshift-psap/fournos:
     project_mappings:

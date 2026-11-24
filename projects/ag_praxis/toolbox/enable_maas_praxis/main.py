@@ -297,6 +297,46 @@ def wait_hot_path_deployments_ready(args, ctx):
 
 @retry(attempts=60, delay=10, backoff=1.0)
 @task
+def wait_authorino_ready(args, ctx):
+    """Wait for the Authorino CR to report Ready after the pod bump."""
+    resource = oc_get_json(
+        "authorino",
+        name="authorino",
+        namespace=args.kuadrant_namespace,
+        ignore_not_found=True,
+    )
+    if resource is None:
+        return False, "authorino CR not found"
+
+    for condition in resource.get("status", {}).get("conditions", []):
+        if condition.get("type") == "Ready" and condition.get("status") == "True":
+            return "Authorino CR is Ready"
+
+    return False, "authorino CR not Ready yet"
+
+
+@retry(attempts=60, delay=10, backoff=1.0)
+@task
+def wait_limitador_ready(args, ctx):
+    """Wait for the Limitador CR to report Ready after the pod bump."""
+    resource = oc_get_json(
+        "limitador",
+        name="limitador",
+        namespace=args.kuadrant_namespace,
+        ignore_not_found=True,
+    )
+    if resource is None:
+        return False, "limitador CR not found"
+
+    for condition in resource.get("status", {}).get("conditions", []):
+        if condition.get("type") == "Ready" and condition.get("status") == "True":
+            return "Limitador CR is Ready"
+
+    return False, "limitador CR not Ready yet"
+
+
+@retry(attempts=60, delay=10, backoff=1.0)
+@task
 def verify_extproc_limits(args, ctx):
     """Verify the effective ExtProc circuit-breaker limits on the live gateway.
 

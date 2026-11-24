@@ -356,5 +356,40 @@ def capture_maas_tenant_config(args, ctx):
     return "; ".join(results)
 
 
+@task
+def capture_kuadrant_crs(args, ctx):
+    """Capture the Authorino and Limitador CRs from the kuadrant namespace."""
+    artifacts = args.artifact_dir / "artifacts" / "kuadrant"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    for kind in ("authorino", "limitador"):
+        results.append(
+            _capture(
+                f"{kind} CR yaml",
+                artifacts / f"{kind}.yaml",
+                "get",
+                kind,
+                kind,
+                "-n",
+                args.kuadrant_namespace,
+                "-o",
+                "yaml",
+            )
+        )
+        results.append(
+            _capture(
+                f"{kind} CR describe",
+                artifacts / f"{kind}_describe.txt",
+                "describe",
+                kind,
+                kind,
+                "-n",
+                args.kuadrant_namespace,
+            )
+        )
+    return "; ".join(results)
+
+
 if __name__ == "__main__":
     run.main()

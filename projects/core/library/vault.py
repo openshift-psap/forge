@@ -34,6 +34,7 @@ class VaultContent:
     sensible: bool = True
     censor_text: str | None = None
     deprecated_filenames: list[str] = None
+    optional: bool = False
     _vault: Optional["VaultDefinition"] = None
 
     def __post_init__(self):
@@ -73,7 +74,7 @@ class VaultContent:
             if not deprecated_path.exists():
                 continue
 
-            logger.error(
+            logger.warning(
                 f"Vault '{self._vault.name}' content '{self.name}': "
                 f"canonical file '{self.filename}' not found, resolving to "
                 f"deprecated filename '{deprecated_filename}'. "
@@ -156,6 +157,7 @@ class VaultManager:
                 sensible=sensible,
                 censor_text=censor_text,
                 deprecated_filenames=deprecated_filenames,
+                optional=content_def.get("optional", False),
             )
 
         vault_def = VaultDefinition(
@@ -177,9 +179,24 @@ class VaultManager:
             return None
         return self._vault_cache.get(vault_name)
 
+    def get_vault_unchecked(self, vault_name: str) -> VaultDefinition | None:
+        """Get a vault definition by name, regardless of initialization status.
+
+        Use only for censoring — normal code should use get_vault().
+        """
+        return self._vault_cache.get(vault_name)
+
     def list_vaults(self) -> list[str]:
         """List initialized vault names"""
         return list(self._initialized_vaults)
+
+    def list_all_available_vaults(self) -> list[str]:
+        """List all vault names that have their secret directory available on disk."""
+        return [
+            name
+            for name, vault_def in self._vault_cache.items()
+            if vault_def.secret_dir and vault_def.secret_dir.exists()
+        ]
 
     def validate_vault(self, vault_name: str, strict: bool = True) -> bool:
         """
@@ -245,6 +262,8 @@ class VaultManager:
             # Validate content file exists (file_path falls back to deprecated filenames)
             content_path = content_def.file_path
             if content_path is None or not content_path.exists():
+                if content_def.optional:
+                    continue
                 msg = f"Vault '{vault_name}' missing content '{content_name}' at: {content_path}"
                 if effective_strict:
                     logger.error(msg)
