@@ -111,6 +111,14 @@ profiles:
     scheduler_manifest: manifests/deployments/default-3.6GA.yaml
     topology_from_model: true
 
+  default-3.5GA-router:
+    scheduler_manifest: manifests/deployments/default-3.5GA.yaml
+    router_image: registry.redhat.io/rhoai/odh-llm-d-router-endpoint-picker-rhel9@sha256:b4a5c8d6650a4ea3c7ae47b8ba16e9c52484d2f758f588447e4f96d6ec751e41
+    scheduler:
+      annotations:
+        app.kubernetes.io/version: "0.9.0"
+    topology_from_model: true
+
 # Template flavor configurations with name-based extraction
 templates:
   pd:
