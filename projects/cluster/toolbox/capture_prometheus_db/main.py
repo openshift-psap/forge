@@ -16,11 +16,16 @@ Can be run standalone:
 
 from __future__ import annotations
 
+import gzip
 import logging
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from projects.core.dsl import always, entrypoint, execute_tasks, shell, task
+from projects.cluster.toolbox.capture_prometheus_db.public import (
+    copy_openmetrics_with_quoted_labels,
+)
+from projects.core.dsl import always, entrypoint, execute_tasks, task
 from projects.core.dsl.utils.k8s import oc, oc_exec
 
 logger = logging.getLogger("DSL")
@@ -169,32 +174,40 @@ def create_temp_tsdb_dir(args, ctx):
 
 @task
 def dump_metrics(args, ctx):
-    """Run promtool tsdb dump-openmetrics with time filtering against the temp dir."""
+    """Capture the compressed promtool dump and quote label names before publishing it."""
 
     output_file = ctx.output_dir / "open_metrics.gz"
-    result = oc_exec(
-        "sh",
-        "-c",
-        f"promtool tsdb dump-openmetrics"
-        f" --min-time={ctx.start_ms} --max-time={ctx.end_ms}"
-        f" {ctx.temp_dir if args.head_only else TSDB_PATH}"
-        f" | gzip",
-        timeout_seconds=1800,
-        stdout_dest=output_file,
-        text=False,
-        check=False,
-        **_pod_kwargs(ctx),
-    )
-
-    if result.returncode != 0:
-        logger.warning(
-            "promtool exited with code %d (torn WAL record is expected on live Prometheus)",
-            result.returncode,
+    with tempfile.TemporaryDirectory(dir=ctx.output_dir) as temp_dir:
+        raw_file = Path(temp_dir) / "raw.gz"
+        result = oc_exec(
+            "sh",
+            "-c",
+            f"promtool tsdb dump-openmetrics"
+            f" --min-time={ctx.start_ms} --max-time={ctx.end_ms}"
+            f" {ctx.temp_dir if args.head_only else TSDB_PATH}"
+            f" | gzip",
+            timeout_seconds=1800,
+            stdout_dest=raw_file,
+            text=False,
+            check=False,
+            **_pod_kwargs(ctx),
         )
 
-    size_result = shell.run(["stat", "-c", "%s", str(output_file)], shell=False, check=False)
+        if result.returncode != 0:
+            logger.warning(
+                "promtool exited with code %d (torn WAL record is expected on live Prometheus)",
+                result.returncode,
+            )
 
-    ctx.archive_size_bytes = int(size_result.stdout.strip()) if size_result.success else 0
+        corrected_file = Path(temp_dir) / output_file.name
+        with (
+            gzip.open(raw_file, "rb") as source,
+            gzip.open(corrected_file, "wb", compresslevel=6) as destination,
+        ):
+            copy_openmetrics_with_quoted_labels(source, destination)
+        corrected_file.replace(output_file)
+
+    ctx.archive_size_bytes = output_file.stat().st_size
 
     return f"Dumped metrics ({ctx.archive_size_bytes} bytes compressed)"
 
