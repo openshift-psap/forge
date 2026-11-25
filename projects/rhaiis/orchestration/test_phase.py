@@ -783,7 +783,7 @@ def _run_warmup_step(
 
     warmup_cfg = config.project.get_config("rhaiis.warmup", {})
     warmup_rate = warmup_cfg.get("rate", 200)
-    warmup_max_seconds = int(workload.get("warmup", warmup_cfg.get("max_seconds", 60)))
+    warmup_max_seconds = int(warmup_cfg.get("max_seconds", 60))
 
     guidellm_args = runtime_config.build_guidellm_args(
         benchmark_cfg=benchmark_cfg,
