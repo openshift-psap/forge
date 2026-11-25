@@ -52,48 +52,6 @@ def _find_gateway_authpolicy(gateway_name, ingress_namespace):
     return None
 
 
-def _contains_wasm_shim_config(node) -> bool:
-    """Whether the node holds the kuadrant wasm shim configuration string."""
-    from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
-        WASM_SHIM_CONFIG_PREFIX,
-    )
-
-    if isinstance(node, str):
-        return node.startswith(WASM_SHIM_CONFIG_PREFIX)
-    if isinstance(node, dict):
-        return any(_contains_wasm_shim_config(value) for value in node.values())
-    if isinstance(node, list):
-        return any(_contains_wasm_shim_config(value) for value in node)
-    return False
-
-
-def _find_gateway_wasm_envoyfilter(gateway_name, ingress_namespace):
-    """Name of the kuadrant wasm-shim EnvoyFilter owned by the given Gateway.
-
-    The EnvoyFilter (e.g. kuadrant-maas-default-gateway) embeds the wasm shim
-    configuration, including the auth-service timeout. The name is derived from
-    the gateway by the kuadrant operator, not by a stable rule, so it is
-    discovered through the ownerReference plus the shim configuration marker
-    instead (several EnvoyFilters are owned by the same Gateway).
-    """
-    result = oc(
-        "get",
-        "envoyfilter",
-        "-n",
-        ingress_namespace,
-        "-o",
-        "json",
-        log_stdout=False,  # parsed for ownerReferences only: don't log the JSON blob
-    )
-    for item in json.loads(result.stdout).get("items", []):
-        for owner in item.get("metadata", {}).get("ownerReferences", []):
-            if owner.get("kind") != "Gateway" or owner.get("name") != gateway_name:
-                continue
-            if _contains_wasm_shim_config(item.get("spec", {})):
-                return item["metadata"]["name"]
-    return None
-
-
 @entrypoint
 def run(
     *,
