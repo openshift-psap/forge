@@ -371,3 +371,17 @@ def test_deploy_reuses_foreign_configmap_without_relabeling() -> None:
 
     applied = [call for call in fake.calls if call.input_text and "ConfigMap" in call.input_text]
     assert applied == []
+
+
+def test_label_commands_use_separate_arguments() -> None:
+    # oc label rejects a single comma-joined spec ("invalid label spec");
+    # each key=value must be its own argument. Caught live on the first
+    # clean-slate deploy after the mocks had hidden it.
+    fake = FakeShell()
+    _run_all_tasks(fake)
+    label_commands = [cmd for cmd in fake.commands() if cmd.startswith("oc label")]
+    assert label_commands, "expected label commands on the create path"
+    for cmd in label_commands:
+        spec = cmd.split(" ", 4)[-1]  # everything after "oc label <type> <name> [-n ns]"
+        assert "," not in spec, f"comma-joined label spec: {cmd}"
+        assert " " in spec, f"expected multiple label args: {cmd}"

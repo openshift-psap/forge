@@ -95,10 +95,14 @@ def run(
 
 
 def _render_labels(labels: dict[str, str] | None) -> str:
-    """Render ownership labels as an oc label argument (k=v,...)."""
+    """Render ownership labels as separate oc label arguments (k=v k=v).
+
+    Each key=value must be its own argument: oc label rejects a single
+    comma-joined spec ("invalid label spec").
+    """
     if not labels:
         return ""
-    return ",".join(f"{key}={value}" for key, value in sorted(labels.items()))
+    return " ".join(f"{key}={value}" for key, value in sorted(labels.items()))
 
 
 @task
