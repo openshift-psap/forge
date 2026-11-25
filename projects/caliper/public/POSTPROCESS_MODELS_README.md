@@ -80,13 +80,41 @@ class PostprocessStatus:
 ```
 
 **Key Methods:**
-- `is_success() -> bool`: Check if overall status is successful
+- `is_success() -> bool`: Check if overall status is successful (CI-label semantics: `final_status == success`)
 - `has_regressions() -> bool`: Check if regressions were detected
 - `get_failure_reason() -> str`: Get human-readable failure reason
 - `get_step_result(step_name) -> dict`: Get specific step result
 - `to_dict() -> dict`: Convert to dictionary for YAML
 - `from_dict(data) -> PostprocessStatus`: Parse from dictionary
 - `from_orchestration_result(result) -> PostprocessStatus`: Convert from orchestration
+- `classify() -> PostprocessClassification`: Classify post-processing health independently of the test-phase outcome
+- `is_test_failure() -> bool`: Check whether the test phase failed (as opposed to the post-processing)
+- `is_postprocess_failure() -> bool`: Check whether the post-processing itself failed, independently of the test phase
+- `has_failed_steps() -> bool`: Check whether any post-processing step failed
+
+### Test failure vs post-processing failure
+
+`is_success()` answers the CI-label question ("is the overall final status
+success?"). A run whose *test* failed but whose post-processing succeeded gets
+`final_status: test_failed, success: false` — `is_success()` is correctly
+`False` there. To answer the orthogonal question "did the post-processing
+itself fail?", use `classify()` / `classify_postprocess_outcome()`:
+
+```python
+from projects.caliper.public import classify_postprocess_outcome
+
+classification = classify_postprocess_outcome(status_data)  # raw dict, missing keys tolerated
+classification.outcome  # PostprocessOutcome (see below)
+classification.test_failed  # bool — did the test phase fail?
+```
+
+`PostprocessOutcome` values: `success`, `warning`, `postprocess_failure`,
+`performance_regression`, `performance_increase`.
+
+Because `final_status` gives `test_failed` top priority, it can **mask** real
+post-processing step failures (test failed AND parse failed → `test_failed`).
+The classifier therefore inspects the steps first: any step with
+`status: failed` yields `postprocess_failure` even under a `test_failed` label.
 
 ### PostprocessTestPhaseInfo
 Test phase information:

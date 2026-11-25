@@ -242,10 +242,146 @@ def test_notification_without_file_links():
     print("✅ No file links notification formatting test passed")
 
 
+def test_notification_test_failed_postprocess_clean():
+    """Test notification formatting: test failed but all post-processing steps succeeded."""
+    status = PostprocessStatus(
+        final_status=FinalPostprocessStatus.TEST_FAILED,
+        success=False,
+        base_directory="/test/artifacts",
+        test_phase=PostprocessTestPhaseInfo(
+            phase=PostprocessTestPhase.FAILED, message="Test execution failed"
+        ),
+        steps=[
+            {
+                "parse": {
+                    "status": "success",
+                    "completed_at": time.time(),
+                    "record_count": 42,
+                }
+            },
+            {
+                "visualize": {
+                    "status": "success",
+                    "completed_at": time.time(),
+                    "output_dir": "plots/",
+                }
+            },
+        ],
+    )
+
+    notification_text = format_postprocess_status_notification(status)
+
+    # Post-processing succeeded — must not be reported as failed, but the test
+    # failure downgrades the header to a warning and gets its own step line
+    assert "⚠️ **Post-processing Status**" in notification_text
+    assert "❌ **Post-processing Status**" not in notification_text
+    # The test failure is called out explicitly, before the post-processing steps
+    assert "- ⚠️ **test**: `failed`" in notification_text
+    assert "* `Test execution failed`" in notification_text
+    assert notification_text.index("- ⚠️ **test**") < notification_text.index("- ✅ **parse**")
+    assert "- ✅ **parse**: `success`" in notification_text
+    assert "- ✅ **visualize**: `success`" in notification_text
+
+    print("✅ Test-failed/clean-postprocess notification formatting test passed")
+
+
+def test_notification_test_failed_masks_step_failure():
+    """Test notification formatting: test failed AND a post-processing step failed."""
+    status = PostprocessStatus(
+        final_status=FinalPostprocessStatus.TEST_FAILED,
+        success=False,
+        base_directory="/test/artifacts",
+        test_phase=PostprocessTestPhaseInfo(
+            phase=PostprocessTestPhase.FAILED, message="Test execution failed"
+        ),
+        steps=[
+            {
+                "parse": {
+                    "status": "failed",
+                    "completed_at": time.time(),
+                    "error": "Invalid JSON format in input file",
+                }
+            }
+        ],
+    )
+
+    notification_text = format_postprocess_status_notification(status)
+
+    # The step failure must be surfaced even though final_status masks it
+    assert "❌ **Post-processing Status**" in notification_text
+    assert "- ⚠️ **test**: `failed`" in notification_text
+    assert "- ❌ **parse**: `failed`" in notification_text
+
+    print("✅ Masked step failure notification formatting test passed")
+
+
+def test_notification_warning():
+    """Test notification formatting: warnings-only post-processing."""
+    status = PostprocessStatus(
+        final_status=FinalPostprocessStatus.KPI_PIPELINE_FAILED,
+        success="warning",
+        base_directory="/test/artifacts",
+        test_phase=PostprocessTestPhaseInfo(phase=PostprocessTestPhase.SUCCESS),
+        steps=[
+            {
+                "parse": {
+                    "status": "success",
+                    "completed_at": time.time(),
+                    "record_count": 42,
+                }
+            },
+            {
+                "artifacts_to_kpis": {
+                    "status": "warning",
+                    "completed_at": time.time(),
+                    "reason": "some KPIs could not be computed",
+                }
+            },
+        ],
+    )
+
+    notification_text = format_postprocess_status_notification(status)
+
+    assert "⚠️ **Post-processing Status**" in notification_text
+    assert "- ⚠️ **artifacts_to_kpis**: `warning`" in notification_text
+
+    print("✅ Warning notification formatting test passed")
+
+
+def test_notification_performance_increase():
+    """Test notification formatting: performance improvement is not a failure."""
+    status = PostprocessStatus(
+        final_status=FinalPostprocessStatus.PERFORMANCE_INCREASE,
+        success=False,
+        base_directory="/test/artifacts",
+        test_phase=PostprocessTestPhaseInfo(phase=PostprocessTestPhase.SUCCESS),
+        steps=[
+            {
+                "parse": {
+                    "status": "success",
+                    "completed_at": time.time(),
+                    "record_count": 42,
+                }
+            }
+        ],
+    )
+
+    notification_text = format_postprocess_status_notification(status)
+
+    assert "⚠️ **Post-processing Status**" in notification_text
+    assert "❌ **Post-processing Status**" not in notification_text
+
+    print("✅ Performance increase notification formatting test passed")
+
+
 if __name__ == "__main__":
     # Run tests
     test_notification_formatting_success()
     test_notification_formatting_regression()
     test_notification_formatting_failure()
     test_notification_without_file_links()
+    test_notification_test_failed_postprocess_clean()
+    test_notification_test_failed_masks_step_failure()
+    test_notification_warning()
+    test_notification_performance_increase()
     print("✅ All notification integration tests passed!")

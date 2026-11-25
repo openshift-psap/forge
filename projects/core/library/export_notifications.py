@@ -18,6 +18,7 @@ from projects.caliper.engine.constants import METADATA_FILE
 from projects.caliper.engine.kpi.dataclasses import CaliperTestMetadata
 from projects.caliper.orchestration.censoring import censor_text
 from projects.caliper.orchestration.postprocess import POSTPROCESS_STATUS_FILENAME
+from projects.caliper.public import PostprocessOutcome, classify_postprocess_outcome
 from projects.core.ci_entrypoint.prepare_ci import CI_METADATA_DIRNAME
 from projects.core.library import ci as ci_lib
 from projects.core.library import config, env
@@ -1328,14 +1329,23 @@ def _extract_postprocess_status_info(artifact_dir: Path, get_file_link=None) -> 
             dir_name = str(relative_dir) if relative_dir != Path(".") else "root"
 
             base_directory = postprocess_data.get("base_directory", "")
-
-            # Extract overall status
-            overall_success = postprocess_data.get("success", False)
             final_status = postprocess_data.get("final_status", "unknown")
+
+            # Classify post-processing health independently of the test-phase outcome:
+            # a failed test must not report the post-processing as failed.
+            classification = classify_postprocess_outcome(postprocess_data)
+
+            # Import inside the function to avoid circular imports
+            from projects.caliper.orchestration.notification import postprocess_outcome_emoji
 
             # Extract individual step statuses
             steps = postprocess_data.get("steps", [])
             step_statuses = []
+
+            # Surface the test-phase outcome as the first step-like entry: a failed
+            # test must not be reported as a post-processing failure, but must stay visible.
+            if classification.test_failed:
+                step_statuses.append("⚠️ test: failed")
 
             for step_dict in steps:
                 for step_name, step_data in step_dict.items():
@@ -1353,13 +1363,14 @@ def _extract_postprocess_status_info(artifact_dir: Path, get_file_link=None) -> 
                         step_statuses.append(f"{status_emoji} {step_label}")
 
             # Format overall line
-            overall_emoji = "✅" if overall_success else "❌"
+            overall_emoji = postprocess_outcome_emoji(classification)
             if step_statuses:
                 steps_str = " " + " | ".join(step_statuses)
             else:
                 steps_str = f" {final_status}"
 
-            postprocess_info_lines.append(f"* {overall_emoji} **{dir_name}**: {steps_str}")
+            overall_line = f"* {overall_emoji} **{dir_name}**: {steps_str}"
+            postprocess_info_lines.append(overall_line)
 
         except Exception as e:
             postprocess_info_lines.append(f"**{postprocess_file.name}**: Error reading file - {e}")
@@ -1473,17 +1484,21 @@ def _check_postprocess_warnings(step_dir: Path) -> StepStatus:
         if not status_data:
             continue
 
-        # Check top-level success field for warning value
-        success_value = status_data.get("success")
-        if success_value == "warning":
+        # Classify post-processing health independently of the test-phase outcome:
+        # a test failure is already flagged via the step's own exit status.
+        classification = classify_postprocess_outcome(status_data)
+
+        if classification.outcome == PostprocessOutcome.POSTPROCESS_FAILURE:
+            logging.error(
+                f"Post-processing failure detected in {status_file}, raising the FAILURE flag"
+            )
+            return StepStatus.FAILURE
+
+        if classification.outcome == PostprocessOutcome.WARNING:
             logging.warning(
                 f"Post-process warning detected in {status_file}, setting the WARNING flag"
             )
             status = StepStatus.WARNING
-
-        if success_value in ("failure", "error"):
-            logging.error(f"Post-process {success_value} detected, raising the FAILURE flag")
-            return StepStatus.FAILURE
 
     return status
 

@@ -10,7 +10,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from projects.caliper.public import PostprocessStatus, StepStatus
+from projects.caliper.public import (
+    PostprocessClassification,
+    PostprocessOutcome,
+    PostprocessStatus,
+    StepStatus,
+)
+
+
+def postprocess_outcome_emoji(classification: PostprocessClassification) -> str:
+    """Emoji for a post-processing classification.
+
+    A regression is a red CI gate; an improvement or a warning is not a failure.
+    A failed test phase does not make the post-processing fail, but downgrades
+    the header from a success to a warning.
+    """
+    if classification.outcome in (
+        PostprocessOutcome.POSTPROCESS_FAILURE,
+        PostprocessOutcome.PERFORMANCE_REGRESSION,
+    ):
+        return "❌"
+    if classification.outcome in (
+        PostprocessOutcome.WARNING,
+        PostprocessOutcome.PERFORMANCE_INCREASE,
+    ):
+        return "⚠️"
+    if classification.test_failed:
+        return "⚠️"
+    return "✅"
 
 
 def format_postprocess_status_notification(
@@ -28,13 +55,16 @@ def format_postprocess_status_notification(
     """
 
     if not status or not status.steps:
-        return []
+        return ""
 
     lines = []
 
-    # Check overall status (keep unchanged regardless of abort status)
-    status_emoji = "✅" if status.is_success() else "❌"
+    # Classify post-processing health independently of the test-phase outcome:
+    # a failed test must not report the post-processing as failed.
+    classification = status.classify()
     base_directory = Path(status.base_directory)
+
+    status_emoji = postprocess_outcome_emoji(classification)
 
     def postprocess_get_file_link(file_path: Path | str, text: str = None) -> str:
         if not get_file_link:
@@ -42,7 +72,15 @@ def format_postprocess_status_notification(
 
         return get_file_link(base_directory / file_path, text)
 
-    lines.append(f"{status_emoji} **Post-processing Status** `{base_directory}`")
+    header = f"{status_emoji} **Post-processing Status** `{base_directory}`"
+    lines.append(header)
+
+    # Surface the test-phase outcome as a step-like line: a failed test must not
+    # be reported as a post-processing failure, but must stay visible.
+    if classification.test_failed:
+        lines.append("- ⚠️ **test**: `failed`")
+        if status.test_phase.message:
+            lines.append(f"  * `{status.test_phase.message}`")
 
     # Convert steps from list[dict] format to sorted list of (step_name, step_data) tuples
     step_tuples = []

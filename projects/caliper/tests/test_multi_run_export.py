@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -25,6 +27,31 @@ from projects.caliper.engine.file_export.artifacts_export_run import discover_ru
 
 # Use new format for tests
 TEST_LABELS_MARKER = METADATA_FILE
+
+
+@contextmanager
+def _mock_mlflow_modules(mock_ml: MagicMock):
+    """Install a mock ``mlflow`` in ``sys.modules`` without evicting unrelated modules.
+
+    ``patch.dict("sys.modules", ...)`` deletes from ``sys.modules`` every module
+    imported while the patch is active, not just the patched keys. Modules first
+    imported inside a test would then be re-imported with fresh classes in later
+    tests, breaking ``isinstance`` against the surviving copies. Only the
+    ``mlflow`` entries are installed and restored here.
+    """
+    saved = {key: sys.modules.get(key) for key in ("mlflow", "mlflow.tracking")}
+    sys.modules["mlflow"] = mock_ml
+    sys.modules["mlflow.tracking"] = mock_ml.tracking
+    try:
+        yield mock_ml
+    finally:
+        for key in [k for k in sys.modules if k.startswith("mlflow") and k not in saved]:
+            sys.modules.pop(key, None)
+        for key, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = previous
 
 
 def _create_test_metadata(directory: Path, labels: dict) -> None:
@@ -281,7 +308,7 @@ class TestMultiRunMlflowLogging:
         mock_client = MagicMock()
         mock_ml.tracking.MlflowClient.return_value = mock_client
 
-        with patch.dict("sys.modules", {"mlflow": mock_ml, "mlflow.tracking": mock_ml.tracking}):
+        with _mock_mlflow_modules(mock_ml):
             yield mock_ml
 
     def test_creates_parent_and_child_runs(self, artifact_tree: Path, mock_mlflow):
@@ -517,7 +544,7 @@ class TestWorkspacePropagation:
         mock_ml.active_run.return_value = mock_run
         mock_ml.get_tracking_uri.return_value = "http://test:5000"
         mock_ml.tracking.MlflowClient.return_value = MagicMock()
-        with patch.dict("sys.modules", {"mlflow": mock_ml, "mlflow.tracking": mock_ml.tracking}):
+        with _mock_mlflow_modules(mock_ml):
             yield mock_ml
 
     def test_workspace_set_in_env(self, artifact_tree: Path, _mock_mlflow):
@@ -566,7 +593,7 @@ class TestWorkspacePropagation:
         )
         from projects.caliper.engine.file_export.mlflow_backend import log_multi_run_artifacts
         from projects.caliper.engine.model import FileExportBackendResult
-        from projects.core.library import export
+        from projects.core.library import env, export
         from projects.core.library.export_notifications import ExportStatus
 
         connection = {"tracking_uri": "http://test:5000", "token": "vault-token"}
@@ -594,7 +621,6 @@ class TestWorkspacePropagation:
             status_path, [FileExportBackendResult("mlflow", "success", metadata=metadata)]
         )
         status = ExportStatus.from_dict(yaml.safe_load(status_path.read_text()))
-        monkeypatch.setattr(export.env, "ARTIFACT_DIR", export_dir)
         monkeypatch.setattr(export.config, "project", MagicMock())
         export.config.project.get_config.return_value = "vault-ref" if use_vault else None
         monkeypatch.setattr(export, "load_mlflow_connection", lambda *args: connection)
@@ -606,7 +632,11 @@ class TestWorkspacePropagation:
             )
 
         client.log_artifact.side_effect = check_upload_workspace
-        export._update_final_artifacts(artifact_tree, status)
+        # ARTIFACT_DIR is __getattr__-backed: monkeypatch.setattr on it would
+        # materialize a real module attribute on undo and shadow __getattr__
+        # for every later test in the session. TempArtifactDir restores cleanly.
+        with env.TempArtifactDir(export_dir):
+            export._update_final_artifacts(artifact_tree, status)
 
         client.log_artifact.assert_any_call(
             "test-id", str(export_dir / "run.log"), artifact_path=export_dir.name

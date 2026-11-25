@@ -78,13 +78,52 @@ class PostprocessStatus:
     base_directory: str
     test_phase: TestPhaseInfo
     steps: list[dict[str, Any]] = field(default_factory=list)
-    
+
     # Rich API methods
     def is_success(self) -> bool
     def has_regressions(self) -> bool
     def get_failure_reason(self) -> str | None
     def get_step_result(self, step_name: str) -> dict[str, Any] | None
+    def classify(self) -> PostprocessClassification
+    def is_test_failure(self) -> bool
+    def is_postprocess_failure(self) -> bool
+    def has_failed_steps(self) -> bool
 ```
+
+### **Test failure vs post-processing failure**
+
+`final_status` is the single authoritative CI label: `test_failed` takes
+priority over everything, so a run whose test failed gets
+`success: false` even when every post-processing step succeeded — and
+`test_failed` also masks real step failures (test failed AND parse failed is
+still labelled `test_failed`).
+
+Consumers that need to distinguish "the test failed" from "the post-processing
+failed" use `classify_postprocess_outcome()` (raw dicts, missing keys
+tolerated) or `PostprocessStatus.classify()`. The steps are inspected first so
+masked step failures are surfaced:
+
+| final_status | steps | success | outcome | test_failed |
+|---|---|---|---|---|
+| `success` | no failure | `True` | `success` | false |
+| `test_failed` | no failed step | `False` | `success` | true |
+| `test_failed` | warnings only | `False` | `warning` | true |
+| `test_failed` | ≥1 `failed` | `False` | `postprocess_failure` | true |
+| `parse_visualize_failed` / `kpi_pipeline_failed` | any | `False` | `postprocess_failure` | false |
+| `kpi_pipeline_failed` | warnings only | `"warning"` | `warning` | false |
+| `performance_regression` | no failure | `False` | `performance_regression` | false |
+| `performance_increase` | no failure | `False` | `performance_increase` | false |
+| missing/unknown | no failure | `False` | `postprocess_failure` (conservative) | per test_phase |
+
+Notification semantics derived from the classification:
+
+- ✅ post-processing succeeded (with a `*(test failed)*` note when the test failed)
+- ⚠️ warnings only, or performance increase (an improvement is not a failure)
+- ❌ post-processing step failure, or performance regression (red CI gate)
+
+A real post-processing failure also raises the FAILURE flag in the export
+notification's overall job status (`_check_postprocess_warnings`); a test
+failure does not — it is already reported via the step's own exit status.
 
 ### **Status Enums**
 

@@ -10,11 +10,11 @@ skip_cleanup: false
 skip_prepare: false
 skip_finalizers: false
 
-endpoints:
-- svc
-- gw
-- maas/ipp
-- maas/praxis
+endpoints: [maas/praxis]
+# - svc
+# - gw
+# - maas/ipp
+# - maas/praxis
 
 matrix_benchmarking:
   simulator_level:
