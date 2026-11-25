@@ -40,9 +40,9 @@ from projects.core.dsl import (
 )
 
 DEFAULT_IMAGE = "quay.io/mimehta/vllmprofiler"
-DEFAULT_INJECTOR_NAMESPACE = "vllm-profiler"
+INJECTOR_NAMESPACE = "vllm-profiler"
 DEFAULT_TARGET_LABELS = "vllm-profiler/enabled=true"
-DEFAULT_WEBHOOK_NAME = "env-injector-webhook"
+WEBHOOK_NAME = "env-injector-webhook"
 WEBHOOK_SERVICE_PATH = "/mutate"
 CERT_SECRET_NAME = "env-injector-certs"
 CONFIGMAP_NAME = "env-injector-files"
@@ -51,24 +51,10 @@ MIN_CA_BUNDLE_LENGTH = 100
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 
-def webhook_name(injector_namespace: str) -> str:
-    """Return the MutatingWebhookConfiguration name for an injector namespace.
-
-    The webhook is cluster-scoped, so instances in custom namespaces get a
-    namespace-suffixed name to coexist with the default one. The default
-    namespace keeps the historical name for compatibility with injectors
-    deployed before this was configurable.
-    """
-    if injector_namespace == DEFAULT_INJECTOR_NAMESPACE:
-        return DEFAULT_WEBHOOK_NAME
-    return f"{DEFAULT_WEBHOOK_NAME}-{injector_namespace}"
-
-
 @entrypoint
 def run(
     *,
     namespace: str,
-    injector_namespace: str = DEFAULT_INJECTOR_NAMESPACE,
     image: str = DEFAULT_IMAGE,
     target_labels: str = DEFAULT_TARGET_LABELS,
     profiling_ranges: str = "500-503",
@@ -81,7 +67,6 @@ def run(
     Args:
         namespace: Target namespace of the profiled pods (the ConfigMap is
             created here and the webhook only injects into this namespace).
-        injector_namespace: Namespace hosting the webhook deployment.
         image: env-injector container image.
         target_labels: Labels a pod must carry to be injected.
         profiling_ranges: Forward-pass ranges written into profiler_config.yaml.
@@ -113,28 +98,26 @@ def ensure_injector_namespace(args, context):
     the crash window that would otherwise leave an unlabelled namespace no
     later run adopts and no teardown removes.
     """
-    result = shell.run(f"oc get namespace {args.injector_namespace}", check=False)
+    result = shell.run(f"oc get namespace {INJECTOR_NAMESPACE}", check=False)
     if result.returncode == 0:
-        return f"Namespace {args.injector_namespace} already exists"
+        return f"Namespace {INJECTOR_NAMESPACE} already exists"
 
     manifest = {
         "apiVersion": "v1",
         "kind": "Namespace",
         "metadata": {
-            "name": args.injector_namespace,
+            "name": INJECTOR_NAMESPACE,
             "labels": dict(args.labels or {}),
         },
     }
     shell.run("oc apply -f -", input_text=yaml.safe_dump(manifest))
-    return f"Created namespace {args.injector_namespace}"
+    return f"Created namespace {INJECTOR_NAMESPACE}"
 
 
 @task
 def ensure_service_account(args, context):
     """Create the service account, labelled, in one atomic apply."""
-    result = shell.run(
-        f"oc get serviceaccount env-injector -n {args.injector_namespace}", check=False
-    )
+    result = shell.run(f"oc get serviceaccount env-injector -n {INJECTOR_NAMESPACE}", check=False)
     if result.returncode == 0:
         return "Serviceaccount env-injector already exists"
 
@@ -143,7 +126,7 @@ def ensure_service_account(args, context):
         "kind": "ServiceAccount",
         "metadata": {
             "name": "env-injector",
-            "namespace": args.injector_namespace,
+            "namespace": INJECTOR_NAMESPACE,
             "labels": dict(args.labels or {}),
         },
     }
@@ -151,10 +134,10 @@ def ensure_service_account(args, context):
     return "Created serviceaccount env-injector"
 
 
-def _webhook_ca_bundle(webhook: str) -> str | None:
+def _webhook_ca_bundle() -> str | None:
     """Return the existing webhook caBundle if it is present and plausible."""
     result = shell.run(
-        f"oc get mutatingwebhookconfiguration {webhook} "
+        f"oc get mutatingwebhookconfiguration {WEBHOOK_NAME} "
         "-o jsonpath='{.webhooks[0].clientConfig.caBundle}'",
         check=False,
     )
@@ -164,7 +147,7 @@ def _webhook_ca_bundle(webhook: str) -> str | None:
     return ca_bundle
 
 
-def _generate_tls_certificate(injector_namespace: str) -> str:
+def _generate_tls_certificate() -> str:
     """Generate a CA and serving certificate; create the TLS secret.
 
     Mirrors gen-certs.sh from openshift-psap/vllm-profiler: a self-signed
@@ -200,8 +183,8 @@ def _generate_tls_certificate(injector_namespace: str) -> str:
     )
 
     dns_names = [
-        f"env-injector.{injector_namespace}.svc",
-        f"env-injector.{injector_namespace}.svc.cluster.local",
+        f"env-injector.{INJECTOR_NAMESPACE}.svc",
+        f"env-injector.{INJECTOR_NAMESPACE}.svc.cluster.local",
     ]
     tls_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     tls_cert = (
@@ -251,7 +234,7 @@ def _generate_tls_certificate(injector_namespace: str) -> str:
         )
         shell.run(
             f"oc create secret tls {CERT_SECRET_NAME} "
-            f"-n {injector_namespace} --cert={tls_crt} --key={tls_key_path}"
+            f"-n {INJECTOR_NAMESPACE} --cert={tls_crt} --key={tls_key_path}"
         )
 
     return base64.b64encode(ca_cert.public_bytes(serialization.Encoding.PEM)).decode()
@@ -261,10 +244,10 @@ def _generate_tls_certificate(injector_namespace: str) -> str:
 def ensure_tls_certificate(args, context):
     """Create the TLS secret on first run; reuse an existing CA bundle when valid."""
     secret = shell.run(
-        f"oc get secret {CERT_SECRET_NAME} -n {args.injector_namespace} -o name",
+        f"oc get secret {CERT_SECRET_NAME} -n {INJECTOR_NAMESPACE} -o name",
         check=False,
     )
-    existing_ca = _webhook_ca_bundle(webhook_name(args.injector_namespace))
+    existing_ca = _webhook_ca_bundle()
 
     if secret.returncode == 0 and existing_ca:
         return "TLS secret and webhook CA bundle already in place"
@@ -272,15 +255,15 @@ def ensure_tls_certificate(args, context):
     # Self-heal: an existing secret without a valid webhook CA bundle cannot
     # be recovered (the CA is not stored in the secret), so regenerate.
     if secret.returncode == 0:
-        shell.run(f"oc delete secret {CERT_SECRET_NAME} -n {args.injector_namespace}")
+        shell.run(f"oc delete secret {CERT_SECRET_NAME} -n {INJECTOR_NAMESPACE}")
         logger_note = "regenerated TLS certificate (webhook CA bundle was invalid)"
     else:
         logger_note = "generated TLS certificate"
 
-    context.ca_bundle = _generate_tls_certificate(args.injector_namespace)
+    context.ca_bundle = _generate_tls_certificate()
     if args.labels:
         shell.run(
-            f"oc label secret {CERT_SECRET_NAME} -n {args.injector_namespace} "
+            f"oc label secret {CERT_SECRET_NAME} -n {INJECTOR_NAMESPACE} "
             f"{_render_labels(args.labels)}"
         )
     return f"{logger_note}; webhook CA bundle prepared"
@@ -288,8 +271,7 @@ def ensure_tls_certificate(args, context):
 
 @task
 def deploy_webhook_configuration(args, context):
-    webhook = webhook_name(args.injector_namespace)
-    ca_bundle = getattr(context, "ca_bundle", None) or _webhook_ca_bundle(webhook)
+    ca_bundle = getattr(context, "ca_bundle", None) or _webhook_ca_bundle()
     if not ca_bundle:
         raise RuntimeError(
             "No CA bundle available for the webhook configuration; "
@@ -299,7 +281,7 @@ def deploy_webhook_configuration(args, context):
     webhook_manifest = {
         "apiVersion": "admissionregistration.k8s.io/v1",
         "kind": "MutatingWebhookConfiguration",
-        "metadata": {"name": webhook, "labels": dict(args.labels or {})},
+        "metadata": {"name": WEBHOOK_NAME, "labels": dict(args.labels or {})},
         "webhooks": [
             {
                 "name": "env-injector.vllmbench.local",
@@ -308,7 +290,7 @@ def deploy_webhook_configuration(args, context):
                     "caBundle": ca_bundle,
                     "service": {
                         "name": "env-injector",
-                        "namespace": args.injector_namespace,
+                        "namespace": INJECTOR_NAMESPACE,
                         "path": WEBHOOK_SERVICE_PATH,
                         "port": 443,
                     },
@@ -330,7 +312,7 @@ def deploy_webhook_configuration(args, context):
         ],
     }
     shell.run("oc apply -f -", input_text=yaml.safe_dump(webhook_manifest))
-    return f"Applied MutatingWebhookConfiguration {webhook}"
+    return f"Applied MutatingWebhookConfiguration {WEBHOOK_NAME}"
 
 
 @task
@@ -340,7 +322,7 @@ def deploy_injector_deployment(args, context):
         "kind": "Deployment",
         "metadata": {
             "name": "env-injector",
-            "namespace": args.injector_namespace,
+            "namespace": INJECTOR_NAMESPACE,
             "labels": dict(args.labels or {}),
         },
         "spec": {
@@ -377,7 +359,7 @@ def deploy_injector_deployment(args, context):
         "kind": "Service",
         "metadata": {
             "name": "env-injector",
-            "namespace": args.injector_namespace,
+            "namespace": INJECTOR_NAMESPACE,
             "labels": dict(args.labels or {}),
         },
         "spec": {
@@ -387,7 +369,7 @@ def deploy_injector_deployment(args, context):
     }
     shell.run("oc apply -f -", input_text=yaml.safe_dump(deployment))
     shell.run("oc apply -f -", input_text=yaml.safe_dump(service))
-    return f"Applied env-injector Deployment and Service in {args.injector_namespace}"
+    return f"Applied env-injector Deployment and Service in {INJECTOR_NAMESPACE}"
 
 
 @task
@@ -445,7 +427,7 @@ def deploy_profiler_configmap(args, context):
 @task
 def wait_for_injector_pod(args, context):
     result = shell.run(
-        f"oc get pods -n {args.injector_namespace} -l app=env-injector "
+        f"oc get pods -n {INJECTOR_NAMESPACE} -l app=env-injector "
         "-o jsonpath='{.items[0].status.phase}'",
         check=False,
     )

@@ -23,17 +23,15 @@ from projects.core.dsl import (
 from projects.kserve.toolbox.deploy_profiler_injector.main import (
     CERT_SECRET_NAME,
     CONFIGMAP_NAME,
-    webhook_name,
+    INJECTOR_NAMESPACE,
+    WEBHOOK_NAME,
 )
-
-DEFAULT_INJECTOR_NAMESPACE = "vllm-profiler"
 
 
 @entrypoint
 def run(
     *,
     namespace: str,
-    injector_namespace: str = DEFAULT_INJECTOR_NAMESPACE,
     labels: dict[str, str] | None = None,
 ):
     """Tear down the forge-owned vLLM profiler env-injector.
@@ -41,7 +39,6 @@ def run(
     Args:
         namespace: Target namespace of the profiled pods (the ConfigMap to
             remove lives here).
-        injector_namespace: Namespace hosting the webhook deployment.
         labels: Ownership labels used by deploy_profiler_injector. Only
             resources carrying all of them are removed; required, so a
             teardown can never delete an injector deployed by someone else.
@@ -97,16 +94,15 @@ def _remove(resource: str, name: str, ownership: str, namespace: str | None = No
 
 @task
 def remove_webhook_configuration(args, context):
-    webhook = webhook_name(args.injector_namespace)
-    ownership = _is_owned("mutatingwebhookconfiguration", webhook, None, args.labels)
-    return _remove("mutatingwebhookconfiguration", webhook, ownership)
+    ownership = _is_owned("mutatingwebhookconfiguration", WEBHOOK_NAME, None, args.labels)
+    return _remove("mutatingwebhookconfiguration", WEBHOOK_NAME, ownership)
 
 
 @task
 def remove_injector_namespace(args, context):
     """Delete the injector namespace (cascades deployment, service, SA, secret)."""
-    ownership = _is_owned("namespace", args.injector_namespace, None, args.labels)
-    return _remove("namespace", args.injector_namespace, ownership)
+    ownership = _is_owned("namespace", INJECTOR_NAMESPACE, None, args.labels)
+    return _remove("namespace", INJECTOR_NAMESPACE, ownership)
 
 
 @task
@@ -123,9 +119,9 @@ def remove_orphaned_tls_secret(args, context):
     when the namespace itself was foreign (e.g. pre-existing) but the
     secret inside it is ours.
     """
-    namespace_ownership = _is_owned("namespace", args.injector_namespace, None, args.labels)
+    namespace_ownership = _is_owned("namespace", INJECTOR_NAMESPACE, None, args.labels)
     if namespace_ownership == "owned":
         return "Secret cascaded by the namespace deletion"
 
-    ownership = _is_owned("secret", CERT_SECRET_NAME, args.injector_namespace, args.labels)
-    return _remove("secret", CERT_SECRET_NAME, ownership, namespace=args.injector_namespace)
+    ownership = _is_owned("secret", CERT_SECRET_NAME, INJECTOR_NAMESPACE, args.labels)
+    return _remove("secret", CERT_SECRET_NAME, ownership, namespace=INJECTOR_NAMESPACE)

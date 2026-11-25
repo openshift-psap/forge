@@ -29,7 +29,6 @@ def _init_project_config() -> None:
 def test_profiler_config_keys_exist() -> None:
     _init_project_config()
 
-    assert core_config.project.get_config("profiler.injector_namespace") == "vllm-profiler"
     assert core_config.project.get_config("profiler.teardown_after_run") is False
 
 
@@ -42,10 +41,8 @@ def test_ci_post_cleanup_references_a_defined_helper() -> None:
     assert "teardown_profiler_injector_if_configured" in source
 
 
-def test_deploy_passes_labels_and_injector_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deploy_passes_labels(monkeypatch: pytest.MonkeyPatch) -> None:
     _init_project_config()
-    core_config.project.set_config("profiler.injector_namespace", "custom-injector-ns")
-
     captured = {}
 
     def fake_deploy(**kwargs):
@@ -55,7 +52,6 @@ def test_deploy_passes_labels_and_injector_namespace(monkeypatch: pytest.MonkeyP
     prepare_sequence.prepare_profiler_injector("ns-target")
 
     assert captured["namespace"] == "ns-target"
-    assert captured["injector_namespace"] == "custom-injector-ns"
     assert captured["labels"] == prepare_sequence.PROFILER_INJECTOR_LABELS
 
 
@@ -74,7 +70,6 @@ def test_teardown_skipped_when_not_configured(monkeypatch: pytest.MonkeyPatch) -
 def test_teardown_runs_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     _init_project_config()
     core_config.project.set_config("profiler.teardown_after_run", True)
-    core_config.project.set_config("profiler.injector_namespace", "custom-injector-ns")
 
     captured = {}
 
@@ -87,7 +82,6 @@ def test_teardown_runs_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     prepare_sequence.teardown_profiler_injector_if_configured("ns-target")
 
     assert captured["namespace"] == "ns-target"
-    assert captured["injector_namespace"] == "custom-injector-ns"
     assert captured["labels"] == prepare_sequence.PROFILER_INJECTOR_LABELS
 
 

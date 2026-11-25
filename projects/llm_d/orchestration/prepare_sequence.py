@@ -16,10 +16,6 @@ PROFILER_INJECTOR_LABELS = {
 }
 
 
-def _profiler_injector_namespace() -> str:
-    return config.project.get_config("profiler.injector_namespace", default_value="vllm-profiler")
-
-
 def prepare_profiler_injector(namespace: str) -> None:
     """Deploy the vLLM profiler env-injector for the test namespace.
 
@@ -33,7 +29,6 @@ def prepare_profiler_injector(namespace: str) -> None:
 
     deploy_profiler_injector(
         namespace=namespace,
-        injector_namespace=_profiler_injector_namespace(),
         profiling_ranges=config.project.get_config("profiler.ranges", default_value="500-503"),
         labels=PROFILER_INJECTOR_LABELS,
     )
@@ -51,11 +46,7 @@ def teardown_profiler_injector_if_configured(namespace: str) -> None:
 
     from projects.kserve.toolbox.teardown_profiler_injector.main import run as teardown
 
-    teardown(
-        namespace=namespace,
-        injector_namespace=_profiler_injector_namespace(),
-        labels=PROFILER_INJECTOR_LABELS,
-    )
+    teardown(namespace=namespace, labels=PROFILER_INJECTOR_LABELS)
 
 
 def run_prepare_sequence() -> int:

@@ -22,7 +22,6 @@ OWNERSHIP_LABELS = {
 
 ARGS = SimpleNamespace(
     namespace="ns-target",
-    injector_namespace="vllm-profiler",
     image="quay.io/mimehta/vllmprofiler",
     target_labels="vllm-profiler/enabled=true",
     profiling_ranges="100-200",
@@ -221,11 +220,7 @@ class TeardownShell:
 def _run_teardown(fake: TeardownShell) -> None:
     from projects.kserve.toolbox.teardown_profiler_injector import main as teardown
 
-    args = SimpleNamespace(
-        namespace="ns-target",
-        injector_namespace="vllm-profiler",
-        labels=OWNERSHIP_LABELS,
-    )
+    args = SimpleNamespace(namespace="ns-target", labels=OWNERSHIP_LABELS)
     with patch.object(dsl_shell, "run", side_effect=fake):
         for task in [
             teardown.remove_webhook_configuration,
@@ -293,74 +288,6 @@ def test_teardown_requires_ownership_labels() -> None:
 
     with pytest.raises(ValueError, match="ownership labels"):
         teardown.run(namespace="ns-target", labels=None)
-
-
-def test_webhook_name_is_namespace_derived() -> None:
-    # Default namespace keeps the historical name (compatibility with
-    # injectors deployed before the namespace was configurable).
-    assert deploy.webhook_name("vllm-profiler") == "env-injector-webhook"
-    # Custom namespaces get a suffixed, cluster-unique webhook name so a
-    # long-lived custom injector coexists with the regression one.
-    assert deploy.webhook_name("npalaska-profiler") == "env-injector-webhook-npalaska-profiler"
-
-
-def test_custom_injector_namespace_deploys_suffixed_webhook() -> None:
-    fake = FakeShell()
-    custom_args = SimpleNamespace(**{**ARGS.__dict__, "injector_namespace": "npalaska-profiler"})
-    context = SimpleNamespace()
-    with patch.object(dsl_shell, "run", side_effect=fake):
-        for task in [
-            deploy.ensure_injector_namespace,
-            deploy.ensure_service_account,
-            deploy.ensure_tls_certificate,
-            deploy.deploy_webhook_configuration,
-            deploy.deploy_injector_deployment,
-            deploy.deploy_profiler_configmap,
-            deploy.wait_for_injector_pod,
-        ]:
-            task(custom_args, context)
-
-    manifests = fake.applied_manifests()
-    by_kind = {(m["kind"], m["metadata"]["name"]): m for m in manifests}
-    assert ("MutatingWebhookConfiguration", "env-injector-webhook-npalaska-profiler") in by_kind
-    deployment = by_kind[("Deployment", "env-injector")]
-    assert deployment["metadata"]["namespace"] == "npalaska-profiler"
-    assert deployment["spec"]["template"]["spec"]["containers"][0]["env"][0] == {
-        "name": "TARGET_NAMESPACE",
-        "value": "ns-target",
-    }
-    # the webhook points at the custom namespace's service
-    webhook = by_kind[("MutatingWebhookConfiguration", "env-injector-webhook-npalaska-profiler")]
-    assert webhook["webhooks"][0]["clientConfig"]["service"]["namespace"] == "npalaska-profiler"
-
-
-def test_teardown_uses_the_namespace_derived_webhook_name() -> None:
-    fake = TeardownShell(
-        {
-            "mutatingwebhookconfiguration/env-injector-webhook-npalaska-profiler": OWNERSHIP_LABELS,
-            "namespace/npalaska-profiler": OWNERSHIP_LABELS,
-            "configmap/env-injector-files": OWNERSHIP_LABELS,
-        }
-    )
-    from projects.kserve.toolbox.teardown_profiler_injector import main as teardown
-
-    args = SimpleNamespace(
-        namespace="ns-target",
-        injector_namespace="npalaska-profiler",
-        labels=OWNERSHIP_LABELS,
-    )
-    with patch.object(dsl_shell, "run", side_effect=fake):
-        for task in [
-            teardown.remove_webhook_configuration,
-            teardown.remove_injector_namespace,
-            teardown.remove_profiler_configmap,
-            teardown.remove_orphaned_tls_secret,
-        ]:
-            task(args, SimpleNamespace())
-
-    assert fake.deleted[0] == (
-        "oc delete mutatingwebhookconfiguration env-injector-webhook-npalaska-profiler  --ignore-not-found"
-    )
 
 
 def test_deploy_reuses_foreign_configmap_without_relabeling() -> None:
