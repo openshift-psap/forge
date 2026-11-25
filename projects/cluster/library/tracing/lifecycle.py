@@ -119,10 +119,11 @@ def start_capture(
     )
     try:
         _deploy_collector(identity, settings)
-    except Exception:
+    except BaseException:
         # The deploy can fail after applying its resources (e.g. the readiness
-        # wait times out). The caller gets no session to clean up, so remove
-        # them here; the deploy error is still the one raised.
+        # wait times out or the run is interrupted). The caller gets no session
+        # to clean up, so remove them here; the deploy error or interrupt is
+        # still the one raised.
         cleanup_after_failure(session)
         raise
     return session

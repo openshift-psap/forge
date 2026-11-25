@@ -30,6 +30,7 @@ from projects.cluster.library.tracing.models import (
     parse_sample_ratio,
     settings_from_config,
 )
+from projects.core.library.run import SignalInterrupt
 
 
 class _Config:
@@ -459,19 +460,28 @@ def test_project_tracing_config_uses_the_component_defaults(project):
     assert section == yaml.safe_load(DEFAULTS_FILE.read_text())
 
 
-def test_failed_collector_deploy_removes_the_collector(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("collector did not become ready within 300s"),
+        # An interrupt during the readiness wait leaves no session to clean up.
+        SignalInterrupt(15, None),
+    ],
+    ids=["deploy-failed", "interrupted"],
+)
+def test_failed_collector_deploy_removes_the_collector(monkeypatch, tmp_path, error):
     """A deploy that fails after applying resources must not leave the collector behind."""
     from projects.cluster.library.tracing import lifecycle
     from projects.cluster.library.tracing.models import TracingSettings
 
     def failing_deploy(*_args, **_kwargs):
-        raise RuntimeError("collector did not become ready within 300s")
+        raise error
 
     cleaned = []
     monkeypatch.setattr(lifecycle, "_deploy_collector", failing_deploy)
     monkeypatch.setattr(lifecycle, "cleanup", lambda session: cleaned.append(session.identity))
 
-    with pytest.raises(RuntimeError, match="did not become ready"):
+    with pytest.raises(type(error)) as raised:
         lifecycle.start_capture(
             job_id="job",
             capture_id="cap",
@@ -482,6 +492,7 @@ def test_failed_collector_deploy_removes_the_collector(monkeypatch, tmp_path):
             settings=TracingSettings(mode=TracingMode.STANDARD),
         )
 
+    assert raised.value is error
     assert [identity.capture_id for identity in cleaned] == ["cap"]
 
 
