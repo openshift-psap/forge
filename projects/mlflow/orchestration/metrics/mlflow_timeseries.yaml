@@ -1,0 +1,69 @@
+- query: sum(rate(container_cpu_usage_seconds_total{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"}[1m]))
+  metricName: timeseries.mlflow_cpu_cores
+  description: Timeseries mlflow cpu cores
+  unit: cores
+- query: sum(container_memory_working_set_bytes{namespace="redhat-ods-applications",pod=~"mlflow-.*",container="mlflow"})
+  metricName: timeseries.mlflow_memory_bytes
+  description: Timeseries mlflow memory bytes
+  unit: bytes
+- query: histogram_quantile(0.5,sum(rate(mlflow_http_request_duration_seconds_bucket{namespace="redhat-ods-applications"}[1m]))
+    by (le))
+  metricName: timeseries.mlflow_latency_p50_s
+  description: Timeseries mlflow latency p50 s
+  unit: seconds
+- query: histogram_quantile(0.95,sum(rate(mlflow_http_request_duration_seconds_bucket{namespace="redhat-ods-applications"}[1m]))
+    by (le))
+  metricName: timeseries.mlflow_latency_p95_s
+  description: Timeseries mlflow latency p95 s
+  unit: seconds
+- query: histogram_quantile(0.99,sum(rate(mlflow_http_request_duration_seconds_bucket{namespace="redhat-ods-applications"}[1m]))
+    by (le))
+  metricName: timeseries.mlflow_latency_p99_s
+  description: Timeseries mlflow latency p99 s
+  unit: seconds
+- query: sum(rate(mlflow_http_request_total{namespace="redhat-ods-applications"}[1m]))
+  metricName: timeseries.mlflow_rps
+  description: Timeseries mlflow rps
+  unit: per second
+- query: sum(rate(mlflow_http_request_exceptions_total{namespace="redhat-ods-applications"}[1m]))
+  metricName: timeseries.mlflow_errors_per_sec
+  description: Timeseries mlflow errors per sec
+  unit: per second
+- query: pg_stat_activity_count{datname="mlflow",state="active",namespace="{{.NAMESPACE}}"}
+  metricName: timeseries.postgresql_active_connections
+  description: Timeseries postgresql active connections
+  unit: count
+- query: pg_stat_activity_count{datname="mlflow",state="idle",namespace="{{.NAMESPACE}}"}
+  metricName: timeseries.postgresql_idle_connections
+  description: Timeseries postgresql idle connections
+  unit: count
+- query: pg_stat_activity_count{datname="mlflow",state="idle in transaction",namespace="{{.NAMESPACE}}"}
+  metricName: timeseries.postgresql_idle_in_tx_connections
+  description: Timeseries postgresql idle in tx connections
+  unit: count
+- query: histogram_quantile(0.95,sum(rate(apiserver_request_duration_seconds_bucket{resource="selfsubjectaccessreviews",verb="POST"}[1m]))
+    by (le))
+  metricName: timeseries.ssar_latency_p95_s
+  description: Timeseries ssar latency p95 s
+  unit: seconds
+- query: sum(pg_lock_waits_count{namespace="{{.NAMESPACE}}"})
+  metricName: timeseries.postgresql_lock_waiters
+  description: Timeseries postgresql lock waiters
+  unit: count
+- query: rate(pg_mlflow_backend_io_buffers_written_total{namespace="{{.NAMESPACE}}"}[1m])
+  metricName: timeseries.postgresql_buffers_backend_per_sec
+  description: Relation blocks written per second by backends other than the background writer and checkpointer
+  unit: per second
+- query: rate(pg_mlflow_checkpointer_buffers_written_total{namespace="{{.NAMESPACE}}"}[1m])
+  metricName: timeseries.postgresql_buffers_checkpoint_per_sec
+  description: Shared buffers written per second during checkpoints and restartpoints
+  unit: per second
+- query: rate(pg_stat_bgwriter_buffers_clean_total{namespace="{{.NAMESPACE}}"}[1m])
+  metricName: timeseries.postgresql_buffers_clean_per_sec
+  description: Timeseries postgresql buffers clean per sec
+  unit: per second
+- query: sum(rate(pg_stat_database_blks_hit{datname="mlflow",namespace="{{.NAMESPACE}}"}[1m])) / (sum(rate(pg_stat_database_blks_hit{datname="mlflow",namespace="{{.NAMESPACE}}"}[1m]))
+    + sum(rate(pg_stat_database_blks_read{datname="mlflow",namespace="{{.NAMESPACE}}"}[1m])))
+  metricName: timeseries.postgresql_cache_hit_ratio
+  description: Timeseries postgresql cache hit ratio
+  unit: ratio

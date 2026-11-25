@@ -1,0 +1,23 @@
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+  namespace: {{ operator_namespace }}
+spec:
+  replicas: 1
+  workers: 8
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "64"
+      memory: "128Gi"
+  backendStoreUriFrom:
+    name: mlflow-db-credentials
+    key: backend-store-uri
+  artifactsDestination: "s3://mlflow-artifacts/artifacts"
+  serveArtifacts: true
+  envFrom:
+    - secretRef:
+        name: mlflow-s3-credentials

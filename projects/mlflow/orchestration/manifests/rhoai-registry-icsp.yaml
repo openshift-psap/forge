@@ -1,0 +1,15 @@
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: rhoai-registry
+spec:
+  repositoryDigestMirrors:
+    - source: registry.redhat.io/rhoai
+      mirrors:
+        - quay.io/rhoai
+    - source: registry.redhat.io/rhaii
+      mirrors:
+        - registry.stage.redhat.io/rhaii
+    - source: registry.redhat.io/rhaii-early-access
+      mirrors:
+        - registry.stage.redhat.io/rhaii-early-access

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ namespace }}
+  labels:
+    mlflow-enabled: "true"
+  annotations:
+    mlflow.kubeflow.org/workspace-description: "MLflow performance testing workspace"
