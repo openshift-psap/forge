@@ -826,9 +826,9 @@ def _run_profiler_step(
     from projects.guidellm.toolbox.run_guidellm_benchmark.main import (
         run as run_guidellm_benchmark,
     )
-    from projects.rhaiis.toolbox.copy_profiler_traces.main import run as copy_profiler_traces
-    from projects.rhaiis.toolbox.enable_profiler_gate.main import run as enable_profiler_gate
-    from projects.rhaiis.toolbox.verify_profiler_prereqs.main import run as verify_profiler_prereqs
+    from projects.kserve.toolbox.copy_profiler_traces.main import run as copy_profiler_traces
+    from projects.kserve.toolbox.enable_profiler_gate.main import run as enable_profiler_gate
+    from projects.kserve.toolbox.verify_profiler_prereqs.main import run as verify_profiler_prereqs
 
     logger.info("Verifying profiler prerequisites")
     verify_profiler_prereqs(namespace=namespace)
@@ -846,7 +846,7 @@ def _run_profiler_step(
 
         gate_value = label if isinstance(label, str) else str(label)
         enable_profiler_gate(
-            name=deployment_name,
+            pod_selector=f"serving.kserve.io/inferenceservice={deployment_name}",
             namespace=namespace,
             gate_value=gate_value,
             clear_traces=label_index == 0,
@@ -875,14 +875,14 @@ def _run_profiler_step(
             )
         finally:
             enable_profiler_gate(
-                name=deployment_name,
+                pod_selector=f"serving.kserve.io/inferenceservice={deployment_name}",
                 namespace=namespace,
                 disable=True,
             )
 
     logger.info("Copying profiler traces from pod")
     copy_result = copy_profiler_traces(
-        name=deployment_name,
+        pod_selector=f"serving.kserve.io/inferenceservice={deployment_name}",
         namespace=namespace,
         transfer_timeout_seconds=profiler_cfg.get("transfer_timeout_seconds", 300),
     )
