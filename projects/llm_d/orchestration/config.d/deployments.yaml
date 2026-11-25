@@ -40,6 +40,9 @@ pd:
   roce:
     enabled: false
     resources: composite.dra.io/gpu-nic-pair
+    # Each GPU-NIC pair brings its own GPU: request one pair per GPU instead
+    # of nvidia.com/gpu, so that no GPU is handed out twice.
+    gpus_from_resource: true
 
     vllm_extra:
       env:
