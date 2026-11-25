@@ -98,7 +98,7 @@ praxis:
   # requests with an instant empty HTTP 500 before auth. Valid range 1-1024;
   # out-of-range values silently fall back to 8. The effective limits are verified
   # against the gateway's live Envoy config after activation.
-  extproc_max_requests: 256
+  extproc_max_requests: null
   # Identity-metrics toggle for the maas-gateway-auth AuthPolicy (the `metrics`
   # field of the identity response filter, hardcoded true by maas-controller's
   # template). With it on, authorino re-compiles and re-evaluates the filter's
