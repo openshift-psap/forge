@@ -22,7 +22,7 @@ jobs:
 
           # No -q: grep must read the whole input, otherwise it exits early,
           # printf gets SIGPIPE, and pipefail turns a match into a failure.
-          if printf '%s' "$PR_BODY" | grep -iE '(fixes|closes|resolves|refs|part of)[[:space:]]+#[0-9]+' >/dev/null; then
+          if printf '%s' "$PR_BODY" | grep -iE '(fixes|closes|resolves|refs|part of|fix)[[:space:]]+#[0-9]+' >/dev/null; then
             echo "PR body references a tracking issue."
             exit 0
           fi
