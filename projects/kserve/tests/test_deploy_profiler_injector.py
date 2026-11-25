@@ -134,9 +134,15 @@ def test_full_deploy_on_clean_cluster() -> None:
     ]:
         assert by_kind[(kind, name)]["metadata"]["labels"] == OWNERSHIP_LABELS
 
+    # Namespace and ServiceAccount are created via labelled manifests
+    # (atomic: no unlabelled crash window); the TLS secret is created by
+    # oc create secret tls and labelled afterwards.
+    namespace_manifest = by_kind[("Namespace", "vllm-profiler")]
+    assert namespace_manifest["metadata"]["labels"] == OWNERSHIP_LABELS
+    sa_manifest = by_kind[("ServiceAccount", "env-injector")]
+    assert sa_manifest["metadata"]["namespace"] == "vllm-profiler"
+    assert sa_manifest["metadata"]["labels"] == OWNERSHIP_LABELS
     label_commands = [cmd for cmd in fake.commands() if cmd.startswith("oc label")]
-    assert any("oc label namespace vllm-profiler" in cmd for cmd in label_commands)
-    assert any("oc label serviceaccount env-injector" in cmd for cmd in label_commands)
     assert any("oc label secret env-injector-certs" in cmd for cmd in label_commands)
 
 
@@ -376,11 +382,12 @@ def test_deploy_reuses_foreign_configmap_without_relabeling() -> None:
 def test_label_commands_use_separate_arguments() -> None:
     # oc label rejects a single comma-joined spec ("invalid label spec");
     # each key=value must be its own argument. Caught live on the first
-    # clean-slate deploy after the mocks had hidden it.
+    # clean-slate deploy after the mocks had hidden it. Only the TLS
+    # secret still uses oc label; ns/SA are labelled via their manifests.
     fake = FakeShell()
     _run_all_tasks(fake)
     label_commands = [cmd for cmd in fake.commands() if cmd.startswith("oc label")]
-    assert label_commands, "expected label commands on the create path"
+    assert label_commands, "expected the secret label command on the create path"
     for cmd in label_commands:
         spec = cmd.split(" ", 4)[-1]  # everything after "oc label <type> <name> [-n ns]"
         assert "," not in spec, f"comma-joined label spec: {cmd}"

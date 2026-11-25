@@ -107,29 +107,48 @@ def _render_labels(labels: dict[str, str] | None) -> str:
 
 @task
 def ensure_injector_namespace(args, context):
+    """Create the injector namespace, labelled, in one atomic apply.
+
+    Creating via a labelled manifest (instead of create-then-label) closes
+    the crash window that would otherwise leave an unlabelled namespace no
+    later run adopts and no teardown removes.
+    """
     result = shell.run(f"oc get namespace {args.injector_namespace}", check=False)
-    if result.returncode != 0:
-        shell.run(f"oc create namespace {args.injector_namespace}")
-        if args.labels:
-            shell.run(f"oc label namespace {args.injector_namespace} {_render_labels(args.labels)}")
-        return f"Created namespace {args.injector_namespace}"
-    return f"Namespace {args.injector_namespace} already exists"
+    if result.returncode == 0:
+        return f"Namespace {args.injector_namespace} already exists"
+
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+            "name": args.injector_namespace,
+            "labels": dict(args.labels or {}),
+        },
+    }
+    shell.run("oc apply -f -", input_text=yaml.safe_dump(manifest))
+    return f"Created namespace {args.injector_namespace}"
 
 
 @task
 def ensure_service_account(args, context):
+    """Create the service account, labelled, in one atomic apply."""
     result = shell.run(
         f"oc get serviceaccount env-injector -n {args.injector_namespace}", check=False
     )
-    if result.returncode != 0:
-        shell.run(f"oc create serviceaccount env-injector -n {args.injector_namespace}")
-        if args.labels:
-            shell.run(
-                f"oc label serviceaccount env-injector -n {args.injector_namespace} "
-                f"{_render_labels(args.labels)}"
-            )
-        return "Created serviceaccount env-injector"
-    return "Serviceaccount env-injector already exists"
+    if result.returncode == 0:
+        return "Serviceaccount env-injector already exists"
+
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "name": "env-injector",
+            "namespace": args.injector_namespace,
+            "labels": dict(args.labels or {}),
+        },
+    }
+    shell.run("oc apply -f -", input_text=yaml.safe_dump(manifest))
+    return "Created serviceaccount env-injector"
 
 
 def _webhook_ca_bundle(webhook: str) -> str | None:
