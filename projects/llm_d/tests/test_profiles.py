@@ -882,6 +882,37 @@ def test_render_uses_sanitized_model_name_and_profile_resources() -> None:
     assert manifest["spec"]["router"]["scheduler"] == {}
 
 
+def test_roce_requests_gpus_only_through_gpu_nic_pairs() -> None:
+    """Each pair brings its own GPU, so nvidia.com/gpu must not be requested too."""
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config("runtime.deployment_profile", "pd-p.tp1-p.x8-d.tp4-d.x2")
+    core_config.project.set_config("deployments.pd.roce.enabled", True)
+
+    manifest = render_inference_service_from_parts(
+        config_dir=str(PROJECT_ORCHESTRATION_DIR),
+        namespace="forge-llm-d",
+        inference_service=runtime_config.get_platform_config()["inference_service"],
+        model_name=runtime_config.get_model_name(),
+        model_slug=runtime_config.get_model_slug(),
+        deployment_profile=runtime_config.get_deployment_profile(),
+        model_cache=runtime_config.get_model_cache_config(),
+        deployment_profile_name=runtime_config.get_deployment_profile_name(),
+    )
+
+    decode = manifest["spec"]["template"]["containers"][0]["resources"]
+    prefill = manifest["spec"]["prefill"]["template"]["containers"][0]["resources"]
+    assert decode == {
+        "requests": {"composite.dra.io/gpu-nic-pair": "4"},
+        "limits": {"composite.dra.io/gpu-nic-pair": "4"},
+    }
+    assert prefill == {
+        "requests": {"composite.dra.io/gpu-nic-pair": "1"},
+        "limits": {"composite.dra.io/gpu-nic-pair": "1"},
+    }
+
+
 def test_render_uses_embedded_scheduler_config() -> None:
     _init_project_config()
     core_config.project.set_config("model_cache.enabled", False)
