@@ -291,7 +291,10 @@ def handle_pd_resources(
     elif networking_type == "roce":
         # Add RoCE resources
         roce_resources = roce_config.get("resources", {})
-        resource_dict = _normalize_resources(roce_resources, "RoCE")
+        if roce_config.get("gpus_from_resource", False):
+            resource_dict = _move_gpus_to_resource(base_resources, roce_resources)
+        else:
+            resource_dict = _normalize_resources(roce_resources, "RoCE")
         _apply_resources(base_resources, resource_dict)
         logger.info(f"Applied RoCE resources: {resource_dict}")
 
@@ -315,6 +318,24 @@ def handle_pd_resources(
 
         _apply_resources(base_resources, resource_dict)
         logger.info(f"Applied EFA resources: {resource_dict} (TP={tensor_parallelism}, ratio=1:4)")
+
+
+def _move_gpus_to_resource(base_resources: dict[str, Any], resource_name: Any) -> dict[str, str]:
+    """Request the GPUs through a network resource that brings its own GPU.
+
+    A composite GPU-NIC pair allocates its GPU through the NVIDIA DRA driver,
+    which does not see the GPUs handed out by the device plugin. Requesting
+    nvidia.com/gpu as well lets two pods get the same GPU, so request one pair
+    per GPU and no nvidia.com/gpu.
+    """
+    if not isinstance(resource_name, str):
+        raise ValueError(
+            f"gpus_from_resource needs a single resource name, got {type(resource_name).__name__}"
+        )
+
+    gpu_count = base_resources["limits"].pop("nvidia.com/gpu")
+    base_resources["requests"].pop("nvidia.com/gpu")
+    return {resource_name: gpu_count}
 
 
 def _normalize_resources(resources: Any, technology: str) -> dict[str, str]:
