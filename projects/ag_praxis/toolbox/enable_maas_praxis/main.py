@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc, oc_get_json
@@ -17,6 +18,26 @@ DEPLOYMENTS_TO_CHECK = ["payload-processing", "payload-pre-processing"]
 # controller with a silent fallback to the default 8 -- not clamped -- so the range
 # is enforced here, before annotating.
 MAX_EXTPROC_MAX_REQUESTS = 1024
+
+# Envoy duration format accepted for the wasm shim auth-service timeout
+# (e.g. "500ms", "2s", "1m"). RHCL configures the kuadrant wasm shim with a
+# 200ms default (RHOAIENG-71638); Red Hat's documented workaround value is 2s.
+AUTH_TIMEOUT_PATTERN = re.compile(r"^\d+(ms|s|m)$")
+
+# Kuadrant operator env var backing the wasm shim's auth-service timeout: the
+# operator bakes it into every wasm-shim EnvoyFilter it generates. No CR
+# exposes the timeout, so this is the only lever -- and the operator Deployment
+# is itself OLM-reconciled, so the env var must be set on the governing
+# Subscription's spec.config.env (OLM propagates it to the Deployment). Every
+# level stays reconcile-safe, unlike patching the generated EnvoyFilter, which
+# any kuadrant reconcile reverts.
+AUTH_SERVICE_TIMEOUT = "AUTH_SERVICE_TIMEOUT"
+
+# Benign, forge-owned annotation bumped to trigger the kuadrant reconcile that
+# regenerates the wasm-shim EnvoyFilter after an AUTH_SERVICE_TIMEOUT change:
+# the operator only rewrites the EnvoyFilter on reconcile, not on its own
+# restart. The Gateway owns the EnvoyFilter, so touching it is the trigger.
+RECONCILE_TRIGGER_ANNOTATION = "praxis.forge/auth-timeout-reconcile"
 
 # PodMonitors making otherwise-unscraped metrics visible to the system
 # Prometheus (openshift-ingress is a platform namespace: the system Prometheus
@@ -47,6 +68,170 @@ def _find_gateway_authpolicy(gateway_name, ingress_namespace):
     return None
 
 
+def _deployment_env_entry(deployment: dict, name: str):
+    """The env entry with this name on any container of the deployment, else None."""
+    containers = (
+        deployment.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+    )
+    for container in containers:
+        for entry in container.get("env") or []:
+            if entry.get("name") == name:
+                return entry
+    return None
+
+
+def _find_kuadrant_operator(namespace):
+    """The kuadrant operator Deployment manifest (a dict).
+
+    The strongest signal is a container already defining AUTH_SERVICE_TIMEOUT;
+    otherwise the operator is matched by deployment name. Anything ambiguous or
+    missing raises: silently benchmarking with the wrong timeout is worse.
+    """
+    result = oc(
+        "get",
+        "deployment",
+        "-n",
+        namespace,
+        "-o",
+        "json",
+        log_stdout=False,  # parsed for env vars only: don't log the JSON blob
+    )
+    items = json.loads(result.stdout).get("items", [])
+
+    defining = [
+        item for item in items if _deployment_env_entry(item, AUTH_SERVICE_TIMEOUT) is not None
+    ]
+    if len(defining) == 1:
+        return defining[0]
+    if len(defining) > 1:
+        raise RuntimeError(
+            f"Several deployments define {AUTH_SERVICE_TIMEOUT} in {namespace}: "
+            f"{[item['metadata']['name'] for item in defining]} -- cannot pick the kuadrant operator"
+        )
+
+    named = [item for item in items if "kuadrant-operator" in item["metadata"]["name"]]
+    if len(named) == 1:
+        return named[0]
+    if len(named) > 1:
+        raise RuntimeError(
+            f"Several kuadrant-operator deployments in {namespace}: "
+            f"{[item['metadata']['name'] for item in named]} -- cannot pick one"
+        )
+    raise RuntimeError(
+        f"No kuadrant operator deployment found in {namespace} (deployments: "
+        f"{[item['metadata']['name'] for item in items]}) -- cannot set "
+        f"{AUTH_SERVICE_TIMEOUT}"
+    )
+
+
+def _find_operator_subscription(deployment: dict) -> dict:
+    """The OLM Subscription governing the operator deployment, as a dict.
+
+    The Deployment is OLM-reconciled: patching its env directly would be
+    reverted on the next Subscription/CSV reconcile. The Subscription is the
+    object to configure -- OLM propagates spec.config.env into the Deployment.
+
+    It is matched through the ClusterServiceVersion owning the deployment
+    (status.installedCSV), falling back to OLM's operators.coreos.com label.
+    Anything ambiguous or missing raises.
+    """
+    csv_name = None
+    for owner in deployment.get("metadata", {}).get("ownerReferences", []):
+        if owner.get("kind") == "ClusterServiceVersion":
+            csv_name = owner.get("name")
+            break
+
+    result = oc(
+        "get",
+        "subscription",
+        "-A",
+        "-o",
+        "json",
+        log_stdout=False,  # parsed for installedCSV/labels only: don't log the JSON blob
+    )
+    items = json.loads(result.stdout).get("items", [])
+
+    if csv_name:
+        matches = [sub for sub in items if sub.get("status", {}).get("installedCSV") == csv_name]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"Several Subscriptions report installedCSV {csv_name}: "
+                f"{[s['metadata']['name'] for s in matches]} -- cannot pick one"
+            )
+
+    # Fallback: OLM labels the operand with operators.coreos.com/<subscription>.<namespace>
+    for label in deployment.get("metadata", {}).get("labels", {}):
+        if not label.startswith("operators.coreos.com/"):
+            continue
+        sub_name, _, sub_namespace = label.removeprefix("operators.coreos.com/").rpartition(".")
+        matches = [
+            sub
+            for sub in items
+            if sub["metadata"]["name"] == sub_name and sub["metadata"]["namespace"] == sub_namespace
+        ]
+        if len(matches) == 1:
+            return matches[0]
+
+    raise RuntimeError(
+        f"No OLM Subscription found governing the kuadrant operator deployment "
+        f"{deployment['metadata']['name']} (CSV owner: {csv_name or 'none'}) -- the "
+        "Deployment cannot be patched directly, it is OLM-reconciled"
+    )
+
+
+def _patch_subscription_auth_timeout(subscription: dict, desired) -> None:
+    """Add, replace or remove AUTH_SERVICE_TIMEOUT in the Subscription's spec.config.env."""
+    spec = subscription.get("spec", {})
+    env = (spec.get("config") or {}).get("env")
+    index = next(
+        (i for i, entry in enumerate(env or []) if entry.get("name") == AUTH_SERVICE_TIMEOUT), None
+    )
+
+    if desired is None:
+        ops = [{"op": "remove", "path": f"/spec/config/env/{index}"}]
+    elif env is None:
+        if spec.get("config") is None:
+            ops = [
+                {
+                    "op": "add",
+                    "path": "/spec/config",
+                    "value": {"env": [{"name": AUTH_SERVICE_TIMEOUT, "value": desired}]},
+                }
+            ]
+        else:
+            ops = [
+                {
+                    "op": "add",
+                    "path": "/spec/config/env",
+                    "value": [{"name": AUTH_SERVICE_TIMEOUT, "value": desired}],
+                }
+            ]
+    elif index is None:
+        ops = [
+            {
+                "op": "add",
+                "path": "/spec/config/env/-",
+                "value": {"name": AUTH_SERVICE_TIMEOUT, "value": desired},
+            }
+        ]
+    else:
+        ops = [{"op": "replace", "path": f"/spec/config/env/{index}/value", "value": desired}]
+
+    oc(
+        "patch",
+        "subscription",
+        subscription["metadata"]["name"],
+        "-n",
+        subscription["metadata"]["namespace"],
+        "--type",
+        "json",
+        "-p",
+        json.dumps(ops),
+    )
+
+
 @entrypoint
 def run(
     *,
@@ -59,6 +244,7 @@ def run(
     payload_processing_config: dict | None = None,
     extproc_max_requests: int | None = None,
     identity_metrics: bool | None = None,
+    auth_timeout: str | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
 
@@ -100,6 +286,22 @@ def run(
             anyway). True restores it for metering-focused runs. None keeps the
             controller default. Verified against the AuthPolicy and the generated
             AuthConfigs (see verify_identity_metrics).
+        auth_timeout: Timeout of the kuadrant wasm shim's auth-service hop to
+            authorino, in Envoy duration format (e.g. "200ms", "2s", "1m"). RHCL
+            configures the shim with a 200ms default and failureMode deny
+            (RHOAIENG-71638): under high concurrency, an auth call that overruns
+            it is turned into an empty-details HTTP 500/503 (~14% of the 500s on
+            the 2026-11-24 praxis/large run); Red Hat's documented workaround is
+            AUTH_SERVICE_TIMEOUT=2s. The timeout is not exposed by any CR: it is
+            set through AUTH_SERVICE_TIMEOUT on the kuadrant operator's OLM
+            Subscription (spec.config.env -- the Deployment is OLM-reconciled,
+            the Subscription is the source of truth; the operator bakes the
+            value into every wasm-shim EnvoyFilter it generates, so it survives
+            reconciles) and verified against the gateway's live listener config
+            (see verify_auth_timeout). None removes forge's override, restoring
+            the platform baseline (the RHCL 200ms) -- also on deactivation,
+            since the env var is a cluster-wide change that must not outlive
+            the praxis campaign.
     """
     if (
         extproc_max_requests is not None
@@ -110,6 +312,13 @@ def run(
             f"Valid range: 1-{MAX_EXTPROC_MAX_REQUESTS}. "
             "Out-of-range values are silently rejected by the controller "
             "(fallback to the default 8), so they are refused here instead."
+        )
+
+    if auth_timeout is not None and not AUTH_TIMEOUT_PATTERN.match(auth_timeout):
+        raise ValueError(
+            f"Invalid auth_timeout: {auth_timeout!r}. "
+            f'Expected an Envoy duration (e.g. "500ms", "2s", "1m") matching '
+            f"{AUTH_TIMEOUT_PATTERN.pattern}."
         )
 
     return execute_tasks(locals())
@@ -379,6 +588,112 @@ def set_identity_metrics(args, ctx):
     )
 
 
+@retry(attempts=10, delay=20, backoff=1.0)
+@task
+def set_auth_timeout(args, ctx):
+    """Set AUTH_SERVICE_TIMEOUT on the kuadrant operator's OLM Subscription.
+
+    The kuadrant operator bakes the auth-service timeout (RHCL default 200ms,
+    failureMode deny: an overrun becomes an empty-details HTTP 500/503,
+    RHOAIENG-71638) into every wasm-shim EnvoyFilter it generates -- no CR
+    exposes it. The env var is the only lever (Red Hat's documented workaround
+    for the known issue sets it to 2s), and the operator Deployment is itself
+    OLM-reconciled, so the value is set on the governing Subscription's
+    spec.config.env: OLM propagates it to the Deployment and rolls the
+    operator. Every level stays reconcile-safe (Subscription -> Deployment ->
+    EnvoyFilter), unlike a manual EnvoyFilter patch, which any kuadrant
+    reconcile reverts.
+
+    After OLM propagation, the Gateway (the EnvoyFilter's owner) is annotated
+    to trigger the kuadrant reconcile that regenerates the EnvoyFilter -- the
+    operator only rewrites it on reconcile, not on its own restart.
+    Deactivation and auth_timeout=None remove forge's override from the
+    Subscription: the platform baseline applies again (the operator's built-in
+    default, or the CSV-configured value when the product sets one). The
+    effective value is verified against the gateway's live listener config
+    (verify_auth_timeout).
+
+    Retry-safe: a re-run finds the Subscription already configured, waits for
+    the remaining OLM propagation, and only re-fires the reconcile trigger.
+    """
+    desired = args.auth_timeout if args.activate else None
+
+    deployment = _find_kuadrant_operator(args.kuadrant_namespace)
+    deploy_name = deployment["metadata"]["name"]
+
+    subscription = _find_operator_subscription(deployment)
+    sub_ref = f"{subscription['metadata']['namespace']}/{subscription['metadata']['name']}"
+
+    env = (subscription.get("spec", {}).get("config") or {}).get("env") or []
+    sub_current = next(
+        (entry.get("value") for entry in env if entry.get("name") == AUTH_SERVICE_TIMEOUT), None
+    )
+
+    if sub_current == desired and desired is None:
+        return f"{AUTH_SERVICE_TIMEOUT} already unset on {sub_ref} (platform baseline in effect)"
+
+    patched = sub_current != desired
+    if patched:
+        _patch_subscription_auth_timeout(subscription, desired)
+
+    # Wait for OLM to propagate to the Deployment before firing the reconcile:
+    # the old operator pod would regenerate the EnvoyFilter with the old value.
+    # A removal waits for the Deployment to leave the overridden value -- it
+    # either disappears or reverts to the platform (CSV) baseline.
+    deployment = oc_get_json("deployment", name=deploy_name, namespace=args.kuadrant_namespace)
+    entry = _deployment_env_entry(deployment, AUTH_SERVICE_TIMEOUT)
+    effective = entry.get("value") if entry else None
+
+    if desired is not None:
+        propagated = effective == desired
+        detail = f"expected {desired!r}, the Deployment still shows {effective!r}"
+    else:
+        propagated = effective != sub_current
+        detail = f"the Deployment still shows the removed value {effective!r}"
+
+    if not propagated:
+        return False, (
+            f"OLM has not propagated {AUTH_SERVICE_TIMEOUT} to {deploy_name} yet: {detail}"
+        )
+
+    result = oc(
+        "rollout",
+        "status",
+        f"deployment/{deploy_name}",
+        "-n",
+        args.kuadrant_namespace,
+        "--timeout=300s",
+        check=False,
+    )
+    if result.returncode != 0:
+        return False, (
+            f"kuadrant operator rollout of {deploy_name} not finished: {result.stderr.strip()}"
+        )
+
+    # Trigger the kuadrant reconcile that regenerates the wasm-shim EnvoyFilter
+    # (also fired without a patch, to recover a stale EnvoyFilter from an
+    # earlier aborted run).
+    from datetime import UTC, datetime
+
+    oc(
+        "annotate",
+        "gateway",
+        args.gateway_name,
+        "-n",
+        args.ingress_namespace,
+        f"{RECONCILE_TRIGGER_ANNOTATION}={datetime.now(UTC).isoformat()}",
+        "--overwrite",
+    )
+
+    change = (
+        f"{sub_current or 'unset'} -> {desired or 'unset'}" if patched else f"already {desired}"
+    )
+    return (
+        f"{AUTH_SERVICE_TIMEOUT} {change} on Subscription {sub_ref}, operator rolled out, "
+        "gateway reconcile triggered"
+    )
+
+
 @retry(attempts=60, delay=10, backoff=1.0)
 @task
 def wait_for_deployment_images(args, ctx):
@@ -636,6 +951,59 @@ def verify_identity_metrics(args, ctx):
     return (
         f"identity metrics={args.identity_metrics} on {policy_name} and {total}/{total} AuthConfigs"
     )
+
+
+@retry(attempts=30, delay=10, backoff=1.0)
+@task
+def verify_auth_timeout(args, ctx):
+    """Verify the effective auth-service timeout on the live gateway.
+
+    Ground truth is the gateway pod's listener config_dump, not the
+    Subscription or the operator Deployment: after an AUTH_SERVICE_TIMEOUT
+    change OLM must propagate and roll the operator, the wasm-shim EnvoyFilter
+    must be regenerated (triggered by the Gateway annotation in
+    set_auth_timeout) and istiod must push the new listeners -- all before the
+    timeout takes effect. Fails the run if it never does, instead of silently
+    benchmarking with the default.
+
+    Envoy stats must NOT be used for this check: Istio's stats_matcher means
+    most stats are never instantiated, so "no output" is indistinguishable
+    from "not configured". The config_dump is unaffected.
+    """
+    if not args.activate or args.auth_timeout is None:
+        return "Skipped: no auth timeout to verify"
+
+    from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
+        WASM_SHIM_AUTH_SERVICE,
+        extract_wasm_shim_services,
+        fetch_gateway_config_dump,
+    )
+
+    try:
+        config_dump = fetch_gateway_config_dump(
+            args.ingress_namespace, args.gateway_name, resource="dynamic_listeners"
+        )
+    except RuntimeError as exc:
+        return False, str(exc)
+
+    services = extract_wasm_shim_services(config_dump)
+    if not services:
+        return False, "No kuadrant wasm shim configuration in the gateway listeners yet"
+
+    service = services.get(WASM_SHIM_AUTH_SERVICE)
+    if not isinstance(service, dict) or "timeout" not in service:
+        return False, f"The shim has no {WASM_SHIM_AUTH_SERVICE} timeout: {service!r}"
+
+    effective = service["timeout"]
+    if effective != args.auth_timeout:
+        return (
+            False,
+            f"auth-service timeout is {effective!r}, expected {args.auth_timeout!r} "
+            "(EnvoyFilter not regenerated yet -- operator rollout, kuadrant reconcile "
+            "or istiod push pending)",
+        )
+
+    return f"auth-service timeout {effective} in effect on the gateway"
 
 
 def _query_thanos(promql: str) -> list[dict]:

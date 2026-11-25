@@ -111,16 +111,20 @@ praxis:
   # deployment_level dimension ([true, false]) for A/B measurements.
   identity_metrics: false
   # Timeout of the kuadrant wasm shim's auth-service hop to authorino, in Envoy
-  # duration format (e.g. "500ms", "2s", "1m"). The kuadrant operator default
-  # is 2s with failureMode deny: an auth call that overruns it is turned into
-  # an empty-details HTTP 500 (~14% of the 500s on the 2026-11-24 praxis/large
-  # run -- the rest was the ext_proc circuit breaker). The timeout is not
-  # exposed by any CR: enable_maas_praxis patches it into the kuadrant-generated
-  # EnvoyFilter and verifies it against the gateway's live listener config
-  # (a kuadrant reconcile reverts the patch, so it is re-checked per endpoint).
-  # null keeps the current value. Can also be used as a matrix deployment_level
-  # dimension (e.g. ["1s", "2s", "5s"]).
-  auth_timeout: null
+  # duration format (e.g. "200ms", "2s", "1m"). RHCL configures the shim with a
+  # 200ms default and failureMode deny (RHOAIENG-71638): under high concurrency
+  # an auth call that overruns it is turned into an empty-details HTTP 500/503
+  # (~14% of the 500s on the 2026-11-24 praxis/large run -- the rest was the
+  # ext_proc circuit breaker); Red Hat's documented workaround is
+  # AUTH_SERVICE_TIMEOUT=2s. The timeout is not exposed by any CR:
+  # enable_maas_praxis sets it through AUTH_SERVICE_TIMEOUT on the kuadrant
+  # operator's OLM Subscription (spec.config.env -- the source of truth; the
+  # operator Deployment is OLM-reconciled and regenerates the wasm-shim
+  # EnvoyFilter from the env var) and verifies it against the gateway's live
+  # listener config. null removes forge's override, restoring the platform
+  # baseline (the RHCL 200ms). Can also be used as a matrix deployment_level
+  # dimension (e.g. ["200ms", "2s", "5s"]).
+  auth_timeout: 5s
   payload_processing:
     replicas: 1
     cpu_request: 100m

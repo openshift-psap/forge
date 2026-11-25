@@ -32,12 +32,13 @@ extproc_max_requests:
     legend_keys: [max_requests]
     group_keys: []
 
-# Isolate the auth-timeout component of the 500s (the empty-details, ~2s-duration
-# rejections from the kuadrant wasm shim's failureMode:deny on auth-service
-# timeout): run with the ext_proc budget at the controller ceiling so the
-# circuit breaker is NOT the variable, and sweep the auth timeout around the
-# kuadrant default (2s). Success-rate deltas per step are the auth path's
-# contribution; the ext_proc overflow share should stay flat across steps.
+# Isolate the auth-timeout component of the 500s (the empty-details rejections
+# from the kuadrant wasm shim's failureMode:deny when authorino latency overruns
+# the RHCL 200ms default -- RHOAIENG-71638): run with the ext_proc budget at the
+# controller ceiling so the circuit breaker is NOT the variable, and sweep the
+# auth timeout from the RHCL default up past Red Hat's documented 2s workaround.
+# Success-rate deltas per step are the auth path's contribution; the ext_proc
+# overflow share should stay flat across steps.
 auth_timeout:
   test.endpoints: [maas/praxis]
   test.sweep: large
@@ -47,7 +48,7 @@ auth_timeout:
   prom.capture.enabled: false
   test.matrix_benchmarking.deployment_level.enabled: true
   test.matrix_benchmarking.deployment_level.dimensions:
-    platform.praxis.auth_timeout: ["1s", "2s", "5s"]
+    platform.praxis.auth_timeout: ["200ms", "2s", "5s"]
 
   test.matrix_benchmarking.deployment_level.labels:
     platform.praxis.auth_timeout: auth_timeout

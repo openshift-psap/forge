@@ -31,6 +31,15 @@ EXTPROC_CIRCUIT_BREAKER_FIELDS = (
 # verification was written -- kept as-is to avoid flagging pre-existing configs).
 EXTPROC_VERIFIED_FIELDS = ("max_requests", "max_pending_requests", "max_connections")
 
+# The kuadrant wasm shim running on the gateway. Its configuration is a compact
+# JSON string embedded in the EnvoyFilter CR the kuadrant operator generates
+# and in the gateway's live listener config; the "services" key holds the
+# auth/ratelimit hop settings (endpoint, failureMode, timeout). Shared with
+# enable_maas_praxis, which sets the auth-service timeout through the kuadrant
+# operator's AUTH_SERVICE_TIMEOUT env var and verifies it.
+WASM_SHIM_AUTH_SERVICE = "auth-service"
+WASM_SHIM_CONFIG_PREFIX = '{"actionSets":'
+
 
 @dataclass(frozen=True)
 class DeploymentTarget:
@@ -93,9 +102,10 @@ def run(
     Covers the payload-processing deployments, the MaaS gateway, and the kuadrant
     auth/ratelimiting backends (authorino, limitador), plus the MaasTenantConfig,
     the AuthPolicies/AuthConfigs, and the effective ExtProc circuit-breaker limits
-    from the gateway's live Envoy config. The final task condenses the observed
-    praxis configuration into artifacts/praxis_state_summary.json (ext_proc
-    budget, identity-metrics flag, authorino settings) -- the input of the
+    and kuadrant wasm shim service settings from the gateway's live Envoy config.
+    The final task condenses the observed praxis configuration into
+    artifacts/praxis_state_summary.json (ext_proc budget, identity-metrics flag,
+    wasm shim services, authorino settings) -- the input of the
     500-cliff postprocess report.
 
     Each component's files are saved in a dedicated directory under the artifacts
@@ -483,6 +493,35 @@ def capture_extproc_limits(args, ctx):
 
 
 @task
+def capture_wasm_services(args, ctx):
+    """Capture the kuadrant wasm shim's service settings from the live gateway.
+
+    Ground truth for the auth-service timeout (platform.praxis.auth_timeout /
+    enable_maas_praxis) is the gateway pod's listener config_dump, not the
+    operator deployment or the EnvoyFilter CR. Only the extracted "services"
+    mapping is persisted -- never the full config_dump.
+    """
+    artifacts = args.artifact_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    try:
+        config_dump = fetch_gateway_config_dump(
+            args.ingress_namespace, args.gateway_name, resource="dynamic_listeners"
+        )
+    except RuntimeError as exc:
+        logger.warning("Failed to fetch the gateway listener config_dump: %s", exc)
+        return f"Failed to capture wasm services: {exc}"
+
+    services = extract_wasm_shim_services(config_dump)
+    if services is None:
+        return "No kuadrant wasm shim configuration in the gateway listeners"
+
+    dest = artifacts / "wasm_services.json"
+    dest.write_text(json.dumps(services, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return f"Captured wasm shim services ({', '.join(sorted(services))}) to {dest}"
+
+
+@task
 def capture_authconfigs(args, ctx):
     """Capture the generated AuthConfigs (what authorino actually evaluates)."""
     artifacts = args.artifact_dir / "artifacts"
@@ -513,6 +552,7 @@ def write_state_summary(args, ctx):
     summary = {
         "extproc_max_requests": summarize_extproc_budget(artifacts),
         "identity_metrics": summarize_identity_metrics(artifacts),
+        "wasm_services": summarize_wasm_services(artifacts),
         "authorino": summarize_authorino(artifacts),
     }
     dest = artifacts / "praxis_state_summary.json"
@@ -520,8 +560,14 @@ def write_state_summary(args, ctx):
     return f"Wrote praxis state summary to {dest}"
 
 
-def fetch_gateway_config_dump(ingress_namespace: str, gateway_name: str) -> dict:
-    """Fetch the gateway pod's dynamic active clusters from the Envoy admin API.
+def fetch_gateway_config_dump(
+    ingress_namespace: str, gateway_name: str, resource: str = "dynamic_active_clusters"
+) -> dict:
+    """Fetch a gateway pod's Envoy config section from the admin API.
+
+    The default resource is the dynamic active clusters (the ext_proc
+    circuit-breaker limits); "dynamic_listeners" carries the HTTP filter
+    chains, where the kuadrant wasm shim configuration lives.
 
     Raises RuntimeError on failure so callers decide the policy: verification
     tasks retry, capture tasks record the gap.
@@ -536,7 +582,7 @@ def fetch_gateway_config_dump(ingress_namespace: str, gateway_name: str) -> dict
         "pilot-agent",
         "request",
         "GET",
-        "config_dump?resource=dynamic_active_clusters",
+        f"config_dump?resource={resource}",
         check=False,
         log_stdout=False,
     )
@@ -550,6 +596,45 @@ def fetch_gateway_config_dump(ingress_namespace: str, gateway_name: str) -> dict
         raise RuntimeError(
             f"config_dump from deploy/{deployment} is not valid JSON: {exc}"
         ) from exc
+
+
+def extract_wasm_shim_services(document: dict) -> dict | None:
+    """The kuadrant wasm shim's "services" config from an EnvoyFilter spec or config_dump.
+
+    The shim configuration is a compact JSON string ({"actionSets":...}) embedded
+    in both the EnvoyFilter CR and the gateway's live listener config. This walks
+    every string, parses the shim config and returns its "services" mapping
+    (service name -> {endpoint, failureMode, timeout, type}); None when absent.
+
+    Walking by content instead of a fixed path keeps this working across
+    EnvoyFilter layout changes (configPatches indices, typed_config nesting).
+    """
+    found = None
+
+    def walk(node):
+        nonlocal found
+        if found is not None:
+            return
+        if isinstance(node, str):
+            if not node.startswith(WASM_SHIM_CONFIG_PREFIX):
+                return
+            try:
+                config = json.loads(node)
+            except json.JSONDecodeError:
+                return
+            services = config.get("services")
+            if isinstance(services, dict):
+                found = services
+            return
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(document or {})
+    return found
 
 
 def extract_extproc_cluster_limits(config_dump: dict) -> dict[str, dict]:
@@ -693,6 +778,18 @@ def summarize_authorino(artifacts: Path) -> dict | None:
         "replicas": spec.get("replicas"),
         "evaluator_cache_size": spec.get("evaluatorCacheSize"),
     }
+
+
+def summarize_wasm_services(artifacts: Path) -> dict | None:
+    """Observed kuadrant wasm shim service settings (auth/ratelimit timeouts)."""
+    path = artifacts / "wasm_services.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to parse %s: %s", path, exc)
+        return None
 
 
 if __name__ == "__main__":
