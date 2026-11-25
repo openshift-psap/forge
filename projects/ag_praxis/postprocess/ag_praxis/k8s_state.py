@@ -24,6 +24,7 @@ from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
     summarize_authorino,
     summarize_extproc_budget,
     summarize_identity_metrics,
+    summarize_wasm_services,
 )
 from projects.caliper.engine.model import BaseTestNode
 
@@ -40,8 +41,9 @@ class PraxisK8sState:
     extproc_max_requests: dict
     identity_metrics: dict
     authorino: dict | None
-    from_summary: bool
-    capture_dir: Path
+    wasm_services: dict | None = None
+    from_summary: bool = False
+    capture_dir: Path | None = None
 
     def effective_budget(self) -> int | None:
         """The budget the gateway actually enforced (payload ext_proc clusters)."""
@@ -80,6 +82,7 @@ def load_praxis_k8s_state(test_node: BaseTestNode) -> PraxisK8sState | None:
                 extproc_max_requests=data.get("extproc_max_requests") or {},
                 identity_metrics=data.get("identity_metrics") or {},
                 authorino=data.get("authorino"),
+                wasm_services=data.get("wasm_services"),
                 from_summary=True,
                 capture_dir=summary_path.parent,
             )
@@ -94,6 +97,7 @@ def load_praxis_k8s_state(test_node: BaseTestNode) -> PraxisK8sState | None:
         extproc_max_requests=summarize_extproc_budget(artifacts),
         identity_metrics=summarize_identity_metrics(artifacts),
         authorino=summarize_authorino(artifacts),
+        wasm_services=summarize_wasm_services(artifacts),
         from_summary=False,
         capture_dir=artifacts,
     )
