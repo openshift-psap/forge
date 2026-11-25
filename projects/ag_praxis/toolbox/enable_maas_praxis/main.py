@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 
 from projects.core.dsl import always, entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc, oc_get_json
@@ -18,10 +17,6 @@ DEPLOYMENTS_TO_CHECK = ["payload-processing", "payload-pre-processing"]
 # controller with a silent fallback to the default 8 -- not clamped -- so the range
 # is enforced here, before annotating.
 MAX_EXTPROC_MAX_REQUESTS = 1024
-
-# Envoy duration format accepted for the wasm shim auth-service timeout
-# (e.g. "500ms", "2s", "1m"). The kuadrant operator default is 2s.
-AUTH_TIMEOUT_PATTERN = re.compile(r"^\d+(ms|s|m)$")
 
 # PodMonitors making otherwise-unscraped metrics visible to the system
 # Prometheus (openshift-ingress is a platform namespace: the system Prometheus
@@ -64,7 +59,6 @@ def run(
     payload_processing_config: dict | None = None,
     extproc_max_requests: int | None = None,
     identity_metrics: bool | None = None,
-    auth_timeout: str | None = None,
 ):
     """Activate or deactivate praxis payload processing on a MaasTenantConfig.
 
@@ -106,15 +100,6 @@ def run(
             anyway). True restores it for metering-focused runs. None keeps the
             controller default. Verified against the AuthPolicy and the generated
             AuthConfigs (see verify_identity_metrics).
-        auth_timeout: Timeout of the kuadrant wasm shim's auth-service hop to
-            authorino, in Envoy duration format (e.g. "500ms", "2s", "1m"). The
-            kuadrant operator default is 2s with failureMode deny: an auth call
-            that overruns it is turned into an empty-details HTTP 500 (~14% of
-            the 500s on the 2026-11-24 praxis/large run). None keeps the current
-            value. The timeout lives in the shim configuration embedded in the
-            kuadrant-generated EnvoyFilter (no CR exposes it), so it is patched
-            there and verified against the gateway's live listener config (see
-            verify_auth_timeout).
     """
     if (
         extproc_max_requests is not None
@@ -125,13 +110,6 @@ def run(
             f"Valid range: 1-{MAX_EXTPROC_MAX_REQUESTS}. "
             "Out-of-range values are silently rejected by the controller "
             "(fallback to the default 8), so they are refused here instead."
-        )
-
-    if auth_timeout is not None and not AUTH_TIMEOUT_PATTERN.match(auth_timeout):
-        raise ValueError(
-            f"Invalid auth_timeout: {auth_timeout!r}. "
-            f'Expected an Envoy duration (e.g. "500ms", "2s", "1m") matching '
-            f"{AUTH_TIMEOUT_PATTERN.pattern}."
         )
 
     return execute_tasks(locals())
@@ -401,101 +379,6 @@ def set_identity_metrics(args, ctx):
     )
 
 
-@task
-def set_auth_timeout(args, ctx):
-    """Patch the wasm shim's auth-service timeout in the kuadrant EnvoyFilter.
-
-    The kuadrant operator generates the EnvoyFilter (kuadrant-<gateway>) from
-    the AuthPolicies/TokenRateLimitPolicies and hardcodes the shim service
-    timeouts (auth-service 2s, ratelimit 100ms) -- no CR exposes them. The only
-    lever is patching the embedded shim configuration string, which istiod then
-    pushes to the gateway (the wasm filter runs with failure_policy FAIL_RELOAD,
-    so the new timeout takes effect without a pod restart).
-
-    Caveat: any policy reconcile that rewrites the EnvoyFilter reverts this
-    patch to the operator default -- verify_auth_timeout is the safety net, and
-    the effective value is captured with the run (capture_wasm_services).
-    """
-    if not args.activate:
-        return "Skipped: praxis is being deactivated (shim config left as-is)"
-    if args.auth_timeout is None:
-        return "Skipped: no auth_timeout configured, keeping the current value"
-
-    from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
-        WASM_SHIM_AUTH_SERVICE,
-        WASM_SHIM_CONFIG_PREFIX,
-    )
-
-    filter_name = _find_gateway_wasm_envoyfilter(args.gateway_name, args.ingress_namespace)
-    if filter_name is None:
-        raise RuntimeError(
-            f"No wasm-shim EnvoyFilter owned by Gateway/{args.gateway_name} found in "
-            f"{args.ingress_namespace} -- cannot set the auth timeout"
-        )
-
-    envoyfilter = oc_get_json("envoyfilter", name=filter_name, namespace=args.ingress_namespace)
-    spec = envoyfilter.get("spec", {})
-
-    # Locate the shim configuration string by content (configPatches indices
-    # are not stable), and rebuild it with the new auth-service timeout. The
-    # collected path is absolute from the EnvoyFilter document root (JSON patch).
-    entries = []
-
-    def walk(node, path):
-        if entries:
-            return
-        if isinstance(node, str):
-            if node.startswith(WASM_SHIM_CONFIG_PREFIX):
-                entries.append(("/" + "/".join(path), node))
-            return
-        if isinstance(node, dict):
-            for key, value in node.items():
-                walk(value, path + [key])
-        elif isinstance(node, list):
-            for index, value in enumerate(node):
-                walk(value, path + [index])
-
-    walk(spec, ["spec"])
-    if not entries:
-        raise RuntimeError(
-            f"EnvoyFilter {filter_name} carries no kuadrant wasm shim configuration -- "
-            "kuadrant layout changed?"
-        )
-
-    config_path, raw_config = entries[0]
-    try:
-        config = json.loads(raw_config)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Cannot parse the shim configuration of {filter_name}: {exc}") from exc
-
-    service = config.setdefault("services", {}).get(WASM_SHIM_AUTH_SERVICE)
-    if not isinstance(service, dict):
-        raise RuntimeError(
-            f"The shim configuration of {filter_name} has no {WASM_SHIM_AUTH_SERVICE} "
-            "service -- kuadrant layout changed?"
-        )
-
-    current = service.get("timeout")
-    if current == args.auth_timeout:
-        return f"auth-service timeout already {current} on {filter_name}"
-
-    service["timeout"] = args.auth_timeout
-    new_config = json.dumps(config, separators=(",", ":"))
-
-    oc(
-        "patch",
-        "envoyfilter",
-        filter_name,
-        "-n",
-        args.ingress_namespace,
-        "--type",
-        "json",
-        "-p",
-        json.dumps([{"op": "replace", "path": config_path, "value": new_config}]),
-    )
-    return f"Set auth-service timeout {current} -> {args.auth_timeout} on {filter_name}"
-
-
 @retry(attempts=60, delay=10, backoff=1.0)
 @task
 def wait_for_deployment_images(args, ctx):
@@ -753,56 +636,6 @@ def verify_identity_metrics(args, ctx):
     return (
         f"identity metrics={args.identity_metrics} on {policy_name} and {total}/{total} AuthConfigs"
     )
-
-
-@retry(attempts=30, delay=10, backoff=1.0)
-@task
-def verify_auth_timeout(args, ctx):
-    """Verify the effective auth-service timeout on the live gateway.
-
-    Ground truth is the gateway pod's listener config_dump, not the patched
-    EnvoyFilter: istiod needs a moment to push the change, and any kuadrant
-    reconcile that rewrites the EnvoyFilter reverts the patch to the operator
-    default (2s). Fails the run if the timeout never takes effect, instead of
-    silently benchmarking with the default.
-
-    Envoy stats must NOT be used for this check: Istio's stats_matcher means
-    most stats are never instantiated, so "no output" is indistinguishable
-    from "not configured". The config_dump is unaffected.
-    """
-    if not args.activate or args.auth_timeout is None:
-        return "Skipped: no auth timeout to verify"
-
-    from projects.ag_praxis.toolbox.capture_maas_praxis.main import (
-        WASM_SHIM_AUTH_SERVICE,
-        extract_wasm_shim_services,
-        fetch_gateway_config_dump,
-    )
-
-    try:
-        config_dump = fetch_gateway_config_dump(
-            args.ingress_namespace, args.gateway_name, resource="dynamic_listeners"
-        )
-    except RuntimeError as exc:
-        return False, str(exc)
-
-    services = extract_wasm_shim_services(config_dump)
-    if not services:
-        return False, "No kuadrant wasm shim configuration in the gateway listeners yet"
-
-    service = services.get(WASM_SHIM_AUTH_SERVICE)
-    if not isinstance(service, dict) or "timeout" not in service:
-        return False, f"The shim has no {WASM_SHIM_AUTH_SERVICE} timeout: {service!r}"
-
-    effective = service["timeout"]
-    if effective != args.auth_timeout:
-        return (
-            False,
-            f"auth-service timeout is {effective!r}, expected {args.auth_timeout!r} "
-            "(istiod push pending, or a kuadrant reconcile reverted the patch)",
-        )
-
-    return f"auth-service timeout {effective} in effect on the gateway"
 
 
 def _query_thanos(promql: str) -> list[dict]:

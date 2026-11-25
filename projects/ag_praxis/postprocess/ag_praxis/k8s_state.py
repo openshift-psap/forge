@@ -56,11 +56,6 @@ class PraxisK8sState:
             return values.pop()
         return None
 
-    def auth_timeout(self) -> str | None:
-        """The auth-service timeout the gateway actually ran with."""
-        service = (self.wasm_services or {}).get("auth-service") or {}
-        return service.get("timeout")
-
 
 def load_praxis_k8s_state(test_node: BaseTestNode) -> PraxisK8sState | None:
     """Load the observed praxis state of a test node from its capture artifacts.
