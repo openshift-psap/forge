@@ -249,6 +249,15 @@ def test_pattern_matched_keys_keep_only_numbers_and_booleans():
         {"key": "vllm.queue.duration", "value": {"doubleValue": 0.25}},
         {"key": "llm_d.score", "value": {"intValue": "3"}},
         {"key": "forge.quality.complete", "value": {"boolValue": True}},
+        # The EPP picker reports its scores as an array of doubles.
+        {
+            "key": "llm_d.epp.picker.top_scores",
+            "value": {"arrayValue": {"values": [{"doubleValue": 3.99}]}},
+        },
+        {
+            "key": "llm_d.epp.picker.scores",
+            "value": {"arrayValue": {"values": [{"stringValue": "SENTINEL_ARRAY"}]}},
+        },
         # Exact allowlist keys keep their (redacted) text values.
         {"key": "gen_ai.request.model", "value": {"stringValue": "Qwen/Qwen3-0.6B"}},
     ]
@@ -279,6 +288,7 @@ def test_pattern_matched_keys_keep_only_numbers_and_booleans():
         "vllm.queue.duration",
         "llm_d.score",
         "forge.quality.complete",
+        "llm_d.epp.picker.top_scores",
         "gen_ai.request.model",
     ]
     assert "SENTINEL" not in json.dumps(span)

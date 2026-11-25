@@ -80,8 +80,9 @@ SPAN_ATTRIBUTE_ALLOWLIST = frozenset(
 )
 
 # Reviewed regular-expression allowlist for families of numeric/diagnostic keys.
-# Keys matched only by a pattern keep number or boolean values; any other value
-# is dropped, since a free-form string under such a key could carry anything.
+# Keys matched only by a pattern keep number or boolean values (or arrays of
+# them); any other value is dropped, since a free-form string under such a key
+# could carry anything.
 SPAN_ATTRIBUTE_PATTERNS = (
     re.compile(r"^vllm\.[a-z0-9_.]*?(num_|count|tokens|duration|latency|size|queue|batch)"),
     re.compile(r"^llm_d\.[a-z0-9_.]*?(score|weight|queue|latency|duration|count)"),
@@ -203,13 +204,28 @@ def redact_anyvalue(any_value: Any) -> Any:
     return any_value
 
 
-def _is_number_or_bool(any_value: Any) -> bool:
-    """Return whether an OTLP ``AnyValue`` holds a single number or boolean."""
+def _is_scalar_number_or_bool(any_value: Any) -> bool:
     return (
         isinstance(any_value, dict)
         and len(any_value) == 1
         and next(iter(any_value)) in ("intValue", "doubleValue", "boolValue")
     )
+
+
+def _is_number_or_bool(any_value: Any) -> bool:
+    """Return whether an OTLP ``AnyValue`` holds numbers or booleans only.
+
+    Arrays of numbers count too: the EPP reports its picker scores
+    (``llm_d.epp.picker.top_scores``) as an array of doubles.
+    """
+    if _is_scalar_number_or_bool(any_value):
+        return True
+    if not (isinstance(any_value, dict) and len(any_value) == 1):
+        return False
+    array = any_value.get("arrayValue")
+    if not isinstance(array, dict):
+        return False
+    return all(_is_scalar_number_or_bool(v) for v in array.get("values") or [])
 
 
 def _sanitize_attributes(
