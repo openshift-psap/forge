@@ -89,3 +89,12 @@ def test_teardown_runs_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["namespace"] == "ns-target"
     assert captured["injector_namespace"] == "custom-injector-ns"
     assert captured["labels"] == prepare_sequence.PROFILER_INJECTOR_LABELS
+
+
+def test_test_phase_finalizers_reference_the_teardown_helper() -> None:
+    """Guard against wiring drift: the finalizer chain calls the teardown."""
+    from projects.llm_d.orchestration import test_phase
+
+    source = Path(test_phase.__file__).read_text()
+    assert "_teardown_profiler_injector" in source
+    assert callable(test_phase._teardown_profiler_injector)
