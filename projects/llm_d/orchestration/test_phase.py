@@ -365,7 +365,28 @@ def run_finalizers(
         llmisvc_name=llmisvc_name or "llmisvc-name-not-available",
     )
 
+    finalizer_exc = _run_finalizer(
+        "tearing down the profiler injector",
+        _teardown_profiler_injector,
+        namespace=runtime_config.get_namespace(),
+    )
+
     return primary_exc, finalizer_exc
+
+
+def _teardown_profiler_injector(*, namespace: str) -> None:
+    """Remove the env-injector after the test when configured to do so.
+
+    Runs from the test-phase finalizers so pipelines without a post-cleanup
+    task (forge-test-only, forge-prepare-test) still tear it down. No-op
+    unless profiler.teardown_after_run is set; only touches resources
+    carrying the llm_d ownership labels.
+    """
+    from projects.llm_d.orchestration.prepare_sequence import (
+        teardown_profiler_injector_if_configured,
+    )
+
+    teardown_profiler_injector_if_configured(namespace)
 
 
 def do_test() -> int:

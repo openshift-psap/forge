@@ -10,6 +10,44 @@ from projects.llm_d.orchestration import prepare_phase, runtime_config
 
 logger = logging.getLogger(__name__)
 
+PROFILER_INJECTOR_LABELS = {
+    "app.kubernetes.io/managed-by": "forge",
+    "forge.openshift.io/project": "llm_d",
+}
+
+
+def prepare_profiler_injector(namespace: str) -> None:
+    """Deploy the vLLM profiler env-injector for the test namespace.
+
+    Deployed only when the profiler is enabled, so profiling works on a
+    clean cluster without manual injector setup (the injection itself only
+    affects pods labelled vllm-profiler/enabled=true in the namespace).
+    """
+    from projects.kserve.toolbox.deploy_profiler_injector.main import (
+        run as deploy_profiler_injector,
+    )
+
+    deploy_profiler_injector(
+        namespace=namespace,
+        profiling_ranges=config.project.get_config("profiler.ranges", default_value="500-503"),
+        labels=PROFILER_INJECTOR_LABELS,
+    )
+
+
+def teardown_profiler_injector_if_configured(namespace: str) -> None:
+    """Remove the env-injector in post-cleanup when configured to do so.
+
+    Only touches resources carrying PROFILER_INJECTOR_LABELS, so an
+    injector deployed by someone else and reused by an idempotent prepare
+    is never removed.
+    """
+    if not config.project.get_config("profiler.teardown_after_run", default_value=False):
+        return
+
+    from projects.kserve.toolbox.teardown_profiler_injector.main import run as teardown
+
+    teardown(namespace=namespace, labels=PROFILER_INJECTOR_LABELS)
+
 
 def run_prepare_sequence() -> int:
     """Run the prepare phase sequence using global config"""
@@ -36,6 +74,8 @@ def run_prepare_sequence() -> int:
         with runtime_config.activate_run_spec(run_spec):
             with env.NextArtifactDir(f"prepare_{run_spec.artifact_dirname}"):
                 prepare_phase.ensure_test_namespace()
+                if config.project.get_config("profiler.enabled", default_value=False):
+                    prepare_profiler_injector(run_spec.namespace)
                 prepare_phase.cleanup_previous_run()
                 prepare_phase.prepare_model_cache()
                 if not skip_gpu:
