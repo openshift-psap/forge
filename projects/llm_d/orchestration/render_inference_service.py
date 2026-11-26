@@ -539,6 +539,18 @@ def _render_pd_deployment(
     if scheduler is not None:
         manifest["spec"]["router"]["scheduler"] = copy.deepcopy(scheduler)
 
+        # Set router container image (deployment profile specific or default),
+        # matching the standard deployment path.
+        router_image = deployment_profile.get("router_image")
+        if not router_image:
+            router_image = config.project.get_config(
+                "deployments.defaults.router_image", default_value=None
+            )
+        if router_image:
+            manifest["spec"]["router"]["scheduler"]["template"]["containers"][0][
+                "image"
+            ] = router_image
+
     return manifest
 
 

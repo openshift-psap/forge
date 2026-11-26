@@ -110,6 +110,20 @@ profiles:
     replicas: 4
     tensor_parallelism: 2
 
+  pd-3.5GA-router-p.tp1-p.x8-d.tp4-d.x2:
+    scheduler_manifest: manifests/scheduler_config/default-3.5GA-pd.yaml
+    router_image: registry.redhat.io/rhoai/odh-llm-d-router-endpoint-picker-rhel9@sha256:b4a5c8d6650a4ea3c7ae47b8ba16e9c52484d2f758f588447e4f96d6ec751e41
+    scheduler:
+      annotations:
+        app.kubernetes.io/version: "0.9.0"
+    tensor_parallelism: FROM_NAME
+    prefill:
+      replicas: FROM_NAME
+      tensor_parallelism: FROM_NAME
+    decode:
+      replicas: FROM_NAME
+      tensor_parallelism: FROM_NAME
+
   default-3.6GA:
     scheduler_manifest: manifests/deployments/default-3.6GA.yaml
     topology_from_model: true
