@@ -5,10 +5,10 @@ import pytest
 
 def test_profiler_trace_copy_failure_propagates(monkeypatch) -> None:
     from projects.guidellm.toolbox.run_guidellm_benchmark import main as guidellm
+    from projects.kserve.toolbox.copy_profiler_traces import main as copy_traces
+    from projects.kserve.toolbox.enable_profiler_gate import main as profiler_gate
+    from projects.kserve.toolbox.verify_profiler_prereqs import main as verify_prereqs
     from projects.rhaiis.orchestration import test_phase
-    from projects.rhaiis.toolbox.copy_profiler_traces import main as copy_traces
-    from projects.rhaiis.toolbox.enable_profiler_gate import main as profiler_gate
-    from projects.rhaiis.toolbox.verify_profiler_prereqs import main as verify_prereqs
 
     monkeypatch.setattr(verify_prereqs, "run", lambda **kwargs: None)
     monkeypatch.setattr(profiler_gate, "run", lambda **kwargs: None)

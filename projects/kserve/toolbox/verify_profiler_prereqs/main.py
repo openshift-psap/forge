@@ -4,6 +4,12 @@
 Ported from model-furnace's oc_commands.verify_profiler_prerequisites().
 Checks webhook pod, MutatingWebhookConfiguration, TLS secret, and
 ConfigMap before any profiler run is attempted.
+
+Args:
+    namespace: Target namespace of the profiled inference service
+        (must match the webhook deployment's TARGET_NAMESPACE).
+    webhook_namespace: Namespace hosting the env-injector webhook
+        (default "vllm-profiler").
 """
 
 from projects.core.dsl import (
@@ -17,14 +23,15 @@ MIN_CA_BUNDLE_LENGTH = 100
 
 
 @entrypoint
-def run(*, namespace: str):
+def run(*, namespace: str, webhook_namespace: str = "vllm-profiler"):
     return execute_tasks(locals())
 
 
 @task
 def check_webhook_pod(args, context):
     result = shell.run(
-        "oc get pods -n vllm-profiler -l app=env-injector -o jsonpath='{.items[0].status.phase}'",
+        f"oc get pods -n {args.webhook_namespace} -l app=env-injector "
+        "-o jsonpath='{.items[0].status.phase}'",
         check=False,
     )
     phase = result.stdout.strip().strip("'")
@@ -41,7 +48,7 @@ def check_webhook_pod(args, context):
 @task
 def check_webhook_target_namespace(args, context):
     result = shell.run(
-        "oc get deployment env-injector -n vllm-profiler "
+        f"oc get deployment env-injector -n {args.webhook_namespace} "
         "-o jsonpath='{.spec.template.spec.containers[0]"
         '.env[?(@.name=="TARGET_NAMESPACE")].value}\'',
         check=False,
@@ -83,13 +90,13 @@ def check_mutating_webhook(args, context):
 @task
 def check_tls_secret(args, context):
     result = shell.run(
-        "oc get secret env-injector-certs -n vllm-profiler -o name",
+        f"oc get secret env-injector-certs -n {args.webhook_namespace} -o name",
         check=False,
     )
     if result.returncode != 0:
         context.errors = getattr(context, "errors", [])
         context.errors.append(
-            "TLS secret 'env-injector-certs' not found in vllm-profiler namespace"
+            f"TLS secret 'env-injector-certs' not found in {args.webhook_namespace} namespace"
         )
         return "FAIL: TLS secret missing"
     return "OK: TLS secret exists"
