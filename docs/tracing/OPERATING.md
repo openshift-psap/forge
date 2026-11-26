@@ -238,7 +238,9 @@ queue, or file exporter. Sanitizer errors reject ingress; there is no bypass.
 The sidecar has no spool mount, a read-only root filesystem, a 16 MiB request
 limit, socket/forwarding deadlines, and bounded CPU/memory. Source files are
 mounted from the capture-owned ConfigMap; no runtime package installation is
-needed. Its image is pinned to `python:3.12.8-slim-bookworm`.
+needed. Its image is pinned to `quay.io/centos/centos:stream10` by digest
+(`HELPER_IMAGE` in `projects/cluster/library/tracing/collection.py`); the spool
+probe and spool reader use the same image.
 
 Policy version 2 recursively filters key/value lists and redacts arrays, removes
 opaque bytes and tracestate, and reviews scope identity and schema URLs.
@@ -263,7 +265,7 @@ these images using Podman:
 
 ```sh
 podman pull ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.115.1
-podman pull python:3.12.8-slim-bookworm
+podman pull quay.io/centos/centos:stream10@sha256:b042adb7687b322f80765277b552dcdd9c5f98bd3ca64e2f46175d2ae55fc82b
 FORGE_TEST_COLLECTOR=1 python -m pytest projects/cluster/tests/test_tracing_collector_integration.py
 python -m pytest projects/cluster/tests/test_tracing_regressions.py projects/cluster/tests/test_tracing_sanitizer_boundary.py
 python -m pytest projects/caliper/tests/test_tracing_mlflow_ingest.py projects/caliper/tests/test_tracing_multi_run_export.py

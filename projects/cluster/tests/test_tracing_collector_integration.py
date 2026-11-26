@@ -1,6 +1,6 @@
 """Opt-in proof with the pinned Collector and sanitizer containers.
 
-Pre-pull DEFAULT_COLLECTOR_IMAGE and SANITIZER_IMAGE, then run with
+Pre-pull DEFAULT_COLLECTOR_IMAGE and HELPER_IMAGE, then run with
 FORGE_TEST_COLLECTOR=1. Uses only a disposable local pod and volume.
 """
 
@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from projects.cluster.library.tracing.collection import SANITIZER_IMAGE, sanitizer_sources
+from projects.cluster.library.tracing.collection import HELPER_IMAGE, sanitizer_sources
 from projects.cluster.library.tracing.models import DEFAULT_COLLECTOR_IMAGE
 from projects.cluster.tests.test_tracing_capture_toolbox import SENTINEL, _record
 from projects.cluster.toolbox.deploy_trace_collector.main import TEMPLATES_DIR
@@ -87,8 +87,8 @@ def collector(tmp_path, request):
             sanitizer,
             "--network",
             "container:" + name,
-            SANITIZER_IMAGE,
-            "python",
+            HELPER_IMAGE,
+            "python3",
             "-B",
             "/opt/forge/sanitize_otlp.py",
         )

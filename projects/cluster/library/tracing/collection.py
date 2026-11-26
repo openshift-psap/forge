@@ -28,10 +28,13 @@ COMPONENT_LABEL_KEY = "app.kubernetes.io/component"
 COMPONENT_LABEL_VALUE = "forge-tracing"
 MANAGED_BY_LABEL_KEY = "app.kubernetes.io/managed-by"
 MANAGED_BY_LABEL_VALUE = "forge"
-# A small image that surely contains a shell-less reader is not assumed; the
-# spool-reader container uses a pinned busybox so `oc exec`/`oc cp` work.
-DEFAULT_READER_IMAGE = "busybox:1.36.1"
-SANITIZER_IMAGE = "python:3.12.8-slim-bookworm"
+# One pinned image for the spool probe, the spool reader and the sanitizer: it
+# has the shell, coreutils and tar that `oc exec`/`oc cp` need, and the Python
+# 3.12 standard library that the sanitizer runs on.
+HELPER_IMAGE = (
+    "quay.io/centos/centos:stream10"
+    "@sha256:b042adb7687b322f80765277b552dcdd9c5f98bd3ca64e2f46175d2ae55fc82b"
+)
 
 
 def sanitizer_sources() -> dict[str, str]:
@@ -72,7 +75,6 @@ def build_collector_resources(
     identity: CaptureIdentity,
     settings: TracingSettings,
     collector_config_text: str,
-    reader_image: str = DEFAULT_READER_IMAGE,
 ) -> list[dict[str, Any]]:
     """Build the ConfigMap, PVC, Deployment, and Service for a capture.
 
@@ -132,7 +134,7 @@ def build_collector_resources(
                     "initContainers": [
                         {
                             "name": "spool-probe",
-                            "image": reader_image,
+                            "image": HELPER_IMAGE,
                             "command": [
                                 "sh",
                                 "-c",
@@ -149,8 +151,8 @@ def build_collector_resources(
                     "containers": [
                         {
                             "name": "sanitizer",
-                            "image": SANITIZER_IMAGE,
-                            "command": ["python", "-B", "/opt/forge/sanitize_otlp.py"],
+                            "image": HELPER_IMAGE,
+                            "command": ["python3", "-B", "/opt/forge/sanitize_otlp.py"],
                             "securityContext": {
                                 "allowPrivilegeEscalation": False,
                                 "readOnlyRootFilesystem": True,
@@ -163,7 +165,7 @@ def build_collector_resources(
                             "readinessProbe": {
                                 "exec": {
                                     "command": [
-                                        "python",
+                                        "python3",
                                         "-B",
                                         "-c",
                                         "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4319/health', timeout=2)",
@@ -210,7 +212,7 @@ def build_collector_resources(
                         },
                         {
                             "name": "spool-reader",
-                            "image": reader_image,
+                            "image": HELPER_IMAGE,
                             "command": ["sleep", "infinity"],
                             "resources": {
                                 "requests": {"cpu": "10m", "memory": "32Mi"},
@@ -283,7 +285,7 @@ def load_collector_config(templates_dir) -> str:
 
 __all__ = [
     "COMPONENT_LABEL_KEY",
-    "DEFAULT_READER_IMAGE",
+    "HELPER_IMAGE",
     "OWNERSHIP_LABEL_KEY",
     "SPOOL_FILENAME",
     "SPOOL_MOUNT_PATH",
