@@ -59,6 +59,7 @@ from projects.caliper.public import (
     ParseStepResult,
     S3StepResult,
     StepStatus,
+    TraceReportsStepResult,
     VisualizeStepResult,
 )
 from projects.core.library import env
@@ -67,6 +68,10 @@ logger = logging.getLogger(__name__)
 
 # Postprocess status filename constant
 POSTPROCESS_STATUS_FILENAME = "postprocess_status.yaml"
+
+# Trace reports go beside the visualize reports, one folder per test node.
+TRACE_REPORTS_DIRNAME = "reports"
+TRACE_REPORT_SOURCE = "tracing"
 
 # Artifact file holding the /var PR directive that reproduces the visualization
 # plugin settings, and the config key it overrides.
@@ -1560,6 +1565,29 @@ class CaliperPostprocessOrchestrator:
         from projects.core.library.postprocess import generate_postprocess_status_report
         from projects.core.library.reports_index import generate_caliper_reports_index
 
+        # Trace reports are generated independently of parse/visualize so a
+        # report fix (or a replot) needs neither a running collector nor a
+        # repeated benchmark. Failure is reported but never aborts the pipeline.
+        # They run first so the reports index and status page list them.
+        try:
+            self._generate_trace_reports()
+        except Exception:
+            from projects.core.library import ci
+
+            # Do not include raw exception text: it can originate in trace data.
+            message = "Trace report generation failed; retained bundles can be replayed."
+            logger.error(message)
+            ci.add_notification_file("tracing-report-failed", message)
+            self._add_step(
+                "trace_reports",
+                TraceReportsStepResult(
+                    status=StepStatus.FAILED, completed_at=time.time(), error=message
+                ),
+            )
+            result["success"] = False
+            if result.get("final_status") == FINAL_SUCCESS:
+                result["final_status"] = FINAL_KPI_PIPELINE_FAILED
+
         try:
             generate_caliper_reports_index(result, self.output_dir, "reports_index.html")
         except Exception as e:
@@ -1569,6 +1597,63 @@ class CaliperPostprocessOrchestrator:
             generate_postprocess_status_report(result, self.output_dir, "postprocess_status.html")
         except Exception as e:
             logger.warning("Failed to generate postprocessing status report: %s", e)
+
+    def _generate_trace_reports(self) -> None:
+        """Generate a shared trace report for every discovered bundle.
+
+        Reads only the retained, sanitized bundles under the artifact tree and
+        writes the reports in the postprocessing directory, beside the visualize
+        reports: ``reports/<test node>/tracing/``. The test directories are not
+        modified. Never imports a project adapter, so it works for any project
+        that produced a valid bundle.
+        """
+        from projects.caliper.engine.tracing import bundle as bundle_mod
+        from projects.caliper.postprocess.helpers import tracing_report
+
+        # Bundles live under the Caliper artifact tree, not the postprocessing
+        # output directory (env.ARTIFACT_DIR is NNN__postprocessing here), so
+        # scan the resolved artifacts directory.
+        bundles = bundle_mod.discover_bundles(self.artifacts_dir)
+        if not bundles:
+            logger.info("No trace bundles under %s; no trace report generated", self.artifacts_dir)
+            return
+
+        reports_dir = self.output_dir / TRACE_REPORTS_DIRNAME
+        output_files = []
+        for bundle in bundles:
+            scope = self._trace_report_scope(bundle.test_dir)
+            scope_dir = Path() if scope == "global" else Path(scope)
+            written = tracing_report.write_report(bundle, reports_dir / scope_dir / "tracing")
+            for path in written.values():
+                logger.info("Generated trace report for %s: %s", scope, path)
+            output_files.append(
+                {
+                    "path": str(written["html"].relative_to(reports_dir)),
+                    "title": "Trace distribution",
+                    "scope": scope,
+                    "source": TRACE_REPORT_SOURCE,
+                }
+            )
+
+        try:
+            relative_reports_dir = str(reports_dir.relative_to(env.ARTIFACT_DIR))
+        except ValueError:
+            relative_reports_dir = str(reports_dir)
+        self._add_step(
+            "trace_reports",
+            TraceReportsStepResult(
+                status=StepStatus.SUCCESS,
+                completed_at=time.time(),
+                output_files=output_files,
+                output_dir=relative_reports_dir,
+                generated_files=len(output_files),
+            ),
+        )
+
+    def _trace_report_scope(self, test_dir: Path) -> str:
+        """Name a test node the way the visualize reports do ("global" at the root)."""
+        relative = test_dir.resolve().relative_to(Path(self.artifacts_dir).resolve())
+        return relative.as_posix() if relative.parts else "global"
 
     def _save_postprocess_status_yaml(self, result: dict[str, Any]) -> None:
         """Save postprocess status as YAML for GitHub notifications."""

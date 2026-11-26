@@ -274,6 +274,7 @@ def convert_status_yaml_to_html(
     step_order = [
         "parse",
         "visualize",
+        "trace_reports",
         "artifacts_to_kpis",
         "dashboard_csv",
         "artifacts_to_ai_data",
@@ -431,7 +432,7 @@ def convert_status_yaml_to_html(
                 return str(Path(base_directory) / relative_path)
             return relative_path
 
-        if step_name == "visualize" and step_status in ["ok", "success"]:
+        if step_name in ("visualize", "trace_reports") and step_status in ["ok", "success"]:
             output_files = step_info.get("output_files", [])
             output_dir = step_info.get("output_dir", "")
 

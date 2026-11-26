@@ -2,8 +2,8 @@
 Generate HTML index pages for Caliper reports.
 
 The index mirrors the completion notification layout: report entries come from
-the visualize step of the postprocess status (ReportFile dicts carrying
-scope/source metadata) and are grouped by test scope, then by report source.
+the visualize and trace report steps of the postprocess status (ReportFile
+dicts carrying scope/source metadata) and are grouped by test scope, then by report source.
 
 Paths are resolved against the step base and only kept when the file exists
 on disk, so stale metadata never produces dead links.
@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Postprocess steps whose ``output_files`` are HTML reports to list.
+REPORT_STEP_NAMES = ("visualize", "trace_reports")
 
 
 @dataclass(frozen=True)
@@ -67,7 +70,7 @@ def generate_caliper_reports_index(
 def _collect_report_entries(
     status: dict[str, Any], output_dir: Path, index_filename: str
 ) -> list[_ReportEntry]:
-    """Collect report entries from the visualize steps of the postprocess status."""
+    """Collect report entries from the report steps of the postprocess status."""
     entries_by_path: dict[Path, _ReportEntry] = {}
 
     for entry in _entries_from_status(status, output_dir):
@@ -78,17 +81,17 @@ def _collect_report_entries(
 
 
 def _entries_from_status(status: dict[str, Any], output_dir: Path) -> list[_ReportEntry]:
-    """Extract report entries from the visualize steps of the postprocess status."""
+    """Extract report entries from the report steps of the postprocess status."""
     base_dir = _base_directory(status, output_dir)
 
     entries = []
     for step in status.get("steps", []):
         if not isinstance(step, dict):
             continue
-        step_data = step.get("visualize")
-        if not isinstance(step_data, dict):
-            continue
-        entries.extend(_entries_from_visualize_step(step_data, base_dir, output_dir))
+        for step_name in REPORT_STEP_NAMES:
+            step_data = step.get(step_name)
+            if isinstance(step_data, dict):
+                entries.extend(_entries_from_visualize_step(step_data, base_dir, output_dir))
     return entries
 
 

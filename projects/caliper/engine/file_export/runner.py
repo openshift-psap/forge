@@ -51,6 +51,7 @@ def run_file_export(
     upload_workers: int = 10,
     mlflow_run_metadata: dict[str, Any] | None = None,
     mlflow_workspace: str | None = None,
+    trace_export: Any = None,
 ) -> list[FileExportBackendResult]:
     if source.is_file():
         paths = [source]
@@ -106,12 +107,24 @@ def run_file_export(
                 upload_workers=upload_workers,
                 run_metadata=mlflow_run_metadata,
                 workspace=mlflow_workspace,
+                trace_export=trace_export,
             )
+            trace_failures = []
+            if isinstance(ml_meta, dict) and isinstance(ml_meta.get("trace_export"), dict):
+                trace_failures = ml_meta["trace_export"].get("failures", []) or []
+            # Native trace ingestion is a separate outcome; a failure makes the
+            # backend fail even though ordinary artifacts uploaded.
+            status = "failure" if (failures or trace_failures) else "success"
+            detail_out = detail
+            if trace_failures:
+                detail_out = (
+                    f"{detail} (native trace export failed for {len(trace_failures)} bundle(s))"
+                )
             results.append(
                 FileExportBackendResult(
                     backend="mlflow",
-                    status="success" if not failures else "failure",
-                    detail=detail,
+                    status=status,
+                    detail=detail_out,
                     metadata=ml_meta,
                 )
             )

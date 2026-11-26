@@ -1,0 +1,561 @@
+"""Unit tests for the shared tracing library.
+
+Covers the plan's Configuration and Rendering rows: mode/ratio validation,
+rejection of malformed YAML types and unsupported engines, idempotent
+instrumentation, and preservation of existing non-tracing args and env.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from projects.cluster.library.tracing.instrumentation import (
+    EXPORTER_ENDPOINT_ENV,
+    RESOURCE_ATTRIBUTES_ENV,
+    SERVICE_NAME_ENV,
+    TRACES_SAMPLER_ARG_ENV,
+    apply_env_vars,
+    apply_vllm_additional_args,
+    build_capture_id,
+    collector_service_name,
+    tracing_environment,
+    vllm_detailed_supported,
+    vllm_tracing_args,
+)
+from projects.cluster.library.tracing.models import (
+    CaptureIdentity,
+    TracingConfigError,
+    TracingMode,
+    parse_mode,
+    parse_sample_ratio,
+    settings_from_config,
+)
+from projects.core.library.run import SignalInterrupt
+
+
+class _Config:
+    """Minimal stand-in for config.project.get_config."""
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def get_config(self, path, default_value=..., warn=True, print=True):
+        node = self._data
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                if default_value is ...:
+                    raise KeyError(path)
+                return default_value
+            node = node[part]
+        return node
+
+
+def _identity() -> CaptureIdentity:
+    return CaptureIdentity(
+        job_id="job-1",
+        capture_id="cap-1",
+        project="llm_d",
+        namespace="ns",
+        deployment_id="llmd-abc",
+    )
+
+
+# --- Configuration ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("off", TracingMode.OFF),
+        ("standard", TracingMode.STANDARD),
+        ("detailed", TracingMode.DETAILED),
+    ],
+)
+def test_parse_mode_accepts_supported(raw, expected):
+    assert parse_mode(raw) is expected
+
+
+def test_parse_mode_rejects_unknown():
+    with pytest.raises(TracingConfigError, match="unsupported tracing.mode"):
+        parse_mode("verbose")
+
+
+def test_parse_mode_rejects_non_string():
+    with pytest.raises(TracingConfigError, match="must be a string"):
+        parse_mode(1)
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 0.5, 1, 1.0])
+def test_parse_sample_ratio_accepts_bounds(value):
+    assert parse_sample_ratio(value) == float(value)
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1, "0.5", True])
+def test_parse_sample_ratio_rejects_bad_values(value):
+    with pytest.raises(TracingConfigError):
+        parse_sample_ratio(value)
+
+
+def test_settings_off_is_valid_even_with_malformed_collector_settings():
+    cfg = _Config({"tracing": {"mode": "off", "sample_ratio": "not-a-number"}})
+    settings = settings_from_config(cfg.get_config)
+    assert settings.mode is TracingMode.OFF
+    assert not settings.enabled
+
+
+def test_settings_from_config_full():
+    cfg = _Config(
+        {
+            "tracing": {
+                "mode": "detailed",
+                "sample_ratio": 0.25,
+                "collector": {"storage_size": "5Gi", "ready_timeout_seconds": 120},
+            }
+        }
+    )
+    settings = settings_from_config(cfg.get_config)
+    assert settings.mode is TracingMode.DETAILED
+    assert settings.sample_ratio == 0.25
+    assert settings.storage_size == "5Gi"
+    assert settings.ready_timeout_seconds == 120
+
+
+def test_settings_reject_malformed_storage_size():
+    cfg = _Config({"tracing": {"mode": "standard", "collector": {"storage_size": 10}}})
+    with pytest.raises(TracingConfigError, match="non-empty string"):
+        settings_from_config(cfg.get_config)
+
+
+def test_settings_reject_non_int_timeout():
+    cfg = _Config({"tracing": {"mode": "standard", "collector": {"ready_timeout_seconds": "60"}}})
+    with pytest.raises(TracingConfigError, match="integer"):
+        settings_from_config(cfg.get_config)
+
+
+# --- Instrumentation -------------------------------------------------------
+
+
+def test_tracing_environment_sets_service_identity():
+    settings = settings_from_config(
+        _Config({"tracing": {"mode": "standard", "sample_ratio": 0.5}}).get_config
+    )
+    env = tracing_environment(settings, _identity(), "vllm", namespace="ns")
+    assert env[SERVICE_NAME_ENV] == "llmd-abc-vllm"
+    assert env[EXPORTER_ENDPOINT_ENV].startswith("http://forge-otel-collector-cap-1.ns.svc")
+    assert env[TRACES_SAMPLER_ARG_ENV] == "0.5"
+    assert "forge.capture_id=cap-1" in env[RESOURCE_ATTRIBUTES_ENV]
+    # No credentials anywhere in the tracing environment.
+    assert all("password" not in k.lower() and "token" not in k.lower() for k in env)
+
+
+def test_vllm_args_are_idempotent_and_preserve_existing():
+    settings = settings_from_config(_Config({"tracing": {"mode": "standard"}}).get_config)
+    args = ["--model=x", "--otlp-traces-endpoint=http://old:4317", "--port=8000"]
+    once = vllm_tracing_args(args, settings, _identity(), "vllm", namespace="ns")
+    twice = vllm_tracing_args(once, settings, _identity(), "vllm", namespace="ns")
+    assert once == twice
+    assert "--model=x" in once
+    assert "--port=8000" in once
+    assert sum(a.startswith("--otlp-traces-endpoint") for a in once) == 1
+
+
+def test_vllm_detailed_mode_adds_detailed_flag():
+    settings = settings_from_config(_Config({"tracing": {"mode": "detailed"}}).get_config)
+    args = vllm_tracing_args([], settings, _identity(), "vllm", namespace="ns")
+    assert "--collect-detailed-traces=all" in args
+
+
+def test_vllm_standard_mode_omits_detailed_flag():
+    settings = settings_from_config(_Config({"tracing": {"mode": "standard"}}).get_config)
+    args = vllm_tracing_args([], settings, _identity(), "vllm", namespace="ns")
+    assert "--collect-detailed-traces=all" not in args
+
+
+def test_apply_vllm_additional_args_preserves_unrelated_and_dedups():
+    existing = "--model=x --max-model-len=4096 --otlp-traces-endpoint=http://old:4317"
+    merged = apply_vllm_additional_args(existing, ["--otlp-traces-endpoint=http://new:4317"])
+    assert "--model=x" in merged
+    assert "--max-len" not in merged
+    assert merged.count("--otlp-traces-endpoint") == 1
+    assert "http://new:4317" in merged
+
+
+def test_apply_env_vars_replaces_existing_keys():
+    env = [{"name": "KEEP", "value": "1"}, {"name": SERVICE_NAME_ENV, "value": "old"}]
+    result = apply_env_vars(env, {SERVICE_NAME_ENV: "new"})
+    assert {item["name"]: item["value"] for item in result} == {
+        "KEEP": "1",
+        SERVICE_NAME_ENV: "new",
+    }
+
+
+def test_vllm_detailed_unsupported_engine_is_rejected():
+    with pytest.raises(TracingConfigError, match="detailed"):
+        vllm_detailed_supported("trtllm", mode=TracingMode.DETAILED)
+
+
+def test_vllm_detailed_supported_for_standard_mode():
+    assert vllm_detailed_supported("trtllm", mode=TracingMode.STANDARD)
+
+
+def test_collector_writable_probe_runs_before_collector():
+    """Storage writability is proved by a write-capable init container.
+
+    The spool-reader stays read-only for artifact copying, so it must never be
+    the container used to prove the PVC is writable.
+    """
+    from projects.cluster.library.tracing.collection import build_collector_resources
+    from projects.cluster.library.tracing.models import (
+        CaptureIdentity,
+        TracingMode,
+        TracingSettings,
+    )
+
+    resources = build_collector_resources(
+        identity=CaptureIdentity(
+            job_id="job",
+            capture_id="cap",
+            project="llm_d",
+            namespace="ns",
+            deployment_id="dep",
+        ),
+        settings=TracingSettings(mode=TracingMode.STANDARD),
+        collector_config_text="receivers: {}",
+    )
+    deployment = next(r for r in resources if r["kind"] == "Deployment")
+    pod_spec = deployment["spec"]["template"]["spec"]
+    init = pod_spec["initContainers"][0]
+    assert init["name"] == "spool-probe"
+    assert "touch" in init["command"][-1]
+    assert init["volumeMounts"][0].get("readOnly") is not True
+
+    reader = next(c for c in pod_spec["containers"] if c["name"] == "spool-reader")
+    assert reader["volumeMounts"][0]["readOnly"] is True
+
+    # No hardcoded fsGroup: OpenShift's restricted-v2 SCC rejects a value
+    # outside the namespace's assigned supplemental-group range.
+    assert "fsGroup" not in pod_spec.get("securityContext", {})
+
+
+def test_sanitizer_sidecar_runs_on_the_standard_library_only(tmp_path):
+    """The sidecar image has no third-party packages; its mounted code must load anyway."""
+    import subprocess
+    import sys
+
+    from projects.cluster.library.tracing.collection import build_collector_resources
+    from projects.cluster.library.tracing.models import (
+        CaptureIdentity,
+        TracingMode,
+        TracingSettings,
+    )
+
+    resources = build_collector_resources(
+        identity=CaptureIdentity(
+            job_id="job", capture_id="cap", project="llm_d", namespace="ns", deployment_id="dep"
+        ),
+        settings=TracingSettings(mode=TracingMode.STANDARD),
+        collector_config_text="receivers: {}",
+    )
+    config_map = next(r for r in resources if r["kind"] == "ConfigMap")
+    deployment = next(r for r in resources if r["kind"] == "Deployment")
+    volume = next(
+        v for v in deployment["spec"]["template"]["spec"]["volumes"] if v["name"] == "sanitizer"
+    )
+    for item in volume["configMap"]["items"]:
+        target = tmp_path / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(config_map["data"][item["key"]])
+
+    load_without_site_packages = (
+        "import runpy, sys\n"
+        "sys.path[:] = [sys.argv[1]] + [p for p in sys.path if 'site-packages' not in p]\n"
+        "runpy.run_path(sys.argv[1] + '/sanitize_otlp.py', run_name='sidecar')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", load_without_site_packages, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_collector_config_uses_valid_file_exporter_schema():
+    """The pinned file exporter must accept the rendered config at startup."""
+    import yaml
+
+    from projects.cluster.library.tracing.collection import load_collector_config
+    from projects.cluster.toolbox.deploy_trace_collector.main import TEMPLATES_DIR
+
+    config = yaml.safe_load(load_collector_config(TEMPLATES_DIR))
+    file_exporter = config["exporters"]["file"]
+    assert file_exporter["format"] == "json"
+    assert file_exporter["append"] is True
+    assert "rotation" not in file_exporter
+
+
+def test_shipped_tracing_defaults_are_off():
+    """The shipped defaults.yaml must parse as mode "off".
+
+    YAML 1.1 reads a bare ``off`` as boolean false, which strict config
+    validation correctly rejects, so the shipped file must quote it.
+    """
+    import yaml
+
+    from projects.cluster.library.tracing.models import (
+        DEFAULTS_FILE,
+        TracingMode,
+        settings_from_config,
+    )
+
+    data = yaml.safe_load(DEFAULTS_FILE.read_text(encoding="utf-8"))
+    assert data["mode"] == "off", 'defaults.yaml must quote mode: "off"'
+
+    def get_config(path, default=None):
+        return data.get(path.removeprefix("tracing."), default)
+
+    assert settings_from_config(get_config).mode is TracingMode.OFF
+
+
+# --- Isolation -------------------------------------------------------------
+
+
+def test_two_captures_in_one_namespace_do_not_collide():
+    """Two jobs/captures in one namespace must produce distinct, scoped names."""
+    from projects.cluster.library.tracing.collection import (
+        build_collector_resources,
+        cleanup_selector,
+        collector_service_name,
+        pvc_name,
+    )
+    from projects.cluster.library.tracing.models import TracingMode, TracingSettings
+
+    settings = TracingSettings(mode=TracingMode.STANDARD)
+    captures = {}
+    for capture_id in ("cap-a", "cap-b"):
+        identity = CaptureIdentity(
+            job_id=f"job-{capture_id}",
+            capture_id=capture_id,
+            project="llm_d",
+            namespace="ns",
+            deployment_id="dep",
+        )
+        resources = build_collector_resources(
+            identity=identity,
+            settings=settings,
+            collector_config_text="receivers: {}",
+        )
+        names = {r["metadata"]["name"] for r in resources}
+        captures[capture_id] = (names, cleanup_selector(identity))
+
+    names_a, selector_a = captures["cap-a"]
+    names_b, selector_b = captures["cap-b"]
+    assert names_a.isdisjoint(names_b)
+    assert selector_a != selector_b
+    assert selector_a.endswith("cap-a")
+    assert collector_service_name("cap-a") != collector_service_name("cap-b")
+    assert pvc_name("cap-a") != pvc_name("cap-b")
+
+
+def test_cleanup_selector_only_matches_own_capture():
+    from projects.cluster.library.tracing.collection import (
+        OWNERSHIP_LABEL_KEY,
+        build_collector_resources,
+        cleanup_selector,
+    )
+    from projects.cluster.library.tracing.models import TracingMode, TracingSettings
+
+    identity = CaptureIdentity(
+        job_id="job-1",
+        capture_id="cap-a",
+        project="llm_d",
+        namespace="ns",
+        deployment_id="dep",
+    )
+    resources = build_collector_resources(
+        identity=identity,
+        settings=TracingSettings(mode=TracingMode.STANDARD),
+        collector_config_text="receivers: {}",
+    )
+    selector = cleanup_selector(identity)
+    key, _, value = selector.partition("=")
+    assert key == OWNERSHIP_LABEL_KEY
+    for resource in resources:
+        assert resource["metadata"]["labels"][OWNERSHIP_LABEL_KEY] == value
+
+
+def test_wait_for_ready_honors_configured_deadline(monkeypatch):
+    """The readiness wait must end at ready_timeout_seconds, not a fixed count.
+
+    A hard-coded attempt count would ignore the configured budget entirely.
+    """
+    import time
+
+    from projects.cluster.library.tracing.models import TracingSettings
+    from projects.cluster.toolbox.deploy_trace_collector import main as deploy_main
+
+    class _Ctx:
+        settings = TracingSettings(ready_timeout_seconds=30)
+        ready_deadline = time.monotonic() - 1
+
+    with pytest.raises(RuntimeError, match="did not become ready within 30s"):
+        deploy_main.wait_for_ready.__wrapped__(_Ctx(), _Ctx())
+
+
+def test_wait_for_ready_polls_before_deadline(monkeypatch):
+    """Before the deadline, a not-yet-available deployment is a retry, not a failure."""
+    import time
+
+    from projects.cluster.library.tracing.models import CaptureIdentity, TracingSettings
+    from projects.cluster.toolbox.deploy_trace_collector import main as deploy_main
+
+    monkeypatch.setattr(deploy_main, "oc_get_json", lambda *a, **k: None)
+
+    class _Ctx:
+        settings = TracingSettings(ready_timeout_seconds=30)
+        ready_deadline = time.monotonic() + 30
+        identity = CaptureIdentity(
+            job_id="j", capture_id="c", project="p", namespace="ns", deployment_id="d"
+        )
+
+    ctx = _Ctx()
+    result = deploy_main.wait_for_ready.__wrapped__(ctx, ctx)
+    assert result[0] is False
+
+
+def test_capture_id_keeps_the_collector_service_name_valid():
+    """A long job name must still yield a DNS-1035 Service name."""
+    import re
+
+    capture_id = build_capture_id("forge-llm-d-" + "x" * 80, "forge-llm-d")
+    service = collector_service_name(capture_id)
+
+    assert len(service) <= 63
+    assert re.fullmatch(r"[a-z]([-a-z0-9]*[a-z0-9])?", service)
+
+
+def test_capture_id_is_distinct_per_job():
+    """Separate jobs in one namespace must not share a collector."""
+    first = build_capture_id("forge-llm-d-20261106-095538", "forge-llm-d")
+    second = build_capture_id("forge-llm-d-20261106-101500", "forge-llm-d")
+
+    assert first != second
+    assert first.startswith("forge-llm-d-20261106-095538-")
+    assert build_capture_id("forge-llm-d-20261106-095538", "forge-llm-d") == first
+
+
+@pytest.mark.parametrize("project", ["llm_d", "rhaiis"])
+def test_project_tracing_config_uses_the_component_defaults(project):
+    import yaml
+
+    from projects.cluster.library.tracing.models import DEFAULTS_FILE
+    from projects.core.library import config as core_config
+    from projects.core.library import env as core_env
+
+    chunk = (
+        core_env.FORGE_HOME / "projects" / project / "orchestration" / "config.d" / "tracing.yaml"
+    )
+    section = core_config._apply_chunk_defaults(chunk, yaml.safe_load(chunk.read_text()))
+
+    assert section == yaml.safe_load(DEFAULTS_FILE.read_text())
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("collector did not become ready within 300s"),
+        # An interrupt during the readiness wait leaves no session to clean up.
+        SignalInterrupt(15, None),
+    ],
+    ids=["deploy-failed", "interrupted"],
+)
+def test_failed_collector_deploy_removes_the_collector(monkeypatch, tmp_path, error):
+    """A deploy that fails after applying resources must not leave the collector behind."""
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.models import TracingSettings
+
+    def failing_deploy(*_args, **_kwargs):
+        raise error
+
+    cleaned = []
+    monkeypatch.setattr(lifecycle, "_deploy_collector", failing_deploy)
+    monkeypatch.setattr(lifecycle, "cleanup", lambda session: cleaned.append(session.identity))
+
+    with pytest.raises(type(error)) as raised:
+        lifecycle.start_capture(
+            job_id="job",
+            capture_id="cap",
+            project="llm_d",
+            namespace="ns",
+            deployment_id="dep",
+            output_root=tmp_path,
+            settings=TracingSettings(mode=TracingMode.STANDARD),
+        )
+
+    assert raised.value is error
+    assert [identity.capture_id for identity in cleaned] == ["cap"]
+
+
+def test_failed_cleanup_keeps_the_deploy_error(monkeypatch, tmp_path):
+    """A cleanup failure is notified; the caller still sees why the collector did not start."""
+    from projects.cluster.library.tracing import lifecycle
+    from projects.cluster.library.tracing.models import TracingSettings
+    from projects.core.library import ci
+
+    def failing_deploy(*_args, **_kwargs):
+        raise RuntimeError("collector did not become ready within 300s")
+
+    def failing_cleanup(_session):
+        raise RuntimeError("delete failed")
+
+    notifications = []
+    monkeypatch.setattr(lifecycle, "_deploy_collector", failing_deploy)
+    monkeypatch.setattr(lifecycle, "cleanup", failing_cleanup)
+    monkeypatch.setattr(
+        ci, "add_notification_file", lambda name, _message: notifications.append(name)
+    )
+
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        lifecycle.start_capture(
+            job_id="job",
+            capture_id="cap",
+            project="llm_d",
+            namespace="ns",
+            deployment_id="dep",
+            output_root=tmp_path,
+            settings=TracingSettings(mode=TracingMode.STANDARD),
+        )
+
+    assert notifications == ["tracing-cleanup-failed"]
+
+
+@pytest.mark.parametrize(
+    ("oc_result", "error"),
+    [
+        ("", None),
+        ("persistentvolumeclaim/forge-trace-spool-cap\n", "still present"),
+        # A failed query must not read as "nothing left".
+        (RuntimeError("oc get failed"), "oc get failed"),
+    ],
+)
+def test_cleanup_confirmation_fails_when_it_cannot_confirm(monkeypatch, oc_result, error):
+    from projects.cluster.library.tracing.models import CaptureIdentity
+    from projects.cluster.toolbox.cleanup_trace_collector import main as cleanup_main
+
+    def fake_oc(*_args, **kwargs):
+        assert kwargs.get("check", True), "query errors must raise"
+        if isinstance(oc_result, Exception):
+            raise oc_result
+        return type("R", (), {"stdout": oc_result})()
+
+    monkeypatch.setattr(cleanup_main, "oc", fake_oc)
+    identity = CaptureIdentity(
+        job_id="job", capture_id="cap", project="llm_d", namespace="ns", deployment_id="dep"
+    )
+    ctx = type("Ctx", (), {"identity": identity})()
+
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            cleanup_main.confirm_removed.__wrapped__(ctx, ctx)
+    else:
+        assert cleanup_main.confirm_removed.__wrapped__(ctx, ctx) == "All capture resources removed"

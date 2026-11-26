@@ -68,6 +68,37 @@ def test_index_groups_reports_by_scope_then_source(tmp_path):
     assert ">Ingress Metrics</a>" in content
 
 
+def test_index_lists_trace_reports(tmp_path):
+    output_dir, reports_dir = _make_output_dir(tmp_path)
+    status = _status(output_dir, [])
+    status["steps"].append(
+        {
+            "trace_reports": {
+                "status": "success",
+                "output_dir": str(reports_dir),
+                "output_files": [
+                    {
+                        "source": "tracing",
+                        "scope": "000__workload",
+                        "title": "Trace distribution",
+                        "path": _write_report(
+                            reports_dir, "000__workload/tracing/trace_distribution_report.html"
+                        ),
+                    }
+                ],
+            }
+        }
+    )
+
+    index_path = generate_caliper_reports_index(status, output_dir, "reports_index.html")
+
+    assert index_path is not None
+    content = index_path.read_text()
+    assert "<h2>Test 000__workload</h2>" in content
+    assert "<h3>Tracing</h3>" in content
+    assert ">Trace distribution</a>" in content
+
+
 def test_global_scope_comes_first(tmp_path):
     output_dir, reports_dir = _make_output_dir(tmp_path)
     status = _status(
