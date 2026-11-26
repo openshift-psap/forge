@@ -375,6 +375,8 @@ def _toggle_praxis_for_endpoint(ep_name, maas_cfg):
             gateway_name=maas_cfg["gateway"]["name"],
             payload_processing_config=praxis_cfg.get("payload_processing"),
             extproc_max_requests=praxis_cfg.get("extproc_max_requests"),
+            identity_metrics=praxis_cfg.get("identity_metrics"),
+            auth_timeout=praxis_cfg.get("auth_timeout"),
         )
     elif ep_name == "maas/ipp":
         logger.info("Deactivating praxis for endpoint %s", ep_name)

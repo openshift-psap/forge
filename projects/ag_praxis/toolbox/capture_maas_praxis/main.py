@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 from projects.core.dsl import entrypoint, execute_tasks, task
 from projects.core.dsl.utils.k8s import oc, oc_get_json
@@ -10,6 +13,32 @@ from projects.core.dsl.utils.k8s import oc, oc_get_json
 logger = logging.getLogger("DSL")
 
 GATEWAY_NAME_LABEL = "gateway.networking.k8s.io/gateway-name"
+
+# ExtProc concurrency budget: the annotation read by ai-gateway-controller, the
+# fields the controller writes into the Envoy circuit breakers, and the operator
+# default applied when the annotation is absent or out of range (silently -- not
+# clamped). Shared with enable_maas_praxis, which sets and verifies the budget.
+EXTPROC_MAX_REQUESTS_ANNOTATION_KEY = "maas.opendatahub.io/experimental-extproc-max-requests"
+OPERATOR_DEFAULT_EXTPROC_MAX_REQUESTS = 8
+EXTPROC_CIRCUIT_BREAKER_FIELDS = (
+    "max_requests",
+    "max_pending_requests",
+    "max_connections",
+    "max_concurrent_streams",
+)
+# Fields verified against the annotated budget (the controller is expected to
+# write the same value into all four, but only these three existed when the
+# verification was written -- kept as-is to avoid flagging pre-existing configs).
+EXTPROC_VERIFIED_FIELDS = ("max_requests", "max_pending_requests", "max_connections")
+
+# The kuadrant wasm shim running on the gateway. Its configuration is a compact
+# JSON string embedded in the EnvoyFilter CR the kuadrant operator generates
+# and in the gateway's live listener config; the "services" key holds the
+# auth/ratelimit hop settings (endpoint, failureMode, timeout). Shared with
+# enable_maas_praxis, which sets the auth-service timeout through the kuadrant
+# operator's AUTH_SERVICE_TIMEOUT env var and verifies it.
+WASM_SHIM_AUTH_SERVICE = "auth-service"
+WASM_SHIM_CONFIG_PREFIX = '{"actionSets":'
 
 
 @dataclass(frozen=True)
@@ -71,7 +100,13 @@ def run(
     """Capture the state of the inference hot-path deployments for debugging.
 
     Covers the payload-processing deployments, the MaaS gateway, and the kuadrant
-    auth/ratelimiting backends (authorino, limitador), plus the MaasTenantConfig.
+    auth/ratelimiting backends (authorino, limitador), plus the MaasTenantConfig,
+    the AuthPolicies/AuthConfigs, and the effective ExtProc circuit-breaker limits
+    and kuadrant wasm shim service settings from the gateway's live Envoy config.
+    The final task condenses the observed praxis configuration into
+    artifacts/praxis_state_summary.json (ext_proc budget, identity-metrics flag,
+    wasm shim services, authorino settings) -- the input of the
+    500-cliff postprocess report.
 
     Each component's files are saved in a dedicated directory under the artifacts
     directory (e.g. artifacts/authorino/deployment.yaml), with its pod logs under
@@ -357,6 +392,45 @@ def capture_maas_tenant_config(args, ctx):
 
 
 @task
+def capture_auth_policies(args, ctx):
+    """Capture the gateway AuthPolicies, including the identity-metrics value.
+
+    The AuthPolicy yaml records whether the identity response filter had its
+    metric-label evaluation on or off during the run (platform.praxis.
+    identity_metrics / enable_maas_praxis) -- without it, runs are not
+    comparable. The summary file extracts just that flag; the yaml is the
+    robust record (no credentials in AuthPolicies, safe for artifacts).
+    """
+    artifacts = args.artifact_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    results = [
+        _capture(
+            "AuthPolicies yaml (includes the identity-metrics flag)",
+            artifacts / "authpolicies.yaml",
+            "get",
+            "authpolicy",
+            "-n",
+            args.ingress_namespace,
+            "-o",
+            "yaml",
+        ),
+        _capture(
+            "AuthPolicy identity-metrics summary",
+            artifacts / "authpolicy_identity_metrics.txt",
+            "get",
+            "authpolicy",
+            "-n",
+            args.ingress_namespace,
+            "-o",
+            "jsonpath={range .items[*]}{.metadata.name}: "
+            'identity.metrics={.spec.defaults.rules.response.success.filters.identity.metrics}{"\\n"}{end}',
+        ),
+    ]
+    return "; ".join(results)
+
+
+@task
 def capture_kuadrant_crs(args, ctx):
     """Capture the Authorino and Limitador CRs from the kuadrant namespace."""
     artifacts = args.artifact_dir / "artifacts" / "kuadrant"
@@ -389,6 +463,333 @@ def capture_kuadrant_crs(args, ctx):
             )
         )
     return "; ".join(results)
+
+
+@task
+def capture_extproc_limits(args, ctx):
+    """Capture the effective ExtProc circuit-breaker limits from the live gateway.
+
+    Ground truth for the ext_proc concurrency budget is the gateway pod's Envoy
+    config_dump, not the CRs: out-of-range annotation values silently fall back
+    to the operator default, and reconciles can revert patches. Only the
+    extracted circuit-breaker section is persisted -- never the full config_dump.
+    """
+    artifacts = args.artifact_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    try:
+        config_dump = fetch_gateway_config_dump(args.ingress_namespace, args.gateway_name)
+    except RuntimeError as exc:
+        logger.warning("Failed to fetch the gateway config_dump: %s", exc)
+        return f"Failed to capture ext_proc limits: {exc}"
+
+    limits = extract_extproc_cluster_limits(config_dump)
+    if not limits:
+        return "No ext_proc clusters in the gateway Envoy config (praxis not active?)"
+
+    dest = artifacts / "extproc_limits.json"
+    dest.write_text(json.dumps(limits, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return f"Captured ext_proc circuit-breaker limits of {len(limits)} cluster(s) to {dest}"
+
+
+@task
+def capture_wasm_services(args, ctx):
+    """Capture the kuadrant wasm shim's service settings from the live gateway.
+
+    Ground truth for the auth-service timeout (platform.praxis.auth_timeout /
+    enable_maas_praxis) is the gateway pod's listener config_dump, not the
+    operator deployment or the EnvoyFilter CR. Only the extracted "services"
+    mapping is persisted -- never the full config_dump.
+    """
+    artifacts = args.artifact_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    try:
+        config_dump = fetch_gateway_config_dump(
+            args.ingress_namespace, args.gateway_name, resource="dynamic_listeners"
+        )
+    except RuntimeError as exc:
+        logger.warning("Failed to fetch the gateway listener config_dump: %s", exc)
+        return f"Failed to capture wasm services: {exc}"
+
+    services = extract_wasm_shim_services(config_dump)
+    if services is None:
+        return "No kuadrant wasm shim configuration in the gateway listeners"
+
+    dest = artifacts / "wasm_services.json"
+    dest.write_text(json.dumps(services, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return f"Captured wasm shim services ({', '.join(sorted(services))}) to {dest}"
+
+
+@task
+def capture_authconfigs(args, ctx):
+    """Capture the generated AuthConfigs (what authorino actually evaluates)."""
+    artifacts = args.artifact_dir / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+
+    return _capture(
+        "AuthConfigs yaml (kuadrant-generated, evaluated by authorino)",
+        artifacts / "authconfigs.yaml",
+        "get",
+        "authconfig",
+        "-n",
+        args.kuadrant_namespace,
+        "-o",
+        "yaml",
+    )
+
+
+@task
+def write_state_summary(args, ctx):
+    """Write praxis_state_summary.json: the observed praxis config of this capture.
+
+    Everything is derived from the files captured by the earlier tasks of this
+    command, so the summary is reproducible post-run and reports can state what
+    the cluster actually ran with -- not what the harness configuration asked
+    for. Missing inputs are recorded as null, never guessed.
+    """
+    artifacts = args.artifact_dir / "artifacts"
+    summary = {
+        "extproc_max_requests": summarize_extproc_budget(artifacts),
+        "identity_metrics": summarize_identity_metrics(artifacts),
+        "wasm_services": summarize_wasm_services(artifacts),
+        "authorino": summarize_authorino(artifacts),
+    }
+    dest = artifacts / "praxis_state_summary.json"
+    dest.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return f"Wrote praxis state summary to {dest}"
+
+
+def fetch_gateway_config_dump(
+    ingress_namespace: str, gateway_name: str, resource: str = "dynamic_active_clusters"
+) -> dict:
+    """Fetch a gateway pod's Envoy config section from the admin API.
+
+    The default resource is the dynamic active clusters (the ext_proc
+    circuit-breaker limits); "dynamic_listeners" carries the HTTP filter
+    chains, where the kuadrant wasm shim configuration lives.
+
+    Raises RuntimeError on failure so callers decide the policy: verification
+    tasks retry, capture tasks record the gap.
+    """
+    deployment = _resolve_gateway_deployment_name(gateway_name, ingress_namespace)
+    result = oc(
+        "exec",
+        "-n",
+        ingress_namespace,
+        f"deploy/{deployment}",
+        "--",
+        "pilot-agent",
+        "request",
+        "GET",
+        f"config_dump?resource={resource}",
+        check=False,
+        log_stdout=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"config_dump fetch failed on deploy/{deployment}: rc={result.returncode}"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"config_dump from deploy/{deployment} is not valid JSON: {exc}"
+        ) from exc
+
+
+def extract_wasm_shim_services(document: dict) -> dict | None:
+    """The kuadrant wasm shim's "services" config from an EnvoyFilter spec or config_dump.
+
+    The shim configuration is a compact JSON string ({"actionSets":...}) embedded
+    in both the EnvoyFilter CR and the gateway's live listener config. This walks
+    every string, parses the shim config and returns its "services" mapping
+    (service name -> {endpoint, failureMode, timeout, type}); None when absent.
+
+    Walking by content instead of a fixed path keeps this working across
+    EnvoyFilter layout changes (configPatches indices, typed_config nesting).
+    """
+    found = None
+
+    def walk(node):
+        nonlocal found
+        if found is not None:
+            return
+        if isinstance(node, str):
+            if not node.startswith(WASM_SHIM_CONFIG_PREFIX):
+                return
+            try:
+                config = json.loads(node)
+            except json.JSONDecodeError:
+                return
+            services = config.get("services")
+            if isinstance(services, dict):
+                found = services
+            return
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(document or {})
+    return found
+
+
+def extract_extproc_cluster_limits(config_dump: dict) -> dict[str, dict]:
+    """Circuit-breaker limits of the ext_proc clusters in an Envoy config_dump.
+
+    Returns {cluster_name: {"threshold_entries": int, "limits": [{field: value}]}}.
+    A threshold_entries greater than one means a botched MERGE appended to the
+    repeated field -- the original limits may still be in force.
+    """
+    limits = {}
+    for config_entry in config_dump.get("configs", []):
+        cluster = config_entry.get("cluster", {}) if isinstance(config_entry, dict) else {}
+        name = cluster.get("name", "")
+        if "extproc" not in name:
+            continue
+        thresholds = cluster.get("circuit_breakers", {}).get("thresholds") or []
+        limits[name] = {
+            "threshold_entries": len(thresholds),
+            "limits": [
+                {field: entry.get(field) for field in EXTPROC_CIRCUIT_BREAKER_FIELDS}
+                for entry in thresholds
+            ],
+        }
+    return limits
+
+
+def identity_metrics_entries(spec) -> list[tuple[str, bool]]:
+    """(json_patch_path, current_value) for identity response filters with a metrics field.
+
+    Walks the whole spec so any AuthPolicy/AuthConfig layout works (rules under
+    spec or under defaults/overrides). Shared with enable_maas_praxis, which
+    patches and verifies the flag.
+    """
+    entries = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            if path and path[-1] == "identity" and "json" in node and "metrics" in node:
+                entries.append(
+                    ("/spec/" + "/".join(str(p) for p in path) + "/metrics", node["metrics"])
+                )
+                return
+            for k, v in node.items():
+                walk(v, path + [k])
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, path + [i])
+
+    walk(spec or {}, [])
+    return entries
+
+
+def _load_yaml_file(path: Path):
+    """Load a YAML artifact captured by this command; None when absent/unparseable.
+
+    A capture gap must surface as null in the summary (visible in the reports),
+    not crash the whole capture -- hence warn-and-None rather than raising.
+    """
+    if not path.exists():
+        return None
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        logger.warning("Failed to parse captured artifact %s: %s", path, exc)
+        return None
+
+
+def summarize_extproc_budget(artifacts: Path) -> dict:
+    """Observed ExtProc budget: annotated value vs effective Envoy circuit breakers."""
+    tenant = _load_yaml_file(artifacts / "maastenantconfig.yaml") or {}
+    annotations = tenant.get("metadata", {}).get("annotations") or {}
+    raw = annotations.get(EXTPROC_MAX_REQUESTS_ANNOTATION_KEY)
+
+    annotation = None
+    annotation_invalid = None
+    if raw is not None:
+        try:
+            annotation = int(raw)
+        except (TypeError, ValueError):
+            annotation_invalid = str(raw)
+
+    effective = None
+    limits_path = artifacts / "extproc_limits.json"
+    if limits_path.exists():
+        try:
+            effective = json.loads(limits_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse %s: %s", limits_path, exc)
+
+    consistent = None
+    if effective:
+        payload_values = {
+            entry.get("max_requests")
+            for name, data in effective.items()
+            if "payload" in name
+            for entry in data.get("limits", [])
+        }
+        expected = annotation if annotation is not None else OPERATOR_DEFAULT_EXTPROC_MAX_REQUESTS
+        if payload_values:
+            consistent = payload_values == {expected}
+
+    summary = {"annotation": annotation, "effective": effective, "consistent": consistent}
+    if annotation_invalid is not None:
+        summary["annotation_invalid"] = annotation_invalid
+    return summary
+
+
+def summarize_identity_metrics(artifacts: Path) -> dict:
+    """Observed identity-metrics flag: AuthPolicy layer and generated AuthConfig layer."""
+    policies = {}
+    for item in (_load_yaml_file(artifacts / "authpolicies.yaml") or {}).get("items", []):
+        name = item.get("metadata", {}).get("name", "?")
+        entries = identity_metrics_entries(item.get("spec"))
+        if entries:
+            policies[name] = {"identity_metrics": entries[0][1], "filters": len(entries)}
+
+    authconfigs = None
+    authconfigs_doc = _load_yaml_file(artifacts / "authconfigs.yaml")
+    if authconfigs_doc is not None:
+        total = 0
+        values = set()
+        for item in authconfigs_doc.get("items", []):
+            for _, value in identity_metrics_entries(item.get("spec")):
+                total += 1
+                values.add(value)
+        authconfigs = {
+            "total_filters": total,
+            "identity_metrics": values.pop() if len(values) == 1 else None,
+        }
+
+    return {"policies": policies, "authconfigs": authconfigs}
+
+
+def summarize_authorino(artifacts: Path) -> dict | None:
+    """Observed authorino CR settings (replicas, evaluator cache size)."""
+    doc = _load_yaml_file(artifacts / "kuadrant" / "authorino.yaml")
+    if not doc:
+        return None
+    spec = doc.get("spec") or {}
+    return {
+        "replicas": spec.get("replicas"),
+        "evaluator_cache_size": spec.get("evaluatorCacheSize"),
+    }
+
+
+def summarize_wasm_services(artifacts: Path) -> dict | None:
+    """Observed kuadrant wasm shim service settings (auth/ratelimit timeouts)."""
+    path = artifacts / "wasm_services.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        logger.warning("Failed to parse %s: %s", path, exc)
+        return None
 
 
 if __name__ == "__main__":

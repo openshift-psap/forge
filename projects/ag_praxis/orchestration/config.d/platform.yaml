@@ -98,7 +98,33 @@ praxis:
   # requests with an instant empty HTTP 500 before auth. Valid range 1-1024;
   # out-of-range values silently fall back to 8. The effective limits are verified
   # against the gateway's live Envoy config after activation.
-  extproc_max_requests: 256
+  extproc_max_requests: null
+  # Identity-metrics toggle for the maas-gateway-auth AuthPolicy (the `metrics`
+  # field of the identity response filter, hardcoded true by maas-controller's
+  # template). With it on, authorino re-compiles and re-evaluates the filter's
+  # CEL label expressions on every request (metricLabels: 72-88% of its CPU in
+  # pprof profiles); turning it off cut authorino CPU per successful auth by
+  # ~38%. The labels feed usage metering that is broken on streamed
+  # /v1/responses anyway (token metering fails open, Finding 2 of
+  # maas-praxis-500-ext-proc-overflow.md). Set true for metering-focused runs;
+  # null keeps the controller default. Can also be used as a matrix
+  # deployment_level dimension ([true, false]) for A/B measurements.
+  identity_metrics: false
+  # Timeout of the kuadrant wasm shim's auth-service hop to authorino, in Envoy
+  # duration format (e.g. "200ms", "2s", "1m"). RHCL configures the shim with a
+  # 200ms default and failureMode deny (RHOAIENG-71638): under high concurrency
+  # an auth call that overruns it is turned into an empty-details HTTP 500/503
+  # (~14% of the 500s on the 2026-11-24 praxis/large run -- the rest was the
+  # ext_proc circuit breaker); Red Hat's documented workaround is
+  # AUTH_SERVICE_TIMEOUT=2s. The timeout is not exposed by any CR:
+  # enable_maas_praxis sets it through AUTH_SERVICE_TIMEOUT on the kuadrant
+  # operator's OLM Subscription (spec.config.env -- the source of truth; the
+  # operator Deployment is OLM-reconciled and regenerates the wasm-shim
+  # EnvoyFilter from the env var) and verifies it against the gateway's live
+  # listener config. null removes forge's override, restoring the platform
+  # baseline (the RHCL 200ms). Can also be used as a matrix deployment_level
+  # dimension (e.g. ["200ms", "2s", "5s"]).
+  auth_timeout: 5s
   payload_processing:
     replicas: 1
     cpu_request: 100m

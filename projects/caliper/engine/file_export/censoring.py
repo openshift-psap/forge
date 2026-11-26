@@ -15,12 +15,43 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .censoring_rules import (
-    COMPILED_KEYWORD_PATTERNS,
+    COMPILED_KEYWORD_PATTERNS_BYTES,
+    KEYWORD_PATTERN_REQUIRED_LITERALS,
+    KEYWORD_PATTERNS,
     matches_sensitive_filename,
 )
 from .timefmt import format_duration, format_time
 
 logger = logging.getLogger(__name__)
+
+# Common text file extensions — module-level to avoid rebuilding per file
+TEXT_FILE_EXTENSIONS = {
+    ".txt",
+    ".log",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".xml",
+    ".csv",
+    ".md",
+    ".rst",
+    ".py",
+    ".js",
+    ".html",
+    ".css",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".conf",
+    ".cfg",
+    ".ini",
+    ".properties",
+    ".out",
+    ".err",
+}
+
+REDACTED_BYTES = b"[REDACTED]"
+DEFAULT_VAULT_REDACTED_BYTES = b"[REDACTED-VAULT]"
 
 
 def _merge_overlapping_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -96,6 +127,24 @@ class ArtifactCensor:
         self.dry_run = dry_run
         self.last_duration: float | None = None
 
+        # Precomputed byte-level vault secret specs, built once instead of
+        # re-stripping and re-encoding every secret for every file:
+        # (secret, replacement, has_censor_text, vault_identifier)
+        self._vault_secret_specs: list[tuple[bytes, bytes, bool, str]] = []
+        for secret in self.vault_secrets:
+            if not secret or not secret.strip():
+                continue
+            stripped = secret.strip()
+            has_censor_text = stripped in self.censor_text_mapping
+            replacement = self.censor_text_mapping.get(stripped, "")
+            replacement_bytes = (
+                replacement.encode("utf-8") if has_censor_text else DEFAULT_VAULT_REDACTED_BYTES
+            )
+            vault_identifier = self.secret_mapping.get(stripped, "unknown vault")
+            self._vault_secret_specs.append(
+                (stripped.encode("utf-8"), replacement_bytes, has_censor_text, vault_identifier)
+            )
+
         if self.verbose:
             logger.info(
                 f"Initialized censoring at {format_time()} with {len(self.vault_secrets)} vault secrets"
@@ -103,33 +152,7 @@ class ArtifactCensor:
 
     def _is_text_file(self, file_path: Path) -> bool:
         """Check if file is likely a text file based on extension and content sample."""
-        # Common text file extensions
-        text_extensions = {
-            ".txt",
-            ".log",
-            ".yaml",
-            ".yml",
-            ".json",
-            ".xml",
-            ".csv",
-            ".md",
-            ".rst",
-            ".py",
-            ".js",
-            ".html",
-            ".css",
-            ".sql",
-            ".sh",
-            ".bash",
-            ".conf",
-            ".cfg",
-            ".ini",
-            ".properties",
-            ".out",
-            ".err",
-        }
-
-        if file_path.suffix.lower() in text_extensions:
+        if file_path.suffix.lower() in TEXT_FILE_EXTENSIONS:
             return True
 
         # For files without clear extension, try to detect if it's text
@@ -175,65 +198,66 @@ class ArtifactCensor:
             if not self._is_text_file(file_path):
                 return CensoringResult(file_path, False, "non-text file", safely_redacted=False)
 
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
-            sanitized = False
+            # Scan raw bytes: files that end up clean (the common case) never pay
+            # a UTF-8 decode, and byte offsets stay valid for in-place redaction.
+            data = file_path.read_bytes()
             reasons = []
 
-            # Import KEYWORD_PATTERNS for reporting
-            from .censoring_rules import KEYWORD_PATTERNS
-
-            # Check for keyword patterns - redact matched spans in place
-            keyword_detected = False
+            # Keyword patterns: cheap literal pre-filter, then regex only on
+            # patterns that can possibly match this file
+            lowered = data.lower()
+            all_spans = []
             matched_patterns = set()
-            for i, pattern in enumerate(COMPILED_KEYWORD_PATTERNS):
-                matches = list(pattern.finditer(content))
-                if matches:
-                    keyword_detected = True
-                    matched_patterns.add(i)
+            for pattern_idx, literals in enumerate(KEYWORD_PATTERN_REQUIRED_LITERALS):
+                if not any(literal in lowered for literal in literals):
+                    continue
 
+                pattern = COMPILED_KEYWORD_PATTERNS_BYTES[pattern_idx]
+                pattern_matched = False
+                for match in pattern.finditer(data):
+                    all_spans.append((match.start(), match.end()))
+                    pattern_matched = True
+
+                if pattern_matched:
+                    matched_patterns.add(pattern_idx)
+
+            keyword_detected = bool(matched_patterns)
             if keyword_detected:
-                # Collect all match spans from all patterns
-                all_spans = []
-                for pattern in COMPILED_KEYWORD_PATTERNS:
-                    for match in pattern.finditer(content):
-                        all_spans.append((match.start(), match.end()))
-
-                # Merge overlapping spans to avoid corrupting replacements
+                # Merge overlapping spans to avoid corrupting replacements, then
+                # rebuild the content in one pass (repeated slicing would be
+                # quadratic in the number of matches)
                 merged_spans = _merge_overlapping_spans(all_spans)
+                parts = []
+                prev_end = 0
+                for start, end in merged_spans:
+                    parts.append(data[prev_end:start])
+                    parts.append(REDACTED_BYTES)
+                    prev_end = end
+                parts.append(data[prev_end:])
+                data = b"".join(parts)
 
-                # Replace merged spans in reverse order to preserve string indices
-                for start, end in reversed(merged_spans):
-                    content = content[:start] + "[REDACTED]" + content[end:]
-
-                # Add reasons for all matched patterns
                 for pattern_idx in sorted(matched_patterns):
                     reasons.append(f"contains keyword pattern: {KEYWORD_PATTERNS[pattern_idx]}")
-
-                sanitized = True
 
             # Track whether only safe censor_text replacements were made
             has_safe_replacements = False
             has_unsafe_replacements = False
+            sanitized = keyword_detected
 
             # Always check for vault secrets, independent of keyword pattern detection
-            for secret in self.vault_secrets:
-                if secret and secret.strip() and secret.strip() in content:
-                    # Use censor_text if available, otherwise use [REDACTED-VAULT]
-                    replacement = self.censor_text_mapping.get(secret.strip(), "[REDACTED-VAULT]")
-                    content = content.replace(secret.strip(), replacement)
+            for secret, replacement, has_censor_text, vault_identifier in self._vault_secret_specs:
+                if secret in data:
+                    data = data.replace(secret, replacement)
                     sanitized = True
 
-                    # Track type of replacement and add appropriate reason
-                    if secret.strip() not in self.censor_text_mapping:
-                        # Unexpected vault content - add to reasons for reporting
-                        has_unsafe_replacements = True
-                        vault_identifier = self.secret_mapping.get(secret.strip(), "unknown vault")
-                        reasons.append(f"contains vault secret: {vault_identifier}")
-                    else:
+                    if has_censor_text:
                         # Expected vault content with censor_text - add specific reason
                         has_safe_replacements = True
-                        vault_identifier = self.secret_mapping.get(secret.strip(), "unknown vault")
                         reasons.append(f"replaced with censor_text from {vault_identifier}")
+                    else:
+                        # Unexpected vault content - add to reasons for reporting
+                        has_unsafe_replacements = True
+                        reasons.append(f"contains vault secret: {vault_identifier}")
 
             if sanitized:
                 # Determine if this was safely redacted (only censor_text, no keywords/unexpected vault)
@@ -244,13 +268,13 @@ class ArtifactCensor:
                 # Write sanitized content back to original file (skip if dry run)
                 if not self.dry_run:
                     try:
-                        file_path.write_text(content, encoding="utf-8")
+                        file_path.write_bytes(data)
                     except PermissionError:
                         # Handle read-only files by making them writable
                         try:
                             # Make file writable
                             file_path.chmod(file_path.stat().st_mode | stat.S_IWUSR)
-                            file_path.write_text(content, encoding="utf-8")
+                            file_path.write_bytes(data)
                         except Exception:
                             # If we still can't write, abort this file export
                             raise
@@ -333,7 +357,7 @@ def apply_censoring_to_artifacts(
         artifact_paths: List of artifact file paths
         censoring_enabled: Whether to apply censoring
         verbose: Enable verbose logging
-        vault_secrets: Set of vault secret strings to censor
+        vault_secrets: Set of secret strings to censor
         secret_mapping: Dict mapping secret strings to vault/content identifiers
         censor_text_mapping: Dict mapping secret strings to censor_text replacements
         dry_run: Skip file modifications while preserving analysis

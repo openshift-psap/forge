@@ -8,6 +8,7 @@ in artifacts before upload.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 # Keyword patterns to detect in file content
 # These are compiled regex patterns that match common sensitive data patterns
@@ -58,7 +59,10 @@ KEYWORD_PATTERNS = [
     # Command line arguments
     r"--(?:password|api[_-]?key|token|secret)\s+[^'\"\s]{3,}",
     # OpenShift/Kubernetes secret creation commands
-    r"(?:oc|kubectl)\s+create\s+secret\s+.*--from-literal[=\s]+[^=\s]+=[^'\"\s]{3,}",
+    # Note: [^\n]* instead of .* (identical without DOTALL, but explicit): the scan stays
+    # line-bounded, and the --from-literal pre-filter below keeps the backtracking cost
+    # away from files that do not contain --from-literal at all.
+    r"(?:oc|kubectl)\s+create\s+secret\s+[^\n]*--from-literal[=\s]+[^=\s]+=[^'\"\s]{3,}",
     # Environment variable exports in shell (explicit lowercase to avoid matching var names)
     r"(?:^|\s)[e][x][p][o][r][t]\s+[A-Z_]*(?:PASSWORD|API_KEY|TOKEN|SECRET)[A-Z_]*=[^'\"\s]{3,}",
 ]
@@ -66,15 +70,73 @@ KEYWORD_PATTERNS = [
 # Compile patterns for better performance
 COMPILED_KEYWORD_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in KEYWORD_PATTERNS]
 
-# File patterns to always censor (by filename)
-SENSITIVE_FILE_PATTERNS = [
+# Bytes-compiled variants for the fast file-scan path in censoring.py: scanning raw
+# bytes avoids decoding files that end up clean (the common case).
+# Note: IGNORECASE on bytes patterns folds ASCII case only.
+COMPILED_KEYWORD_PATTERNS_BYTES = [
+    re.compile(pattern.encode("ascii"), re.IGNORECASE) for pattern in KEYWORD_PATTERNS
+]
+
+# Required literals, index-aligned with KEYWORD_PATTERNS: a match of pattern i is
+# impossible unless the (lowercased) content contains at least one of these byte
+# sequences. Used as a cheap substring pre-filter to skip the regex scan entirely
+# on files that cannot match — see ArtifactCensor._sanitize_file_content.
+# /!\ Keep aligned with KEYWORD_PATTERNS when adding, removing or reordering patterns.
+KEYWORD_PATTERN_REQUIRED_LITERALS: list[tuple[bytes, ...]] = [
+    (b"password",),  # password
+    (b"passwd",),  # passwd
+    (b"api",),  # api key
+    (b"apikey",),  # apikey
+    (b"api",),  # api secret
+    (b"secret",),  # secret token
+    (b"access",),  # access token
+    (b"api",),  # api token
+    (b"refresh",),  # refresh token
+    (b"bearer",),  # Bearer tokens
+    (b"sk-",),  # OpenAI API keys
+    (b"ghp_",),  # GitHub personal access tokens
+    (b"gho_",),  # GitHub OAuth tokens
+    (b"ghu_",),  # GitHub user-to-server tokens
+    (b"ghs_",),  # GitHub server-to-server tokens
+    (b"ghr_",),  # GitHub refresh tokens
+    (b"akia",),  # AWS Access Key ID
+    (b"aws",),  # AWS secret access key
+    (b"mongodb://",),
+    (b"mysql://",),
+    (b"postgresql://",),
+    (b"credential",),
+    (b"private",),  # private key
+    (b"huggingface", b"anthropic", b"openai", b"claude"),  # ML/AI service tokens
+    (b"hf_",),  # Hugging Face tokens
+    (b"ant-",),  # Anthropic API keys
+    (b"jwt", b"webhook", b"slack", b"discord", b"telegram"),  # service secrets
+    (b"encryption",),
+    (b"signing",),
+    (b"xox",),  # Slack tokens
+    (b"--password", b"--api", b"--token", b"--secret"),  # command line arguments
+    (b"--from-literal",),  # oc/kubectl create secret
+    (b"export",),  # shell exports
+]
+
+if len(KEYWORD_PATTERN_REQUIRED_LITERALS) != len(KEYWORD_PATTERNS):
+    raise ValueError(
+        "KEYWORD_PATTERN_REQUIRED_LITERALS is misaligned with KEYWORD_PATTERNS "
+        f"({len(KEYWORD_PATTERN_REQUIRED_LITERALS)} vs {len(KEYWORD_PATTERNS)} entries)"
+    )
+
+# Filename-only patterns: matched against the file basename
+SENSITIVE_BASENAME_PATTERNS = [
+    r".*secret.*",  # Any file with "secret" in the name
+    r".*credential.*",  # Any file with "credential" in the name
+    r".*password.*",  # Any file with "password" in the name
+]
+
+# Path patterns: matched against the full file path
+SENSITIVE_PATH_PATTERNS = [
     r".*\.pem$",  # PEM certificate files
     r".*\.key$",  # Private key files
     r".*\.p12$",  # PKCS#12 certificate files
     r".*\.pfx$",  # PKCS#12 certificate files (Windows)
-    r".*secret.*",  # Any file with "secret" in the name
-    r".*credential.*",  # Any file with "credential" in the name
-    r".*password.*",  # Any file with "password" in the name
     r".*\.ssh/.*",  # SSH directory contents
     r".*/\.ssh/.*",  # SSH directory contents (with path)
     r".*id_rsa.*",  # SSH private keys
@@ -85,8 +147,17 @@ SENSITIVE_FILE_PATTERNS = [
     r".*\.env\..*",  # Environment files with suffixes
 ]
 
+# All sensitive file patterns (basename + path)
+SENSITIVE_FILE_PATTERNS = SENSITIVE_BASENAME_PATTERNS + SENSITIVE_PATH_PATTERNS
+
 # Compile file patterns for better performance
 COMPILED_FILE_PATTERNS = [re.compile(pattern, re.IGNORECASE) for pattern in SENSITIVE_FILE_PATTERNS]
+_COMPILED_BASENAME_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE) for pattern in SENSITIVE_BASENAME_PATTERNS
+]
+_COMPILED_PATH_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE) for pattern in SENSITIVE_PATH_PATTERNS
+]
 
 
 def matches_sensitive_filename(filename: str) -> bool:
@@ -99,27 +170,8 @@ def matches_sensitive_filename(filename: str) -> bool:
     Returns:
         bool: True if the filename indicates a sensitive file
     """
-    from pathlib import Path
-
-    # Filename-only patterns that should match just the basename
-    filename_only_patterns = [
-        r".*secret.*",
-        r".*credential.*",
-        r".*password.*",
-    ]
-
-    # Check filename-only patterns against basename
     basename = Path(filename).name
-    for pattern_str in filename_only_patterns:
-        pattern = re.compile(pattern_str, re.IGNORECASE)
-        if pattern.match(basename):
-            return True
+    if any(pattern.match(basename) for pattern in _COMPILED_BASENAME_PATTERNS):
+        return True
 
-    # Check all other patterns against full path
-    for pattern in COMPILED_FILE_PATTERNS:
-        pattern_str = pattern.pattern
-        if pattern_str not in filename_only_patterns:
-            if pattern.match(filename):
-                return True
-
-    return False
+    return any(pattern.match(filename) for pattern in _COMPILED_PATH_PATTERNS)

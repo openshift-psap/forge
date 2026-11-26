@@ -1,0 +1,235 @@
+# Gateway Envoy / kuadrant wasm-shim stats, from the istio-proxy container of
+# the MaaS gateway pods (merged stats endpoint, port 15020 /stats/prometheus).
+#
+# Source: the praxis-gateway-envoy PodMonitor created by enable_maas_praxis —
+# the platform's own maas-default-gateway-metrics PodMonitor scrapes the same
+# port but only the istio_* request families survive in Prometheus, so the
+# families below exist only through our monitor. Scraped by the system
+# Prometheus (openshift-ingress is a platform namespace, excluded from UWM)
+# and visible through thanos-querier. The full raw scrape is additionally
+# preserved by the capture_prometheus_db_system TSDB dump.
+#
+# Why these series matter: kuadrant_errors is the auth-stage fail-closed
+# counter (each increment is a request the wasm shim killed because the auth
+# gRPC failed — the ~2 s deadline 500s of Findings 3/5 of
+# ag_praxis/orchestration/poc/maas-praxis-500-ext-proc-overflow.md).
+# kuadrant_allowed/denied split the successful auth outcomes from policy
+# denials. The envoy_server_*/cluster_manager_*/istiod series cover gateway
+# health: event-loop stalls (watchdog), config rejects, istiod disconnects.
+#
+# Istio's stats_matcher limits which Envoy stats exist at all: per-cluster
+# stats only survive for the xds-grpc cluster — the payload ext_proc clusters
+# are not observable here (their streams are measured by the praxis_extproc
+# profile from the extproc side).
+#
+# params:
+#   NAMESPACE: namespace of the gateway pods (default openshift-ingress)
+
+- param_defaults:
+    NAMESPACE: "openshift-ingress"
+
+# ── Kuadrant auth outcomes ────────────────────────────────────────────
+
+- query: >-
+    sum by (pod) (rate(kuadrant_allowed{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_allowed_rate_by_pod
+  description: Auth-allowed requests per gateway pod
+  unit: req/s
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (rate(kuadrant_denied{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_denied_rate_by_pod
+  description: Auth-denied requests per gateway pod (policy rejections)
+  unit: req/s
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (rate(kuadrant_errors{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_errors_rate_by_pod
+  description: Auth-stage errors per gateway pod — every increment is a
+    request the wasm shim killed on a failed auth gRPC call (fail-closed);
+    this is the 500-storm counter
+  unit: req/s
+  legendLabels: [pod]
+
+- query: >-
+    sum(rate(kuadrant_allowed{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_allowed_rate
+  description: Total auth-allowed request rate
+  unit: req/s
+
+- query: >-
+    sum(rate(kuadrant_denied{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_denied_rate
+  description: Total auth-denied request rate
+  unit: req/s
+
+- query: >-
+    sum(rate(kuadrant_errors{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_errors_rate
+  description: Total auth-stage error rate (fail-closed kills)
+  unit: req/s
+
+- query: >-
+    sum(rate(kuadrant_hits{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_hits_rate
+  description: Wasm-shim config cache hits
+  unit: 1/s
+
+- query: >-
+    sum(rate(kuadrant_misses{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_misses_rate
+  description: Wasm-shim config cache misses
+  unit: 1/s
+
+- query: >-
+    max by (pod) (kuadrant_configs{namespace="{{.NAMESPACE}}"})
+  metricName: kuadrant_configs
+  description: AuthConfigs loaded in the wasm shim per gateway pod
+  unit: configs
+  legendLabels: [pod]
+
+# ── Wasm shim health ──────────────────────────────────────────────────
+
+- query: >-
+    sum by (pod) (envoy_wasm_envoy_wasm_runtime_v8_active{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_wasm_v8_active
+  description: Active Wasm VMs (the kuadrant shim) per gateway pod
+  unit: vms
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (rate(envoy_wasm_kuadrant_wasm_shim_vm_reload_failure{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: kuadrant_shim_vm_reload_failure_rate
+  description: Kuadrant wasm-shim VM reload failures (config reload errors)
+  unit: 1/s
+  legendLabels: [pod]
+
+# ── Envoy server health ───────────────────────────────────────────────
+
+- query: >-
+    sum by (pod) (envoy_server_live{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_server_live
+  description: Gateway Envoy live per pod (1 = serving)
+  unit: bool
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (envoy_server_uptime{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_server_uptime
+  description: Gateway Envoy uptime per pod (pod restarts reset it)
+  unit: s
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (envoy_server_memory_allocated{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_server_memory_allocated
+  description: Envoy allocated memory per gateway pod
+  unit: bytes
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (envoy_server_memory_heap_size{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_server_memory_heap_size
+  description: Envoy heap size per gateway pod
+  unit: bytes
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (envoy_server_total_connections{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_server_total_connections
+  description: Active downstream connections per gateway pod
+  unit: connections
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod, thread_name) (rate(envoy_server_watchdog_miss{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: envoy_server_watchdog_miss_rate
+  description: Event-loop watchdog misses per pod and thread — nonzero means
+    the Envoy event loop stalled (main_thread misses starve every listener)
+  unit: 1/s
+  legendLabels: [pod, thread_name]
+
+- query: >-
+    sum by (pod, thread_name) (rate(envoy_server_watchdog_mega_miss{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: envoy_server_watchdog_mega_miss_rate
+  description: Severe event-loop stalls per pod and thread
+  unit: 1/s
+  legendLabels: [pod, thread_name]
+
+# ── Config state (CDS/LDS) ────────────────────────────────────────────
+
+- query: >-
+    sum by (pod) (envoy_cluster_manager_active_clusters{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_cluster_manager_active_clusters
+  description: Active Envoy clusters per gateway pod
+  unit: clusters
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (envoy_cluster_manager_warming_clusters{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_cluster_manager_warming_clusters
+  description: Warming Envoy clusters per gateway pod
+  unit: clusters
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (rate(envoy_cluster_manager_cds_update_failure{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: envoy_cds_update_failure_rate
+  description: Cluster config update failures per gateway pod
+  unit: 1/s
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (envoy_listener_manager_total_listeners_active{namespace="{{.NAMESPACE}}"})
+  metricName: envoy_listeners_active
+  description: Active Envoy listeners per gateway pod
+  unit: listeners
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (rate(envoy_listener_manager_lds_update_failure{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: envoy_lds_update_failure_rate
+  description: Listener config update failures per gateway pod
+  unit: 1/s
+  legendLabels: [pod]
+
+# ── Istiod connectivity (xds-grpc cluster — the only cluster stats
+#    stats_matcher lets through) ────────────────────────────────────────
+
+- query: >-
+    sum by (pod) (envoy_cluster_upstream_cx_active{namespace="{{.NAMESPACE}}", cluster_name="xds-grpc"})
+  metricName: envoy_istiod_cx_active
+  description: Active xDS connections to istiod per gateway pod
+  unit: connections
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (rate(envoy_cluster_upstream_cx_protocol_error{namespace="{{.NAMESPACE}}", cluster_name="xds-grpc"}[2m]))
+  metricName: envoy_istiod_cx_protocol_error_rate
+  description: xDS connection protocol errors per gateway pod (connection
+    resets to istiod)
+  unit: 1/s
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (rate(istio_agent_istiod_connection_terminations{namespace="{{.NAMESPACE}}"}[2m]))
+  metricName: istio_agent_istiod_connection_terminations_rate
+  description: Istiod connection terminations per gateway pod
+  unit: 1/s
+  legendLabels: [pod]
+
+- query: >-
+    min by (pod) (istio_agent_cert_expiry_seconds{namespace="{{.NAMESPACE}}"})
+  metricName: istio_agent_cert_expiry_seconds
+  description: Workload certificate time-to-expiry per gateway pod
+  unit: s
+  legendLabels: [pod]
+
+- query: >-
+    sum by (pod) (istio_agent_go_goroutines{namespace="{{.NAMESPACE}}"})
+  metricName: istio_agent_go_goroutines
+  description: pilot-agent goroutines per gateway pod
+  unit: goroutines
+  legendLabels: [pod]

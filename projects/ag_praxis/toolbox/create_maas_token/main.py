@@ -48,6 +48,11 @@ def create_sa_token(args, ctx):
     """Create a ServiceAccount token and write it into the deployer pod."""
     ctx.api_key_length = 0  # set by request_maas_token; default for callers
 
+    token_cmd = f"oc create token {shlex.quote(args.sa_name)} -n {shlex.quote(args.namespace)}"
+    # Safe to log: the SA token is only in the command's stdout, which
+    # handled_secretly keeps out of the logs — the text carries no secret.
+    logger.info(f"<safe command> {token_cmd}")
+
     token_result = oc(
         "create",
         "token",
@@ -57,6 +62,14 @@ def create_sa_token(args, ctx):
         handled_secretly=True,
     )
     sa_token = token_result.stdout.strip()
+
+    copy_cmd = (
+        f"oc -n {shlex.quote(args.deployer_namespace)} exec -i"
+        f" {shlex.quote(args.deployer_pod)} -- sh -c {shlex.quote(f'cat > {TOKEN_PATH_IN_POD}')}"
+    )
+    # Safe to log: the SA token travels via stdin (input_text), never via the
+    # command text.
+    logger.info(f"<safe command> {copy_cmd}")
 
     oc(
         "-n",

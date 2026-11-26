@@ -7,6 +7,7 @@ groups:
     - report_prometheus_metrics
     - report_payload_resources
     - report_auth_saturation
+    - report_500_cliff
 
   release_regression:
     - report_deployment_profile
@@ -26,3 +27,4 @@ groups:
     - report_prometheus_metrics
     - report_payload_resources
     - report_auth_saturation
+    - report_500_cliff

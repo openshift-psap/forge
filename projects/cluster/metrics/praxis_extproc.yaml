@@ -1,0 +1,79 @@
+# praxis ext_proc stream metrics, exposed by the payload-pre-processing /
+# payload-processing pods (odh-praxis-extproc image, container port 9090
+# named "metrics", path /metrics).
+#
+# These pods live in openshift-ingress and are not scraped by Prometheus by
+# default. The PodMonitor making them visible is created by enable_maas_praxis
+# (see verify_podmonitor in that command) and is picked up by the SYSTEM
+# Prometheus (prometheus-k8s): openshift-ingress is a platform namespace
+# (openshift.io/cluster-monitoring label), which the system Prometheus
+# requires and user-workload-monitoring excludes — the same mechanism behind
+# the platform's own maas-default-gateway-metrics PodMonitor for the istio
+# stats. The series reach thanos-querier either way, which is what these
+# queries go through. Note: they will NOT appear in the
+# capture_prometheus_db_uwm TSDB dump (UWM never scrapes this namespace).
+#
+# Why these series matter (Finding 1 of
+# ag_praxis/orchestration/poc/maas-praxis-500-ext-proc-overflow.md): every
+# in-flight streaming request holds an ext_proc stream for its full response
+# duration, so the admission ceiling of the praxis path is
+# extproc_max_requests / stream_duration. These series measure both factors
+# directly: how many streams are admitted per second, and how long each one
+# is held.
+#
+# The exporter's summary quantiles are all zero (broken) — only _sum and
+# _count are meaningful, so no quantile series are captured.
+#
+# params:
+#   NAMESPACE: namespace of the payload deployments (default openshift-ingress)
+#   POD_NAME: payload pod name regex (default payload-.*)
+
+- param_defaults:
+    NAMESPACE: "openshift-ingress"
+    POD_NAME: "payload-.*"
+
+# ── Stream volume ─────────────────────────────────────────────────────
+
+- query: >-
+    sum by (pod) (rate(praxis_extproc_requests_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[2m]))
+  metricName: praxis_extproc_streams_rate_by_pod
+  description: ExtProc stream admission rate per payload pod
+  unit: streams/s
+  legendLabels: [pod]
+
+- query: >-
+    sum(rate(praxis_extproc_requests_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[2m]))
+  metricName: praxis_extproc_streams_rate
+  description: Total ExtProc stream admission rate
+  unit: streams/s
+
+- query: >-
+    praxis_extproc_requests_total{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}
+  metricName: praxis_extproc_requests_total
+  description: Cumulative ExtProc streams processed per pod since pod start
+    (pod bumps between runs reset it — series switch to the new pod name)
+  unit: streams
+  legendLabels: [pod]
+
+# ── Stream duration and occupancy ─────────────────────────────────────
+
+- query: >-
+    sum(rate(praxis_extproc_request_duration_seconds_sum{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[2m]))
+    /
+    sum(rate(praxis_extproc_request_duration_seconds_count{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[2m]))
+  metricName: praxis_extproc_stream_duration_avg
+  description: Average ext_proc stream duration over the window (windowed
+    sum/count rates, not the lifetime average)
+  unit: s
+
+# In-flight stream estimate (Little's law): admission_rate x avg_duration
+# = rate(count) x rate(sum)/rate(count) = rate(sum) — the duration sum's
+# rate is the in-flight stream count directly. Compare against the
+# extproc_max_requests circuit-breaker budget (platform.praxis config):
+# pinned at the budget means the gateway is shedding everything above it.
+- query: >-
+    sum(rate(praxis_extproc_request_duration_seconds_sum{namespace="{{.NAMESPACE}}", pod=~"{{.POD_NAME}}"}[2m]))
+  metricName: praxis_extproc_streams_inflight
+  description: Estimated in-flight ext_proc streams (Little's law) — compare
+    with the extproc_max_requests budget
+  unit: streams
