@@ -547,9 +547,9 @@ def _render_pd_deployment(
                 "deployments.defaults.router_image", default_value=None
             )
         if router_image:
-            manifest["spec"]["router"]["scheduler"]["template"]["containers"][0][
-                "image"
-            ] = router_image
+            manifest["spec"]["router"]["scheduler"]["template"]["containers"][0]["image"] = (
+                router_image
+            )
 
     return manifest
 
