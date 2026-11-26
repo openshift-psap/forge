@@ -238,6 +238,8 @@ def resolve_spool(args, ctx):
     ctx.spool_bytes = _spool_bytes(ctx.namespace, ctx.collector_pod)
     # Start the settle budget only once collection is actually being drained.
     ctx.settle_deadline = time.monotonic() + ctx.settle_timeout_seconds
+    ctx.last_size = None
+    ctx.stable_samples = 0
     if ctx.spool_bytes <= 0:
         return "Spool is empty (expected for zero/late sampling)"
     return f"Spool present ({ctx.spool_bytes} bytes)"
@@ -256,8 +258,7 @@ def wait_for_settle(args, ctx):
     deadline expires the capture is recorded as interrupted instead of claiming
     a graceful drain.
     """
-    deadline = getattr(ctx, "settle_deadline", None)
-    if deadline is not None and time.monotonic() >= deadline:
+    if time.monotonic() >= ctx.settle_deadline:
         ctx.interrupted = True
         return (
             f"Settle deadline of {ctx.settle_timeout_seconds}s expired; "
@@ -266,8 +267,6 @@ def wait_for_settle(args, ctx):
 
     current = _spool_bytes(ctx.namespace, ctx.collector_pod)
     ctx.spool_bytes = max(ctx.spool_bytes, current)
-    ctx.last_size = getattr(ctx, "last_size", None)
-    ctx.stable_samples = getattr(ctx, "stable_samples", 0)
 
     if current == ctx.last_size:
         ctx.stable_samples += 1
@@ -275,12 +274,14 @@ def wait_for_settle(args, ctx):
         ctx.stable_samples = 0
     ctx.last_size = current
 
-    if ctx.stable_samples >= SETTLE_STABLE_SAMPLES:
-        if current == 0:
-            # An empty capture is a valid recorded outcome once it stays empty.
-            return "Spool stayed empty; nothing to settle"
-        return f"Spool settled at {current} bytes"
-    return (False, f"spool size {current} not yet stable")
+    if ctx.stable_samples < SETTLE_STABLE_SAMPLES:
+        return (False, f"spool size {current} not yet stable")
+
+    if current == 0:
+        # An empty capture is a valid recorded outcome once it stays empty.
+        return "Spool stayed empty; nothing to settle"
+
+    return f"Spool settled at {current} bytes"
 
 
 @task

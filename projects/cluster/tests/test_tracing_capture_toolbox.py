@@ -397,6 +397,8 @@ def _settle_ctx(tmp_path: Path, **overrides):
         "settle_timeout_seconds": 300,
         "settle_deadline": time.monotonic() + 300,
         "spool_bytes": 0,
+        "last_size": None,
+        "stable_samples": 0,
     }
     values.update(overrides)
     return _Ctx(**values)
