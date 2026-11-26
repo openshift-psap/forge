@@ -5,6 +5,7 @@ resources:
   # - resolve-job.yaml
   - task-forge-step.yaml
   - pipeline-full.yaml
+  - pipeline-ibmcloud-create-destroy.yaml
   - pipeline-launcher.yaml
   - pipeline-nightly.yaml
   - pipeline-prepare-only.yaml

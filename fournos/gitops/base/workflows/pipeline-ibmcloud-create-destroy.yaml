@@ -1,0 +1,62 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: forge-ibmcloud-create-destroy
+  annotations:
+    fournos.dev/resolve-image: image-registry.openshift-image-registry.svc:5000/${NAMESPACE}/forge-core:latest
+spec:
+  workspaces:
+    - name: artifacts
+  params:
+    - name: fjob-name
+      type: string
+    - name: fournos-workload-namespace
+      type: string
+    - name: kubeconfig-secret
+      type: string
+  tasks:
+    - name: create
+      timeout: 4h
+      taskRef:
+        name: forge-step
+      workspaces:
+        - name: artifacts
+          workspace: artifacts
+          subPath: public
+        - name: internal
+          workspace: artifacts
+          subPath: internal
+      params:
+        - name: fjob-name
+          value: "$(params.fjob-name)"
+        - name: fournos-workload-namespace
+          value: "$(params.fournos-workload-namespace)"
+        - name: kubeconfig-secret
+          value: "$(params.kubeconfig-secret)"
+        - name: job-step
+          value: ibmcloud-create
+        - name: job-step-name
+          value: 00__ibmcloud-create
+  finally:
+    - name: destroy
+      timeout: 59m
+      taskRef:
+        name: forge-step
+      workspaces:
+        - name: artifacts
+          workspace: artifacts
+          subPath: public
+        - name: internal
+          workspace: artifacts
+          subPath: internal
+      params:
+        - name: fjob-name
+          value: "$(params.fjob-name)"
+        - name: fournos-workload-namespace
+          value: "$(params.fournos-workload-namespace)"
+        - name: kubeconfig-secret
+          value: "$(params.kubeconfig-secret)"
+        - name: job-step
+          value: ibmcloud-destroy
+        - name: job-step-name
+          value: 01__ibmcloud-destroy
