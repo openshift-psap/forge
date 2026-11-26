@@ -28,7 +28,11 @@ are rejected. Defaults remain in the orchestration configuration.
 The same public module exposes `validate_vault_directory(vault_dir, for_create=...)`
 and the required filename lists. Orchestration and toolbox entrypoints validate
 that required files are readable and nonempty. Create requires the full bundle;
-destroy requires only `ibmcloud-api-key`. Validation never logs credential contents.
+destroy requires `ibmcloud-api-key` and `pull-secret` (to extract the matching
+installer from the saved release payload). The mandatory vault declaration requires
+those two files; operator and SSH files are optional at that layer so teardown
+can proceed without them. Create's public validator still requires the full bundle.
+Validation never logs credential contents.
 Standalone callers can use these contracts before invoking either toolbox.
 
 The configuration step uses a private, compact JSON copy of the pull secret so

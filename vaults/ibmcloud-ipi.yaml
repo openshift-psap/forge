@@ -4,18 +4,25 @@ content:
   ibmcloud-api-key:
     description: Infrastructure API key used to create and destroy the cluster.
   ibmcloud-cloud-controller-manager-api-key:
+    optional: true  # Required by create, not by teardown.
     description: IAM API key for the OpenShift cloud controller manager.
   ibmcloud-cluster-csi-drivers-api-key:
+    optional: true  # Required by create, not by teardown.
     description: IAM API key for the OpenShift CSI storage drivers.
   ibmcloud-image-registry-api-key:
+    optional: true  # Required by create, not by teardown.
     description: IAM API key for the OpenShift image registry.
   ibmcloud-ingress-operator-api-key:
+    optional: true  # Required by create, not by teardown.
     description: IAM API key for the OpenShift ingress operator.
   ibmcloud-machine-api-api-key:
+    optional: true  # Required by create, not by teardown.
     description: IAM API key for the OpenShift machine API.
   pull-secret:
     description: Registry authentication JSON for the selected OpenShift payload.
   ssh-publickey:
+    optional: true  # Required by create, not by teardown.
     description: Public half of the SSH key installed on cluster machines.
   ssh-privatekey:
+    optional: true  # Required by create, not by teardown.
     description: Matching unencrypted SSH private key for installer diagnostics.

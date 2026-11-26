@@ -21,6 +21,7 @@ from projects.ibmcloud_cluster.toolbox.create import main
 from projects.ibmcloud_cluster.toolbox.destroy import main as destroy
 from projects.ibmcloud_cluster.toolbox.public import (
     CREATE_VAULT_FILES,
+    DESTROY_VAULT_FILES,
     ClusterConfig,
     validate_vault_directory,
 )
@@ -189,12 +190,107 @@ class WrapperTests(unittest.TestCase):
                 )
                 self.assertNotEqual(first["CLUSTER_NAME"], second["CLUSTER_NAME"])
 
-    def test_destroy_requires_only_infrastructure_credentials(self):
+    def test_destroy_requires_only_teardown_credentials(self):
         self.run_action("create")
         for name in CREATE_VAULT_FILES:
-            if name != "ibmcloud-api-key":
+            if name not in DESTROY_VAULT_FILES:
                 (self.vault_dir / name).unlink()
         self.assertEqual(self.run_action("destroy"), {"status": "destroyed"})
+
+    def test_ci_destroy_accepts_reduced_bundle_with_real_vault_validation(self):
+        from projects.ibmcloud_cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        self.run_action("create")
+        for name in CREATE_VAULT_FILES:
+            if name not in DESTROY_VAULT_FILES:
+                (self.vault_dir / name).unlink()
+        with (
+            patch.dict(
+                os.environ, {"FOURNOS_CI": "true", "IBMCLOUD_IPI_PROFILE_PATH": str(self.vault_dir)}
+            ),
+            patch.object(env, "FORGE_SHARED_DIR", self.directory),
+            patch.object(ci.vault, "_vault_manager", None),
+            patch.object(ci.vault, "_strict_validation_enabled", True),
+        ):
+            self.assertEqual(ci.lifecycle("destroy"), 0)
+        self.assertEqual(self.calls[-1][0], "destroy")
+        self.assertTrue((self.state / "destroy.succeeded").is_file())
+
+    def test_ci_create_requires_full_bundle_with_real_vault_validation(self):
+        from projects.ibmcloud_cluster.orchestration import ci
+
+        (self.vault_dir / "ibmcloud-machine-api-api-key").unlink()
+        with (
+            patch.dict(
+                os.environ, {"FOURNOS_CI": "true", "IBMCLOUD_IPI_PROFILE_PATH": str(self.vault_dir)}
+            ),
+            patch.object(env, "FORGE_SHARED_DIR", self.directory),
+            patch.object(ci.config, "project", SimpleNamespace(get_config=lambda _: self.settings)),
+            patch.object(ci.vault, "_vault_manager", None),
+            patch.object(ci.vault, "_strict_validation_enabled", True),
+        ):
+            with self.assertRaisesRegex(ValueError, "ibmcloud-machine-api-api-key"):
+                ci.lifecycle("create")
+        self.assertFalse((self.directory / "ibmcloud").exists())
+        self.assertEqual(self.calls, [])
+
+    def test_ci_destroy_rejects_missing_teardown_files_with_real_vault_validation(self):
+        from projects.ibmcloud_cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        self.run_action("create")
+        for name in DESTROY_VAULT_FILES:
+            with self.subTest(filename=name):
+                credential = self.vault_dir / name
+                original_content = credential.read_text()
+                credential.unlink()
+                with (
+                    patch.dict(
+                        os.environ,
+                        {"FOURNOS_CI": "true", "IBMCLOUD_IPI_PROFILE_PATH": str(self.vault_dir)},
+                    ),
+                    patch.object(env, "FORGE_SHARED_DIR", self.directory),
+                    patch.object(env, "BASE_ARTIFACT_DIR", self.public),
+                    patch.object(ci.vault, "_vault_manager", None),
+                    patch.object(ci.vault, "_strict_validation_enabled", True),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "mandatory vaults failed validation"):
+                        ci.lifecycle("destroy")
+                self.assertFalse((self.state / "destroy.succeeded").exists())
+                credential.write_text(original_content)
+        self.assertNotIn("destroy", [step for step, _ in self.calls])
+
+    def test_ci_missing_teardown_vault_preserves_recovery_details_and_reports_failure(self):
+        from projects.ibmcloud_cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        self.run_action("create")
+        self.vault_dir.rename(self.directory / "unavailable-vault")
+        with (
+            patch.dict(
+                os.environ, {"FOURNOS_CI": "true", "IBMCLOUD_IPI_PROFILE_PATH": str(self.vault_dir)}
+            ),
+            patch.object(env, "FORGE_SHARED_DIR", self.directory),
+            patch.object(env, "BASE_ARTIFACT_DIR", self.public),
+            patch.object(ci.vault, "_vault_manager", None),
+            patch.object(ci.vault, "_strict_validation_enabled", True),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "mandatory vaults failed validation"):
+                ci.lifecycle("destroy")
+        self.assertEqual(
+            json.loads((self.public / "ibmcloud-resource-group.json").read_text()),
+            {"resourceGroupName": "test"},
+        )
+        notifications = list(
+            (self.public / "000__ci_metadata/notifications").glob("*__ibmcloud-cleanup-failed.txt")
+        )
+        self.assertEqual(len(notifications), 1)
+        self.assertIn("Retain the job, PipelineRun, and private PVC", notifications[0].read_text())
+        self.assertTrue((self.state / "install/installer/metadata.json").is_file())
+        self.assertTrue((self.state / "install/installer/private-state").is_file())
+        self.assertFalse((self.state / "destroy.succeeded").exists())
+        self.assertNotIn("destroy", [step for step, _ in self.calls])
 
     def test_create_destroy_reuses_saved_inputs_and_installer_assets(self):
         created = self.run_action("create")
@@ -421,6 +517,59 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(json.loads(artifact_path.read_text()), {"resourceGroupName": "test"})
         self.assertTrue((self.state / "install/installer/metadata.json").is_file())
 
+    def test_ci_preserves_install_error_when_recovery_artifact_write_also_fails(self):
+        from projects.ibmcloud_cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        artifact_path = self.public / "ibmcloud-resource-group.json"
+        artifact_path.mkdir(parents=True)
+        failure = RuntimeError("dummy-private-installer-output")
+
+        def fail_install(step, *args):
+            self.run_step_command(step, *args)
+            if step == "install":
+                raise failure
+
+        with (
+            patch.object(env, "FORGE_SHARED_DIR", self.directory),
+            patch.object(ci.config, "project", SimpleNamespace(get_config=lambda _: self.settings)),
+            patch.object(ci.vault, "init"),
+            patch.object(
+                ci.vault, "get_vault_content_path", return_value=self.vault_dir / "ibmcloud-api-key"
+            ),
+            patch.object(main, "run_step_command", fail_install),
+            self.assertLogs(ci.__name__, level="WARNING") as logs,
+        ):
+            with self.assertRaises(TaskExecutionError) as raised:
+                ci.lifecycle("create")
+        self.assertIs(raised.exception.original_exception, failure)
+        self.assertIn("preserving the original installation error", logs.output[0])
+        self.assertNotIn("dummy-private-installer-output", "\n".join(logs.output))
+        self.assertNotIn("test-credential", "\n".join(logs.output))
+        self.assertTrue((self.state / "install/installer/metadata.json").is_file())
+        self.assertTrue(artifact_path.is_dir())
+        self.assertFalse((self.public / "ibmcloud-status.json").exists())
+
+    def test_ci_reports_artifact_write_failure_after_successful_install(self):
+        from projects.ibmcloud_cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        artifact_path = self.public / "ibmcloud-resource-group.json"
+        artifact_path.mkdir(parents=True)
+        with (
+            patch.object(env, "FORGE_SHARED_DIR", self.directory),
+            patch.object(ci.config, "project", SimpleNamespace(get_config=lambda _: self.settings)),
+            patch.object(ci.vault, "init"),
+            patch.object(
+                ci.vault, "get_vault_content_path", return_value=self.vault_dir / "ibmcloud-api-key"
+            ),
+        ):
+            with self.assertRaises(IsADirectoryError):
+                ci.lifecycle("create")
+        self.assertEqual(self.calls[-1][0], "install")
+        self.assertTrue((self.state / "install/installer/metadata.json").is_file())
+        self.assertFalse((self.public / "ibmcloud-status.json").exists())
+
     def test_vault_constant_matches_resolver_configuration(self):
         from projects.ibmcloud_cluster.orchestration import ci
 
@@ -530,6 +679,35 @@ class WrapperTests(unittest.TestCase):
         self.assertNotIn("dummy-private-release-output", message)
         self.assertNotIn("test-credential", message)
         self.assertTrue((self.state / "install/installer/private-state").is_file())
+
+    def test_ci_preserves_teardown_error_when_notification_directory_is_a_file(self):
+        from projects.ibmcloud_cluster.orchestration import ci
+
+        self.state = self.directory / "ibmcloud"
+        self.run_action("create")
+        notifications_path = self.public / "000__ci_metadata/notifications"
+        notifications_path.parent.mkdir(parents=True, exist_ok=True)
+        notifications_path.write_text("Test obstruction")
+        failure = RuntimeError("dummy-private-release-output")
+        with (
+            patch.object(env, "FORGE_SHARED_DIR", self.directory),
+            patch.object(env, "BASE_ARTIFACT_DIR", self.public),
+            patch.object(ci.vault, "init"),
+            patch.object(
+                ci.vault, "get_vault_content_path", return_value=self.vault_dir / "ibmcloud-api-key"
+            ),
+            patch.object(destroy, "run_step_command", side_effect=failure),
+            self.assertLogs(ci.__name__, level="WARNING") as logs,
+        ):
+            with self.assertRaises(TaskExecutionError) as raised:
+                ci.lifecycle("destroy")
+        self.assertIs(raised.exception.original_exception, failure)
+        self.assertIn("preserving the original teardown error", logs.output[0])
+        self.assertNotIn("dummy-private-release-output", "\n".join(logs.output))
+        self.assertNotIn("test-credential", "\n".join(logs.output))
+        self.assertTrue(notifications_path.is_file())
+        self.assertTrue((self.state / "install/installer/private-state").is_file())
+        self.assertFalse((self.state / "destroy.succeeded").exists())
 
     @unittest.skipUnless(
         importlib.util.find_spec("jsonpath_ng"), "Requires Forge config dependencies"

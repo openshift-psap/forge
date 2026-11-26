@@ -2,6 +2,7 @@
 """Ephemeral IBM Cloud cluster lifecycle, without a workload test phase."""
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from projects.core.library import config, env, run, vault
 from projects.ibmcloud_cluster.toolbox.create.main import run as create_ibmcloud
 from projects.ibmcloud_cluster.toolbox.destroy.main import run as destroy_ibmcloud
 from projects.ibmcloud_cluster.toolbox.public import ClusterConfig, validate_vault_directory
+
+logger = logging.getLogger(__name__)
 
 IBM_CLOUD_VAULT = "ibmcloud-ipi"
 
@@ -46,14 +49,9 @@ def lifecycle(action: str) -> int:
     if env.FORGE_SHARED_DIR is None:
         raise ValueError("The shared pipeline workspace is required")
     state = env.FORGE_SHARED_DIR / "ibmcloud"
-    vault_dir = ""
-    # Local cleanup after confirmed cloud deletion requires no credentials.
-    if action == "create" or (
-        (state / "install.started").exists() and not (state / "destroy.succeeded").exists()
-    ):
+    if action == "create":
         vault.init(mandatory_vaults=[IBM_CLOUD_VAULT])
         vault_dir = str(vault.get_vault_content_path(IBM_CLOUD_VAULT, "ibmcloud-api-key").parent)
-    if action == "create":
         settings = ClusterConfig.model_validate(config.project.get_config("ibmcloud"))
         validate_vault_directory(vault_dir, for_create=True)
         settings_file = env.FORGE_SHARED_DIR / "ibmcloud-settings.yaml"
@@ -65,7 +63,15 @@ def lifecycle(action: str) -> int:
                 settings_file_path=str(settings_file),
                 job_name=os.environ["FJOB_NAME"],
             )
-        finally:
+        except Exception:
+            try:
+                write_resource_group_artifact(state)
+            except Exception:
+                logger.warning(
+                    "Unable to save resource-group recovery artifact; preserving the original installation error"
+                )
+            raise
+        else:
             write_resource_group_artifact(state)
     else:
         try:
@@ -73,16 +79,29 @@ def lifecycle(action: str) -> int:
         finally:
             # Recovery-artifact failures must never prevent cloud cleanup.
             try:
-                if vault_dir:
+                vault_dir = ""
+                # Local cleanup after confirmed cloud deletion needs no credentials.
+                if (state / "install.started").exists() and not (
+                    state / "destroy.succeeded"
+                ).exists():
+                    vault.init(mandatory_vaults=[IBM_CLOUD_VAULT])
+                    vault_dir = str(
+                        vault.get_vault_content_path(IBM_CLOUD_VAULT, "ibmcloud-api-key").parent
+                    )
                     validate_vault_directory(vault_dir, for_create=False)
                 result = destroy_ibmcloud(state_dir=str(state), vault_dir=vault_dir)
             except Exception:
-                ci_lib.add_notification_file(
-                    "ibmcloud-cleanup-failed",
-                    "IBM Cloud cleanup failed. Retain the job, PipelineRun, and private PVC "
-                    "state until cleanup is completed. The resource group is recorded in "
-                    "ibmcloud-resource-group.json when installer metadata is available.",
-                )
+                try:
+                    ci_lib.add_notification_file(
+                        "ibmcloud-cleanup-failed",
+                        "IBM Cloud cleanup failed. Retain the job, PipelineRun, and private PVC "
+                        "state until cleanup is completed. The resource group is recorded in "
+                        "ibmcloud-resource-group.json when installer metadata is available.",
+                    )
+                except OSError:
+                    logger.warning(
+                        "Unable to write cleanup notification; preserving the original teardown error"
+                    )
                 raise
     (env.ARTIFACT_DIR / "ibmcloud-status.json").write_text(json.dumps(result, indent=2) + "\n")
     return 0

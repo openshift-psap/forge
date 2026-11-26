@@ -73,7 +73,7 @@ CREATE_VAULT_FILES = (
     "ssh-publickey",
     "ssh-privatekey",
 )
-DESTROY_VAULT_FILES = ("ibmcloud-api-key",)
+DESTROY_VAULT_FILES = ("ibmcloud-api-key", "pull-secret")
 
 
 def validate_vault_directory(vault_dir: str | Path, *, for_create: bool) -> Path:

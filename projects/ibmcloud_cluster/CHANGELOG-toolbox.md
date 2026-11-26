@@ -2,6 +2,17 @@
 
 ## ibmcloud
 
+- Keep installation failures primary when recovery-artifact writing also fails,
+  while reporting artifact failures after otherwise successful installation.
+
+- Save recovery artifacts before teardown vault setup and report credential
+  initialization failures through the cleanup notification path.
+
+- Preserve the primary teardown error if notification-directory setup fails.
+
+- Allow teardown with only the IBM API key and pull secret, without requiring
+  create-only operator or SSH credentials during CI vault initialization.
+
 - Save only the installer metadata resource-group name to a public recovery
   artifact without printing it or exposing the full metadata file.
 
