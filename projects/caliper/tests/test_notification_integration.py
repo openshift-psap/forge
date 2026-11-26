@@ -112,6 +112,43 @@ def test_notification_formatting_success():
     print("✅ Success notification formatting test passed")
 
 
+def test_notification_lists_trace_reports():
+    status = PostprocessStatus(
+        final_status=FinalPostprocessStatus.SUCCESS,
+        success=True,
+        base_directory="/test/artifacts",
+        test_phase=PostprocessTestPhaseInfo(phase=PostprocessTestPhase.SUCCESS),
+        steps=[
+            {
+                "trace_reports": {
+                    "status": "success",
+                    "completed_at": time.time(),
+                    "output_dir": "reports",
+                    "output_files": [
+                        {
+                            "source": "tracing",
+                            "scope": "000__workload",
+                            "title": "Trace distribution",
+                            "path": "000__workload/tracing/trace_distribution_report.html",
+                        }
+                    ],
+                }
+            },
+        ],
+    )
+
+    def get_file_link(file_path, text: str = None):
+        return f"[{text}](https://example.com/{file_path})"
+
+    text = format_postprocess_status_notification(status, get_file_link)
+
+    assert "- ✅ **trace_reports**: `success`" in text
+    assert "**Test `000__workload`**" in text
+    assert "**Tracing**:" in text
+    assert "📄 [Trace distribution](" in text
+    assert "reports/000__workload/tracing/trace_distribution_report.html)" in text
+
+
 def test_notification_formatting_regression():
     """Test notification formatting for regression detection."""
     status = PostprocessStatus(

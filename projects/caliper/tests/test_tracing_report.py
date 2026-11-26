@@ -148,6 +148,16 @@ def test_write_report_creates_json_and_html(tmp_path: Path):
     assert "generate" in html_text
 
 
+def _postprocessing_dir(tmp_path: Path, monkeypatch) -> Path:
+    """The postprocessing directory, which is ARTIFACT_DIR while postprocessing runs."""
+    from projects.core.library import env
+
+    postprocessing_dir = tmp_path / "05__postprocessing"
+    postprocessing_dir.mkdir()
+    monkeypatch.setattr(env, "ARTIFACT_DIR", postprocessing_dir)
+    return postprocessing_dir
+
+
 def test_orchestrator_scans_artifact_tree_not_output_dir(tmp_path: Path, monkeypatch):
     """Postprocess runs in NNN__postprocessing; bundles live in the artifact tree.
 
@@ -158,17 +168,63 @@ def test_orchestrator_scans_artifact_tree_not_output_dir(tmp_path: Path, monkeyp
 
     artifacts_dir = tmp_path / "artifacts"
     _write_bundle(artifacts_dir)
-
-    postprocessing_dir = tmp_path / "05__postprocessing"
-    postprocessing_dir.mkdir()
+    postprocessing_dir = _postprocessing_dir(tmp_path, monkeypatch)
 
     orchestrator = CaliperPostprocessOrchestrator(
         {}, artifacts_dir=artifacts_dir, output_dir=postprocessing_dir
     )
     orchestrator._generate_trace_reports()
 
-    report = artifacts_dir / "000__workload" / "reports" / tracing_report.REPORT_HTML_FILENAME
-    assert report.is_file()
+    report_dir = postprocessing_dir / "reports" / "000__workload" / "tracing"
+    assert (report_dir / tracing_report.REPORT_HTML_FILENAME).is_file()
+    assert (report_dir / tracing_report.REPORT_JSON_FILENAME).is_file()
+
+
+def test_reports_are_written_to_postprocessing_and_recorded(tmp_path: Path, monkeypatch):
+    """Reports land in the postprocessing directory, never in the test node.
+
+    The step lists them like visualize reports, so the reports index and the
+    notification link them.
+    """
+    from projects.caliper.orchestration.postprocess import CaliperPostprocessOrchestrator
+
+    artifacts_dir = tmp_path / "artifacts"
+    _write_bundle(artifacts_dir)
+    test_dir_before = sorted(p.relative_to(artifacts_dir) for p in artifacts_dir.rglob("*"))
+    postprocessing_dir = _postprocessing_dir(tmp_path, monkeypatch)
+
+    orchestrator = CaliperPostprocessOrchestrator(
+        {}, artifacts_dir=artifacts_dir, output_dir=postprocessing_dir
+    )
+    orchestrator._generate_trace_reports()
+
+    assert sorted(p.relative_to(artifacts_dir) for p in artifacts_dir.rglob("*")) == (
+        test_dir_before
+    )
+    step = orchestrator.steps[-1]["trace_reports"]
+    assert step["status"] == "success"
+    assert step["generated_files"] == 1
+    assert step["output_files"] == [
+        {
+            "path": f"000__workload/tracing/{tracing_report.REPORT_HTML_FILENAME}",
+            "title": "Trace distribution",
+            "scope": "000__workload",
+            "source": "tracing",
+        }
+    ]
+    assert step["output_dir"] == "reports"
+    assert (postprocessing_dir / "reports" / step["output_files"][0]["path"]).is_file()
+
+
+def test_no_bundle_records_no_trace_report_step(tmp_path: Path):
+    from projects.caliper.orchestration.postprocess import CaliperPostprocessOrchestrator
+
+    orchestrator = CaliperPostprocessOrchestrator(
+        {}, artifacts_dir=tmp_path / "artifacts", output_dir=tmp_path / "post"
+    )
+    orchestrator._generate_trace_reports()
+
+    assert orchestrator.steps == []
 
 
 def test_report_failure_notifies_and_marks_result_failed(tmp_path, monkeypatch):

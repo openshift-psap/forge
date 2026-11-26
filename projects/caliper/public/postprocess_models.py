@@ -97,6 +97,20 @@ class VisualizeStepResult(BaseStepResult):
 
 
 @dataclass
+class TraceReportsStepResult(BaseStepResult):
+    """Trace report step result.
+
+    ``output_files`` has the same shape as the visualize step's, so the reports
+    index and the notification list trace reports like visualize reports.
+    """
+
+    output_files: list[dict[str, str]] = field(default_factory=list)
+    output_dir: str | None = None
+    generated_files: int = 0
+    error: str | None = None
+
+
+@dataclass
 class KpiGenerateStepResult(BaseStepResult):
     """KPI generation step result."""
 

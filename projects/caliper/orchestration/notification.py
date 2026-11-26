@@ -108,7 +108,7 @@ def _format_step_details_with_formatters(
         return _format_s3_import_step(step_data, get_file_link)
     elif step_name == "analyse_kpis":
         return _format_analyse_kpis_step(step_data, get_file_link)
-    elif step_name == "visualize":
+    elif step_name in ("visualize", "trace_reports"):
         return _format_visualize_step(step_data, get_file_link)
     else:
         return _format_generic_file_step(step_data, get_file_link)
