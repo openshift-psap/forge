@@ -1,7 +1,10 @@
-"""Fetch pinned release steps and adapt their CI paths for the internal workspace."""
+"""Shared release-script preparation, private execution, and path validation."""
 
 from __future__ import annotations
 
+import os
+import re
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -105,3 +108,39 @@ def defaults(source: Path) -> dict[str, str]:
             value = option.get("default", "")
             values[option["name"]] = str(value).lower() if isinstance(value, bool) else str(value)
     return values
+
+
+def state_directory(state_dir: str) -> Path:
+    """Validate a shell-safe internal path outside the public artifact trees."""
+    root = Path(state_dir).resolve()
+    if not state_dir or not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(root)):
+        raise ValueError("Internal workspace path must be shell-safe")
+    for key in ("ARTIFACT_DIR", "ARTIFACT_BASE_DIR", "FORGE_BASE_ARTIFACT_DIR"):
+        if os.environ.get(key):
+            public = Path(os.environ[key]).resolve()
+            if root == public or root in public.parents or public in root.parents:
+                raise ValueError("Installer state must be outside the artifact workspace")
+    return root
+
+
+def run_step_command(step: str, root: Path, runtime: Path, values: dict) -> None:
+    # Raw upstream output can contain credentials. It stays off Forge's public stdout.
+    child_env = {
+        **os.environ,
+        **values,
+        "HOME": str(runtime),
+        "TMPDIR": str(runtime),
+        "FORGE_RUNTIME_DIR": str(runtime),
+    }
+    log_path = root / "logs" / f"{runtime.name}-{step}.log"
+    with log_path.open("w") as log:
+        result = subprocess.run(
+            ["bash", str(root / "release" / f"{step}-commands.sh")],
+            cwd=runtime,
+            env=child_env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    if result.returncode:
+        raise RuntimeError(f"Release step {step} failed; inspect the internal workspace logs")

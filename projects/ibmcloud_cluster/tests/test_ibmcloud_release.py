@@ -17,8 +17,9 @@ from unittest.mock import patch
 
 import yaml
 
-from projects.cluster.toolbox.ibmcloud import main, upstream
 from projects.core.library import env
+from projects.ibmcloud_cluster.toolbox import common as upstream
+from projects.ibmcloud_cluster.toolbox.create import main
 
 
 class ReleaseTests(unittest.TestCase):
@@ -30,29 +31,29 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.settings = yaml.safe_load(
-            (env.FORGE_HOME / "projects/cluster/orchestration/config.yaml").read_text()
+            (env.FORGE_HOME / "projects/ibmcloud_cluster/orchestration/config.yaml").read_text()
         )["ibmcloud"]
         self.settings.update(
             base_domain="example.com",
             resource_group="test",
-            release_image="quay.io/test/release@sha256:" + "a" * 64,
         )
-        self.profile = self.root / "profile"
-        self.profile.mkdir()
+        self.settings["release"]["image"] = "quay.io/test/release@sha256:" + "a" * 64
+        self.vault_dir = self.root / "vault_dir"
+        self.vault_dir.mkdir()
         definition = yaml.safe_load((env.FORGE_HOME / "vaults/ibmcloud-ipi.yaml").read_text())
         for name in definition["content"]:
-            (self.profile / name).write_text("dummy-test-credential")
-        (self.profile / "pull-secret").write_text(
+            (self.vault_dir / name).write_text("dummy-test-credential")
+        (self.vault_dir / "pull-secret").write_text(
             json.dumps({"auths": {"example.com": {"auth": "dummy"}}})
         )
-        (self.profile / "ssh-publickey").write_text("ssh-ed25519 AAAADUMMY test\n")
+        (self.vault_dir / "ssh-publickey").write_text("ssh-ed25519 AAAADUMMY test\n")
         for name in ("shared", "logs", "install"):
             (self.root / name).mkdir()
         self.urls = []
 
         def committed_source(url, timeout):
             self.urls.append(url)
-            prefix = f"https://raw.githubusercontent.com/openshift/release/{self.settings['release_commit']}/"
+            prefix = f"https://raw.githubusercontent.com/openshift/release/{self.settings['release']['commit']}/"
             self.assertTrue(url.startswith(prefix))
             result = subprocess.run(
                 [
@@ -60,7 +61,7 @@ class ReleaseTests(unittest.TestCase):
                     "-C",
                     str(self.repo),
                     "show",
-                    f"{self.settings['release_commit']}:{url.removeprefix(prefix)}",
+                    f"{self.settings['release']['commit']}:{url.removeprefix(prefix)}",
                 ],
                 check=True,
                 capture_output=True,
@@ -69,8 +70,10 @@ class ReleaseTests(unittest.TestCase):
 
         # Only source retrieval is replaced: configuration and teardown run as Bash subprocesses.
         with patch.object(upstream.urllib.request, "urlopen", committed_source):
-            upstream.prepare(self.settings["release_commit"], self.root / "release")
-        self.values = main.environment(self.settings, self.root, self.profile)
+            upstream.prepare(self.settings["release"]["commit"], self.root / "release")
+        self.values = main.environment(
+            self.settings, self.root, self.vault_dir, "ibmcloud-test-abcde"
+        )
 
     def test_pinned_sources_adapt_before_any_cloud_operation(self):
         self.assertEqual(len(self.urls), 10)
@@ -84,8 +87,9 @@ class ReleaseTests(unittest.TestCase):
 
     def test_real_configuration_scripts_with_dummy_credentials(self):
         for step in ("conf", "ibmcloud", "credentials"):
-            main.execute(step, self.root, self.root / "install", self.values)
+            main.run_step_command(step, self.root, self.root / "install", self.values)
         config = yaml.safe_load((self.root / "shared/install-config.yaml").read_text())
+        self.assertEqual(config["metadata"]["name"], self.values["CLUSTER_NAME"])
         self.assertEqual(config["platform"]["ibmcloud"]["region"], "au-syd")
         self.assertEqual(config["controlPlane"]["platform"]["ibmcloud"]["type"], "bxf-8x32")
         self.assertEqual(config["compute"][0]["platform"]["ibmcloud"]["type"], "bxf-16x64")
@@ -97,12 +101,15 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(yaml.safe_load(manifest.read_text())["kind"], "Secret")
 
     def configure_cluster(self):
-        args = SimpleNamespace(settings=self.settings)
+        args = SimpleNamespace()
         context = SimpleNamespace(
-            root=self.root,
-            profile=self.profile,
+            state_dir=self.root,
+            settings=self.settings,
+            vault_dir=self.vault_dir,
             runtime=self.root / "install",
-            values=main.environment(self.settings, self.root, self.profile),
+            values=main.environment(
+                self.settings, self.root, self.vault_dir, "ibmcloud-test-abcde"
+            ),
         )
         main.prepare_config_profile.original_func(args, context)
         main.configure_cluster.original_func(args, context)
@@ -111,7 +118,7 @@ class ReleaseTests(unittest.TestCase):
     def test_multiline_pull_secret_is_normalized_without_modifying_vault(self):
         secret = {"auths": {"example.com": {"auth": "dummy-test-credential"}}}
         original = json.dumps(secret, indent=2)
-        source = self.profile / "pull-secret"
+        source = self.vault_dir / "pull-secret"
         source.write_text(original)
         source.chmod(0o444)
         config = self.configure_cluster()
@@ -174,7 +181,7 @@ chmod +x "$FORGE_RUNTIME_DIR/openshift-install"
             "FAKE_DESTROY_MARKER": str(marker),
         }
         try:
-            main.execute("destroy", self.root, runtime, values)
+            main.run_step_command("destroy", self.root, runtime, values)
         except RuntimeError:
             # This fixture contains dummy credentials only; expose its failure for debugging.
             self.fail((self.root / "logs/destroy-destroy.log").read_text())
@@ -185,16 +192,16 @@ chmod +x "$FORGE_RUNTIME_DIR/openshift-install"
         script = self.root / "release/test-commands.sh"
         script.write_text("echo dummy-test-credential; echo dummy-test-credential >&2; exit 7\n")
         with self.assertRaises(RuntimeError) as raised:
-            main.execute("test", self.root, self.root / "install", self.values)
+            main.run_step_command("test", self.root, self.root / "install", self.values)
         self.assertNotIn("dummy-test-credential", str(raised.exception))
         self.assertIn("dummy-test-credential", (self.root / "logs/install-test.log").read_text())
 
 
 class PipelineTests(unittest.TestCase):
-    def test_forge_launcher_finds_executable_cluster_ci_script(self):
+    def test_forge_launcher_finds_executable_ibmcloud_ci_script(self):
         from projects.core.ci_entrypoint.run_common import find_script
 
-        project = env.FORGE_HOME / "projects/cluster"
+        project = env.FORGE_HOME / "projects/ibmcloud_cluster"
         self.assertEqual(find_script(project, "ci"), project / "orchestration/ci.py")
 
     def test_two_tasks_bind_internal_storage_and_destroy_runs_in_finally(self):

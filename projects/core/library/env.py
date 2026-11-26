@@ -10,6 +10,8 @@ from io import StringIO
 BASE_ARTIFACT_DIR = None  # Immutable copy of the initial ARTIFACT_DIR
 _GLOBAL_ARTIFACT_DIR = None  # Internal global fallback
 FORGE_HOME = pathlib.Path(__file__).parents[3]
+# Optional private workspace shared across pipeline steps; never an artifact root.
+FORGE_SHARED_DIR: pathlib.Path | None = None
 
 # Thread-local storage for ARTIFACT_DIR (thread-safe)
 _tls_artifact_dir = threading.local()
@@ -85,7 +87,7 @@ def reset_artifact_dir():
 
 
 def init(daily_artifact_dir=False):
-    global ARTIFACT_DIR, BASE_ARTIFACT_DIR
+    global ARTIFACT_DIR, BASE_ARTIFACT_DIR, FORGE_SHARED_DIR
 
     # Configure global logging to show INFO level messages
     logging.basicConfig(
@@ -129,6 +131,11 @@ def init(daily_artifact_dir=False):
     _set_artifact_dir(artifact_dir)
     # Also set in thread-local storage for main thread
     _set_tls_artifact_dir(artifact_dir)
+
+    shared_dir = os.environ.get("FORGE_SHARED_DIR")
+    FORGE_SHARED_DIR = pathlib.Path(shared_dir).expanduser().resolve() if shared_dir else None
+    if FORGE_SHARED_DIR is not None:
+        FORGE_SHARED_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 
     # Ensure CI metadata directory exists (lazy import to avoid circular imports)
     from . import ci as ci_lib

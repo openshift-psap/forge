@@ -137,6 +137,7 @@ testpaths = [
     "projects/fournos_launcher/tests",
     "projects/rhaiis/tests",
     "projects/cluster/tests",
+    "projects/ibmcloud_cluster/tests",
     "projects/inference_playbooks/tests",
     "projects/ag_praxis/tests",
     "projects/rhoai/tests",

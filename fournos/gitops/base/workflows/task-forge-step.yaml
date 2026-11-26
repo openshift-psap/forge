@@ -50,7 +50,7 @@ spec:
         value: /var/run/secrets/fournos
       - name: FOURNOS_CI
         value: "true"
-      - name: FORGE_INTERNAL_DIR
+      - name: FORGE_SHARED_DIR
         value: "$(workspaces.internal.path)"
       - name: PSAP_FORGE_ALWAYS_SEND_NOTIFICATION
         value: "$(params.always-send-notification)"
