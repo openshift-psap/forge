@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from projects.rhaiis.toolbox.copy_profiler_traces import main as transfer
+from projects.kserve.toolbox.copy_profiler_traces import main as transfer
 
 
 def test_remote_chunk_reader_reads_only_requested_bytes(tmp_path) -> None:
@@ -23,7 +23,7 @@ def test_remote_chunk_reader_reads_only_requested_bytes(tmp_path) -> None:
 
 
 def _mock_remote(monkeypatch, payload: bytes) -> None:
-    def remote_text(_pod, _namespace, *command, **kwargs):
+    def remote_text(_pod, _namespace, _container, *command, **kwargs):
         if command[0] == "stat":
             return str(len(payload))
         if command[0] == "sha256sum":
@@ -46,7 +46,9 @@ def test_copy_preserves_and_verifies_plain_rank0_trace(monkeypatch, tmp_path) ->
     filename = "trace_rank0_pid100_runprofile1_range500-503.json"
     monkeypatch.setattr(transfer.subprocess, "run", copy)
 
-    copied = transfer._copy_one_trace("pod/model", "test", filename, tmp_path, 30)
+    copied = transfer._copy_one_trace(
+        "pod/model", "test", "kserve-container", filename, tmp_path, 30
+    )
 
     assert copied.name == filename
     assert copied.read_bytes() == payload
@@ -70,7 +72,9 @@ def test_truncated_chunk_is_retried_without_recopied_prefix(monkeypatch, tmp_pat
     monkeypatch.setattr(transfer.subprocess, "run", copy)
     filename = "trace_rank0_pid100_runprofile4_range500-503.json"
 
-    copied = transfer._copy_one_trace("pod/model", "test", filename, tmp_path, 30)
+    copied = transfer._copy_one_trace(
+        "pod/model", "test", "kserve-container", filename, tmp_path, 30
+    )
     assert offsets == [0, 1000, 1000, 2000]
     assert copied.read_bytes() == payload
     assert not list(tmp_path.glob("*.partial"))
@@ -89,7 +93,7 @@ def test_repeatedly_truncated_chunk_does_not_publish_trace(monkeypatch, tmp_path
     filename = "trace_rank0_pid100_runprofile4_range500-503.json"
 
     with pytest.raises(RuntimeError, match="failed at offset 0 after 3 attempts"):
-        transfer._copy_one_trace("pod/model", "test", filename, tmp_path, 30)
+        transfer._copy_one_trace("pod/model", "test", "kserve-container", filename, tmp_path, 30)
     assert attempts == [0, 0, 0]
     assert not list(tmp_path.iterdir())
 
@@ -105,7 +109,9 @@ def test_existing_gzip_trace_is_decoded_to_plain_json(monkeypatch, tmp_path) -> 
     monkeypatch.setattr(transfer.subprocess, "run", copy)
     filename = "trace_rank0_pid100_runprofile1_range500-503.json.gz"
 
-    copied = transfer._copy_one_trace("pod/model", "test", filename, tmp_path, 30)
+    copied = transfer._copy_one_trace(
+        "pod/model", "test", "kserve-container", filename, tmp_path, 30
+    )
     assert copied.name == filename.removesuffix(".gz")
     assert copied.read_bytes() == payload
     assert not list(tmp_path.glob("*.partial"))
@@ -124,6 +130,7 @@ def test_invalid_gzip_trace_does_not_publish_json(monkeypatch, tmp_path) -> None
         transfer._copy_one_trace(
             "pod/model",
             "test",
+            "kserve-container",
             "trace_rank0_pid100_runprofile1_range500-503.json.gz",
             tmp_path,
             30,
@@ -144,6 +151,7 @@ def test_checksum_mismatch_does_not_publish_trace(monkeypatch, tmp_path) -> None
         transfer._copy_one_trace(
             "pod/model",
             "test",
+            "kserve-container",
             "trace_rank0_pid100_runprofile1_range500-503.json",
             tmp_path,
             30,
