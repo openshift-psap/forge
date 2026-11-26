@@ -141,6 +141,7 @@ def read_receipt(path: Path) -> ExportReceipt | None:
 def write_receipt(path: Path, receipt: ExportReceipt) -> None:
     """Atomically write the receipt via a temp file + rename."""
     receipt.updated_at = _now_iso()
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(receipt.to_dict(), indent=2, sort_keys=False), encoding="utf-8")
     tmp.replace(path)
@@ -261,6 +262,7 @@ def ingest_bundle(
     workspace: str,
     connection: dict[str, Any] | None,
     archive_sha256: str,
+    receipt_path: Path,
     existing_receipt: ExportReceipt | None = None,
 ) -> IngestionOutcome:
     """Ingest a validated bundle into a single MLflow run, resuming if possible.
@@ -271,10 +273,10 @@ def ingest_bundle(
     - a receipt for a *different* destination is rejected unless re-scoped by the
       caller passing an explicit new target.
 
+    The receipt is written to ``receipt_path``, outside the test directory.
+
     Returns an outcome; raises :class:`TraceExportError` on unrecoverable failure.
     """
-    receipt_path = bundle.bundle_dir / "mlflow-export.json"
-
     if existing_receipt and not existing_receipt.scope_matches(
         tracking_uri=tracking_uri,
         workspace=workspace,

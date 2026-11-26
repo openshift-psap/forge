@@ -198,17 +198,18 @@ def test_link_failure_after_ingestion_retries_only_linkage(
         workspace="",
         connection=None,
         archive_sha256=sha,
+        receipt_path=tmp_path / "receipts" / "mlflow-export.json",
     )
     with pytest.raises(exporter.TraceExportError):
         exporter.ingest_bundle(**kwargs)
 
-    receipt = exporter.read_receipt(bundle.bundle_dir / "mlflow-export.json")
+    receipt = exporter.read_receipt(kwargs["receipt_path"])
     assert receipt is not None
     assert receipt.ingested_trace_ids
     assert receipt.linked_trace_ids == []
 
     outcome = exporter.ingest_bundle(
-        **kwargs, existing_receipt=exporter.read_receipt(bundle.bundle_dir / "mlflow-export.json")
+        **kwargs, existing_receipt=exporter.read_receipt(kwargs["receipt_path"])
     )
     assert posts == 1, "retry must not re-ingest an already accepted archive"
     assert links == 2
@@ -229,6 +230,7 @@ def test_changed_archive_is_rejected(
         workspace="",
         connection=None,
         archive_sha256=sha256_of_file(bundle.archive_path),
+        receipt_path=tmp_path / "receipts" / "mlflow-export.json",
     )
     assert first.status == "complete"
 
@@ -244,7 +246,8 @@ def test_changed_archive_is_rejected(
             workspace="",
             connection=None,
             archive_sha256=sha256_of_file(bundle.archive_path),
-            existing_receipt=exporter.read_receipt(bundle.bundle_dir / "mlflow-export.json"),
+            receipt_path=tmp_path / "receipts" / "mlflow-export.json",
+            existing_receipt=exporter.read_receipt(tmp_path / "receipts" / "mlflow-export.json"),
         )
 
 
@@ -328,6 +331,7 @@ def test_multi_record_archive_posts_bounded_batches(
         workspace="",
         connection=None,
         archive_sha256=sha256_of_file(bundle.archive_path),
+        receipt_path=tmp_path / "receipts" / "mlflow-export.json",
     )
 
     assert outcome.status == "complete"
@@ -407,6 +411,7 @@ def test_bad_otlp_record_is_a_per_bundle_failure_not_an_escape(
         workspace="",
         connection=None,
         resolve_run_id=lambda _d: "run-1",
+        receipt_dir=tmp_path / "receipts",
     )
 
     assert report.failed, "a bad OTLP record must be reported as a bundle failure"

@@ -45,6 +45,9 @@ from projects.core.library.export_notifications import ExportStatus
 
 logger = logging.getLogger(__name__)
 
+# Native trace export receipts, under the export step's own directory.
+TRACE_EXPORT_RECEIPTS_DIRNAME = "trace_export_receipts"
+
 
 class CaliperExportError(Exception):
     """Base exception for Caliper export errors."""
@@ -345,14 +348,15 @@ def _build_trace_export_context(export_cfg: CaliperOrchestrationExportConfig) ->
     Returns None unless ``caliper.export.traces.enabled`` is true. Imported
     lazily so a tracing-disabled export never imports the tracing modules. The
     tracking URI, workspace, and credentials are resolved by the export code
-    that already knows them and passed to ingestion explicitly.
+    that already knows them and passed to ingestion explicitly. The export
+    receipts go to this export step's directory, not into the test directories.
     """
     if not export_cfg.traces.enabled:
         return None
 
     from projects.caliper.engine.tracing.ingest import TraceExportContext
 
-    return TraceExportContext()
+    return TraceExportContext(receipt_dir=Path(env.ARTIFACT_DIR) / TRACE_EXPORT_RECEIPTS_DIRNAME)
 
 
 @requires(

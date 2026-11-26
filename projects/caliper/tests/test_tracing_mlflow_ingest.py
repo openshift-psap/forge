@@ -173,6 +173,7 @@ def test_ingest_and_link_traces(mlflow_server: str) -> None:
             workspace="",
             connection=None,
             archive_sha256=sha256_of_file(bundle.archive_path),
+            receipt_path=Path(tmp) / "receipts" / "mlflow-export.json",
         )
 
         assert outcome.status == "complete"
@@ -199,6 +200,7 @@ def test_repeated_export_does_not_duplicate(mlflow_server: str) -> None:
         _write_bundle(test_dir, test_id="t1", record=_otlp_record())
         bundle = discover_bundles(Path(tmp))[0]
         sha = sha256_of_file(bundle.archive_path)
+        receipt_path = Path(tmp) / "receipts" / "mlflow-export.json"
 
         first = ingest_bundle(
             bundle=bundle,
@@ -208,10 +210,11 @@ def test_repeated_export_does_not_duplicate(mlflow_server: str) -> None:
             workspace="",
             connection=None,
             archive_sha256=sha,
+            receipt_path=receipt_path,
         )
         assert first.status == "complete"
 
-        receipt = read_receipt(bundle.bundle_dir / "mlflow-export.json")
+        receipt = read_receipt(receipt_path)
         assert receipt is not None
         assert receipt.exporter_version == EXPORTER_VERSION
 
@@ -223,6 +226,7 @@ def test_repeated_export_does_not_duplicate(mlflow_server: str) -> None:
             workspace="",
             connection=None,
             archive_sha256=sha,
+            receipt_path=receipt_path,
             existing_receipt=receipt,
         )
         assert second.status == "complete"
@@ -260,6 +264,7 @@ def test_receipt_scope_mismatch_is_rejected(mlflow_server: str) -> None:
                 workspace="",
                 connection=None,
                 archive_sha256="0000",
+                receipt_path=Path(tmp) / "receipts" / "mlflow-export.json",
                 existing_receipt=foreign,
             )
 
@@ -281,6 +286,7 @@ def test_ingest_skips_when_no_run_resolved(mlflow_server: str, tmp_path: Path) -
         workspace="",
         connection=None,
         resolve_run_id=lambda _d: None,
+        receipt_dir=tmp_path / "receipts",
     )
     assert report.discovered == 1
     assert report.outcomes == []
@@ -307,6 +313,7 @@ def test_one_bad_bundle_does_not_block_the_others(mlflow_server: str, tmp_path: 
         workspace="",
         connection=None,
         resolve_run_id=lambda _d: run_id,
+        receipt_dir=tmp_path / "receipts",
     )
 
     assert report.discovered == 3
@@ -331,6 +338,7 @@ def test_no_bundles_is_a_clear_skip(mlflow_server: str, tmp_path: Path) -> None:
         workspace="",
         connection=None,
         resolve_run_id=lambda _d: "run-x",
+        receipt_dir=tmp_path / "receipts",
     )
     assert report.discovered == 0
     assert report.skipped
@@ -354,12 +362,15 @@ def test_single_run_export_ingests_traces(mlflow_server: str, tmp_path: Path) ->
     experiment_id = client.create_experiment("traces-single-run")
     run = client.create_run(experiment_id)
 
-    test_dir = tmp_path / "test_node"
+    source = tmp_path / "artifacts"
+    test_dir = source / "test_node"
     _write_bundle(test_dir, test_id="t1", record=_otlp_record(SINGLE_RUN_TRACE_HEX))
+    test_dir_before = sorted(p.relative_to(test_dir) for p in test_dir.rglob("*"))
 
-    context = TraceExportContext()
+    receipt_dir = tmp_path / "export_step" / "trace_export_receipts"
+    context = TraceExportContext(receipt_dir=receipt_dir)
     results = runner.run_file_export(
-        source=tmp_path,
+        source=source,
         backends=["mlflow"],
         dry_run=False,
         mlflow_tracking_uri=mlflow_server,
@@ -372,6 +383,9 @@ def test_single_run_export_ingests_traces(mlflow_server: str, tmp_path: Path) ->
 
     assert len(results) == 1
     assert results[0].metadata["trace_export"]["outcomes"][0]["ingested"] == 1
+    # The receipt goes to the export step's directory; the test node is untouched.
+    assert (receipt_dir / "test_node" / "traces" / "mlflow-export.json").is_file()
+    assert sorted(p.relative_to(test_dir) for p in test_dir.rglob("*")) == test_dir_before
 
     mlflow_trace_id = derive_mlflow_trace_ids([SINGLE_RUN_TRACE_HEX])[0]
     linked = {
@@ -419,7 +433,7 @@ def test_single_run_export_reports_trace_failure_status(
         mlflow_run_id=run.info.run_id,
         mlflow_connection=None,
         verbose=False,
-        trace_export=TraceExportContext(),
+        trace_export=TraceExportContext(receipt_dir=tmp_path / "receipts"),
     )
     assert results[0].status == "failure"
     assert "native trace export failed" in results[0].detail
@@ -453,7 +467,7 @@ def test_single_run_entrypoint_populates_tracking_uri(mlflow_server: str, tmp_pa
         mlflow_experiment="traces-single-entrypoint",
         mlflow_run_id=run.info.run_id,
         status_yaml_path=status_yaml,
-        trace_export=TraceExportContext(),
+        trace_export=TraceExportContext(receipt_dir=tmp_path / "receipts"),
     )
 
     assert ret == 0

@@ -565,6 +565,7 @@ def _ingest_trace_bundles(
         workspace=workspace,
         connection=connection,
         resolve_run_id=_resolve,
+        receipt_dir=trace_export.receipt_dir,
         reporter=(logger.info if verbose else None),
     )
     if report.failed:

@@ -28,13 +28,17 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TraceExportContext:
-    """Marker that native trace ingestion is enabled for this export.
+    """Native trace ingestion is enabled for this export.
 
     The tracking URI, workspace, credentials and experiment ID are resolved by
     the export code that already knows them and are passed to ingestion
     explicitly, so this object carries no destination state that could be left
-    stale or empty.
+    stale or empty. ``receipt_dir`` is the export step's own directory for the
+    per-bundle export receipts, so the exported test directories are never
+    modified.
     """
+
+    receipt_dir: Path
 
 
 @dataclass
@@ -68,6 +72,12 @@ class IngestionReport:
         }
 
 
+def receipt_path_for(receipt_dir: Path, bundle_dir: Path, artifact_root: Path) -> Path:
+    """Place a bundle's export receipt under ``receipt_dir``, mirroring its path."""
+    relative = bundle_dir.resolve().relative_to(Path(artifact_root).resolve())
+    return Path(receipt_dir) / relative / bundle_mod.EXPORT_RECEIPT_FILENAME
+
+
 def _bundle_label(summary_path: Path, artifact_root: Path) -> str:
     """Name a bundle before its summary is known to be valid."""
     try:
@@ -84,6 +94,7 @@ def ingest_trace_bundles(
     workspace: str,
     connection: dict[str, Any] | None,
     resolve_run_id: Callable[[Path], str | None],
+    receipt_dir: Path,
     reporter: Callable[[str], None] | None = None,
 ) -> IngestionReport:
     """Discover and ingest every trace bundle under ``artifact_root``.
@@ -129,7 +140,8 @@ def ingest_trace_bundles(
                 continue
 
             archive_sha = bundle_mod.sha256_of_file(bundle.archive_path)
-            existing = read_receipt(bundle.bundle_dir / bundle_mod.EXPORT_RECEIPT_FILENAME)
+            receipt_path = receipt_path_for(receipt_dir, bundle.bundle_dir, artifact_root)
+            existing = read_receipt(receipt_path)
             outcome = ingest_bundle(
                 bundle=bundle,
                 run_id=run_id,
@@ -138,6 +150,7 @@ def ingest_trace_bundles(
                 workspace=workspace,
                 connection=connection,
                 archive_sha256=archive_sha,
+                receipt_path=receipt_path,
                 existing_receipt=existing,
             )
             report.outcomes.append(outcome)

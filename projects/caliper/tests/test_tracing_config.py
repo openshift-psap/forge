@@ -32,11 +32,15 @@ def test_build_trace_export_context_is_none_when_disabled():
     assert _build_trace_export_context(_export_config(enabled=False)) is None
 
 
-def test_build_trace_export_context_is_a_marker_when_enabled():
-    # The context is only an enabled marker: the tracking URI, workspace, and
-    # credentials are resolved by the export code and passed to ingestion
-    # explicitly, so no destination state can be left stale or empty here.
+def test_build_trace_export_context_when_enabled(tmp_path, monkeypatch):
+    # The tracking URI, workspace, and credentials are resolved by the export
+    # code and passed to ingestion explicitly, so no destination state can be
+    # left stale or empty here. Receipts go to the export step's own directory.
+    from projects.core.library import env
+
+    monkeypatch.setattr(env, "ARTIFACT_DIR", tmp_path / "04__export-artifacts")
     cfg = _export_config(enabled=True)
     context = _build_trace_export_context(cfg)
     assert context is not None
     assert not getattr(context, "tracking_uri", "")
+    assert context.receipt_dir == tmp_path / "04__export-artifacts" / "trace_export_receipts"

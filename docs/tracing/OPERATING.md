@@ -133,18 +133,23 @@ receive only explicit typed inputs.
 ## Artifact layout
 
 ```text
-<test directory>/
+<test directory>/                      # written by the test phase only
   __caliper_test_metadata__.yaml
-  <numbered capture command>/
-    artifacts/
-      traces/
-        otlp.jsonl.gz          # sanitized native OTLP archive
-        trace-summary.json     # identity, config, time, data, quality, status
-        mlflow-export.json     # resumable native-export receipt
-  reports/
-    trace_distribution_report.html
-    trace_report.json
+  traces/
+    otlp.jsonl.gz                      # sanitized native OTLP archive
+    trace-summary.json                 # identity, config, time, data, quality, status
+
+<NNN__postprocessing>/reports/<test directory>/tracing/
+  trace_distribution_report.html       # listed in the reports index and notification
+  trace_report.json
+
+<export step directory>/trace_export_receipts/<test directory>/traces/
+  mlflow-export.json                   # resumable native-export receipt
 ```
+
+Postprocessing and export never modify the test directories: the reports go to
+the postprocessing directory, beside the visualize reports, and the export
+receipts to the export step's directory.
 
 The archive is sanitized **before** it is written: prompts, completions,
 request/response bodies, headers, cookies, URL credentials/query strings, and
