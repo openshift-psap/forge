@@ -205,13 +205,19 @@ def test_benchmark_resolution_applies_workload_defaults_and_per_benchmark_overri
     assert multi_turn["timeout_seconds"] == 7200
 
 
-def test_guidellm_benchmark_uses_hf_model_name(
+@pytest.mark.parametrize("keep_full_benchmark_file", [False, True])
+def test_guidellm_benchmark_forwards_model_and_full_result_setting(
     monkeypatch: pytest.MonkeyPatch,
+    keep_full_benchmark_file: bool,
 ) -> None:
     _init_project_config()
     core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
     core_config.project.set_config("runtime.deployment_profile", "release-distributed-default")
     core_config.project.set_config("runtime.benchmark_key", "concurrent-1k-1k")
+    core_config.project.set_config(
+        "workloads.keep_full_benchmark_file",
+        keep_full_benchmark_file,
+    )
     core_config.project.set_config("prom.capture.enabled", False)
 
     captured: dict[str, object] = {}
@@ -238,6 +244,7 @@ def test_guidellm_benchmark_uses_hf_model_name(
 
     assert captured["timeout"] == 3600
     assert captured["config_path"] == mock_config_path
+    assert captured["keep_full_benchmark_file"] is keep_full_benchmark_file
     guidellm_args = captured["guidellm_args"]
     assert isinstance(guidellm_args, list)
     assert "--tokenizer=kind=huggingface_auto,model=openai/gpt-oss-120b" in guidellm_args
@@ -873,6 +880,37 @@ def test_render_uses_sanitized_model_name_and_profile_resources() -> None:
         "limits": {"nvidia.com/gpu": "2"},
     }
     assert manifest["spec"]["router"]["scheduler"] == {}
+
+
+def test_roce_requests_gpus_only_through_gpu_nic_pairs() -> None:
+    """Each pair brings its own GPU, so nvidia.com/gpu must not be requested too."""
+    _init_project_config()
+    core_config.project.set_config("model_cache.enabled", False)
+    core_config.project.set_config("runtime.model_name", "openai/gpt-oss-120b")
+    core_config.project.set_config("runtime.deployment_profile", "pd-p.tp1-p.x8-d.tp4-d.x2")
+    core_config.project.set_config("deployments.pd.roce.enabled", True)
+
+    manifest = render_inference_service_from_parts(
+        config_dir=str(PROJECT_ORCHESTRATION_DIR),
+        namespace="forge-llm-d",
+        inference_service=runtime_config.get_platform_config()["inference_service"],
+        model_name=runtime_config.get_model_name(),
+        model_slug=runtime_config.get_model_slug(),
+        deployment_profile=runtime_config.get_deployment_profile(),
+        model_cache=runtime_config.get_model_cache_config(),
+        deployment_profile_name=runtime_config.get_deployment_profile_name(),
+    )
+
+    decode = manifest["spec"]["template"]["containers"][0]["resources"]
+    prefill = manifest["spec"]["prefill"]["template"]["containers"][0]["resources"]
+    assert decode == {
+        "requests": {"composite.dra.io/gpu-nic-pair": "4"},
+        "limits": {"composite.dra.io/gpu-nic-pair": "4"},
+    }
+    assert prefill == {
+        "requests": {"composite.dra.io/gpu-nic-pair": "1"},
+        "limits": {"composite.dra.io/gpu-nic-pair": "1"},
+    }
 
 
 def test_render_uses_embedded_scheduler_config() -> None:

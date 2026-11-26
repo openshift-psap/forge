@@ -5,6 +5,7 @@ pvc_size: 1Gi
 pvc_storage_class: null
 fs_group: null
 timeout_seconds: 3600
+keep_full_benchmark_file: false
 args: {}
 
 smoke_requests:
