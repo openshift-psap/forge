@@ -328,6 +328,10 @@ def _launch_recipe_bundle(recipe_id: str, recipe: dict, bundle: dict, private) -
     metadata = write_bundle_artifacts(
         bundle, submitted, namespace, src, env.FORGE_HOME, node_selector
     )
+    if private:
+        for path in src.rglob("*"):
+            if path.is_file():
+                private.publish(path)
     # Keep existing primary launch files as attribution inputs, but never submit from them.
     suffixes = {
         "LeaderWorkerSet": "-lws",
@@ -337,7 +341,11 @@ def _launch_recipe_bundle(recipe_id: str, recipe: dict, bundle: dict, private) -
         "LLMInferenceService": "",
     }
     for document in submitted:
-        _write_launch_manifest(document["metadata"]["name"] + suffixes[document["kind"]], document)
+        path = _write_launch_manifest(
+            document["metadata"]["name"] + suffixes[document["kind"]], document
+        )
+        if private:
+            private.publish(path)
     created = []
     name = manifest["metadata"]["name"]
 
@@ -347,7 +355,7 @@ def _launch_recipe_bundle(recipe_id: str, recipe: dict, bundle: dict, private) -
         else:
             _create_checked_bundle(src, namespace, metadata, created)
         primary = next(resource for resource in created if resource["kind"] == kind)
-        return wait_recipe.run(
+        endpoint = wait_recipe.run(
             namespace=namespace,
             kind=kind,
             name=name,
@@ -355,6 +363,13 @@ def _launch_recipe_bundle(recipe_id: str, recipe: dict, bundle: dict, private) -
             timeout_seconds=timeout,
             port=port,
         )
+        if private:
+            # Validate observed identity before spending a benchmark window.
+            pods = wait_recipe.owned_pods(namespace, primary["metadata"]["uid"])
+            if not pods:
+                raise ValueError("Private serving runtime evidence is missing before benchmark")
+            private.capture({"items": pods})
+        return endpoint
 
     def capture():
         if private:
@@ -365,7 +380,16 @@ def _launch_recipe_bundle(recipe_id: str, recipe: dict, bundle: dict, private) -
     def cleanup():
         _delete_created_resources(namespace, created)
 
-    _deploy_benchmark_finalize(recipe_id, recipe, namespace, name, deploy, capture, cleanup)
+    _deploy_benchmark_finalize(
+        recipe_id,
+        recipe,
+        namespace,
+        name,
+        deploy,
+        capture,
+        cleanup,
+        **({"private": private} if private else {}),
+    )
 
 
 def _deploy_benchmark_finalize(
@@ -376,6 +400,8 @@ def _deploy_benchmark_finalize(
     deploy,
     capture,
     cleanup,
+    *,
+    private=None,
 ) -> None:
     workload_configs = _get_workload_configs()
     primary_exc = None
@@ -418,6 +444,7 @@ def _deploy_benchmark_finalize(
                 workload,
                 kpi_labels,
                 tokenizer_args=tokenizer_args,
+                **({"private": private} if private else {}),
             )
     except Exception:
         primary_exc = sys.exc_info()
@@ -557,6 +584,8 @@ def _run_workload(
     workload: dict,
     kpi_labels: dict[str, str],
     tokenizer_args: dict[str, bool] | None = None,
+    *,
+    private=None,
 ) -> None:
     tool = workload.get("tool", "guidellm")
     if tool == "guidellm":
@@ -569,6 +598,7 @@ def _run_workload(
             workload,
             kpi_labels,
             tokenizer_args=tokenizer_args,
+            **({"private": private} if private else {}),
         )
     elif tool == "aiperf":
         _run_aiperf_workload(
@@ -580,6 +610,7 @@ def _run_workload(
             workload_key,
             workload,
             kpi_labels,
+            **({"private": private} if private else {}),
         )
     else:
         raise ValueError(f"Unsupported benchmark tool {tool!r} in workload {workload_key!r}")
@@ -594,6 +625,8 @@ def _run_guidellm_workload(
     workload: dict,
     kpi_labels: dict[str, str],
     tokenizer_args: dict[str, bool] | None = None,
+    *,
+    private=None,
 ) -> None:
     benchmark = config.Config(RHAIIS_CONFIG).get_config("benchmarks.guidellm")
     artifact_workload_key = workload_key.replace("/", "-")
@@ -613,11 +646,13 @@ def _run_guidellm_workload(
             labels = {"phase": phase}
             if phase == "warmup":
                 labels["skip"] = True
-            create_test_metadata(
+            metadata_path = create_test_metadata(
                 env.ARTIFACT_DIR,
                 labels,
                 kpi_labels=kpi_labels,
             )
+            if private:
+                private.publish(metadata_path)
             run_guidellm_benchmark.run(
                 endpoint_url=endpoint_url,
                 name=_unique_name(f"guidellm-{phase}-{run_name}"),
@@ -644,6 +679,8 @@ def _run_aiperf_workload(
     workload_key: str,
     workload: dict,
     kpi_labels: dict[str, str],
+    *,
+    private=None,
 ) -> None:
     from projects.aiperf.toolbox.run_aiperf_benchmark import main as run_aiperf_benchmark
 
@@ -674,11 +711,13 @@ def _run_aiperf_workload(
             if concurrency is not None:
                 run_labels["concurrency"] = concurrency
                 run_kpi_labels["concurrency"] = str(concurrency)
-            create_test_metadata(
+            metadata_path = create_test_metadata(
                 env.ARTIFACT_DIR,
                 run_labels,
                 kpi_labels=run_kpi_labels,
             )
+            if private:
+                private.publish(metadata_path)
             job_name = _unique_name(f"aiperf-{workload_key}-{run_name}")
             if len(sweep) > 1:
                 job_name = _unique_name(f"aiperf-c{concurrency}-{run_name}")
@@ -898,6 +937,7 @@ def _capture_admitted_state(namespace: str, document: dict, current: dict, *, pr
             (directory / filename).write_text(
                 yaml.safe_dump(value, sort_keys=False), encoding="utf-8"
             )
+            private.publish(directory / filename)
         return
     (directory / f"{stem}.yaml").write_text(
         yaml.safe_dump(current, sort_keys=False), encoding="utf-8"

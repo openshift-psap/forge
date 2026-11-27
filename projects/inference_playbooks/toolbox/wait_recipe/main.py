@@ -5,7 +5,16 @@ from urllib.parse import urlparse
 
 from projects.core.dsl import entrypoint, execute_tasks, retry, task
 from projects.core.dsl.utils.k8s import oc
-from projects.inference_playbooks.orchestration.private_images import oc_get_json
+from projects.core.dsl.utils.k8s import oc_get_json as _oc_get_json
+
+
+def oc_get_json(*args, **kwargs):
+    """Keep raw API responses and errors out of public readiness diagnostics."""
+    try:
+        return _oc_get_json(*args, **kwargs, handled_secretly=True)
+    except Exception:
+        raise RuntimeError("Recipe resource read failed") from None
+
 
 CONTROLLERS = {
     ("v1", "Pod"): "pods",

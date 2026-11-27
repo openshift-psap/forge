@@ -576,9 +576,19 @@ def test_private_checked_injection_and_capture(checkout, tmp_path, monkeypatch, 
         return original_write(path, text, *args, **kwargs)
 
     monkeypatch.setattr(Path, "write_text", checked_write)
+    pod["metadata"]["annotations"] = {"diagnostic": secret}
+    pod["status"]["message"] = secret
+    pod["status"]["containerStatuses"][0]["state"] = {"terminated": {"message": secret}}
     test_phase._capture_admitted_state("target", created[0], created[0], private=private)
     captured = yaml.safe_load((src.parent / "artifacts" / f"{kind.lower()}.pods.yaml").read_text())
     assert captured["items"][0]["status"]["containerStatuses"][0]["imageID"] == "private"
+    assert "annotations" not in captured["items"][0]["metadata"]
+    assert set(captured["items"][0]["status"]) == {"containerStatuses"}
+    assert set(captured["items"][0]["status"]["containerStatuses"][0]) == {
+        "name",
+        "ready",
+        "imageID",
+    }
     assert all(secret not in path.read_text() for path in src.rglob("*.yaml"))
     with pytest.raises(ValueError, match="vault binding"):
         test_phase._create_checked_bundle(src, "target", metadata, [])
@@ -607,8 +617,8 @@ def test_private_vault_and_errors_do_not_echo_values(tmp_path, monkeypatch):
     assert secret not in str(error.value)
 
 
-@pytest.mark.parametrize("failure", [None, "workload", "leak"])
-def test_private_publication_checks_whole_staging_tree(tmp_path, failure, monkeypatch):
+@pytest.mark.parametrize("failure", [None, "workload", "leak", "interrupt"])
+def test_private_publication_checks_registered_payload(tmp_path, failure, monkeypatch):
     from projects.inference_playbooks.orchestration import private_images as images
 
     # Other fixtures replace this dynamic module attribute with a plain value.
@@ -622,19 +632,95 @@ def test_private_publication_checks_whole_staging_tree(tmp_path, failure, monkey
     def execute():
         with images.env.TempArtifactDir(destination), private.artifact_scope():
             (images.env.ARTIFACT_DIR / "measurements.json").write_text('{"throughput": 123}')
+            private.publish(images.env.ARTIFACT_DIR / "measurements.json")
+            (images.env.ARTIFACT_DIR / "diagnostics.txt").write_text(private.value)
             if failure == "leak":
                 (images.env.ARTIFACT_DIR / "unexpected.txt").write_text(private.value)
+                private.publish(images.env.ARTIFACT_DIR / "unexpected.txt")
             if failure == "workload":
                 raise RuntimeError("synthetic workload failure")
+            if failure == "interrupt":
+                raise KeyboardInterrupt()
             assert not (destination / "measurements.json").exists()
 
     if failure:
-        with pytest.raises((RuntimeError, ValueError)):
+        with pytest.raises((RuntimeError, ValueError, KeyboardInterrupt)):
             execute()
     else:
         execute()
-    assert (destination / "measurements.json").exists() == (failure != "leak")
+    assert (destination / "measurements.json").exists() == (failure is None)
     assert not (destination / "unexpected.txt").exists()
+    assert not (destination / "diagnostics.txt").exists()
+
+
+def test_private_native_publication_projects_jobs_and_reports(tmp_path, monkeypatch):
+    from projects.inference_playbooks.orchestration import private_images as images
+
+    monkeypatch.delattr(images.env, "ARTIFACT_DIR", raising=False)
+    private = images.PrivateImage(
+        {"image_visibility": "private", "image_env": "RC_IMAGE"},
+        "restricted.example.org/internal/runtime:private",
+    )
+    destination = tmp_path / "published"
+    step = Path("001__benchmark_ci-quick/001__run_guidellm_benchmark")
+    report_path = step / "artifacts/results/benchmarks.json"
+    job_path = step / "src/guidellm-job.yaml"
+    raw_report = json.dumps(
+        {
+            "benchmarks": [
+                {"metrics": {"request_totals": {"successful": 7}}, "diagnostic": private.value}
+            ]
+        }
+    ).encode()
+    raw_job = yaml.safe_dump(
+        {
+            "kind": "Job",
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "command": [
+                                    "guidellm",
+                                    "run",
+                                    "--profile",
+                                    '{"kind":"concurrent","streams":[1,5]}',
+                                    "--target",
+                                    "http://192.0.2.1:8000",
+                                ],
+                                "image": "public.example.org/harness:v1",
+                            }
+                        ]
+                    }
+                }
+            },
+        }
+    ).encode()
+    with images.env.TempArtifactDir(destination), private.artifact_scope():
+        for name, raw in (
+            (report_path, raw_report),
+            (job_path, raw_job),
+            (step / "task.log", private.value.encode()),
+        ):
+            path = images.env.ARTIFACT_DIR / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(raw)
+    exported = json.loads((destination / report_path).read_bytes())
+    assert exported["benchmarks"][0]["metrics"]["request_totals"]["successful"] == 7
+    assert (
+        exported["_public_evidence"]["source_sha256"]
+        == "sha256:" + hashlib.sha256(raw_report).hexdigest()
+    )
+    invocation = json.loads(
+        (destination / step / "artifacts/guidellm-invocation.json").read_bytes()
+    )
+    assert invocation["concurrencies"] == [1, 5]
+    assert invocation["source_sha256"] == "sha256:" + hashlib.sha256(raw_job).hexdigest()
+    assert not (destination / job_path).exists()
+    assert not (destination / step / "task.log").exists()
+    assert all(
+        private.value not in path.read_text() for path in destination.rglob("*") if path.is_file()
+    )
 
 
 def test_private_launch_publishes_only_checked_staging(launch, monkeypatch):
@@ -654,6 +740,15 @@ def test_private_launch_publishes_only_checked_staging(launch, monkeypatch):
     launch.checkout.snapshot()
     monkeypatch.setattr(PrivateImage, "load", lambda binding: private)
     monkeypatch.setattr(test_phase, "_capture_created_recipe", lambda *args, **kw: None)
+    pod = {
+        "kind": "Pod",
+        "spec": copy.deepcopy(source["spec"]["template"]["spec"]),
+        "status": {
+            "containerStatuses": [{"name": "vllm", "ready": True, "imageID": "sha256:" + "c" * 64}]
+        },
+    }
+    pod["spec"]["containers"][0]["image"] = private.value
+    monkeypatch.setattr(test_phase.wait_recipe, "owned_pods", lambda *args: [pod])
     monkeypatch.delattr(test_phase.env, "ARTIFACT_DIR", raising=False)
     with test_phase.env.TempArtifactDir(launch.src.parent):
         test_phase._launch_recipe("synthetic", launch.checkout.recipe)

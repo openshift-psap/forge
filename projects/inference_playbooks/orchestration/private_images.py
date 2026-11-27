@@ -3,7 +3,6 @@
 import copy
 import json
 import re
-import shutil
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,10 +21,65 @@ def oc_get_json(*args, **kwargs):
 
 NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 IMAGE = re.compile(
-    r"^[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9]+(?:[._/-]+[a-z0-9]+)*"
+    r"^[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*"
     r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$"
 )
 SERVERS = {"vllm", "vllm-leader", "vllm-worker", "main"}
+
+
+def public_resource(document):
+    """Construct approved runtime facts; submitted bundles own desired configuration."""
+    if "items" in document:
+        return {"kind": "List", "items": [public_resource(item) for item in document["items"]]}
+    result = {"kind": document["kind"]}
+    if "apiVersion" in document:
+        result["apiVersion"] = document["apiVersion"]
+    if "name" in document.get("metadata", {}):
+        result["metadata"] = {"name": document["metadata"]["name"]}
+    if document["kind"] != "Pod":
+        # Raw controller objects carry admission annotations, conditions and API
+        # messages. The verified public submission already records their spec.
+        return result
+    spec = document["spec"]
+    containers = [
+        {
+            key: copy.deepcopy(container[key])
+            for key in (
+                "name",
+                "image",
+                "command",
+                "args",
+                "env",
+                "resources",
+                "volumeMounts",
+                "securityContext",
+            )
+            if key in container
+        }
+        for container in spec["containers"]
+        if container.get("name") in SERVERS
+    ]
+    names = {container["name"] for container in containers}
+    result["spec"] = {
+        "containers": containers,
+        **{
+            key: copy.deepcopy(spec[key])
+            for key in ("volumes", "securityContext", "serviceAccountName")
+            if key in spec
+        },
+    }
+    result["status"] = {
+        "containerStatuses": [
+            {
+                key: copy.deepcopy(status[key])
+                for key in ("name", "ready", "imageID")
+                if key in status
+            }
+            for status in document.get("status", {}).get("containerStatuses", [])
+            if status.get("name") in names
+        ]
+    }
+    return result
 
 
 def image_binding(serving, overrides):
@@ -98,8 +152,8 @@ class PrivateImage:
                 value,
                 repository,
                 repository.split("/")[0],
+                repository.split("/")[0].split(":")[0],
                 repository.split("/", 1)[1],
-                tag,
                 digest,
             )
             if v
@@ -107,6 +161,8 @@ class PrivateImage:
         if digest:
             self.tokens.add(digest.removeprefix("sha256:"))
         self.digests = set()
+        self._staging = None
+        self._exports = {}
 
     def __repr__(self):
         return "PrivateImage(<withheld>)"
@@ -126,29 +182,72 @@ class PrivateImage:
     def inject(self, document):
         return replace_images(document, placeholder(self.binding), self.value)
 
+    def publish(self, path):
+        """Register bytes just constructed from public inputs or approved facts."""
+        if self._staging is not None:
+            if path.is_symlink():
+                raise ValueError("Private evidence output cannot be a symlink")
+            name = path.resolve().relative_to(self._staging.resolve()).as_posix()
+            self._exports[name] = path.read_bytes()
+
     @contextmanager
     def artifact_scope(self):
-        """Publish only a checked staging tree; collection still sanitizes at source."""
+        """Publish registered public records and metric projections, never raw staging."""
         destination = env.ARTIFACT_DIR
         with tempfile.TemporaryDirectory(prefix="forge-private-evidence-") as temporary:
             staging = Path(temporary)
+            self._staging, self._exports = staging, {}
             try:
                 with env.TempArtifactDir(staging):
                     yield
-            finally:
-                # No publication on a leak, including failed/interrupted workload
-                # captures. Never report a matched value or a possibly sensitive path.
-                tokens = [token.encode() for token in self.tokens]
-                for path in staging.rglob("*"):
-                    if path.is_symlink():
-                        raise ValueError("Private evidence staging contains a symlink")
-                    raw = path.read_bytes() if path.is_file() else b""
-                    name = str(path.relative_to(staging)).encode()
-                    if any(token in raw or token in name for token in tokens):
-                        raise ValueError(
-                            "Private image identifier remains in evidence; publication blocked"
+                from .public_invocation import project_invocation
+                from .public_metrics import project_native
+
+                patterns = {
+                    "guidellm": "**/*__run_guidellm_benchmark/artifacts/results/benchmarks*.json",
+                    "aiperf": "**/*__run_aiperf_benchmark/artifacts/aiperf/profile_export_aiperf.json",
+                }
+                for harness, pattern in patterns.items():
+                    for path in sorted(staging.glob(pattern)):
+                        if path.is_symlink() or not path.resolve().is_relative_to(
+                            staging.resolve()
+                        ):
+                            raise ValueError("Private metric export cannot escape staging")
+                        name = path.relative_to(staging).as_posix()
+                        self._exports[name] = json.dumps(
+                            project_native(path.read_bytes(), harness)
+                        ).encode()
+                    for path in sorted(
+                        staging.glob(f"**/*__run_{harness}_benchmark/src/{harness}-job.yaml")
+                    ):
+                        if path.is_symlink() or not path.resolve().is_relative_to(
+                            staging.resolve()
+                        ):
+                            raise ValueError("Private invocation cannot escape staging")
+                        name = (
+                            (path.parent.parent / "artifacts" / f"{harness}-invocation.json")
+                            .relative_to(staging)
+                            .as_posix()
                         )
-                shutil.copytree(staging, destination, dirs_exist_ok=True)
+                        self._exports[name] = json.dumps(
+                            project_invocation(path.read_bytes(), harness)
+                        ).encode()
+            finally:
+                self._staging = None
+            # Failed or interrupted scopes never publish. Do not report a matched
+            # value or a possibly sensitive path when checking successful output.
+            tokens = [token.encode() for token in self.tokens]
+            for name, raw in self._exports.items():
+                if any(token in raw or token in name.encode() for token in tokens):
+                    raise ValueError(
+                        "Private image identifier remains in evidence; publication blocked"
+                    )
+            for name, raw in self._exports.items():
+                path = destination / name
+                if not path.resolve().is_relative_to(destination.resolve()):
+                    raise ValueError("Private publication destination escapes artifact root")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
 
     def text(self, text):
         for token in sorted(self.tokens, key=len, reverse=True):
@@ -160,7 +259,7 @@ class PrivateImage:
             raise ValueError("private image identifier remains in public artifact")
 
     def capture(self, document):
-        result = copy.deepcopy(document)
+        result = public_resource(document)
 
         def discover(value):
             if isinstance(value, dict):
@@ -175,8 +274,7 @@ class PrivateImage:
                     elif status.get("ready"):
                         raise ValueError("ready private serving image digest is missing")
                     status["imageID"] = "private"
-                    if "image" in status:
-                        status["image"] = placeholder(self.binding)
+                    status.pop("image", None)
                 for container in value.get("containers", []):
                     if container.get("name") in SERVERS:
                         if container.get("image") != self.value:
@@ -194,13 +292,5 @@ class PrivateImage:
         if len(self.digests) > 1:
             raise ValueError("heterogeneous private serving digests are unsupported")
 
-        def scrub(value):
-            if isinstance(value, dict):
-                return {self.text(k): scrub(v) for k, v in value.items()}
-            if isinstance(value, list):
-                return [scrub(v) for v in value]
-            return self.text(value) if isinstance(value, str) else value
-
-        result = scrub(result)
         self.assert_public(result)
         return result

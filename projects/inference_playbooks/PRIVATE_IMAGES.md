@@ -28,16 +28,32 @@ Public source/submission artifacts remain placeholders. Contract v3 records only
 the logical binding, plus any separately checked CI placement override.
 
 Readiness and resource API output are secret-handled. Runtime captures collect
-observed image digests in memory and sanitize structured resources before writing.
+observed image digests in memory and construct approved Pod records before writing.
+Only serving configuration, storage/security fields and readiness/image-ID facts
+enter those records. Annotations, conditions, termination messages and other
+diagnostic fields are omitted. Controller captures retain resource identity;
+the verified submitted bundle owns desired configuration.
 Private Pod logs and image-status log blocks are omitted. Ready image IDs become
 `private`, a withholding marker rather than a fabricated digest. Mismatched
 serving images or heterogeneous serving digests fail capture.
 
-Execution artifacts use a separate staging directory. Every staged file and
-relative path is checked for known private identifiers before copying to the
-published tree. A failed check blocks publication of that tree, including on a
-failed workload. This is an additional gate, not a replacement for sanitizing
-captures before serialization.
+Execution artifacts use a separate staging directory. Only explicitly registered
+public inputs, test metadata and constructed runtime facts can publish. Native
+reports become typed `private-metrics-v1` projections, retaining supported numeric
+measurements and units, original-byte checksums and an explicit omitted-field
+count. They are not complete raw reports. Caliper KPI-equivalence tests cover both
+harnesses. Full Jobs become `private-invocation-v1` records of parsed concurrency
+levels and original Job checksums; the matching importer uses those for workload
+completeness. Raw logs, diagnostics, endpoints and unregistered files never copy
+from staging into the public tree.
+
+Every selected file and relative path is checked for private references,
+registry/repository identifiers and observed digests before any publication.
+Bare tags are not substring-scanned against public protocol markers such as
+`apps/v1` or `private`; image fields must match the selected placeholder. Failed
+checks and failed/interrupted workloads never publish the selected payload.
+Persistent restricted diagnostic storage requires separate provisioning;
+temporary staging does not provide retention.
 
 The matching Playbooks importer checks v3 against the tested recipe and overrides,
 retains pre-release attribution, and omits the private digest. RC results may be

@@ -165,6 +165,26 @@ class TestModuleLevelContract:
 
 
 class TestParsing:
+    @pytest.mark.parametrize("harness", ["guidellm", "aiperf"])
+    def test_private_projection_preserves_computed_kpis(self, tmp_path, harness):
+        from projects.inference_playbooks.orchestration.public_metrics import project_native
+
+        node = (_guidellm_node if harness == "guidellm" else _aiperf_node)(tmp_path)
+        plugin = InferencePlaybooksPlugin()
+
+        def metrics():
+            parsed = plugin.parse([node])
+            rows, status = plugin.compute_kpis(_model(tmp_path, [node], parsed.records))
+            return [(row.kpi_id, row.value, row.unit, row.labels) for row in rows]
+
+        before = metrics()
+        path = node.artifact_paths[0]
+        original = json.loads(path.read_bytes())
+        original["diagnostics"] = "restricted.example.org/private/runtime:rc7"
+        path.write_text(json.dumps(project_native(json.dumps(original).encode(), harness)))
+        assert metrics() == before
+        assert "restricted.example.org" not in path.read_text()
+
     def test_guidellm_only(self, tmp_path: Path):
         plugin = InferencePlaybooksPlugin()
         node = _guidellm_node(tmp_path)
