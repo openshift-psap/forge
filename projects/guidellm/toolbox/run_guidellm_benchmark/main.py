@@ -23,9 +23,9 @@ from projects.core.dsl import (  # noqa: F401
 from projects.core.dsl.utils import write_json, write_text
 from projects.core.dsl.utils.k8s import (
     oc,
-    oc_apply,
     oc_get_json,
 )
+from projects.core.library import ci
 from projects.guidellm.toolbox.run_guidellm_benchmark.utils import (
     expand_guidellm_runs,
     render_guidellm_copy_pod_from_parts,
@@ -120,6 +120,10 @@ def run(
 def validate_parameters(args, ctx):
     """Validate and normalize parameters"""
 
+    # Mutate this shared mapping as each create succeeds so ownership survives
+    # an exception later in the same task (for example, PVC creation failure).
+    ctx.created_resources = {}
+
     # Ensure guidellm_args is a list
     ctx.guidellm_args = args.guidellm_args or []
     ctx.guidellm_runs = expand_guidellm_runs(ctx.guidellm_args)
@@ -207,6 +211,79 @@ def _best_effort_delete(description: str, *oc_args: str) -> None:
         logger.warning("Timed out deleting %s: oc %s", description, " ".join(oc_args))
 
 
+def _create_owned_resource(path: Path, manifest: dict, ctx, key: str) -> None:
+    """Record ownership from the create response, never from a later name lookup."""
+    path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    result = oc("create", "-f", str(path), "-o", "json", log_stdout=False)
+    try:
+        created = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        raise RuntimeError(
+            "Helper creation response missing ownership proof; refusing guessed cleanup"
+        ) from None
+    metadata = created.get("metadata") if isinstance(created, dict) else None
+    if (
+        not isinstance(metadata, dict)
+        or created.get("kind") != manifest["kind"]
+        or created.get("apiVersion") != manifest["apiVersion"]
+        or metadata.get("name") != manifest["metadata"]["name"]
+        or metadata.get("namespace") != ctx.target_namespace
+        or not isinstance(metadata.get("uid"), str)
+        or not metadata["uid"]
+    ):
+        raise RuntimeError(
+            "Helper creation response missing ownership proof; refusing guessed cleanup"
+        )
+    ctx.created_resources[key] = {
+        "kind": created["kind"],
+        "metadata": {field: metadata[field] for field in ("name", "namespace", "uid")},
+    }
+
+
+def _cleanup_owned_resources(ctx, keys: tuple[str, ...]) -> None:
+    """Bound finalization to successfully created helpers, including after failure."""
+    failures = []
+    for key in keys:
+        resource = getattr(ctx, "created_resources", {}).get(key)
+        if resource is None:
+            continue
+        kind, metadata = resource["kind"], resource["metadata"]
+        prefix, plural = {
+            "Job": ("/apis/batch/v1", "jobs"),
+            "Pod": ("/api/v1", "pods"),
+            "PersistentVolumeClaim": ("/api/v1", "persistentvolumeclaims"),
+        }[kind]
+        url = f'{prefix}/namespaces/{metadata["namespace"]}/{plural}/{metadata["name"]}'
+        try:
+            result = oc(
+                "delete",
+                f"--raw={url}",
+                "-f",
+                "-",
+                input_text=json.dumps(
+                    {
+                        "apiVersion": "v1",
+                        "kind": "DeleteOptions",
+                        "preconditions": {"uid": metadata["uid"]},
+                        "propagationPolicy": "Foreground",
+                    }
+                ),
+                check=False,
+                log_stdout=False,
+                log_stderr=False,
+                timeout_seconds=60,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            failures.append(f'{kind}/{metadata["name"]}: deletion failed ({type(error).__name__})')
+            continue
+        if result.returncode and "(NotFound)" not in (result.stderr or ""):
+            failures.append(f'{kind}/{metadata["name"]}: UID-preconditioned deletion failed')
+    if failures:
+        message = "Failed to clean up GuideLLM helpers: " + "; ".join(failures)
+        ci.add_notification_file("guidellm-cleanup-failed", message)
+        raise RuntimeError(message)
+
+
 @task
 def create_guidellm_resources_task(args, ctx):
     """Create the GuideLLM benchmark job and optionally PVC with job as owner"""
@@ -227,7 +304,7 @@ def create_guidellm_resources_task(args, ctx):
     # Create the job based on mode
     if args.use_pvc:
         # PVC mode - traditional single container job + PVC
-        oc_apply(
+        _create_owned_resource(
             src_dir / "guidellm-job.yaml",
             render_guidellm_job_from_parts(
                 namespace=ctx.target_namespace,
@@ -240,10 +317,11 @@ def create_guidellm_resources_task(args, ctx):
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
             ),
+            ctx,
+            "job",
         )
 
-        # Get the job metadata for owner reference
-        job_data = oc_get_json("job", name=ctx.benchmark_name, namespace=ctx.target_namespace)
+        job_data = ctx.created_resources["job"]
 
         # Create owner reference from job metadata
         owner_reference = {
@@ -256,7 +334,7 @@ def create_guidellm_resources_task(args, ctx):
         }
 
         # Create the PVC with job as owner
-        oc_apply(
+        _create_owned_resource(
             src_dir / "guidellm-pvc.yaml",
             render_guidellm_pvc_from_parts(
                 namespace=ctx.target_namespace,
@@ -265,13 +343,15 @@ def create_guidellm_resources_task(args, ctx):
                 pvc_storage_class=args.pvc_storage_class,
                 owner_reference=owner_reference,
             ),
+            ctx,
+            "pvc",
         )
 
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS
         return f"GuideLLM benchmark {ctx.benchmark_name} created with job as PVC owner"
     else:
         # Shared volume mode - job with main + sidecar containers
-        oc_apply(
+        _create_owned_resource(
             src_dir / "guidellm-job.yaml",
             render_guidellm_shared_volume_job_from_parts(
                 namespace=ctx.target_namespace,
@@ -284,6 +364,8 @@ def create_guidellm_resources_task(args, ctx):
                 fs_group=args.fs_group,
                 config_path=ctx.config_path,
             ),
+            ctx,
+            "job",
         )
         ctx.wait_deadline = time.monotonic() + args.timeout + JOB_COMPLETION_GRACE_SECONDS
         return (
@@ -516,6 +598,9 @@ Check the job logs for detailed error information:
 def capture_guidellm_state_task(args, ctx):
     """Capture GuideLLM benchmark job state and logs"""
 
+    if "job" not in getattr(ctx, "created_resources", {}):
+        return "No created GuideLLM job to capture"
+
     capture_guidellm_state(
         artifact_dir=args.artifact_dir,
         namespace=ctx.target_namespace,
@@ -541,7 +626,7 @@ def create_copy_pod(args, ctx):
     if pod_data and pod_data.get("items"):
         node_name = pod_data["items"][0].get("spec", {}).get("nodeName")
 
-    oc_apply(
+    _create_owned_resource(
         args.artifact_dir / "src" / "guidellm-copy-pod.yaml",
         render_guidellm_copy_pod_from_parts(
             namespace=ctx.target_namespace,
@@ -549,6 +634,8 @@ def create_copy_pod(args, ctx):
             pvc_size=args.pvc_size,
             node_name=node_name,
         ),
+        ctx,
+        "copy_pod",
     )
     return f"Created copy pod {ctx.benchmark_name}-copy"
 
@@ -867,6 +954,7 @@ def _copy_result_file(
     return None
 
 
+@always
 @task
 def cleanup_copy_pod(args, ctx):
     """Delete the copy pod after results extraction (PVC mode only)"""
@@ -874,45 +962,18 @@ def cleanup_copy_pod(args, ctx):
     if not args.use_pvc:
         return "Skipping copy pod cleanup for shared volume mode"
 
-    _best_effort_delete(
-        "GuideLLM benchmark copy pod",
-        "delete",
-        "pod",
-        f"{ctx.benchmark_name}-copy",
-        "-n",
-        ctx.target_namespace,
-        "--ignore-not-found=true",
-    )
-    return f"Cleaned up copy pod {ctx.benchmark_name}-copy"
+    _cleanup_owned_resources(ctx, ("copy_pod",))
+    return "Cleaned up created GuideLLM copy pod, if any"
 
 
+@always
 @task
 def cleanup_guidellm_resources(args, ctx):
     """Delete the GuideLLM benchmark job and optionally PVC at the end"""
 
-    _best_effort_delete(
-        "GuideLLM benchmark job",
-        "delete",
-        "job",
-        ctx.benchmark_name,
-        "-n",
-        ctx.target_namespace,
-        "--ignore-not-found=true",
-    )
-
-    if args.use_pvc:
-        _best_effort_delete(
-            "GuideLLM benchmark PVC",
-            "delete",
-            "pvc",
-            ctx.benchmark_name,
-            "-n",
-            ctx.target_namespace,
-            "--ignore-not-found=true",
-        )
-
+    _cleanup_owned_resources(ctx, ("job", "pvc"))
     mode = "PVC" if args.use_pvc else "shared volume"
-    return f"Cleaned up GuideLLM benchmark resources for {ctx.benchmark_name} ({mode} mode)"
+    return f"Cleaned up created GuideLLM benchmark resources ({mode} mode)"
 
 
 def capture_guidellm_state(*, artifact_dir: Path, namespace: str, benchmark_name: str) -> None:
