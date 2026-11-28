@@ -132,7 +132,7 @@ def replace_images(document, expected, replacement):
 class PrivateImage:
     """Values stay in memory. Public captures contain placeholders/withholding markers."""
 
-    def __init__(self, binding, value):
+    def __init__(self, binding, value, *, public_images=()):
         if (
             not isinstance(value, str)
             or not IMAGE.fullmatch(value)
@@ -146,13 +146,21 @@ class PrivateImage:
         tag = repository.rsplit("/", 1)[-1].partition(":")[2]
         if tag:
             repository = repository.rsplit(":", 1)[0]
+        registry = repository.split("/")[0]
+        public_registries = {
+            image.split("/", 1)[0]
+            for image in public_images
+            if isinstance(image, str) and IMAGE.fullmatch(image)
+        }
+        registry_tokens = (
+            () if registry in public_registries else (registry, registry.split(":")[0])
+        )
         self.tokens = {
             v
             for v in (
                 value,
                 repository,
-                repository.split("/")[0],
-                repository.split("/")[0].split(":")[0],
+                *registry_tokens,
                 repository.split("/", 1)[1],
                 digest,
             )
@@ -168,7 +176,7 @@ class PrivateImage:
         return "PrivateImage(<withheld>)"
 
     @classmethod
-    def load(cls, binding):
+    def load(cls, binding, *, public_images=()):
         path = vault.get_vault_content_path("psap-forge-private-images", "images")
         if path is None or path.resolve().is_relative_to(env.ARTIFACT_DIR.resolve()):
             raise ValueError("private image vault must be mounted outside artifacts")
@@ -177,7 +185,7 @@ class PrivateImage:
             value = values[binding["image_env"]]
         except (OSError, ValueError, KeyError, TypeError):
             raise ValueError("private image binding is unavailable in the mounted vault") from None
-        return cls(binding, value)
+        return cls(binding, value, public_images=public_images)
 
     def inject(self, document):
         return replace_images(document, placeholder(self.binding), self.value)

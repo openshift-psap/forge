@@ -129,7 +129,6 @@ def test_llmd_plugin_exports_dashboard_compatible_csv(tmp_path):
         reader = csv.DictReader(output)
         rows = list(reader)
         assert reader.fieldnames == DASHBOARD_FIELDNAMES
-    return
     assert len(rows) == 1
     row = rows[0]
     assert row["run"] == "H200-RedHatAI-Llama-3.3-70B-Instruct-FP8-dynamic-2"
@@ -137,8 +136,8 @@ def test_llmd_plugin_exports_dashboard_compatible_csv(tmp_path):
     assert row["model"] == "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic"
     assert row["version"] == "RHOAI-3.5-EA2-precise-prefix-cache"
     assert row["TP"] == "2"
-    assert row["DP"] == "0"
-    assert row["EP"] == "0"
+    assert row["DP"] == ""  # Not declared; do not invent zero-valued topology.
+    assert row["EP"] == ""
     assert row["replicas"] == "4"
     assert row["router_config"] == '{"config":"precise"}'
     assert row["prompt toks"] == "1000"

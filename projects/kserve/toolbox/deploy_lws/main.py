@@ -184,11 +184,11 @@ def resolve_endpoint(args, ctx):
         all_services = oc_get_json("services", namespace=args.namespace) or {}
         service = _select_operator_service(all_services.get("items", []), ctx.lws_name)
     if service is None:
-        return False, f"Waiting for the operator Service for LeaderWorkerSet {ctx.lws_name}"
+        return False, f"Waiting for a usable operator Service for LeaderWorkerSet {ctx.lws_name}"
 
     metadata = service.get("metadata", {})
-    ctx.service_name = metadata.get("name")
     ctx.port = _service_port(service)
+    ctx.service_name = metadata.get("name")
     ctx.endpoint_url = f"http://{ctx.service_name}.{args.namespace}.svc.cluster.local:{ctx.port}"
     return f"Resolved operator Service endpoint {ctx.endpoint_url}"
 
@@ -196,6 +196,10 @@ def resolve_endpoint(args, ctx):
 def _select_operator_service(services: list[dict], lws_name: str) -> dict | None:
     matches = []
     for service in services:
+        try:
+            _service_port(service)
+        except ValueError:
+            continue  # Operator discovery can include portless peer-discovery Services.
         metadata = service.get("metadata", {})
         labels = metadata.get("labels", {})
         name = metadata.get("name", "")

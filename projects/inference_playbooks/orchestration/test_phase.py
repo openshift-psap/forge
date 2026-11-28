@@ -281,7 +281,14 @@ def _manifest_bundle_from_recipe(recipe: dict) -> dict:
 
 def _launch_recipe(recipe_id: str, recipe: dict) -> None:
     bundle = _manifest_bundle_from_recipe(recipe)
-    private = PrivateImage.load(bundle["private_image"]) if bundle.get("private_image") else None
+    private = None
+    if bundle.get("private_image"):
+        # Public harness configuration is committed input, not runtime diagnostics.
+        benchmarks = config.Config(RHAIIS_CONFIG).get_config("benchmarks")
+        private = PrivateImage.load(
+            bundle["private_image"],
+            public_images=[benchmarks[tool]["image"] for tool in ("guidellm", "aiperf")],
+        )
     if private:
         with private.artifact_scope():
             _launch_recipe_bundle(recipe_id, recipe, bundle, private)
@@ -718,9 +725,12 @@ def _run_aiperf_workload(
             )
             if private:
                 private.publish(metadata_path)
-            job_name = _unique_name(f"aiperf-{workload_key}-{run_name}")
+            base = f"aiperf-{workload_key}"
             if len(sweep) > 1:
-                job_name = _unique_name(f"aiperf-c{concurrency}-{run_name}")
+                base += f"-c{concurrency}"
+            job_name = (
+                f"{slugify_identifier(f'{base}-{run_name}', max_length=46)}-{uuid.uuid4().hex[:8]}"
+            )
 
             run_aiperf_benchmark.run(
                 endpoint_url=endpoint_url,

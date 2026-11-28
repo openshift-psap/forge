@@ -49,6 +49,9 @@ from staging into the public tree.
 
 Every selected file and relative path is checked for private references,
 registry/repository identifiers and observed digests before any publication.
+Registry authorities already declared by the public harness configuration may be
+shared with the private serving image. Only that exact authority (including port)
+is exempted; private repositories, references and digests remain protected.
 Bare tags are not substring-scanned against public protocol markers such as
 `apps/v1` or `private`; image fields must match the selected placeholder. Failed
 checks and failed/interrupted workloads never publish the selected payload.

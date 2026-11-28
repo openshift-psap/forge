@@ -738,7 +738,7 @@ def test_private_launch_publishes_only_checked_staging(launch, monkeypatch):
     )
     launch.checkout.path.write_text(yaml.safe_dump(source))
     launch.checkout.snapshot()
-    monkeypatch.setattr(PrivateImage, "load", lambda binding: private)
+    monkeypatch.setattr(PrivateImage, "load", lambda binding, **kwargs: private)
     monkeypatch.setattr(test_phase, "_capture_created_recipe", lambda *args, **kw: None)
     pod = {
         "kind": "Pod",

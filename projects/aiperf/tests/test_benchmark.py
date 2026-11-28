@@ -51,6 +51,57 @@ def test_profile_command_uses_summary_only_and_no_shell() -> None:
     assert "sh" not in command
 
 
+@pytest.mark.parametrize("flag", ["--url", "--model", "--artifact-dir", "-u", "-m"])
+@pytest.mark.parametrize("equals", [False, True])
+def test_extra_args_cannot_replace_structured_identity(flag, equals):
+    args = [f"{flag}=other"] if equals else [flag, "other"]
+    with pytest.raises(ValueError, match="cannot override"):
+        _profile(extra_args=args)
+
+
+def test_extra_args_require_a_load_mode():
+    with pytest.raises(ValueError, match="Set concurrency"):
+        _profile(concurrency=None, extra_args=["--verbose"])
+    command = _profile(concurrency=None, extra_args=["--scenario", "agentx"])
+    assert command[-2:] == ["--scenario", "agentx"]
+
+
+def test_wait_deadlines_are_per_invocation(monkeypatch, tmp_path):
+    import inspect
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(aiperf_command, "oc_get_json", lambda *a, **kw: {"status": {}})
+    monkeypatch.setattr(aiperf_command, "capture_job_state", lambda *a: None)
+    monkeypatch.setattr(aiperf_command.time, "monotonic", lambda: 100)
+    args = SimpleNamespace(name="audit", namespace="fixture", artifact_dir=tmp_path)
+    wait = inspect.unwrap(aiperf_command.wait_for_completion)
+    config = dict(aiperf_command.wait_for_completion._retry_config)
+    assert wait(args, SimpleNamespace(wait_deadline=110)) is False
+    with pytest.raises(RuntimeError, match="exceeded its timeout"):
+        wait(args, SimpleNamespace(wait_deadline=90))
+    assert wait(args, SimpleNamespace(wait_deadline=110)) is False
+    assert aiperf_command.wait_for_completion._retry_config == config
+
+
+def test_llmd_preserves_failed_kpi_status(monkeypatch):
+    from types import SimpleNamespace
+
+    from projects.caliper.engine.kpi import KpiComputationStatus
+    from projects.llm_d.postprocess.llm_d import plugin as module
+
+    failed = KpiComputationStatus.failure_status("unknown GPU", total_tests=2)
+    failed.warnings = ["missing labels"]
+    monkeypatch.setattr(module, "model_for_tool", lambda model, tool: model)
+    monkeypatch.setattr(module.GuideLLMPlugin, "compute_kpis", lambda *a: ([], failed))
+    monkeypatch.setattr(
+        module, "compute_aiperf_kpis", lambda *a: ([], KpiComputationStatus.success_status(1))
+    )
+    _, status = LlmDGuideLLMPlugin().compute_kpis(SimpleNamespace())
+    assert not status.success and status.status == "failed"
+    assert status.message == "unknown GPU" and status.warnings == ["missing labels"]
+    assert status.tests_processed == 1 and status.total_tests == 3
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

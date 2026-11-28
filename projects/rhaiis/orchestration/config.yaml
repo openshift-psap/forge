@@ -21,6 +21,7 @@ benchmarks:
       output_dir: /results
       outputs: json
   aiperf:
+    ssl_verify: true
     image: quay.io/rh-ee-thibrahi/aiperf:0.12.0
     timeout: 3600
     pvc_size: 1Gi

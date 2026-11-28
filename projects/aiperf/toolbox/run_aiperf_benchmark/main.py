@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -54,8 +55,17 @@ def build_profile_command(
         raise ValueError("endpoint_path must start with /")
     if concurrency is not None and request_rate is not None:
         raise ValueError("Choose concurrency or request_rate, not both")
-    has_extra = bool(extra_args)
-    if concurrency is None and request_rate is None and not fixed_schedule and not has_extra:
+    extra_flags = {arg.split("=", 1)[0] for arg in (extra_args or [])}
+    if extra_flags & {"--url", "--model", "--artifact-dir", "-u", "-m"}:
+        raise ValueError("aiperf_args cannot override endpoint, model, or artifact directory")
+    extra_load = extra_flags & {
+        "--concurrency",
+        "--request-rate",
+        "--benchmark-duration",
+        "--scenario",
+        "-c",
+    }
+    if concurrency is None and request_rate is None and not fixed_schedule and not extra_load:
         raise ValueError("Set concurrency, request_rate, or fixed_schedule")
     for name, value in (
         ("concurrency", concurrency),
@@ -261,7 +271,6 @@ def run(
         fixed_schedule_auto_offset=fixed_schedule_auto_offset,
         extra_args=aiperf_args,
     )
-    wait_for_completion._retry_config["attempts"] = max(1, timeout // POLL_SECONDS + 1)
     execute_tasks(locals())
     return 0
 
@@ -323,6 +332,7 @@ def create_resources(args, ctx):
         ssl_verify=args.ssl_verify,
     )
     oc_apply(src / "aiperf-job.yaml", job)
+    ctx.wait_deadline = time.monotonic() + args.timeout
     metadata = {
         "benchmark_tool": "aiperf",
         "image": args.image,
@@ -336,7 +346,7 @@ def create_resources(args, ctx):
     return f"Created AI Perf Job {args.name}"
 
 
-@retry(attempts=361, delay=POLL_SECONDS)
+@retry(attempts=8640, delay=POLL_SECONDS)
 @task
 def wait_for_completion(args, ctx):
     """Wait for the AI Perf Job to succeed or fail."""
@@ -350,6 +360,9 @@ def wait_for_completion(args, ctx):
     ):
         capture_job_state(args.artifact_dir, args.namespace, args.name)
         raise RuntimeError(f"AI Perf Job {args.name} failed; see captured Job logs")
+    if time.monotonic() >= ctx.wait_deadline:
+        capture_job_state(args.artifact_dir, args.namespace, args.name)
+        raise RuntimeError(f"AI Perf Job {args.name} exceeded its timeout")
     return False
 
 

@@ -93,10 +93,21 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
         """Compute KPI values using dataclasses with status details."""
         guidellm_model = model_for_tool(model, "guidellm")
         self._cached_model = guidellm_model
-        guide_rows, _ = super().compute_kpis(guidellm_model)
-        aiperf_rows, _ = compute_aiperf_kpis(model)
-        return guide_rows + aiperf_rows, KpiComputationStatus.success_status(
-            len(model.unified_result_records)
+        guide_rows, guide_status = super().compute_kpis(guidellm_model)
+        aiperf_rows, aiperf_status = compute_aiperf_kpis(model)
+        statuses = (guide_status, aiperf_status)
+        success = all(status.success for status in statuses)
+        return guide_rows + aiperf_rows, KpiComputationStatus(
+            status="failed"
+            if not success
+            else (
+                "warning" if any(status.status == "warning" for status in statuses) else "success"
+            ),
+            success=success,
+            message="; ".join(status.message for status in statuses if status.message) or None,
+            warnings=[warning for status in statuses for warning in status.warnings],
+            tests_processed=sum(status.tests_processed for status in statuses),
+            total_tests=sum(status.total_tests for status in statuses),
         )
 
     def export_dashboard_csv(self, model: UnifiedRunModel, output_path: Path) -> str:
@@ -118,6 +129,11 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
 
         from .csv_dashboard import DASHBOARD_FIELDNAMES
 
+        run_uuids_by_path = {
+            record.test_base_path: record.metrics.get("run_uuids", {})
+            for record in model.unified_result_records
+        }
+
         def metadata_row_mapper(labels: dict[str, Any]) -> dict[str, Any]:
             """Extract LLM-D specific metadata for CSV row from dashboard KPI labels."""
             accelerator = labels.get("gpu_type") or labels.get("accelerator", "")
@@ -125,6 +141,13 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
             run_model = model_id.replace("/", "-")
             tp = labels.get("tensor_parallel_size", "")
             replicas = labels.get("replicas", "")
+            concurrency = labels.get("intended_concurrency")
+            run_uuids = run_uuids_by_path.get(labels.get("run_path"), {})
+            run_uuid = (
+                run_uuids.get(int(float(concurrency)), labels.get("run_uuid", ""))
+                if concurrency is not None
+                else labels.get("run_uuid", "")
+            )
 
             # LLM-D specific version handling
             version = normalize_product_version(
@@ -148,7 +171,7 @@ class LlmDGuideLLMPlugin(GuideLLMPlugin):
                 "prefill_pod_count": labels.get("prefill_pod_count", ""),
                 "decode_pod_count": labels.get("decode_pod_count", ""),
                 "router_config": labels.get("router_config", ""),
-                "uuid": labels.get("run_uuid", ""),
+                "uuid": run_uuid,
                 "runtime_args": labels.get("runtime_args", ""),
                 "guidellm_start_time_ms": labels.get("guidellm_start_time_ms", ""),
                 "guidellm_end_time_ms": labels.get("guidellm_end_time_ms", ""),

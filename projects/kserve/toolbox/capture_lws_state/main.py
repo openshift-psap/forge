@@ -119,6 +119,7 @@ def capture_pod_logs(args, ctx):
         "-l",
         args.pod_selector,
         "--all-containers=true",
+        "--tail=-1",
         "--prefix=true",
     )
 
